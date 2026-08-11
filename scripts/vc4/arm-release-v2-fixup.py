@@ -50,6 +50,37 @@ if '#include "qemu/log.h"' not in text:
         raise SystemExit("could not locate qemu/error-report.h include")
     source.write_text(text.replace(needle, addition, 1), encoding="utf-8")
 
+# QEMU 11 filters the machine list through target-specific QOM interfaces.
+# A class derived directly from TYPE_MACHINE is registered successfully but
+# remains invisible to qemu-system-aarch64 unless it implements the AArch64
+# machine interface.  Both generated regression machines are AArch64-only.
+def expose_to_aarch64(path: str) -> None:
+    machine = ROOT / path
+    text = machine.read_text(encoding="utf-8")
+
+    include = '#include "hw/arm/machines-qom.h"\n'
+    if include not in text:
+        marker = '#include "hw/core/boards.h"\n'
+        if marker not in text:
+            raise SystemExit(f"could not locate boards include in {machine}")
+        text = text.replace(marker, marker + include, 1)
+
+    interface = "    .interfaces = aarch64_machine_interfaces,\n"
+    if interface not in text:
+        marker = "    .parent = TYPE_MACHINE,\n"
+        if marker not in text:
+            raise SystemExit(f"could not locate machine TypeInfo in {machine}")
+        text = text.replace(marker, marker + interface, 1)
+
+    machine.write_text(text, encoding="utf-8")
+
+
+for machine_path in (
+    "hw/arm/vc4_hetero.c",
+    "hw/arm/vc4_arm_release_smoke.c",
+):
+    expose_to_aarch64(machine_path)
+
 # hw source sets are applied against the device/Kconfig dictionary.  The
 # TARGET_AARCH64 preprocessor define is therefore not a valid SourceSet key
 # here and silently omitted the machine from qemu-system-aarch64.  Reuse the
