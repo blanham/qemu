@@ -1,0 +1,314 @@
+
+static bool vc4_cpu_enter_irq(VC4CPU *cpu)
+{
+    CPUState *cs = CPU(cpu);
+    CPUVC4State *env = vc4_cpu_env(cs);
+    uint32_t vector;
+    uint32_t vector_base;
+    uint32_t vector_entry;
+    uint32_t saved_sr = env->sr;
+
+    if (!cpu->intc ||
+        !bcm2835_vc4_intc_acknowledge(cpu->intc, &vector, &vector_base)) {
+        return false;
+    }
+
+    if (env->exception_depth == 0) {
+        env->normal_sp = env->gpr[VC4_REG_SP];
+        env->gpr[VC4_REG_SP] = env->gpr[28];
+    }
+
+    vc4_irq_push(cs, env, env->pc);
+    vc4_irq_push(cs, env, saved_sr);
+    env->exception_depth++;
+
+    vector_entry = cpu_ldl_le_data(vc4_tcg_env(cs),
+                                   vector_base + vector * 4);
+
+    env->sr = saved_sr & ~(VC4_SR_U | VC4_SR_I | VC4_SR_S);
+    if (vector_entry & 1) {
+        env->sr |= VC4_SR_S;
+    }
+    env->pc = vector_entry & ~1u;
+    cs->halted = 0;
+    return true;
+}
+
+static void vc4_cpu_do_interrupt(CPUState *cs)
+{
+    CPUVC4State *env = vc4_cpu_env(cs);
+
+    switch (cs->exception_index) {
+    case VC4_EXCP_IRQ:
+        if (!vc4_cpu_enter_irq(VC4_CPU(cs))) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "VideoCore IV: spurious external interrupt\n");
+        }
+        break;
+    case VC4_EXCP_ILLEGAL:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "VideoCore IV: illegal instruction at 0x%08x\n",
+                      env->pc);
+        cs->halted = 1;
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "VideoCore IV: unknown exception %d at 0x%08x\n",
+                      cs->exception_index, env->pc);
+        cs->halted = 1;
+        break;
+    }
+
+    cs->exception_index = -1;
+}
+
+static bool vc4_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+{
+    CPUVC4State *env = vc4_cpu_env(cs);
+
+    if ((interrupt_request & CPU_INTERRUPT_HARD) &&
+        (env->sr & VC4_SR_I)) {
+        cs->exception_index = VC4_EXCP_IRQ;
+        vc4_cpu_do_interrupt(cs);
+        return true;
+    }
+
+    return false;
+}
+
+static void vc4_cpu_init(Object *obj)
+{
+    qdev_init_gpio_in(DEVICE(obj), vc4_cpu_set_irq, 1);
+}
+
+#include "hw/core/sysemu-cpu-ops.h"
+
+static const struct SysemuCPUOps vc4_sysemu_ops = {
+    .has_work = vc4_cpu_has_work,
+    .get_phys_addr_debug = vc4_cpu_get_phys_addr_debug,
+};
+
+static const TCGCPUOps vc4_tcg_ops = {
+    .guest_default_memory_order = TCG_MO_ALL,
+    .mttcg_supported = false,
+
+    .initialize = vc4_translate_init,
+    .translate_code = vc4_translate_code,
+    .get_tb_cpu_state = vc4_get_tb_cpu_state,
+    .synchronize_from_tb = vc4_cpu_synchronize_from_tb,
+    .restore_state_to_opc = vc4_restore_state_to_opc,
+    .mmu_index = vc4_cpu_mmu_index,
+    .tlb_fill = vc4_cpu_tlb_fill,
+    .pointer_wrap = cpu_pointer_wrap_uint32,
+
+    .cpu_exec_interrupt = vc4_cpu_exec_interrupt,
+    .cpu_exec_halt = vc4_cpu_has_work,
+    .cpu_exec_reset = cpu_reset,
+    .do_interrupt = vc4_cpu_do_interrupt,
+};
+
+static void vc4_cpu_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    CPUClass *cc = CPU_CLASS(klass);
+    VC4CPUClass *vcc = VC4_CPU_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
+
+    device_class_set_parent_realize(dc, vc4_cpu_realize,
+                                    &vcc->parent_realize);
+    resettable_class_set_parent_phases(rc, NULL, vc4_cpu_reset_hold, NULL,
+                                       &vcc->parent_phases);
+
+    cc->class_by_name = vc4_cpu_class_by_name;
+    cc->dump_state = vc4_cpu_dump_state;
+    cc->get_arch_id = vc4_cpu_get_arch_id;
+    cc->set_pc = vc4_cpu_set_pc;
+    cc->get_pc = vc4_cpu_get_pc;
+    cc->gdb_read_register = vc4_cpu_gdb_read_register;
+    cc->gdb_write_register = vc4_cpu_gdb_write_register;
+    cc->gdb_num_core_regs = VC4_NUM_REGS;
+    cc->gdb_arch_name = vc4_gdb_arch_name;
+    cc->sysemu_ops = &vc4_sysemu_ops;
+    cc->tcg_ops = &vc4_tcg_ops;
+}
+
+static const TypeInfo vc4_cpu_types[] = {
+    {
+        .name = TYPE_VC4_CPU,
+        .parent = TYPE_CPU,
+        .instance_size = sizeof(VC4CPU),
+        .instance_align = __alignof(VC4CPU),
+        .instance_init = vc4_cpu_init,
+        .abstract = true,
+        .class_size = sizeof(VC4CPUClass),
+        .class_init = vc4_cpu_class_init,
+    },
+    {
+        .name = TYPE_VC4_VPU_CPU,
+        .parent = TYPE_VC4_CPU,
+    },
+};
+
+DEFINE_TYPES(vc4_cpu_types)
+''',
+)
+
+write(
+    "target/vc4/gdbstub.c",
+    r'''
+/*
+ * VideoCore IV VPU GDB stub
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "qemu/osdep.h"
+#include "gdbstub/helpers.h"
+#include "cpu.h"
+
+int vc4_cpu_gdb_read_register(CPUState *cs, GByteArray *buf, int reg)
+{
+    CPUVC4State *env = vc4_cpu_env(cs);
+
+    if (reg < 0 || reg >= VC4_NUM_REGS) {
+        return 0;
+    }
+    return gdb_get_reg32(buf, vc4_env_get_reg(env, reg));
+}
+
+int vc4_cpu_gdb_write_register(CPUState *cs, uint8_t *buf, int reg)
+{
+    CPUVC4State *env = vc4_cpu_env(cs);
+
+    if (reg < 0 || reg >= VC4_NUM_REGS) {
+        return 0;
+    }
+    vc4_env_set_reg(env, reg, ldl_le_p(buf));
+    return 4;
+}
+''',
+)
+
+write(
+    "target/vc4/op_helper.c",
+    r'''
+/*
+ * VideoCore IV VPU TCG helpers
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "qemu/osdep.h"
+#include "qemu/bitops.h"
+#include "qemu/log.h"
+#include "cpu.h"
+#include "hw/vc4/bcm2835_vc4_intc.h"
+#include "exec/helper-proto-common.h"
+#define HELPER_H "target/vc4/helper.h"
+#include "exec/helper-proto.h.inc"
+#undef HELPER_H
+#include "accel/tcg/cpu-ldst.h"
+#include "accel/tcg/cpu-loop.h"
+
+static inline CPUVC4State *vc4_helper_env(CPUArchState *envp)
+{
+    return (CPUVC4State *)(void *)envp;
+}
+
+static uint32_t vc4_bitreverse(uint32_t value)
+{
+    value = ((value & 0x55555555u) << 1) |
+            ((value >> 1) & 0x55555555u);
+    value = ((value & 0x33333333u) << 2) |
+            ((value >> 2) & 0x33333333u);
+    value = ((value & 0x0f0f0f0fu) << 4) |
+            ((value >> 4) & 0x0f0f0f0fu);
+    value = bswap32(value);
+    return value;
+}
+
+uint32_t helper_vc4_complex_alu(uint32_t op, uint32_t a, uint32_t b)
+{
+    unsigned shift = b & 31;
+    unsigned width;
+
+    switch (op) {
+    case 9:
+        return ror32(a, shift);
+    case 14:
+        width = b;
+        if (width == 0) {
+            return 0;
+        }
+        if (width >= 32) {
+            return a;
+        }
+        return extract32(a, 0, width);
+    case 15:
+        return (int32_t)a > (int32_t)b ? a : b;
+    case 16:
+        return a | (1u << shift);
+    case 17:
+        return (int32_t)a < (int32_t)b ? a : b;
+    case 18:
+        return a & ~(1u << shift);
+    case 20:
+        return a ^ (1u << shift);
+    case 24:
+        width = b;
+        if (width == 0) {
+            return 0;
+        }
+        if (width >= 32) {
+            return a;
+        }
+        return sextract32(a, 0, width);
+    case 27:
+        return b ? clz32(b) : 32;
+    case 29:
+        return vc4_bitreverse(b);
+    case 31:
+        return b == INT32_MIN ? b : ABS((int32_t)b);
+    default:
+        return 0;
+    }
+}
+
+uint32_t helper_vc4_div(uint32_t a, uint32_t b,
+                        uint32_t a_unsigned, uint32_t b_unsigned)
+{
+    if (b == 0) {
+        return UINT32_MAX;
+    }
+
+    if (a_unsigned && b_unsigned) {
+        return a / b;
+    }
+    if (a_unsigned) {
+        return (uint64_t)a / (int64_t)(int32_t)b;
+    }
+    if (b_unsigned) {
+        return (int64_t)(int32_t)a / (uint64_t)b;
+    }
+    if (a == INT32_MIN && b == UINT32_MAX) {
+        return INT32_MIN;
+    }
+    return (int32_t)a / (int32_t)b;
+}
+
+uint32_t helper_vc4_mulhd(uint32_t a, uint32_t b,
+                          uint32_t a_unsigned, uint32_t b_unsigned)
+{
+    if (a_unsigned && b_unsigned) {
+        return ((uint64_t)a * (uint64_t)b) >> 32;
+    }
+    if (a_unsigned) {
+        return ((int64_t)(uint64_t)a * (int64_t)(int32_t)b) >> 32;
+    }
+    if (b_unsigned) {
+        return ((int64_t)(int32_t)a * (int64_t)(uint64_t)b) >> 32;
+    }
+    return ((int64_t)(int32_t)a * (int64_t)(int32_t)b) >> 32;
+}
+
+static void vc4_push(CPUAr
