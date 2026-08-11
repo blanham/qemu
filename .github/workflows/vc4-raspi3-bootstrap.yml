@@ -1,0 +1,102 @@
+name: Bootstrap VC4-first Raspberry Pi 3 machine
+
+on:
+  push:
+    branches:
+      - agent/vc4-raspi3-vpu
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize Raspberry Pi VPU machine
+        run: python3 scripts/vc4/raspi3-bootstrap.py
+
+      - name: Configure and build
+        run: |
+          ./configure \
+            --target-list=vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-vc4
+
+      - name: Verify machine registration
+        run: |
+          build/qemu-system-vc4 -machine help | tee /tmp/vc4-machines.txt
+          grep -q 'raspi3b-vc4' /tmp/vc4-machines.txt
+
+      - name: Build VPU bus smoke firmware
+        run: |
+          python3 - <<'PY'
+          import struct
+
+          # cpuid r0; halt
+          with open('/tmp/raspi3-vc4-smoke.bin', 'wb') as out:
+              out.write(struct.pack('<2H', 0x00e0, 0x0000))
+          PY
+
+      - name: Boot through the BCM283x GPU bus
+        run: |
+          set +e
+          timeout 2s build/qemu-system-vc4 \
+            -M raspi3b-vc4 \
+            -m 128M \
+            -kernel /tmp/raspi3-vc4-smoke.bin \
+            -display none \
+            -monitor none \
+            -serial none \
+            -singlestep \
+            -d cpu \
+            -D /tmp/raspi3-vc4.log
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            cat /tmp/raspi3-vc4.log || true
+            exit "$rc"
+          fi
+          cat /tmp/raspi3-vc4.log
+          python3 - <<'PY'
+          import re
+
+          log = open('/tmp/raspi3-vc4.log', encoding='utf-8').read()
+          match = re.search(r'pc=00000002\s+sr=[0-9a-f]{8}(.*?)(?=\npc=|\Z)',
+                            log, re.S | re.I)
+          if not match:
+              raise SystemExit('VPU did not reach HALT at PC 0x2 on GPU-bus RAM')
+          if not re.search(r'r0\s*=\s*04000104', match.group(0), re.I):
+              raise SystemExit('CPUID result missing after booting through GPU bus')
+          PY
+
+      - name: Commit green machine implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No implementation changes to commit."
+            exit 0
+          fi
+          git commit -m "hw/vc4: add VC4-first Raspberry Pi 3 bring-up machine"
+          git push origin HEAD:${GITHUB_REF_NAME}
