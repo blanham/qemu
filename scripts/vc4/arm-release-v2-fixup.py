@@ -1,17 +1,35 @@
 #!/usr/bin/env python3
-"""Small include and API hardening pass for the ARM-release fixture."""
+"""Harden and correctly link the VC4-controlled ARM-release fixture."""
 
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-p = ROOT / "hw/arm/vc4_arm_release_smoke.c"
-text = p.read_text(encoding="utf-8")
 
+source = ROOT / "hw/arm/vc4_arm_release_smoke.c"
+text = source.read_text(encoding="utf-8")
 needle = '#include "qemu/error-report.h"\n'
 addition = needle + '#include "qemu/log.h"\n'
 if '#include "qemu/log.h"' not in text:
     if needle not in text:
         raise SystemExit("could not locate qemu/error-report.h include")
-    text = text.replace(needle, addition, 1)
+    source.write_text(text.replace(needle, addition, 1), encoding="utf-8")
 
-p.write_text(text, encoding="utf-8")
+# hw source sets are applied against the device/Kconfig dictionary.  The
+# TARGET_AARCH64 preprocessor define is therefore not a valid SourceSet key
+# here and silently omitted the machine from qemu-system-aarch64.  Reuse the
+# existing heterogeneous-frontend Kconfig gate, which is enabled only for the
+# AArch64 development target and also pulls in the embedded VC4 frontend.
+meson = ROOT / "hw/arm/meson.build"
+text = meson.read_text(encoding="utf-8")
+old = (
+    "# Heterogeneous TCG regression: VC4 releases a powered-off Cortex-A53.\n"
+    "arm_common_ss.add(when: 'TARGET_AARCH64',\n"
+)
+new = (
+    "# Heterogeneous TCG regression: VC4 releases a powered-off Cortex-A53.\n"
+    "arm_common_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE',\n"
+)
+if old in text:
+    meson.write_text(text.replace(old, new, 1), encoding="utf-8")
+elif new not in text:
+    raise SystemExit("could not locate VC4 ARM-release Meson entry")
