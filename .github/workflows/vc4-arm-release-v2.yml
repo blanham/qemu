@@ -62,17 +62,18 @@ jobs:
         run: |
           set +e
           ninja -C build qemu-system-aarch64 qemu-system-vc4 \
-            2>&1 | tee /tmp/vc4-build.log
-          rc=${PIPESTATUS[0]}
+            > /tmp/vc4-build.log 2>&1
+          rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then
-            echo '=== final 300 build lines ==='
-            tail -n 300 /tmp/vc4-build.log
             echo '=== compiler and linker diagnostics ==='
-            grep -n -E '(^|: )(error:|fatal error:|undefined reference|FAILED:)' \
-              /tmp/vc4-build.log | tail -n 200 || true
+            grep -n -E 'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-build.log | tail -n 160 || true
+            echo '=== final 180 build lines ==='
+            tail -n 180 /tmp/vc4-build.log
             exit "$rc"
           fi
+          echo 'Heterogeneous AArch64/VC4 build completed successfully.'
 
       - name: Diagnose and verify heterogeneous machine registration
         run: |
