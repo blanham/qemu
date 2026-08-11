@@ -1,0 +1,104 @@
+name: VideoCore IV execution smoke test
+
+on:
+  push:
+    branches:
+      - agent/vc4-tcg-vpu
+
+jobs:
+  execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Configure and build
+        run: |
+          ./configure \
+            --target-list=vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-vc4
+
+      - name: Build scalar smoke firmware
+        run: |
+          python3 - <<'PY'
+          import struct
+
+          # cpuid r0
+          # mov   r1, r0
+          # add   r1, 3
+          # mov   sp, 0x100
+          # st    r1, (sp)
+          # ld    r2, (sp)
+          # halt
+          halfwords = (
+              0x00e0,
+              0x4001,
+              0x6231,
+              0xb019, 0x0100,
+              0x0601,
+              0x0402,
+              0x0000,
+          )
+          with open('/tmp/vc4-smoke.bin', 'wb') as out:
+              out.write(struct.pack('<%dH' % len(halfwords), *halfwords))
+          PY
+
+      - name: Execute translated instructions
+        run: |
+          set +e
+          timeout 2s build/qemu-system-vc4 \
+            -M vc4-vpu \
+            -m 1M \
+            -kernel /tmp/vc4-smoke.bin \
+            -display none \
+            -monitor none \
+            -serial none \
+            -singlestep \
+            -d cpu \
+            -D /tmp/vc4.log
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            cat /tmp/vc4.log
+            exit "$rc"
+          fi
+          cat /tmp/vc4.log
+
+      - name: Verify register and memory results
+        run: |
+          python3 - <<'PY'
+          import re
+
+          log = open('/tmp/vc4.log', encoding='utf-8').read()
+          match = re.search(r'pc=0000000e\s+sr=[0-9a-f]{8}(.*?)(?=\npc=|\Z)',
+                            log, re.S | re.I)
+          if not match:
+              raise SystemExit('no CPU-state block for the HALT instruction at PC 0x0e')
+          state = match.group(0)
+          expected = {
+              0: 0x04000104,
+              1: 0x04000107,
+              2: 0x04000107,
+              25: 0x00000100,
+          }
+          for reg, value in expected.items():
+              pattern = rf'r{reg}\s*=\s*{value:08x}'
+              if not re.search(pattern, state, re.I):
+                  raise SystemExit(
+                      f'r{reg} != 0x{value:08x} in final state:\n{state}')
+          PY
