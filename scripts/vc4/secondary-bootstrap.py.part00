@@ -1,0 +1,639 @@
+#!/usr/bin/env python3
+from pathlib import Path
+from textwrap import dedent
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def write(path: str, content: str) -> None:
+    p = ROOT / path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(dedent(content).lstrip(), encoding="utf-8")
+
+
+def replace(path: str, old: str, new: str) -> None:
+    p = ROOT / path
+    text = p.read_text(encoding="utf-8")
+    if old not in text:
+        raise SystemExit(f"expected text not found in {path}: {old[:100]!r}")
+    p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def replace_all(path: str, old: str, new: str, minimum: int = 1) -> None:
+    p = ROOT / path
+    text = p.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count < minimum:
+        raise SystemExit(
+            f"expected at least {minimum} occurrences in {path}: {old!r}; got {count}"
+        )
+    p.write_text(text.replace(old, new), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Generic TCG: initialize and key each guest frontend independently.
+# ---------------------------------------------------------------------------
+replace(
+    "include/accel/tcg/tb-cpu-state.h",
+    """typedef struct TCGTBCPUState {
+    vaddr pc;
+    uint32_t flags;
+    uint32_t cflags;
+    uint64_t cs_base;
+} TCGTBCPUState;
+""",
+    """typedef struct TCGTBCPUState {
+    vaddr pc;
+    uint32_t flags;
+    uint32_t cflags;
+    uint64_t cs_base;
+
+    /* Distinguish translation frontends in a heterogeneous process. */
+    const void *tcg_ops;
+} TCGTBCPUState;
+""",
+)
+
+replace(
+    "include/exec/translation-block.h",
+    """    uint64_t cs_base;
+
+    uint32_t flags; /* flags defining in which context the code was generated */
+""",
+    """    uint64_t cs_base;
+
+    /* TCG frontend which generated this block (normally CPUClass::tcg_ops). */
+    const void *tcg_ops;
+
+    uint32_t flags; /* flags defining in which context the code was generated */
+""",
+)
+
+replace(
+    "accel/tcg/tb-hash.h",
+    """uint32_t tb_hash_func(tb_page_addr_t phys_pc, vaddr pc,
+                      uint32_t flags, uint64_t flags2, uint32_t cf_mask)
+{
+    return qemu_xxhash8(phys_pc, pc, flags2, flags, cf_mask);
+}
+""",
+    """uint32_t tb_hash_func(tb_page_addr_t phys_pc, vaddr pc,
+                      uint32_t flags, uint64_t flags2, uint32_t cf_mask,
+                      const void *tcg_ops)
+{
+    /*
+     * Frontends may translate identical bytes at identical guest addresses
+     * differently.  Mix the frontend identity into the existing 64-bit key.
+     */
+    return qemu_xxhash8(phys_pc, pc,
+                        flags2 ^ (uintptr_t)tcg_ops, flags, cf_mask);
+}
+""",
+)
+
+replace(
+    "accel/tcg/cpu-exec.c",
+    """    if ((tb_cflags(tb) & CF_PCREL || tb->pc == desc->s.pc) &&
+        tb_page_addr0(tb) == desc->page_addr0 &&
+        tb->cs_base == desc->s.cs_base &&
+        tb->flags == desc->s.flags &&
+""",
+    """    if ((tb_cflags(tb) & CF_PCREL || tb->pc == desc->s.pc) &&
+        tb_page_addr0(tb) == desc->page_addr0 &&
+        tb->cs_base == desc->s.cs_base &&
+        tb->tcg_ops == desc->s.tcg_ops &&
+        tb->flags == desc->s.flags &&
+""",
+)
+replace(
+    "accel/tcg/cpu-exec.c",
+    """    h = tb_hash_func(phys_pc, (s.cflags & CF_PCREL ? 0 : s.pc),
+                     s.flags, s.cs_base, s.cflags);
+""",
+    """    h = tb_hash_func(phys_pc, (s.cflags & CF_PCREL ? 0 : s.pc),
+                     s.flags, s.cs_base, s.cflags, s.tcg_ops);
+""",
+)
+replace(
+    "accel/tcg/cpu-exec.c",
+    """               jc->array[hash].pc == s.pc &&
+               tb->cs_base == s.cs_base &&
+               tb->flags == s.flags &&
+""",
+    """               jc->array[hash].pc == s.pc &&
+               tb->cs_base == s.cs_base &&
+               tb->tcg_ops == s.tcg_ops &&
+               tb->flags == s.flags &&
+""",
+)
+replace(
+    "accel/tcg/cpu-exec.c",
+    """            TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+            s.cflags = cpu->cflags_next_tb;
+""",
+    """            TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+            s.tcg_ops = cpu->cc->tcg_ops;
+            s.cflags = cpu->cflags_next_tb;
+""",
+)
+replace(
+    "accel/tcg/cpu-exec.c",
+    """    TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+    s.cflags = curr_cflags(cpu);
+""",
+    """    TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+    s.tcg_ops = cpu->cc->tcg_ops;
+    s.cflags = curr_cflags(cpu);
+""",
+)
+replace(
+    "accel/tcg/cpu-exec.c",
+    """bool tcg_exec_realizefn(CPUState *cpu, Error **errp)
+{
+    static bool tcg_target_initialized;
+
+    if (!tcg_target_initialized) {
+        /* Check mandatory TCGCPUOps handlers */
+        const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
+#ifndef CONFIG_USER_ONLY
+        assert(tcg_ops->cpu_exec_halt);
+        assert(tcg_ops->cpu_exec_interrupt);
+        assert(tcg_ops->cpu_exec_reset);
+        assert(tcg_ops->pointer_wrap);
+#endif /* !CONFIG_USER_ONLY */
+        assert(tcg_ops->translate_code);
+        assert(tcg_ops->get_tb_cpu_state);
+        assert(tcg_ops->mmu_index);
+        tcg_ops->initialize();
+        tcg_target_initialized = true;
+    }
+""",
+    """bool tcg_exec_realizefn(CPUState *cpu, Error **errp)
+{
+    static GHashTable *tcg_initialized_ops;
+    const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
+
+    if (!tcg_initialized_ops) {
+        tcg_initialized_ops = g_hash_table_new(g_direct_hash, g_direct_equal);
+    }
+
+    if (!g_hash_table_contains(tcg_initialized_ops, tcg_ops)) {
+        /* Check mandatory TCGCPUOps handlers for every linked frontend. */
+#ifndef CONFIG_USER_ONLY
+        assert(tcg_ops->cpu_exec_halt);
+        assert(tcg_ops->cpu_exec_interrupt);
+        assert(tcg_ops->cpu_exec_reset);
+        assert(tcg_ops->pointer_wrap);
+#endif /* !CONFIG_USER_ONLY */
+        assert(tcg_ops->translate_code);
+        assert(tcg_ops->get_tb_cpu_state);
+        assert(tcg_ops->mmu_index);
+        tcg_ops->initialize();
+        g_hash_table_add(tcg_initialized_ops, (void *)tcg_ops);
+    }
+""",
+)
+
+replace(
+    "accel/tcg/tb-maint.c",
+    """    return ((tb_cflags(a) & CF_PCREL || a->pc == b->pc) &&
+            a->cs_base == b->cs_base &&
+            a->flags == b->flags &&
+""",
+    """    return ((tb_cflags(a) & CF_PCREL || a->pc == b->pc) &&
+            a->cs_base == b->cs_base &&
+            a->tcg_ops == b->tcg_ops &&
+            a->flags == b->flags &&
+""",
+)
+replace(
+    "accel/tcg/tb-maint.c",
+    """    h = tb_hash_func(phys_pc, (orig_cflags & CF_PCREL ? 0 : tb->pc),
+                     tb->flags, tb->cs_base, orig_cflags);
+""",
+    """    h = tb_hash_func(phys_pc, (orig_cflags & CF_PCREL ? 0 : tb->pc),
+                     tb->flags, tb->cs_base, orig_cflags, tb->tcg_ops);
+""",
+)
+replace(
+    "accel/tcg/tb-maint.c",
+    """    h = tb_hash_func(tb_page_addr0(tb), (tb->cflags & CF_PCREL ? 0 : tb->pc),
+                     tb->flags, tb->cs_base, tb->cflags);
+""",
+    """    h = tb_hash_func(tb_page_addr0(tb), (tb->cflags & CF_PCREL ? 0 : tb->pc),
+                     tb->flags, tb->cs_base, tb->cflags, tb->tcg_ops);
+""",
+)
+
+replace(
+    "accel/tcg/translate-all.c",
+    """    tb->cs_base = s.cs_base;
+    tb->flags = s.flags;
+""",
+    """    tb->cs_base = s.cs_base;
+    tb->tcg_ops = s.tcg_ops;
+    tb->flags = s.flags;
+""",
+)
+
+# ---------------------------------------------------------------------------
+# VC4 CPU: make the environment and QOM type usable as a secondary frontend.
+# ---------------------------------------------------------------------------
+write(
+    "target/vc4/cpu-qom.h",
+    r'''
+/*
+ * VideoCore IV VPU QOM definitions
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#ifndef VC4_CPU_QOM_H
+#define VC4_CPU_QOM_H
+
+#include "hw/core/cpu.h"
+
+#define TYPE_VC4_CPU "vc4-cpu"
+
+#define VC4_CPU_TYPE_SUFFIX "-" TYPE_VC4_CPU
+#define VC4_CPU_TYPE_NAME(model) model VC4_CPU_TYPE_SUFFIX
+#define TYPE_VC4_VPU_CPU VC4_CPU_TYPE_NAME("vpu")
+
+#ifdef VC4_SECONDARY_FRONTEND
+typedef struct VC4CPU VC4CPU;
+typedef struct VC4CPUClass VC4CPUClass;
+OBJECT_DECLARE_TYPE(VC4CPU, VC4CPUClass, VC4_CPU)
+#else
+OBJECT_DECLARE_CPU_TYPE(VC4CPU, VC4CPUClass, VC4_CPU)
+#endif
+
+#endif /* VC4_CPU_QOM_H */
+''',
+)
+
+write(
+    "target/vc4/cpu.h",
+    r'''
+/*
+ * VideoCore IV VPU CPU definitions
+ *
+ * Initial ISA model based on the public VideoCore IV reverse-engineering
+ * corpus and the libresim VC4 interpreter.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#ifndef VC4_CPU_H
+#define VC4_CPU_H
+
+#include "cpu-qom.h"
+#include "exec/cpu-common.h"
+#include "exec/cpu-interrupt.h"
+
+#ifdef CONFIG_USER_ONLY
+#error "VideoCore IV VPU does not support user-mode emulation"
+#endif
+
+typedef struct BCM2835VC4IntcState BCM2835VC4IntcState;
+
+#define VC4_NUM_REGS 32
+#define VC4_NUM_GPRS 30
+
+#define VC4_REG_SP 25
+#define VC4_REG_LR 26
+#define VC4_REG_SR 30
+#define VC4_REG_PC 31
+
+#define VC4_SR_V       (1u << 0)
+#define VC4_SR_C       (1u << 1)
+#define VC4_SR_N       (1u << 2)
+#define VC4_SR_Z       (1u << 3)
+#define VC4_SR_CB_MASK (3u << 4)
+#define VC4_SR_S       (1u << 29)
+#define VC4_SR_I       (1u << 30)
+#define VC4_SR_U       (1u << 31)
+
+#define VC4_CPUID_VALUE 0x04000104u
+
+enum {
+    VC4_EXCP_ILLEGAL = 1,
+    VC4_EXCP_IRQ,
+};
+
+#ifdef VC4_SECONDARY_FRONTEND
+typedef struct CPUVC4State {
+#else
+typedef struct CPUArchState {
+#endif
+    uint32_t gpr[VC4_NUM_GPRS];
+    uint32_t sr;
+    uint32_t pc;
+
+    /*
+     * In exception mode architectural SP (r25) is banked onto r28.  The
+     * first implementation materializes the alias on entry and writes the
+     * updated exception stack pointer back to r28 on the outermost RTI.
+     */
+    uint32_t normal_sp;
+    uint8_t exception_depth;
+
+    /* Fields up to this point are cleared by a CPU reset. */
+    struct {} end_reset_fields;
+} CPUVC4State;
+
+#ifndef VC4_SECONDARY_FRONTEND
+struct ArchCPU {
+    CPUState parent_obj;
+    CPUVC4State env;
+
+    BCM2835VC4IntcState *intc;
+};
+#else
+struct VC4CPU {
+    CPUState parent_obj;
+    CPUVC4State env;
+
+    BCM2835VC4IntcState *intc;
+};
+#endif
+
+struct VC4CPUClass {
+    CPUClass parent_class;
+
+    DeviceRealize parent_realize;
+    ResettablePhases parent_phases;
+};
+
+#ifndef VC4_SECONDARY_FRONTEND
+#define CPU_RESOLVING_TYPE TYPE_VC4_CPU
+#endif
+
+static inline CPUVC4State *vc4_cpu_env(CPUState *cs)
+{
+    return (CPUVC4State *)(cs + 1);
+}
+
+static inline const CPUVC4State *vc4_cpu_env_const(const CPUState *cs)
+{
+    return (const CPUVC4State *)(cs + 1);
+}
+
+static inline CPUState *vc4_env_cpu(CPUVC4State *env)
+{
+    return (CPUState *)((char *)env - sizeof(CPUState));
+}
+
+static inline VC4CPU *vc4_env_archcpu(CPUVC4State *env)
+{
+    return VC4_CPU(vc4_env_cpu(env));
+}
+
+static inline uint32_t vc4_env_get_reg(const CPUVC4State *env, unsigned reg)
+{
+    if (reg < VC4_NUM_GPRS) {
+        return env->gpr[reg];
+    }
+    if (reg == VC4_REG_SR) {
+        return env->sr;
+    }
+    return env->pc;
+}
+
+static inline void vc4_env_set_reg(CPUVC4State *env, unsigned reg,
+                                   uint32_t value)
+{
+    if (reg < VC4_NUM_GPRS) {
+        env->gpr[reg] = value;
+    } else if (reg == VC4_REG_SR) {
+        env->sr = value;
+    } else {
+        env->pc = value;
+    }
+}
+
+void vc4_translate_init(void);
+void vc4_translate_code(CPUState *cs, TranslationBlock *tb,
+                        int *max_insns, vaddr pc, void *host_pc);
+
+void vc4_cpu_dump_state(CPUState *cs, FILE *f, int flags);
+hwaddr vc4_cpu_get_phys_addr_debug(CPUState *cs, vaddr addr);
+int vc4_cpu_gdb_read_register(CPUState *cs, GByteArray *buf, int reg);
+int vc4_cpu_gdb_write_register(CPUState *cs, uint8_t *buf, int reg);
+
+#endif /* VC4_CPU_H */
+''',
+)
+
+write(
+    "target/vc4/helper.h",
+    r'''
+/*
+ * VideoCore IV VPU TCG helpers
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+DEF_HELPER_FLAGS_3(vc4_complex_alu, TCG_CALL_NO_RWG_SE,
+                   i32, i32, i32, i32)
+DEF_HELPER_FLAGS_4(vc4_div, TCG_CALL_NO_RWG_SE,
+                   i32, i32, i32, i32, i32)
+DEF_HELPER_FLAGS_4(vc4_mulhd, TCG_CALL_NO_RWG_SE,
+                   i32, i32, i32, i32, i32)
+DEF_HELPER_5(vc4_push_pop, void, env, i32, i32, i32, i32)
+DEF_HELPER_1(vc4_rti, void, env)
+DEF_HELPER_3(vc4_raise_illegal, noreturn, env, i32, i32)
+DEF_HELPER_1(vc4_halt, noreturn, env)
+''',
+)
+
+write(
+    "target/vc4/cpu.c",
+    r'''
+/*
+ * QEMU VideoCore IV VPU CPU
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu/log.h"
+#include "qemu/qemu-print.h"
+#include "cpu.h"
+#include "exec/cputlb.h"
+#include "exec/page-protection.h"
+#include "exec/translation-block.h"
+#include "exec/target_page.h"
+#include "accel/tcg/cpu-ldst.h"
+#include "accel/tcg/cpu-ops.h"
+#include "tcg/debug-assert.h"
+#include "system/tcg.h"
+#include "hw/vc4/bcm2835_vc4_intc.h"
+
+QEMU_BUILD_BUG_ON(offsetof(VC4CPU, parent_obj) != 0);
+QEMU_BUILD_BUG_ON(offsetof(VC4CPU, env) != sizeof(CPUState));
+
+static inline CPUArchState *vc4_tcg_env(CPUState *cs)
+{
+    return (CPUArchState *)(void *)vc4_cpu_env(cs);
+}
+
+static void vc4_cpu_set_pc(CPUState *cs, vaddr value)
+{
+    vc4_cpu_env(cs)->pc = value;
+}
+
+static vaddr vc4_cpu_get_pc(CPUState *cs)
+{
+    return vc4_cpu_env(cs)->pc;
+}
+
+static TCGTBCPUState vc4_get_tb_cpu_state(CPUState *cs)
+{
+    CPUVC4State *env = vc4_cpu_env(cs);
+
+    return (TCGTBCPUState) {
+        .pc = env->pc,
+        .flags = 0,
+    };
+}
+
+static void vc4_cpu_synchronize_from_tb(CPUState *cs,
+                                        const TranslationBlock *tb)
+{
+    tcg_debug_assert(!tcg_cflags_has(cs, CF_PCREL));
+    vc4_cpu_env(cs)->pc = tb->pc;
+}
+
+static void vc4_restore_state_to_opc(CPUState *cs,
+                                     const TranslationBlock *tb,
+                                     const uint64_t *data)
+{
+    vc4_cpu_env(cs)->pc = data[0];
+}
+
+static bool vc4_cpu_has_work(CPUState *cs)
+{
+    CPUVC4State *env = vc4_cpu_env(cs);
+
+    return (env->sr & VC4_SR_I) &&
+           cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
+}
+
+static int vc4_cpu_mmu_index(CPUState *cs, bool ifetch)
+{
+    return 0;
+}
+
+static void vc4_cpu_reset_hold(Object *obj, ResetType type)
+{
+    VC4CPUClass *vcc = VC4_CPU_GET_CLASS(obj);
+    CPUVC4State *env = vc4_cpu_env(CPU(obj));
+
+    if (vcc->parent_phases.hold) {
+        vcc->parent_phases.hold(obj, type);
+    }
+
+    memset(env, 0, offsetof(CPUVC4State, end_reset_fields));
+}
+
+static ObjectClass *vc4_cpu_class_by_name(const char *cpu_model)
+{
+    g_autofree char *typename = NULL;
+    ObjectClass *oc;
+
+    oc = object_class_by_name(cpu_model);
+    if (oc && object_class_dynamic_cast(oc, TYPE_VC4_CPU)) {
+        return oc;
+    }
+
+    typename = g_strdup_printf(VC4_CPU_TYPE_NAME("%s"), cpu_model);
+    return object_class_by_name(typename);
+}
+
+static void vc4_cpu_realize(DeviceState *dev, Error **errp)
+{
+    CPUState *cs = CPU(dev);
+    VC4CPUClass *vcc = VC4_CPU_GET_CLASS(dev);
+    Error *local_err = NULL;
+
+    if (qemu_tcg_mttcg_enabled()) {
+        error_setg(errp,
+                   "VideoCore IV requires single-threaded TCG for now");
+        return;
+    }
+
+    cpu_exec_realizefn(cs, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
+    qemu_init_vcpu(cs);
+    cpu_reset(cs);
+    vcc->parent_realize(dev, errp);
+}
+
+static const gchar *vc4_gdb_arch_name(CPUState *cs)
+{
+    return "videocore4";
+}
+
+static int64_t vc4_cpu_get_arch_id(CPUState *cs)
+{
+    return cs->cpu_index;
+}
+
+void vc4_cpu_dump_state(CPUState *cs, FILE *f, int flags)
+{
+    CPUVC4State *env = vc4_cpu_env(cs);
+    int i;
+
+    qemu_fprintf(f, "pc=%08x sr=%08x\n", env->pc, env->sr);
+    for (i = 0; i < 28; i += 4) {
+        qemu_fprintf(f,
+                     "r%-2d=%08x r%-2d=%08x r%-2d=%08x r%-2d=%08x\n",
+                     i, env->gpr[i],
+                     i + 1, env->gpr[i + 1],
+                     i + 2, env->gpr[i + 2],
+                     i + 3, env->gpr[i + 3]);
+    }
+    qemu_fprintf(f,
+                 "r28=%08x r29=%08x r30=%08x r31=%08x\n",
+                 env->gpr[28], env->gpr[29], env->sr, env->pc);
+}
+
+hwaddr vc4_cpu_get_phys_addr_debug(CPUState *cs, vaddr addr)
+{
+    return addr;
+}
+
+static bool vc4_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
+                             MMUAccessType access_type, int mmu_idx,
+                             bool probe, uintptr_t retaddr)
+{
+    vaddr page = addr & TARGET_PAGE_MASK;
+
+    tlb_set_page(cs, page, page, PAGE_READ | PAGE_WRITE | PAGE_EXEC,
+                 mmu_idx, TARGET_PAGE_SIZE);
+    return true;
+}
+
+static void vc4_cpu_set_irq(void *opaque, int irq, int level)
+{
+    CPUState *cs = CPU(opaque);
+
+    if (level) {
+        cpu_interrupt(cs, CPU_INTERRUPT_HARD);
+    } else {
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+    }
+}
+
+static void vc4_irq_push(CPUState *cs, CPUVC4State *env, uint32_t value)
+{
+    uint32_t sp = env->gpr[VC4_REG_SP] - 4;
+
+    env->gpr[VC4_REG_SP] = sp;
+    cpu_stl_le_data(vc4_tcg_env(cs), sp, value);
+}
