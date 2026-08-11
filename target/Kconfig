@@ -15,6 +15,7 @@ source s390x/Kconfig
 source sh4/Kconfig
 source sparc/Kconfig
 source tricore/Kconfig
+source vc4/Kconfig
 source xtensa/Kconfig
 source hexagon/Kconfig
 

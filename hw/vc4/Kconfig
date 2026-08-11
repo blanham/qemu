@@ -1,0 +1,4 @@
+config VC4_VPU
+    bool
+    default y
+    depends on VC4
