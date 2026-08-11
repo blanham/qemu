@@ -27,14 +27,15 @@ for name in ("cpu", "gdbstub", "op_helper", "translate"):
         raise SystemExit(f"could not locate include prologue in {wrapper}")
 
 # The secondary wrappers include primary-target headers and target-width TCG
-# APIs, so they must not live in ARM's target-neutral common-system library.
-# QEMU poisons TARGET_AARCH64, TARGET_LONG_BITS, and target endianness macros
-# while compiling that library.  Keep the same Kconfig gate, but move these
-# files into the target-specific system source set.
+# APIs, so they must not live in either ARM target-neutral source set.
+# QEMU shares arm_common_system_ss and arm_system_ss between ARM32 and AArch64
+# and poisons TARGET_AARCH64, TARGET_LONG_BITS, and target endianness macros
+# while compiling them.  Keep the Kconfig gate, but move the wrappers into
+# arm_ss, which is compiled once per concrete target executable.
 target_meson = ROOT / "target/arm/meson.build"
 text = target_meson.read_text(encoding="utf-8")
 old = "arm_common_system_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', if_true: files(\n"
-new = "arm_system_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', if_true: files(\n"
+new = "arm_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', if_true: files(\n"
 if old in text:
     target_meson.write_text(text.replace(old, new, 1), encoding="utf-8")
 elif new not in text:
