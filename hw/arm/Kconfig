@@ -360,7 +360,7 @@ config MAX78000_SOC
 config RASPI
     bool
     default y
-    depends on TCG && ARM
+    depends on TCG && (ARM || VC4)
     select FRAMEBUFFER
     select PL011 # UART
     select SDHCI

@@ -2,3 +2,12 @@ config VC4_VPU
     bool
     default y
     depends on VC4
+
+config VC4_RASPI3
+    bool
+    default y
+    depends on TCG && VC4
+    select RASPI
+    select OR_IRQ
+    select SPLIT_IRQ
+    select UNIMP

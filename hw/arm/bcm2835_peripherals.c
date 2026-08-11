@@ -14,7 +14,7 @@
 #include "qemu/module.h"
 #include "hw/arm/bcm2835_peripherals.h"
 #include "hw/misc/bcm2835_mbox_defs.h"
-#include "hw/arm/raspi_platform.h"
+#include "hw/raspi/raspi_platform.h"
 #include "system/system.h"
 
 /* Peripheral base address on the VC (GPU) system bus */

@@ -17,7 +17,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "trace.h"
-#include "hw/arm/raspi_platform.h"
+#include "hw/raspi/raspi_platform.h"
 
 #define VCHI_BUSADDR_SIZE       sizeof(uint32_t)
 
