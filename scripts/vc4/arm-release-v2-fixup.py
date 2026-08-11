@@ -5,6 +5,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# QEMU translation units must include qemu/osdep.h before target headers.
+# The embedded VC4 wrappers intentionally include target/arm/cpu.h to expose
+# the primary frontend's CPUArchState type, but doing so before osdep leaves
+# fundamental C/QEMU types and QEMU_BUILD_BUG_ON undefined.
+for name in ("cpu", "gdbstub", "op_helper", "translate"):
+    wrapper = ROOT / f"target/arm/vc4-secondary/{name}.c"
+    text = wrapper.read_text(encoding="utf-8")
+    old = (
+        "#define VC4_SECONDARY_FRONTEND 1\n"
+        '#include "target/arm/cpu.h"\n'
+    )
+    new = (
+        '#include "qemu/osdep.h"\n'
+        "#define VC4_SECONDARY_FRONTEND 1\n"
+        '#include "target/arm/cpu.h"\n'
+    )
+    if old in text:
+        wrapper.write_text(text.replace(old, new, 1), encoding="utf-8")
+    elif new not in text:
+        raise SystemExit(f"could not locate include prologue in {wrapper}")
+
 source = ROOT / "hw/arm/vc4_arm_release_smoke.c"
 text = source.read_text(encoding="utf-8")
 needle = '#include "qemu/error-report.h"\n'
