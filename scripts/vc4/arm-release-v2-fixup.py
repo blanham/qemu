@@ -26,6 +26,20 @@ for name in ("cpu", "gdbstub", "op_helper", "translate"):
     elif new not in text:
         raise SystemExit(f"could not locate include prologue in {wrapper}")
 
+# The secondary wrappers include primary-target headers and target-width TCG
+# APIs, so they must not live in ARM's target-neutral common-system library.
+# QEMU poisons TARGET_AARCH64, TARGET_LONG_BITS, and target endianness macros
+# while compiling that library.  Keep the same Kconfig gate, but move these
+# files into the target-specific system source set.
+target_meson = ROOT / "target/arm/meson.build"
+text = target_meson.read_text(encoding="utf-8")
+old = "arm_common_system_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', if_true: files(\n"
+new = "arm_system_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', if_true: files(\n"
+if old in text:
+    target_meson.write_text(text.replace(old, new, 1), encoding="utf-8")
+elif new not in text:
+    raise SystemExit("could not locate secondary VC4 frontend Meson entry")
+
 source = ROOT / "hw/arm/vc4_arm_release_smoke.c"
 text = source.read_text(encoding="utf-8")
 needle = '#include "qemu/error-report.h"\n'
