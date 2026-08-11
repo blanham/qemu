@@ -49,8 +49,24 @@ jobs:
         run: |
           ninja -C build qemu-system-aarch64 qemu-system-vc4
 
-      - name: Verify heterogeneous machine registration
+      - name: Diagnose and verify heterogeneous machine registration
         run: |
+          echo '=== generated Meson entry ==='
+          grep -n -A3 -B3 'vc4_arm_release_smoke' hw/arm/meson.build || true
+          echo '=== generated type registration ==='
+          grep -n -E -A8 -B8 'TYPE_VC4_ARM_RELEASE|type_init|DEFINE_TYPES|vc4-arm-release-smoke' \
+            hw/arm/vc4_arm_release_smoke.c || true
+          echo '=== target/device configuration ==='
+          grep -R -n -E 'VC4_HETERO_SMOKE|VC4_SECONDARY|TARGET_AARCH64' \
+            build/configs build/*config-target.mak build/*config-devices.mak 2>/dev/null || true
+          echo '=== build graph references ==='
+          grep -R -n 'vc4_arm_release_smoke' build/build.ninja build/meson-info 2>/dev/null || true
+          echo '=== generated objects ==='
+          find build -type f \( -name '*vc4_arm_release*' -o -name '*vc4*release*' \) -print || true
+          echo '=== linked symbols ==='
+          nm -a build/qemu-system-aarch64 2>/dev/null | \
+            grep -E 'vc4_arm_release|vc4_release|arm_release_smoke' || true
+          echo '=== registered machines ==='
           build/qemu-system-aarch64 -machine help | tee /tmp/aarch64-machines.txt
           grep -q 'vc4-arm-release-smoke' /tmp/aarch64-machines.txt
 
