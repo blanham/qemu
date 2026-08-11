@@ -1,0 +1,77 @@
+
+    CPUState *vc4;
+
+    memory_region_add_subregion(sysmem, 0, machine->ram);
+    rom_add_blob_fixed("vc4-hetero-polyglot", polyglot,
+                       sizeof(polyglot), 0);
+
+    arm = cpu_create(machine->cpu_type);
+    vc4 = cpu_create(TYPE_VC4_VPU_CPU);
+
+    vc4_hetero_set_pc(arm, 0);
+    vc4_hetero_set_pc(vc4, 0);
+}
+
+static void vc4_hetero_machine_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    mc->desc = "AArch64 + VideoCore IV heterogeneous TCG smoke machine";
+    mc->init = vc4_hetero_init;
+    mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a53");
+    mc->default_ram_size = 16 * MiB;
+    mc->default_ram_id = "vc4-hetero.ram";
+    mc->min_cpus = 2;
+    mc->max_cpus = 2;
+    mc->default_cpus = 2;
+}
+
+static const TypeInfo vc4_hetero_machine_type = {
+    .name = TYPE_VC4_HETERO_MACHINE,
+    .parent = TYPE_MACHINE,
+    .instance_size = sizeof(VC4HeteroMachineState),
+    .class_init = vc4_hetero_machine_class_init,
+};
+
+static void vc4_hetero_machine_register_types(void)
+{
+    type_register_static(&vc4_hetero_machine_type);
+}
+
+type_init(vc4_hetero_machine_register_types)
+''',
+)
+
+replace(
+    "hw/arm/meson.build",
+    "arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))\n",
+    "arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))\n"
+    "arm_common_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', "
+    "if_true: files('vc4_hetero.c'))\n",
+)
+
+with (ROOT / "hw/arm/Kconfig").open("a", encoding="utf-8") as out:
+    out.write(dedent(r'''
+
+config VC4_HETERO_SMOKE
+    bool
+    depends on TCG && ARM
+'''))
+
+with (ROOT / "configs/devices/aarch64-softmmu/default.mak").open(
+    "a", encoding="utf-8"
+) as out:
+    out.write("\nCONFIG_VC4_HETERO_SMOKE=y\n")
+
+# The VPU CPU references the vectored controller even when this smoke machine
+# leaves it uninstantiated, so link the already-existing target-neutral model.
+replace(
+    "hw/vc4/meson.build",
+    """hw_arch += {'vc4': vc4_ss}
+""",
+    """system_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE',
+              if_true: files('bcm2835_vc4_intc.c'))
+
+hw_arch += {'vc4': vc4_ss}
+""",
+)
