@@ -34,6 +34,10 @@ jobs:
       - name: Materialize Raspberry Pi VPU machine
         run: python3 scripts/vc4/raspi3-bootstrap.py
 
+      - name: Add target-neutral interrupt fabric dependencies
+        run: |
+          sed -i '/    select RASPI/a\    select OR_IRQ\n    select SPLIT_IRQ' hw/vc4/Kconfig
+
       - name: Configure and build
         run: |
           ./configure \
@@ -72,11 +76,12 @@ jobs:
             -D /tmp/raspi3-vc4.log
           rc=$?
           set -e
+          echo "qemu rc=$rc"
+          wc -c /tmp/raspi3-vc4.log || true
+          cat /tmp/raspi3-vc4.log || true
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
-            cat /tmp/raspi3-vc4.log || true
             exit "$rc"
           fi
-          cat /tmp/raspi3-vc4.log
           python3 - <<'PY'
           import re
 
