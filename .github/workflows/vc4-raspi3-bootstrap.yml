@@ -67,7 +67,7 @@ jobs:
             -display none \
             -monitor none \
             -serial none \
-            -singlestep \
+            -accel tcg,one-insn-per-tb=on \
             -d cpu \
             -D /tmp/raspi3-vc4.log
           rc=$?
