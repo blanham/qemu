@@ -18,6 +18,8 @@
 #error "VideoCore IV VPU does not support user-mode emulation"
 #endif
 
+typedef struct BCM2835VC4IntcState BCM2835VC4IntcState;
+
 #define VC4_NUM_REGS 32
 #define VC4_NUM_GPRS 30
 
@@ -26,21 +28,34 @@
 #define VC4_REG_SR 30
 #define VC4_REG_PC 31
 
-#define VC4_SR_V (1u << 0)
-#define VC4_SR_C (1u << 1)
-#define VC4_SR_N (1u << 2)
-#define VC4_SR_Z (1u << 3)
+#define VC4_SR_V       (1u << 0)
+#define VC4_SR_C       (1u << 1)
+#define VC4_SR_N       (1u << 2)
+#define VC4_SR_Z       (1u << 3)
+#define VC4_SR_CB_MASK (3u << 4)
+#define VC4_SR_S       (1u << 29)
+#define VC4_SR_I       (1u << 30)
+#define VC4_SR_U       (1u << 31)
 
 #define VC4_CPUID_VALUE 0x04000104u
 
 enum {
     VC4_EXCP_ILLEGAL = 1,
+    VC4_EXCP_IRQ,
 };
 
 typedef struct CPUArchState {
     uint32_t gpr[VC4_NUM_GPRS];
     uint32_t sr;
     uint32_t pc;
+
+    /*
+     * In exception mode architectural SP (r25) is banked onto r28.  The
+     * first implementation materializes the alias on entry and writes the
+     * updated exception stack pointer back to r28 on the outermost RTI.
+     */
+    uint32_t normal_sp;
+    uint8_t exception_depth;
 
     /* Fields up to this point are cleared by a CPU reset. */
     struct {} end_reset_fields;
@@ -49,6 +64,8 @@ typedef struct CPUArchState {
 struct ArchCPU {
     CPUState parent_obj;
     CPUVC4State env;
+
+    BCM2835VC4IntcState *intc;
 };
 
 struct VC4CPUClass {

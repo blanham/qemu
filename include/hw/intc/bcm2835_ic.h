@@ -16,6 +16,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2835ICState, BCM2835_IC)
 
 #define BCM2835_IC_GPU_IRQ "gpu-irq"
 #define BCM2835_IC_ARM_IRQ "arm-irq"
+#define BCM2835_IC_GPU_IRQ_OUT "gpu-irq-out"
 
 struct BCM2835ICState {
     /*< private >*/
@@ -25,6 +26,7 @@ struct BCM2835ICState {
     MemoryRegion iomem;
     qemu_irq irq;
     qemu_irq fiq;
+    qemu_irq gpu_irq_out[64];
 
     /* 64 GPU IRQs + 8 ARM IRQs = 72 total (GPU first) */
     uint64_t gpu_irq_level, gpu_irq_enable;

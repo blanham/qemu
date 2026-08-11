@@ -8,6 +8,7 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "cpu.h"
+#include "hw/vc4/bcm2835_vc4_intc.h"
 #include "exec/helper-proto.h"
 #include "accel/tcg/cpu-ldst.h"
 #include "accel/tcg/cpu-loop.h"
@@ -156,6 +157,28 @@ void helper_push_pop(CPUVC4State *env, uint32_t push, uint32_t lrpc,
         if (lrpc) {
             vc4_pop(env, VC4_REG_PC);
         }
+    }
+}
+
+void helper_rti(CPUVC4State *env)
+{
+    VC4CPU *cpu = env_archcpu(env);
+    uint32_t sp = env->gpr[VC4_REG_SP];
+
+    env->sr = cpu_ldl_le_data(env, sp);
+    env->pc = cpu_ldl_le_data(env, sp + 4);
+    env->gpr[VC4_REG_SP] = sp + 8;
+
+    if (env->exception_depth) {
+        env->exception_depth--;
+        if (env->exception_depth == 0) {
+            env->gpr[28] = env->gpr[VC4_REG_SP];
+            env->gpr[VC4_REG_SP] = env->normal_sp;
+        }
+    }
+
+    if (cpu->intc) {
+        bcm2835_vc4_intc_complete(cpu->intc);
     }
 }
 

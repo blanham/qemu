@@ -586,21 +586,47 @@ static bool vc4_decode_scalar16(DisasContext *ctx, uint16_t insn)
     int32_t offset;
 
     switch (insn) {
-    case 0x0000:
+    case 0x0000:                    /* BKPT/HALT */
         tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
         gen_helper_halt(tcg_env);
         ctx->base.is_jmp = DISAS_NORETURN;
         return true;
     case 0x0001:                    /* NOP */
         return true;
-    case 0x0004:
-        tcg_gen_ori_i32(cpu_sr, cpu_sr, 0x40000000);
+    case 0x0002:                    /* SLEEP */
+        tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
+        gen_helper_halt(tcg_env);
+        ctx->base.is_jmp = DISAS_NORETURN;
         return true;
-    case 0x0005:
-        tcg_gen_andi_i32(cpu_sr, cpu_sr, ~0x40000000u);
+    case 0x0003:                    /* USER */
+        tcg_gen_ori_i32(cpu_sr, cpu_sr, VC4_SR_U);
         return true;
-    case 0x000a:                    /* RTI: exception model not wired yet */
-        return false;
+    case 0x0004:                    /* EI */
+        tcg_gen_ori_i32(cpu_sr, cpu_sr, VC4_SR_I);
+        return true;
+    case 0x0005:                    /* DI */
+        tcg_gen_andi_i32(cpu_sr, cpu_sr, ~VC4_SR_I);
+        return true;
+    case 0x0006:                    /* CBCLR */
+        tcg_gen_andi_i32(cpu_sr, cpu_sr, ~VC4_SR_CB_MASK);
+        return true;
+    case 0x0007:
+    case 0x0008:
+    case 0x0009: {                  /* CBADD1/2/3 */
+        TCGv_i32 cb = tcg_temp_new_i32();
+
+        tcg_gen_extract_i32(cb, cpu_sr, 4, 2);
+        tcg_gen_addi_i32(cb, cb, insn - 0x0006);
+        tcg_gen_andi_i32(cb, cb, 3);
+        tcg_gen_andi_i32(cpu_sr, cpu_sr, ~VC4_SR_CB_MASK);
+        tcg_gen_shli_i32(cb, cb, 4);
+        tcg_gen_or_i32(cpu_sr, cpu_sr, cb);
+        return true;
+    }
+    case 0x000a:                    /* RTI */
+        gen_helper_rti(tcg_env);
+        ctx->base.is_jmp = DISAS_JUMP;
+        return true;
     default:
         break;
     }

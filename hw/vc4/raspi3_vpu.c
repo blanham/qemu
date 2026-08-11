@@ -18,6 +18,7 @@
 #include "hw/core/loader.h"
 #include "hw/core/sysbus.h"
 #include "hw/arm/bcm2835_peripherals.h"
+#include "hw/vc4/bcm2835_vc4_intc.h"
 #include "system/memory.h"
 #include "system/qtest.h"
 #include "target/vc4/cpu.h"
@@ -27,11 +28,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(VC4Raspi3MachineState, VC4_RASPI3_MACHINE)
 
 #define RASPI3_BOARD_REVISION 0x00a02082u
 #define RASPI3_DEFAULT_VCRAM  (64 * MiB)
+#define VC4_IC0_OFFSET 0x2000
+#define VC4_IC1_OFFSET 0x2800
 
 struct VC4Raspi3MachineState {
     MachineState parent_obj;
 
     BCM2835PeripheralState peripherals;
+    BCM2835VC4IntcState vpu_intc[2];
 };
 
 static void vc4_raspi3_machine_initfn(Object *obj)
@@ -40,6 +44,10 @@ static void vc4_raspi3_machine_initfn(Object *obj)
 
     object_initialize_child(obj, "peripherals", &s->peripherals,
                             TYPE_BCM2835_PERIPHERALS);
+    object_initialize_child(obj, "vpu-intc0", &s->vpu_intc[0],
+                            TYPE_BCM2835_VC4_INTC);
+    object_initialize_child(obj, "vpu-intc1", &s->vpu_intc[1],
+                            TYPE_BCM2835_VC4_INTC);
 }
 
 static void vc4_raspi3_init(MachineState *machine)
@@ -53,6 +61,7 @@ static void vc4_raspi3_init(MachineState *machine)
     const char *image = machine->kernel_filename;
     uint64_t vcram_size;
     ssize_t image_size;
+    unsigned i;
 
     if (machine->ram_size < 16 * MiB) {
         error_report("raspi3b-vc4 requires at least 16 MiB of RAM");
@@ -74,6 +83,30 @@ static void vc4_raspi3_init(MachineState *machine)
         g_assert_not_reached();
     }
 
+    for (i = 0; i < ARRAY_SIZE(s->vpu_intc); i++) {
+        hwaddr offset = i ? VC4_IC1_OFFSET : VC4_IC0_OFFSET;
+
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->vpu_intc[i]),
+                            &error_fatal)) {
+            g_assert_not_reached();
+        }
+        memory_region_add_subregion_overlap(
+            &ps->peri_mr, offset,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->vpu_intc[i]), 0), 1);
+    }
+
+    /*
+     * bcm2835_ic receives the raw 64-source GPU interrupt fabric for the ARM
+     * side.  Its mirror outputs let the VPU controller observe the same
+     * sources without changing every peripheral connection.
+     */
+    for (i = 0; i < BCM2835_VC4_INTC_NUM_IRQS; i++) {
+        qdev_connect_gpio_out_named(
+            DEVICE(&ps->ic), BCM2835_IC_GPU_IRQ_OUT, i,
+            qdev_get_gpio_in_named(DEVICE(&s->vpu_intc[0]),
+                                   BCM2835_VC4_INTC_GPU_IRQ, i));
+    }
+
     /*
      * The VideoCore sees RAM through four cache-policy aliases and sees the
      * peripheral window at 0x7e000000.  bcm2835_peripherals already constructs
@@ -87,6 +120,10 @@ static void vc4_raspi3_init(MachineState *machine)
         error_report("Unable to create VideoCore IV VPU CPU");
         exit(EXIT_FAILURE);
     }
+
+    cpu->intc = &s->vpu_intc[0];
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->vpu_intc[0]), 0,
+                       qdev_get_gpio_in(DEVICE(cpu), 0));
 
     if (!image) {
         image = machine->firmware;

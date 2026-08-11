@@ -61,6 +61,7 @@ static void bcm2835_ic_set_gpu_irq(void *opaque, int irq, int level)
     assert(irq >= 0 && irq < 64);
     trace_bcm2835_ic_set_gpu_irq(irq, level);
     s->gpu_irq_level = deposit64(s->gpu_irq_level, irq, 1, level != 0);
+    qemu_set_irq(s->gpu_irq_out[irq], level);
     bcm2835_ic_update(s);
 }
 
@@ -180,7 +181,11 @@ static const MemoryRegionOps bcm2835_ic_ops = {
 static void bcm2835_ic_reset(DeviceState *d)
 {
     BCM2835ICState *s = BCM2835_IC(d);
+    int i;
 
+    for (i = 0; i < GPU_IRQS; i++) {
+        qemu_set_irq(s->gpu_irq_out[i], 0);
+    }
     s->gpu_irq_enable = 0;
     s->arm_irq_enable = 0;
     s->fiq_enable = false;
@@ -199,6 +204,8 @@ static void bcm2835_ic_init(Object *obj)
                             BCM2835_IC_GPU_IRQ, GPU_IRQS);
     qdev_init_gpio_in_named(DEVICE(s), bcm2835_ic_set_arm_irq,
                             BCM2835_IC_ARM_IRQ, ARM_IRQS);
+    qdev_init_gpio_out_named(DEVICE(s), s->gpu_irq_out,
+                             BCM2835_IC_GPU_IRQ_OUT, GPU_IRQS);
 
     sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq);
     sysbus_init_irq(SYS_BUS_DEVICE(s), &s->fiq);

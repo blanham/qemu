@@ -13,8 +13,10 @@
 #include "exec/page-protection.h"
 #include "exec/translation-block.h"
 #include "exec/target_page.h"
+#include "accel/tcg/cpu-ldst.h"
 #include "accel/tcg/cpu-ops.h"
 #include "tcg/debug-assert.h"
+#include "hw/vc4/bcm2835_vc4_intc.h"
 
 static void vc4_cpu_set_pc(CPUState *cs, vaddr value)
 {
@@ -52,7 +54,10 @@ static void vc4_restore_state_to_opc(CPUState *cs,
 
 static bool vc4_cpu_has_work(CPUState *cs)
 {
-    return cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
+    CPUVC4State *env = cpu_env(cs);
+
+    return (env->sr & VC4_SR_I) &&
+           cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
 }
 
 static int vc4_cpu_mmu_index(CPUState *cs, bool ifetch)
@@ -114,14 +119,17 @@ void vc4_cpu_dump_state(CPUState *cs, FILE *f, int flags)
     int i;
 
     qemu_fprintf(f, "pc=%08x sr=%08x\n", env->pc, env->sr);
-    for (i = 0; i < VC4_NUM_REGS; i += 4) {
+    for (i = 0; i < 28; i += 4) {
         qemu_fprintf(f,
                      "r%-2d=%08x r%-2d=%08x r%-2d=%08x r%-2d=%08x\n",
-                     i, vc4_env_get_reg(env, i),
-                     i + 1, vc4_env_get_reg(env, i + 1),
-                     i + 2, vc4_env_get_reg(env, i + 2),
-                     i + 3, vc4_env_get_reg(env, i + 3));
+                     i, env->gpr[i],
+                     i + 1, env->gpr[i + 1],
+                     i + 2, env->gpr[i + 2],
+                     i + 3, env->gpr[i + 3]);
     }
+    qemu_fprintf(f,
+                 "r28=%08x r29=%08x r30=%08x r31=%08x\n",
+                 env->gpr[28], env->gpr[29], env->sr, env->pc);
 }
 
 hwaddr vc4_cpu_get_phys_addr_debug(CPUState *cs, vaddr addr)
@@ -140,22 +148,108 @@ static bool vc4_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
     return true;
 }
 
-static bool vc4_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+static void vc4_cpu_set_irq(void *opaque, int irq, int level)
 {
-    return false;
+    CPUState *cs = CPU(opaque);
+
+    if (level) {
+        cpu_interrupt(cs, CPU_INTERRUPT_HARD);
+    } else {
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+    }
+}
+
+static void vc4_irq_push(CPUVC4State *env, uint32_t value)
+{
+    uint32_t sp = env->gpr[VC4_REG_SP] - 4;
+
+    env->gpr[VC4_REG_SP] = sp;
+    cpu_stl_le_data(env, sp, value);
+}
+
+static bool vc4_cpu_enter_irq(VC4CPU *cpu)
+{
+    CPUState *cs = CPU(cpu);
+    CPUVC4State *env = &cpu->env;
+    uint32_t vector;
+    uint32_t vector_base;
+    uint32_t vector_entry;
+    uint32_t saved_sr = env->sr;
+
+    if (!cpu->intc ||
+        !bcm2835_vc4_intc_acknowledge(cpu->intc, &vector, &vector_base)) {
+        return false;
+    }
+
+    if (env->exception_depth == 0) {
+        env->normal_sp = env->gpr[VC4_REG_SP];
+        env->gpr[VC4_REG_SP] = env->gpr[28];
+    }
+
+    /*
+     * Hardware pushes PC and then SR onto the descending exception stack.
+     * RTI therefore sees SR at *SP and PC at *(SP + 4).
+     */
+    vc4_irq_push(env, env->pc);
+    vc4_irq_push(env, saved_sr);
+    env->exception_depth++;
+
+    vector_entry = cpu_ldl_le_data(env, vector_base + vector * 4);
+
+    env->sr = saved_sr & ~(VC4_SR_U | VC4_SR_I | VC4_SR_S);
+    if (vector_entry & 1) {
+        env->sr |= VC4_SR_S;
+    }
+    env->pc = vector_entry & ~1u;
+    cs->halted = 0;
+    return true;
 }
 
 static void vc4_cpu_do_interrupt(CPUState *cs)
 {
     CPUVC4State *env = cpu_env(cs);
 
-    if (cs->exception_index == VC4_EXCP_ILLEGAL) {
+    switch (cs->exception_index) {
+    case VC4_EXCP_IRQ:
+        if (!vc4_cpu_enter_irq(VC4_CPU(cs))) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "VideoCore IV: spurious external interrupt\n");
+        }
+        break;
+    case VC4_EXCP_ILLEGAL:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "VideoCore IV: illegal instruction at 0x%08x\n",
                       env->pc);
         cs->halted = 1;
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "VideoCore IV: unknown exception %d at 0x%08x\n",
+                      cs->exception_index, env->pc);
+        cs->halted = 1;
+        break;
     }
+
     cs->exception_index = -1;
+}
+
+static bool vc4_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+{
+    CPUVC4State *env = cpu_env(cs);
+
+    if ((interrupt_request & CPU_INTERRUPT_HARD) &&
+        (env->sr & VC4_SR_I)) {
+        cs->exception_index = VC4_EXCP_IRQ;
+        vc4_cpu_do_interrupt(cs);
+        return true;
+    }
+
+    return false;
+}
+
+static void vc4_cpu_init(Object *obj)
+{
+    qdev_init_gpio_in(DEVICE(obj), vc4_cpu_set_irq, 1);
 }
 
 #include "hw/core/sysemu-cpu-ops.h"
@@ -214,6 +308,7 @@ static const TypeInfo vc4_cpu_types[] = {
         .parent = TYPE_CPU,
         .instance_size = sizeof(VC4CPU),
         .instance_align = __alignof(VC4CPU),
+        .instance_init = vc4_cpu_init,
         .abstract = true,
         .class_size = sizeof(VC4CPUClass),
         .class_init = vc4_cpu_class_init,
