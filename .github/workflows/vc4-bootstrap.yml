@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -33,6 +33,10 @@ jobs:
 
       - name: Materialize VC4 target
         run: python3 scripts/vc4/bootstrap.py
+
+      - name: Apply current-QEMU compatibility fixes
+        run: |
+          sed -i '/#include "exec\/translation-block.h"/a #include "exec/target_page.h"' target/vc4/cpu.c
 
       - name: Configure
         run: |
