@@ -1,0 +1,176 @@
+name: VC4 Raspberry Pi vectored interrupt bring-up
+
+on:
+  push:
+    branches:
+      - agent/vc4-raspi3-irq
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize VC4 interrupt-controller tranche
+        run: python3 scripts/vc4/irq-bootstrap.py
+
+      - name: Configure and build
+        run: |
+          ./configure \
+            --target-list=vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-vc4
+
+      - name: Verify machine and controller registration
+        run: |
+          build/qemu-system-vc4 -machine help | tee /tmp/vc4-machines.txt
+          grep -q 'raspi3b-vc4' /tmp/vc4-machines.txt
+          build/qemu-system-vc4 -M raspi3b-vc4 -device help | \
+            grep -q 'bcm2835-vc4-intc'
+
+      - name: Build vectored interrupt smoke firmware
+        run: |
+          python3 - <<'PY'
+          import struct
+
+          MOV = 0
+          OR = 13
+          LSL = 28
+
+          def half(value):
+              return struct.pack('<H', value & 0xffff)
+
+          def alu_imm16(op, rd, value):
+              return half(0xb000 | ((op & 0x1f) << 5) | (rd & 0x1f)) + \
+                     half(value)
+
+          def mov(rd, value):
+              return alu_imm16(MOV, rd, value)
+
+          def small_imm(op, rd, value):
+              assert op % 2 == 0 and rd < 16 and 0 <= value < 32
+              return half(0x6000 | ((op // 2) << 9) |
+                          ((value & 0x1f) << 4) | rd)
+
+          def memory_offset(store, rd, rb, offset, fmt=0):
+              raw = offset & 0xfff
+              i1 = 0xa200 | (0x20 if store else 0) | \
+                   ((fmt & 3) << 6) | (rd & 0x1f)
+              if raw & 0x800:
+                  i1 |= 0x100
+              i2 = ((rb & 0x1f) << 11) | (raw & 0x7ff)
+              return half(i1) + half(i2)
+
+          code = bytearray()
+          code += mov(28, 0x1800)                    # exception SP
+          code += mov(0, 0x7e00)
+          code += small_imm(LSL, 0, 16)
+          code += alu_imm16(OR, 0, 0x2000)           # r0 = IC0_BASE
+          code += mov(2, 0x1000)                     # vector-table base
+          code += mov(3, 0x0201)                     # handler | supervisor
+          code += memory_offset(True, 3, 2, 0x100)   # vector 64
+          code += memory_offset(True, 2, 0, 0x30)    # IC0_VADDR
+          code += mov(1, 7)
+          code += memory_offset(True, 1, 0, 0x10)    # source 0 priority 7
+          code += mov(4, 0x1200)                     # result marker
+          code += half(0x0004)                       # EI
+          code += mov(1, 1)
+          code += memory_offset(True, 1, 0, 0x48)    # FORCE0_SET
+          code += memory_offset(False, 5, 4, 0)      # runs after RTI
+          code += half(0x0000)                       # halt
+          expected_pc = len(code)
+
+          handler = bytearray()
+          handler += memory_offset(False, 7, 0, 4)   # IC0_S
+          handler += memory_offset(True, 1, 0, 0x50) # FORCE0_CLR
+          handler += mov(6, 0x55aa)
+          handler += memory_offset(True, 6, 4, 0)    # publish marker
+          handler += half(0x000a)                    # RTI
+
+          image = bytearray(0x200 + len(handler))
+          image[:len(code)] = code
+          image[0x200:0x200 + len(handler)] = handler
+          with open('/tmp/vc4-irq-smoke.bin', 'wb') as out:
+              out.write(image)
+          with open('/tmp/vc4-irq-expected-pc', 'w', encoding='ascii') as out:
+              out.write(f'{expected_pc:08x}\n')
+          print(f'firmware={len(image)} bytes final_pc=0x{expected_pc:08x}')
+          PY
+
+      - name: Execute vector-table entry, exception stack and RTI
+        run: |
+          set +e
+          timeout 3s build/qemu-system-vc4 \
+            -M raspi3b-vc4 \
+            -m 128M \
+            -kernel /tmp/vc4-irq-smoke.bin \
+            -display none \
+            -monitor none \
+            -serial none \
+            -accel tcg,one-insn-per-tb=on \
+            -d cpu \
+            -D /tmp/vc4-irq.log
+          rc=$?
+          set -e
+          echo "qemu rc=$rc"
+          cat /tmp/vc4-irq.log
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+            exit "$rc"
+          fi
+
+          python3 - <<'PY'
+          import re
+
+          expected_pc = open('/tmp/vc4-irq-expected-pc', encoding='ascii').read().strip()
+          log = open('/tmp/vc4-irq.log', encoding='utf-8').read()
+          blocks = re.split(r'(?=^pc=[0-9a-f]{8}\s+sr=)', log,
+                            flags=re.MULTILINE | re.IGNORECASE)
+          final = None
+          for block in blocks:
+              if re.match(fr'^pc={expected_pc}\s+sr=', block, re.IGNORECASE):
+                  final = block
+          if final is None:
+              raise SystemExit(f'VPU never reached final halt PC 0x{expected_pc}')
+          if not re.search(r'r5\s*=\s*000055aa', final, re.IGNORECASE):
+              raise SystemExit('IRQ handler marker was not observed after RTI')
+          status = re.search(r'r7\s*=\s*([0-9a-f]{8})', final, re.IGNORECASE)
+          if status is None or (int(status.group(1), 16) & 0xff) != 0x40:
+              raise SystemExit('IC0_S did not report external vector 64')
+          if not re.search(r'sr=40000000', final, re.IGNORECASE):
+              raise SystemExit('RTI did not restore the interrupt-enable SR')
+          if not re.search(r'r28\s*=\s*00001800', final, re.IGNORECASE):
+              raise SystemExit('RTI did not restore the banked exception SP')
+          PY
+
+      - name: Commit green interrupt implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No implementation changes to commit."
+            exit 0
+          fi
+          git commit -m "hw/vc4: model VPU interrupt controller and exception entry"
+          git push origin HEAD:${GITHUB_REF_NAME}
