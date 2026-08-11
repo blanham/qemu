@@ -31,6 +31,19 @@ jobs:
             libpixman-1-dev \
             zlib1g-dev
 
+      - name: Materialize linked AArch64 and VC4 frontends
+        run: |
+          cat scripts/vc4/secondary-bootstrap.py.part00 \
+              scripts/vc4/secondary-bootstrap.py.part01 \
+              scripts/vc4/secondary-bootstrap.py.part02 \
+              scripts/vc4/secondary-bootstrap.py.part03 \
+              > scripts/vc4/secondary-bootstrap.py
+          echo 'a702ecf4349f26bea1bf53328e70fa3ae38131cfd8ed83686ee41575ac6861f2  scripts/vc4/secondary-bootstrap.py' | \
+            sha256sum --check --strict
+          python3 -m py_compile scripts/vc4/secondary-bootstrap.py
+          python3 scripts/vc4/secondary-bootstrap.py
+          rm scripts/vc4/secondary-bootstrap.py
+
       - name: Materialize and harden ARM-release tranche
         run: |
           python3 scripts/vc4/arm-release-bootstrap.py
@@ -68,23 +81,27 @@ jobs:
             grep -E 'vc4_arm_release|vc4_release|arm_release_smoke' || true
           echo '=== registered machines ==='
           build/qemu-system-aarch64 -machine help | tee /tmp/aarch64-machines.txt
+          grep -q 'vc4-hetero-smoke' /tmp/aarch64-machines.txt
           grep -q 'vc4-arm-release-smoke' /tmp/aarch64-machines.txt
+
+      - name: Execute linked-frontend collision regression
+        run: |
+          python3 scripts/vc4/hetero-smoke.py \
+            build/qemu-system-aarch64
 
       - name: Execute VC4-to-ARM release regression
         run: |
           python3 scripts/vc4/arm-release-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Preserve the green implementation
+      - name: Preserve the green heterogeneous implementation
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add hw/arm/meson.build \
-                  hw/arm/vc4_arm_release_smoke.c \
-                  scripts/vc4/arm-release-smoke.py
+          git add -A
           if git diff --cached --quiet; then
             echo "No generated implementation changes to commit."
             exit 0
           fi
-          git commit -m "hw/arm: prove VC4-controlled Cortex-A53 release"
+          git commit -m "hw: materialize VC4-controlled heterogeneous ARM release"
           git push origin HEAD:${GITHUB_REF_NAME}
