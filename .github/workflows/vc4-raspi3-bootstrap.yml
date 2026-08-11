@@ -34,9 +34,9 @@ jobs:
       - name: Materialize Raspberry Pi VPU machine
         run: python3 scripts/vc4/raspi3-bootstrap.py
 
-      - name: Add target-neutral interrupt fabric dependencies
+      - name: Add target-neutral Raspberry Pi support dependencies
         run: |
-          sed -i '/    select RASPI/a\    select OR_IRQ\n    select SPLIT_IRQ' hw/vc4/Kconfig
+          sed -i '/    select RASPI/a\    select OR_IRQ\n    select SPLIT_IRQ\n    select UNIMP' hw/vc4/Kconfig
 
       - name: Configure and build
         run: |
