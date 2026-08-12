@@ -41,25 +41,23 @@ jobs:
 
           path = Path("hw/misc/bcm2835_arm_control.c")
           text = path.read_text(encoding="utf-8")
-          old = """static void bcm2835_arm_control_init(Object *obj)
-          {
-              BCM2835ArmControlState *s = BCM2835_ARM_CONTROL(obj);
-
-              memory_region_init_io(&s->low_mr, obj,
-          """
-          new = """static void bcm2835_arm_control_init(Object *obj)
-          {
-              BCM2835ArmControlState *s = BCM2835_ARM_CONTROL(obj);
-
-              /* Hardware begins with the asynchronous bridge held stopped. */
-              s->control1 = C1_REQSTOP;
-
-              memory_region_init_io(&s->low_mr, obj,
-          """
-          if old in text:
-              path.write_text(text.replace(old, new, 1), encoding="utf-8")
-          elif new not in text:
-              raise SystemExit("could not initialize ARM_CONTROL1 cold state")
+          start = text.find("static void bcm2835_arm_control_init")
+          end = text.find("static void bcm2835_arm_control_class_init", start)
+          if start < 0 or end < 0:
+              raise SystemExit("could not delimit ARM-control instance init")
+          chunk = text[start:end]
+          marker = "BCM2835ArmControlState *s = BCM2835_ARM_CONTROL(obj);"
+          cold_state = (
+              "\n\n    /* Hardware begins with the asynchronous bridge held stopped. */"
+              "\n    s->control1 = C1_REQSTOP;"
+          )
+          if "Hardware begins with the asynchronous bridge held stopped" not in chunk:
+              pos = chunk.find(marker)
+              if pos < 0:
+                  raise SystemExit("could not locate ARM-control state declaration")
+              pos += len(marker)
+              chunk = chunk[:pos] + cold_state + chunk[pos:]
+              path.write_text(text[:start] + chunk + text[end:], encoding="utf-8")
           PY
           chmod +x scripts/vc4/raspi3-arm-start-smoke.py
           git diff --check
