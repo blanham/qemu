@@ -328,7 +328,7 @@ replace_once(
     }
 
 """,
-    """,
+    "",
     "obsolete floating-point rejection",
 )
 

@@ -68,6 +68,30 @@ enum VC4AluOp {
     VC4_OP_ABS,
 };
 
+enum VC4FloatConvOp {
+    VC4_FCONV_FTRUNC = 0,
+    VC4_FCONV_FLOOR,
+    VC4_FCONV_FLTS,
+    VC4_FCONV_FLTU,
+};
+
+enum VC4FloatOp {
+    VC4_FOP_FADD = 0,
+    VC4_FOP_FSUB,
+    VC4_FOP_FMUL,
+    VC4_FOP_FDIV,
+    VC4_FOP_FCMP,
+    VC4_FOP_FABS,
+    VC4_FOP_FRSB,
+    VC4_FOP_FMAX,
+    VC4_FOP_FRCP,
+    VC4_FOP_FRSQRT,
+    VC4_FOP_FNMUL,
+    VC4_FOP_FMIN,
+    VC4_FOP_FLD1,
+    VC4_FOP_FLD0,
+};
+
 typedef struct DisasContext {
     DisasContextBase base;
     CPUVC4State *env;
@@ -392,6 +416,53 @@ static void vc4_gen_alu_imm(DisasContext *ctx, unsigned cond, unsigned op,
 {
     vc4_gen_alu(ctx, cond, op, rd, vc4_get_reg(ctx, ra),
                 tcg_constant_i32(imm));
+}
+
+static void vc4_gen_float_conv(DisasContext *ctx, unsigned cond,
+                               unsigned op, unsigned rd, unsigned ra,
+                               int32_t shift)
+{
+    TCGv_i32 result = tcg_temp_new_i32();
+    TCGLabel *skip;
+
+    if (rd == VC4_REG_PC) {
+        tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
+    }
+
+    skip = vc4_gen_skip_if_false(cond);
+    gen_helper_vc4_float_conv(result, tcg_constant_i32(op),
+                              vc4_get_reg(ctx, ra),
+                              tcg_constant_i32(shift));
+    vc4_set_reg(ctx, rd, result);
+    vc4_gen_end_predicate(skip);
+}
+
+static bool vc4_gen_float_op(DisasContext *ctx, unsigned cond,
+                             unsigned op, unsigned rd,
+                             unsigned ra, TCGv_i32 b)
+{
+    TCGv_i32 result = tcg_temp_new_i32();
+    TCGLabel *skip;
+
+    if (op > VC4_FOP_FLD0) {
+        return false;
+    }
+
+    if (op != VC4_FOP_FCMP && rd == VC4_REG_PC) {
+        tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
+    }
+
+    skip = vc4_gen_skip_if_false(cond);
+    if (op == VC4_FOP_FCMP) {
+        gen_helper_vc4_float_cmp(result, vc4_get_reg(ctx, ra), b);
+        vc4_write_nzcv(result);
+    } else {
+        gen_helper_vc4_float_op(result, tcg_constant_i32(op),
+                                vc4_get_reg(ctx, ra), b);
+        vc4_set_reg(ctx, rd, result);
+    }
+    vc4_gen_end_predicate(skip);
+    return true;
 }
 
 static unsigned vc4_mem_size(unsigned format)
@@ -792,6 +863,31 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
         return true;
     }
 
+    if ((i1 & 0xff80) == 0xca00 && (i2 & 0x0040) != 0) {
+        cond = (i2 >> 7) & 0xf;
+        op = (i1 >> 5) & 3;
+        rd = i1 & 0x1f;
+        ra = (i2 >> 11) & 0x1f;
+        offset = vc4_sext(i2 & 0x3f, 0x20);
+        vc4_gen_float_conv(ctx, cond, op, rd, ra, offset);
+        return true;
+    }
+
+    if ((i1 & 0xfe00) == 0xc800 && (i2 & 0x0060) == 0x0000) {
+        cond = (i2 >> 7) & 0xf;
+        op = (i1 >> 5) & 0xf;
+        rd = i1 & 0x1f;
+        ra = (i2 >> 11) & 0x1f;
+        rb = i2 & 0x1f;
+        return vc4_gen_float_op(ctx, cond, op, rd, ra,
+                                vc4_get_reg(ctx, rb));
+    }
+
+    if ((i1 & 0xfe00) == 0xc800 && (i2 & 0x0040) != 0) {
+        /* The six-bit floating immediate encoding is not verified yet. */
+        return false;
+    }
+
     if ((i1 & 0xfc00) == 0xc000 && (i2 & 0x0060) == 0x0000) {
         op = (i1 >> 5) & 0x1f;
         rd = i1 & 0x1f;
@@ -955,11 +1051,6 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
         vc4_set_reg(ctx, rd, result);
         vc4_gen_end_predicate(skip);
         return true;
-    }
-
-    if ((i1 & 0xfe00) == 0xc800 ||
-        ((i1 & 0xff80) == 0xca00 && (i2 & 0x40))) {
-        return false;               /* floating-point group */
     }
 
     if ((i1 & 0xff80) == 0xc400 && (i2 & 0x60) == 0) {
