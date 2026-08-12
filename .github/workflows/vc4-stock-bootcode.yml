@@ -133,11 +133,12 @@ jobs:
           python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture next official bootcode barrier
+      - name: Capture next official bootcode barrier after timed waits
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
+            --seconds 30 \
             --barrier-is-success
 
       - name: Commit exact tested table-branch implementation
