@@ -24,6 +24,57 @@
 #define V_RSTS_POWEROFF 0x555 /* Linux uses partition 63 to indicate halt. */
 #define R_WDOG 0x24
 
+/*
+ * PM_PROC is the firmware-visible processor power-domain register.  The bit
+ * layout comes from Broadcom's generated cpr_powman.h retained by the open
+ * VideoCore firmware projects.
+ */
+#define R_PROC 0x110
+#define V_PROC_CFG_MASK  0x007f0000
+#define V_PROC_ENAB      (1u << 12)
+#define V_PROC_ARMRSTN   (1u << 6)
+#define V_PROC_ISFUNC    (1u << 5)
+#define V_PROC_MRDONE    (1u << 4)
+#define V_PROC_MEMREP    (1u << 3)
+#define V_PROC_ISPOW     (1u << 2)
+#define V_PROC_POWOK     (1u << 1)
+#define V_PROC_POWUP     (1u << 0)
+
+#define V_PROC_WRITABLE (V_PROC_CFG_MASK | V_PROC_ENAB | V_PROC_ARMRSTN | \
+                         V_PROC_ISFUNC | V_PROC_MEMREP | V_PROC_ISPOW | \
+                         V_PROC_POWUP)
+#define V_PROC_READY (V_PROC_POWUP | V_PROC_POWOK | V_PROC_ISPOW | \
+                      V_PROC_MEMREP | V_PROC_MRDONE | V_PROC_ISFUNC | \
+                      V_PROC_ARMRSTN)
+
+static void bcm2835_powermgt_update_proc(BCM2835PowerMgtState *s,
+                                         uint32_t requested)
+{
+    bool arm_powered;
+
+    requested &= V_PROC_WRITABLE;
+
+    /*
+     * The analogue power controller completes these handshakes
+     * asynchronously on hardware.  They complete immediately in this model,
+     * while preserving the firmware-visible polling protocol.
+     */
+    if (requested & V_PROC_POWUP) {
+        requested |= V_PROC_POWOK;
+    }
+    if ((requested & (V_PROC_POWUP | V_PROC_ISPOW | V_PROC_MEMREP)) ==
+        (V_PROC_POWUP | V_PROC_ISPOW | V_PROC_MEMREP)) {
+        requested |= V_PROC_MRDONE;
+    }
+
+    s->proc = requested;
+    arm_powered = (s->proc & V_PROC_READY) == V_PROC_READY;
+    if (arm_powered != s->arm_powered) {
+        s->arm_powered = arm_powered;
+        qemu_set_irq(s->arm_power_on, arm_powered);
+    }
+}
+
 static uint64_t bcm2835_powermgt_read(void *opaque, hwaddr offset,
                                       unsigned size)
 {
@@ -39,6 +90,9 @@ static uint64_t bcm2835_powermgt_read(void *opaque, hwaddr offset,
         break;
     case R_WDOG:
         res = s->wdog;
+        break;
+    case R_PROC:
+        res = s->proc;
         break;
 
     default:
@@ -88,6 +142,9 @@ static void bcm2835_powermgt_write(void *opaque, hwaddr offset,
                       "bcm2835_powermgt_write: WDOG\n");
         s->wdog = value;
         break;
+    case R_PROC:
+        bcm2835_powermgt_update_proc(s, value);
+        break;
 
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -105,14 +162,25 @@ static const MemoryRegionOps bcm2835_powermgt_ops = {
     .impl.max_access_size = 4,
 };
 
+static int bcm2835_powermgt_post_load(void *opaque, int version_id)
+{
+    BCM2835PowerMgtState *s = opaque;
+
+    qemu_set_irq(s->arm_power_on, s->arm_powered);
+    return 0;
+}
+
 static const VMStateDescription vmstate_bcm2835_powermgt = {
     .name = TYPE_BCM2835_POWERMGT,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = bcm2835_powermgt_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(rstc, BCM2835PowerMgtState),
         VMSTATE_UINT32(rsts, BCM2835PowerMgtState),
         VMSTATE_UINT32(wdog, BCM2835PowerMgtState),
+        VMSTATE_UINT32_V(proc, BCM2835PowerMgtState, 2),
+        VMSTATE_BOOL_V(arm_powered, BCM2835PowerMgtState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -124,6 +192,8 @@ static void bcm2835_powermgt_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &bcm2835_powermgt_ops, s,
                           TYPE_BCM2835_POWERMGT, 0x200);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+    qdev_init_gpio_out_named(DEVICE(s), &s->arm_power_on,
+                             BCM2835_POWERMGT_ARM_POWER_ON, 1);
 }
 
 static void bcm2835_powermgt_reset(DeviceState *dev)
@@ -134,6 +204,9 @@ static void bcm2835_powermgt_reset(DeviceState *dev)
     s->rstc = 0x00000102;
     s->rsts = 0x00001000;
     s->wdog = 0x00000000;
+    s->proc = 0;
+    s->arm_powered = false;
+    qemu_set_irq(s->arm_power_on, 0);
 }
 
 static void bcm2835_powermgt_class_init(ObjectClass *klass, const void *data)
