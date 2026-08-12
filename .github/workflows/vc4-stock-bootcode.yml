@@ -55,6 +55,7 @@ jobs:
             scripts/vc4/raspi3-otp-read-smoke.py \
             scripts/vc4/raspi3-scalar-fpu-smoke.py \
             scripts/vc4/raspi3-pcrel48-smoke.py \
+            scripts/vc4/raspi3-table-branch-smoke.py \
             scripts/vc4/raspi3-cprman-sdc-smoke.py \
             scripts/vc4/raspi3-sdramc-init-smoke.py \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
@@ -62,13 +63,15 @@ jobs:
             scripts/vc4/raspi3-stock-bootcode-0200.py \
             scripts/vc4/cprman-sdc-handshake-fixup.py \
             scripts/vc4/sdramc-init-fixup.py \
-            scripts/vc4/pcrel48-fixup.py
+            scripts/vc4/pcrel48-fixup.py \
+            scripts/vc4/table-branch-fixup.py
 
-      - name: Materialize boot-critical hardware and scalar48 contracts
+      - name: Materialize boot-critical hardware and scalar ISA contracts
         run: |
           python3 scripts/vc4/cprman-sdc-handshake-fixup.py
           python3 scripts/vc4/sdramc-init-fixup.py
           python3 scripts/vc4/pcrel48-fixup.py
+          python3 scripts/vc4/table-branch-fixup.py
           git diff --check
 
       - name: Configure linked guest targets
@@ -115,6 +118,11 @@ jobs:
           python3 scripts/vc4/raspi3-pcrel48-smoke.py \
             build/qemu-system-aarch64
 
+      - name: Validate scalar VideoCore IV table branches
+        run: |
+          python3 scripts/vc4/raspi3-table-branch-smoke.py \
+            build/qemu-system-aarch64
+
       - name: Validate CPRMAN SDRAM-clock UPDATE and ACCPT
         run: |
           python3 scripts/vc4/raspi3-cprman-sdc-smoke.py \
@@ -132,14 +140,14 @@ jobs:
             /tmp/bootcode.bin \
             --barrier-is-success
 
-      - name: Commit exact tested scalar48 implementation
+      - name: Commit exact tested table-branch implementation
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
           git add target/vc4/translate.c
           if git diff --cached --quiet; then
-            echo 'Scalar48 PC-relative memory was already materialized.'
+            echo 'Scalar TBB/TBH table branches were already materialized.'
           else
-            git commit -m "target/vc4: decode scalar48 PC-relative memory"
+            git commit -m "target/vc4: decode scalar table branches"
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
