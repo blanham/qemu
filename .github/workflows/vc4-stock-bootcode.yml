@@ -54,6 +54,7 @@ jobs:
             scripts/vc4/raspi3-bootrom-0200-smoke.py \
             scripts/vc4/raspi3-otp-read-smoke.py \
             scripts/vc4/raspi3-pm-image-smoke.py \
+            scripts/vc4/raspi3-usb-phy-smoke.py \
             scripts/vc4/raspi3-scalar-fpu-smoke.py \
             scripts/vc4/raspi3-pcrel48-smoke.py \
             scripts/vc4/raspi3-table-branch-smoke.py \
@@ -68,6 +69,7 @@ jobs:
             scripts/vc4/cprman-sdc-handshake-fixup.py \
             scripts/vc4/cprman-osccount-fixup.py \
             scripts/vc4/pm-image-fixup.py \
+            scripts/vc4/usb-phy-fixup.py \
             scripts/vc4/sdramc-init-fixup.py \
             scripts/vc4/pcrel48-fixup.py \
             scripts/vc4/table-branch-fixup.py \
@@ -80,6 +82,7 @@ jobs:
           python3 scripts/vc4/cprman-sdc-handshake-fixup.py
           python3 scripts/vc4/cprman-osccount-fixup.py
           python3 scripts/vc4/pm-image-fixup.py
+          python3 scripts/vc4/usb-phy-fixup.py
           python3 scripts/vc4/sdramc-init-fixup.py
           python3 scripts/vc4/pcrel48-fixup.py
           python3 scripts/vc4/table-branch-fixup.py
@@ -121,6 +124,11 @@ jobs:
       - name: Validate PM_IMAGE power-domain handshake
         run: |
           python3 scripts/vc4/raspi3-pm-image-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate PM_USB and BCM2835 USB PHY sideband
+        run: |
+          python3 scripts/vc4/raspi3-usb-phy-smoke.py \
             build/qemu-system-aarch64
 
       - name: Preserve synthetic SD boot-ROM regression at VPU 0x200
@@ -168,7 +176,7 @@ jobs:
           python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture next official bootcode barrier after oscillator countdown
+      - name: Capture next official bootcode barrier after USB PHY init
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
@@ -177,16 +185,18 @@ jobs:
             --icount-shift 10 \
             --barrier-is-success
 
-      - name: Commit exact tested oscillator-countdown model
+      - name: Commit exact tested USB power and PHY sideband model
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
           git add \
-            include/hw/misc/bcm2835_cprman_internals.h \
-            hw/misc/bcm2835_cprman.c
+            include/hw/misc/bcm2835_powermgt.h \
+            hw/misc/bcm2835_powermgt.c \
+            hw/usb/hcd-dwc2.h \
+            hw/usb/hcd-dwc2.c
           if git diff --cached --quiet; then
-            echo 'CPRMAN oscillator countdown was already materialized.'
+            echo 'BCM2835 USB power and PHY sideband was already materialized.'
           else
-            git commit -m "hw/misc: model BCM2835 oscillator countdown"
+            git commit -m "hw/usb: model BCM2835 USB PHY sideband"
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
