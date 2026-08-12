@@ -25,49 +25,73 @@
 #define R_WDOG 0x24
 
 /*
- * PM_PROC is the firmware-visible processor power-domain register.  The bit
- * layout comes from Broadcom's generated cpr_powman.h retained by the open
- * VideoCore firmware projects.
+ * PM_IMAGE and PM_PROC are firmware-visible power-domain registers.  Their
+ * common handshake layout comes from Broadcom's generated cpr_powman.h
+ * retained by the open VideoCore firmware projects.
  */
+#define V_DOMAIN_CFG_MASK 0x007f0000
+#define V_DOMAIN_ENAB     (1u << 12)
+#define V_DOMAIN_ISFUNC   (1u << 5)
+#define V_DOMAIN_MRDONE   (1u << 4)
+#define V_DOMAIN_MEMREP   (1u << 3)
+#define V_DOMAIN_ISPOW    (1u << 2)
+#define V_DOMAIN_POWOK    (1u << 1)
+#define V_DOMAIN_POWUP    (1u << 0)
+
+#define R_IMAGE 0x108
+#define V_IMAGE_RSTN_MASK ((1u << 8) | (1u << 7) | (1u << 6))
+#define V_IMAGE_WRITABLE (V_DOMAIN_CFG_MASK | V_DOMAIN_ENAB | \
+                          V_IMAGE_RSTN_MASK | V_DOMAIN_ISFUNC | \
+                          V_DOMAIN_MEMREP | V_DOMAIN_ISPOW | \
+                          V_DOMAIN_POWUP)
+#define V_IMAGE_RESET V_DOMAIN_ENAB
+
 #define R_PROC 0x110
-#define V_PROC_CFG_MASK  0x007f0000
-#define V_PROC_ENAB      (1u << 12)
-#define V_PROC_ARMRSTN   (1u << 6)
-#define V_PROC_ISFUNC    (1u << 5)
-#define V_PROC_MRDONE    (1u << 4)
-#define V_PROC_MEMREP    (1u << 3)
-#define V_PROC_ISPOW     (1u << 2)
-#define V_PROC_POWOK     (1u << 1)
-#define V_PROC_POWUP     (1u << 0)
+#define V_PROC_ARMRSTN (1u << 6)
+#define V_PROC_WRITABLE (V_DOMAIN_CFG_MASK | V_DOMAIN_ENAB | \
+                         V_PROC_ARMRSTN | V_DOMAIN_ISFUNC | \
+                         V_DOMAIN_MEMREP | V_DOMAIN_ISPOW | \
+                         V_DOMAIN_POWUP)
+#define V_PROC_READY (V_DOMAIN_POWUP | V_DOMAIN_POWOK | V_DOMAIN_ISPOW | \
+                      V_DOMAIN_MEMREP | V_DOMAIN_MRDONE | \
+                      V_DOMAIN_ISFUNC | V_PROC_ARMRSTN)
 
-#define V_PROC_WRITABLE (V_PROC_CFG_MASK | V_PROC_ENAB | V_PROC_ARMRSTN | \
-                         V_PROC_ISFUNC | V_PROC_MEMREP | V_PROC_ISPOW | \
-                         V_PROC_POWUP)
-#define V_PROC_READY (V_PROC_POWUP | V_PROC_POWOK | V_PROC_ISPOW | \
-                      V_PROC_MEMREP | V_PROC_MRDONE | V_PROC_ISFUNC | \
-                      V_PROC_ARMRSTN)
-
-static void bcm2835_powermgt_update_proc(BCM2835PowerMgtState *s,
-                                         uint32_t requested)
+static uint32_t bcm2835_powermgt_complete_domain(uint32_t requested,
+                                                 uint32_t writable)
 {
-    bool arm_powered;
-
-    requested &= V_PROC_WRITABLE;
+    requested &= writable;
 
     /*
      * The analogue power controller completes these handshakes
      * asynchronously on hardware.  They complete immediately in this model,
      * while preserving the firmware-visible polling protocol.
      */
-    if (requested & V_PROC_POWUP) {
-        requested |= V_PROC_POWOK;
+    if (requested & V_DOMAIN_POWUP) {
+        requested |= V_DOMAIN_POWOK;
     }
-    if ((requested & (V_PROC_POWUP | V_PROC_ISPOW | V_PROC_MEMREP)) ==
-        (V_PROC_POWUP | V_PROC_ISPOW | V_PROC_MEMREP)) {
-        requested |= V_PROC_MRDONE;
+    if ((requested & (V_DOMAIN_POWUP | V_DOMAIN_ISPOW |
+                      V_DOMAIN_MEMREP)) ==
+        (V_DOMAIN_POWUP | V_DOMAIN_ISPOW | V_DOMAIN_MEMREP)) {
+        requested |= V_DOMAIN_MRDONE;
     }
 
-    s->proc = requested;
+    return requested;
+}
+
+static void bcm2835_powermgt_update_image(BCM2835PowerMgtState *s,
+                                          uint32_t requested)
+{
+    s->image = bcm2835_powermgt_complete_domain(requested,
+                                                V_IMAGE_WRITABLE);
+}
+
+static void bcm2835_powermgt_update_proc(BCM2835PowerMgtState *s,
+                                         uint32_t requested)
+{
+    bool arm_powered;
+
+    s->proc = bcm2835_powermgt_complete_domain(requested,
+                                               V_PROC_WRITABLE);
     arm_powered = (s->proc & V_PROC_READY) == V_PROC_READY;
     if (arm_powered != s->arm_powered) {
         s->arm_powered = arm_powered;
@@ -90,6 +114,9 @@ static uint64_t bcm2835_powermgt_read(void *opaque, hwaddr offset,
         break;
     case R_WDOG:
         res = s->wdog;
+        break;
+    case R_IMAGE:
+        res = s->image;
         break;
     case R_PROC:
         res = s->proc;
@@ -142,6 +169,9 @@ static void bcm2835_powermgt_write(void *opaque, hwaddr offset,
                       "bcm2835_powermgt_write: WDOG\n");
         s->wdog = value;
         break;
+    case R_IMAGE:
+        bcm2835_powermgt_update_image(s, value);
+        break;
     case R_PROC:
         bcm2835_powermgt_update_proc(s, value);
         break;
@@ -172,7 +202,7 @@ static int bcm2835_powermgt_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_bcm2835_powermgt = {
     .name = TYPE_BCM2835_POWERMGT,
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = bcm2835_powermgt_post_load,
     .fields = (const VMStateField[]) {
@@ -180,6 +210,7 @@ static const VMStateDescription vmstate_bcm2835_powermgt = {
         VMSTATE_UINT32(rsts, BCM2835PowerMgtState),
         VMSTATE_UINT32(wdog, BCM2835PowerMgtState),
         VMSTATE_UINT32_V(proc, BCM2835PowerMgtState, 2),
+        VMSTATE_UINT32_V(image, BCM2835PowerMgtState, 3),
         VMSTATE_BOOL_V(arm_powered, BCM2835PowerMgtState, 2),
         VMSTATE_END_OF_LIST()
     }
@@ -204,6 +235,7 @@ static void bcm2835_powermgt_reset(DeviceState *dev)
     s->rstc = 0x00000102;
     s->rsts = 0x00001000;
     s->wdog = 0x00000000;
+    s->image = V_IMAGE_RESET;
     s->proc = 0;
     s->arm_powered = false;
     qemu_set_irq(s->arm_power_on, 0);
