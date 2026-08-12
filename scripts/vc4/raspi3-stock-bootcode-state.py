@@ -218,7 +218,16 @@ def main() -> int:
 
         qmp: QMP | None = None
         try:
-            qmp = wait_for_qmp(qmp_path, proc, 10.0)
+            try:
+                qmp = wait_for_qmp(qmp_path, proc, 10.0)
+            except Exception as exc:
+                log = stderr_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                raise RuntimeError(
+                    f"{exc}; qemu-diagnostics={diagnostic_tail(log)}"
+                ) from exc
+
             deadline = time.monotonic() + args.seconds
             illegal: re.Match[str] | None = None
 
