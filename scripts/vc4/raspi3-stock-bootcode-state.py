@@ -91,6 +91,29 @@ def flatten(text: str) -> str:
     return " | ".join(line.strip() for line in text.splitlines() if line.strip())
 
 
+def diagnostic_tail(log: str, limit: int = 48) -> str:
+    """Return recent distinct QEMU diagnostics without probe housekeeping."""
+    ignored = (
+        "loaded bootcode.bin",
+        "terminating on signal",
+    )
+    distinct_reversed: list[str] = []
+    seen: set[str] = set()
+
+    for raw_line in reversed(log.splitlines()):
+        line = raw_line.strip()
+        if not line or any(fragment in line for fragment in ignored):
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        distinct_reversed.append(line)
+        if len(distinct_reversed) == limit:
+            break
+
+    return " | ".join(reversed(distinct_reversed)) or "none"
+
+
 def stop_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         return
@@ -156,7 +179,7 @@ def main() -> int:
             "-smp", "5",
             "-drive", f"file={image_path},format=raw,if=sd",
             "-accel", "tcg,thread=single,one-insn-per-tb=on",
-            "-d", "guest_errors",
+            "-d", "unimp,guest_errors",
             "-display", "none",
             "-monitor", "none",
             "-serial", "none",
@@ -193,6 +216,7 @@ def main() -> int:
                     time.sleep(0.01)
 
             log = stderr_path.read_text(encoding="utf-8", errors="replace")
+            log_tail = diagnostic_tail(log)
             illegal = illegal or ILLEGAL_RE.search(log)
             if illegal:
                 opcode = int(illegal.group(1), 16)
@@ -201,7 +225,8 @@ def main() -> int:
                     "STOCK_BOOTCODE_BARRIER "
                     f"kind=illegal-opcode opcode=0x{opcode:04x} "
                     f"pc=0x{pc:08x} "
-                    f"context={probe.context_bytes(bootcode, pc, 24)}"
+                    f"context={probe.context_bytes(bootcode, pc, 24)} "
+                    f"qemu-diagnostics={log_tail}"
                 )
                 return 0 if args.barrier_is_success else 2
 
@@ -245,7 +270,8 @@ def main() -> int:
                 f"pc=0x{pc:08x} sr=0x{sr:08x} context={context} "
                 f"registers={flatten(registers)} "
                 f"cpu-summary={flatten(cpu_summary)} "
-                f"memory={flatten(memory)}"
+                f"memory={flatten(memory)} "
+                f"qemu-diagnostics={log_tail}"
             )
             return 0 if args.barrier_is_success else 3
         finally:
