@@ -49,6 +49,25 @@ jobs:
           python3 scripts/vc4/arm-release-bootstrap.py
           python3 scripts/vc4/arm-release-v2-fixup.py
           python3 scripts/vc4/arm-release-power-fixup.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/vc4/arm-release-observe-fixup.py")
+          text = path.read_text(encoding="utf-8")
+          start_marker = (
+              "# Generic TCG historically assumes one guest ISA per executable"
+          )
+          end_marker = "\n\nsmoke = ROOT / \"scripts/vc4/arm-release-smoke.py\""
+          start = text.find(start_marker)
+          if start >= 0:
+              end = text.find(end_marker, start)
+              if end < 0:
+                  raise SystemExit("could not delimit duplicate TCG fixup")
+              text = text[:start] + text[end + 2:]
+              path.write_text(text, encoding="utf-8")
+          elif "tcg_exec = ROOT / \"accel/tcg/cpu-exec.c\"" in text:
+              raise SystemExit("unexpected residual TCG fixup")
+          PY
           python3 scripts/vc4/arm-release-observe-fixup.py
           chmod +x scripts/vc4/arm-release-smoke.py
           git diff --check
