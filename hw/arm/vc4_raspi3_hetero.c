@@ -15,6 +15,7 @@
 #include "qemu/units.h"
 #include "hw/arm/bcm2836.h"
 #include "hw/arm/machines-qom.h"
+#include "hw/arm/vc4_raspi3_bootrom.h"
 #include "hw/core/boards.h"
 #include "hw/core/irq.h"
 #include "hw/core/loader.h"
@@ -27,7 +28,6 @@
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "system/memory.h"
-#include "system/qtest.h"
 #include "target/arm/arm-powerctl.h"
 #include "target/arm/cpu.h"
 
@@ -46,7 +46,10 @@ struct VC4Raspi3HeteroMachineState {
 
     BCM283XState soc;
     BCM2835VC4IntcState vpu_intc[2];
+    MemoryRegion vpu_address_space;
+    MemoryRegion vpu_boot_cache;
     CPUState *vpu_cpu;
+    BlockBackend *sd_blk;
     qemu_irq arm_power_irq;
 
     bool arm_cpu0_released;
@@ -122,7 +125,7 @@ static void vc4_raspi3_arm_power_on(void *opaque, int n, int level)
     s->arm_release_count++;
 }
 
-static void vc4_raspi3_create_sdcard(BCM283XBaseState *soc)
+static BlockBackend *vc4_raspi3_create_sdcard(BCM283XBaseState *soc)
 {
     DriveInfo *di = drive_get(IF_SD, 0, 0);
     BlockBackend *blk = di ? blk_by_legacy_dinfo(di) : NULL;
@@ -137,6 +140,7 @@ static void vc4_raspi3_create_sdcard(BCM283XBaseState *soc)
     carddev = qdev_new(TYPE_SD_CARD);
     qdev_prop_set_drive_err(carddev, "drive", blk, &error_fatal);
     qdev_realize_and_unref(carddev, bus, &error_fatal);
+    return blk;
 }
 
 static void vc4_raspi3_machine_initfn(Object *obj)
@@ -194,7 +198,7 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     object_property_set_int(OBJECT(soc), "enabled-cpus", 0, &error_abort);
     qdev_realize(DEVICE(soc), NULL, &error_fatal);
 
-    vc4_raspi3_create_sdcard(soc);
+    s->sd_blk = vc4_raspi3_create_sdcard(soc);
 
     for (i = 0; i < ARRAY_SIZE(s->vpu_intc); i++) {
         hwaddr offset = i ? VC4_IC1_OFFSET : VC4_IC0_OFFSET;
@@ -220,11 +224,22 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     }
 
     /*
-     * Unlike the ARM cores, the VPU sees the 4 GiB GPU bus: RAM cache-policy
-     * aliases plus the peripheral window at 0x7e000000.
+     * The VPU sees the 4 GiB GPU bus, but its first-stage ROM loads
+     * bootcode.bin into a local 128 KiB L2-backed area at VPU address zero.
+     * Overlaying a private RAM region preserves that separation: ARM address
+     * zero remains ordinary SDRAM while VPU address zero contains bootcode.
      */
-    cpu_address_space_init(s->vpu_cpu, 0, "vc4-gpu-bus",
-                           &ps->gpu_bus_mr);
+    memory_region_init(&s->vpu_address_space, OBJECT(s->vpu_cpu),
+                       "vc4-vpu-address-space", UINT64_C(1) << 32);
+    memory_region_add_subregion(&s->vpu_address_space, 0, &ps->gpu_bus_mr);
+    memory_region_init_ram(&s->vpu_boot_cache, OBJECT(s->vpu_cpu),
+                           "vc4-vpu-boot-cache",
+                           VC4_RASPI3_BOOT_CACHE_SIZE, &error_fatal);
+    memory_region_add_subregion_overlap(&s->vpu_address_space, 0,
+                                        &s->vpu_boot_cache, 1);
+
+    cpu_address_space_init(s->vpu_cpu, 0, "vc4-vpu",
+                           &s->vpu_address_space);
     s->vpu_cpu->start_powered_off = false;
     if (!qdev_realize(DEVICE(s->vpu_cpu), NULL, &error_fatal)) {
         g_assert_not_reached();
@@ -238,16 +253,29 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
         image = machine->firmware;
     }
 
-    s->vpu_entry = machine->ram_size - vcram_size;
     if (image) {
+        s->vpu_entry = machine->ram_size - vcram_size;
         image_size = load_image_targphys_as(
             image, s->vpu_entry, vcram_size, s->vpu_cpu->as, NULL);
         if (image_size < 0) {
             error_report("could not load VideoCore IV firmware '%s'", image);
             exit(EXIT_FAILURE);
         }
-    } else if (!qtest_enabled()) {
-        warn_report("no VideoCore IV firmware supplied; VPU VCRAM is empty");
+    } else {
+        VC4Raspi3BootInfo boot_info;
+        uint8_t *boot_cache =
+            memory_region_get_ram_ptr(&s->vpu_boot_cache);
+
+        if (!vc4_raspi3_bootrom_load(s->sd_blk, boot_cache,
+                                     VC4_RASPI3_BOOT_CACHE_SIZE,
+                                     &boot_info, &error_fatal)) {
+            g_assert_not_reached();
+        }
+        s->vpu_entry = 0;
+        info_report("raspi3b-vc4-hetero: loaded bootcode.bin (%u bytes) "
+                    "from FAT%u boot partition at LBA %" PRIu64,
+                    boot_info.file_size, boot_info.fat32 ? 32 : 16,
+                    boot_info.partition_lba);
     }
 
     vpu_cc = CPU_GET_CLASS(s->vpu_cpu);
