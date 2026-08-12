@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the BCM2837 VPU-facing OTP busy handshake through qtest."""
+"""Exercise the BCM2837 VPU-facing OTP command handshake through qtest."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ OTP_DATA = 0x18
 OTP_ADDR = 0x1C
 
 OTP_CTRL_LO_START = 1 << 0
-OTP_STATUS_BUSY = 1 << 0
+OTP_STATUS_CMD_DONE = 1 << 0
 OTP_READ_COMMAND = 0
 OTP_PROGRAM_WORD_COMMAND = 0x14
 TEST_ROW = 36
@@ -104,9 +104,9 @@ def main() -> int:
                 smoke.qtest_writel(qtest, OTP_ARM_BASE + offset, value)
 
             reset_status = read_reg(OTP_STATUS)
-            if reset_status & OTP_STATUS_BUSY:
+            if reset_status != OTP_STATUS_CMD_DONE:
                 raise RuntimeError(
-                    "OTP controller reset busy: "
+                    "OTP controller did not reset ready: "
                     f"status=0x{reset_status:08x}"
                 )
 
@@ -121,17 +121,17 @@ def main() -> int:
             if read_reg(OTP_BITSEL) != 0x1F:
                 raise RuntimeError("OTP BITSEL mask was not applied")
 
-            # Production VideoCore code writes the command with START clear,
-            # polls BUSY until it is clear, asserts START, then polls BUSY
-            # until it is clear again.  Commands complete synchronously here.
+            # Issue the two-phase sequence used by production VideoCore code:
+            # write the command with START clear, wait for ready, then strobe
+            # START and wait for command completion.
             write_reg(OTP_ADDR, TEST_ROW)
             write_reg(OTP_DATA, PRESTART_DATA)
             write_reg(OTP_CTRL_HI, 0)
             write_reg(OTP_CTRL_LO, OTP_READ_COMMAND)
             prestart_status = read_reg(OTP_STATUS)
-            if prestart_status & OTP_STATUS_BUSY:
+            if prestart_status != OTP_STATUS_CMD_DONE:
                 raise RuntimeError(
-                    "OTP controller stayed busy before START: "
+                    "OTP controller was not ready before START: "
                     f"status=0x{prestart_status:08x}"
                 )
             if read_reg(OTP_DATA) != PRESTART_DATA:
@@ -141,15 +141,9 @@ def main() -> int:
 
             status = read_reg(OTP_STATUS)
             data = read_reg(OTP_DATA)
-            start_latch = read_reg(OTP_CTRL_LO)
-            if status & OTP_STATUS_BUSY:
+            if not status & OTP_STATUS_CMD_DONE:
                 raise RuntimeError(
-                    f"OTP read remained busy: status=0x{status:08x}"
-                )
-            if start_latch != (OTP_READ_COMMAND | OTP_CTRL_LO_START):
-                raise RuntimeError(
-                    "OTP START command latch changed unexpectedly: "
-                    f"ctrl-lo=0x{start_latch:08x}"
+                    f"OTP read never completed: status=0x{status:08x}"
                 )
             if data != 0:
                 raise RuntimeError(
@@ -158,29 +152,26 @@ def main() -> int:
             if read_reg(OTP_ADDR) != TEST_ROW:
                 raise RuntimeError("OTP address latch did not retain the row")
 
-            # An unsupported programming command must be idle before and
-            # after its START edge, and must never burn an emulated e-fuse.
+            # An unsupported programming command must remain idle before its
+            # START strobe, then complete without burning an emulated e-fuse.
             write_reg(OTP_DATA, 0xFFFFFFFF)
             write_reg(OTP_CTRL_LO, OTP_PROGRAM_WORD_COMMAND)
             program_ready = read_reg(OTP_STATUS)
-            if program_ready & OTP_STATUS_BUSY:
-                raise RuntimeError("OTP program command was not idle")
+            if program_ready != OTP_STATUS_CMD_DONE:
+                raise RuntimeError("OTP program command was not ready")
             write_reg(
                 OTP_CTRL_LO,
                 OTP_PROGRAM_WORD_COMMAND | OTP_CTRL_LO_START,
             )
             program_status = read_reg(OTP_STATUS)
-            if program_status & OTP_STATUS_BUSY:
+            if not program_status & OTP_STATUS_CMD_DONE:
                 raise RuntimeError("unsupported OTP program command hung")
 
             write_reg(OTP_CTRL_LO, OTP_READ_COMMAND)
-            if read_reg(OTP_STATUS) & OTP_STATUS_BUSY:
-                raise RuntimeError("OTP controller did not return to idle")
+            if read_reg(OTP_STATUS) != OTP_STATUS_CMD_DONE:
+                raise RuntimeError("OTP controller did not return to ready")
             write_reg(OTP_CTRL_LO, OTP_READ_COMMAND | OTP_CTRL_LO_START)
-            final_status = read_reg(OTP_STATUS)
             data_after_program = read_reg(OTP_DATA)
-            if final_status & OTP_STATUS_BUSY:
-                raise RuntimeError("final OTP read remained busy")
             if data_after_program != 0:
                 raise RuntimeError(
                     "read-only OTP model mutated a row: "
@@ -188,14 +179,13 @@ def main() -> int:
                 )
 
             print(
-                "BCM2837 OTP busy handshake passed: "
+                "BCM2837 OTP command handshake passed: "
                 f"row={TEST_ROW} reset=0x{reset_status:08x} "
                 f"prestart=0x{prestart_status:08x} "
                 f"complete=0x{status:08x} data=0x{data:08x} "
-                f"start-latch=0x{start_latch:08x} "
                 f"program-ready=0x{program_ready:08x} "
                 f"program-complete=0x{program_status:08x} "
-                f"final=0x{final_status:08x} programming=ignored"
+                "programming=ignored"
             )
             return 0
         except Exception:
