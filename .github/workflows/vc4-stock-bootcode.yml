@@ -55,10 +55,12 @@ jobs:
             scripts/vc4/raspi3-otp-read-smoke.py \
             scripts/vc4/raspi3-pm-image-smoke.py \
             scripts/vc4/raspi3-usb-phy-smoke.py \
+            scripts/vc4/raspi3-usb-phy-settle-smoke.py \
+            scripts/vc4/raspi3-sdhost-registers-smoke.py \
             scripts/vc4/raspi3-scalar-fpu-smoke.py \
             scripts/vc4/raspi3-pcrel48-smoke.py \
             scripts/vc4/raspi3-table-branch-smoke.py \
-            scripts/vc4/raspi3-btest-smoke.py \
+            scripts/vc4/raspi3-btest-zero-smoke.py \
             scripts/vc4/raspi3-vector80-delay-smoke.py \
             scripts/vc4/raspi3-vector48-delay-smoke.py \
             scripts/vc4/raspi3-cprman-sdc-smoke.py \
@@ -71,10 +73,12 @@ jobs:
             scripts/vc4/cprman-osccount-fixup.py \
             scripts/vc4/pm-image-fixup.py \
             scripts/vc4/usb-phy-fixup.py \
+            scripts/vc4/usb-phy-settle-fixup.py \
+            scripts/vc4/sdhost-registers-fixup.py \
             scripts/vc4/sdramc-init-fixup.py \
             scripts/vc4/pcrel48-fixup.py \
             scripts/vc4/table-branch-fixup.py \
-            scripts/vc4/btest-fixup.py \
+            scripts/vc4/btest-zero-fixup.py \
             scripts/vc4/vector80-delay-fixup.py \
             scripts/vc4/vector48-delay-fixup.py \
             scripts/vc4/stock-icount-fixup.py
@@ -90,11 +94,19 @@ jobs:
           else
             python3 scripts/vc4/pm-image-fixup.py
           fi
-          python3 scripts/vc4/usb-phy-fixup.py
+          if grep -q '#define BCM2835_GMDIOCSR' hw/usb/hcd-dwc2.c &&
+             grep -q 'uint16_t bcm2835_phy\[DWC2_BCM2835_PHY_REGS\]' hw/usb/hcd-dwc2.h &&
+             grep -q 'VMSTATE_UINT16_ARRAY_V(bcm2835_phy' hw/usb/hcd-dwc2.c; then
+            echo 'BCM2835 USB power and DWC2 PHY sideband support is already materialized.'
+          else
+            python3 scripts/vc4/usb-phy-fixup.py
+          fi
+          python3 scripts/vc4/usb-phy-settle-fixup.py
+          python3 scripts/vc4/sdhost-registers-fixup.py
           python3 scripts/vc4/sdramc-init-fixup.py
           python3 scripts/vc4/pcrel48-fixup.py
           python3 scripts/vc4/table-branch-fixup.py
-          python3 scripts/vc4/btest-fixup.py
+          python3 scripts/vc4/btest-zero-fixup.py
           python3 scripts/vc4/vector80-delay-fixup.py
           python3 scripts/vc4/vector48-delay-fixup.py
           python3 scripts/vc4/stock-icount-fixup.py
@@ -140,6 +152,17 @@ jobs:
           python3 scripts/vc4/raspi3-usb-phy-smoke.py \
             build/qemu-system-aarch64
 
+      - name: Validate BCM2835 USB PHY settle indication
+        run: |
+          python3 scripts/vc4/raspi3-usb-phy-settle-smoke.py \
+            build/qemu-system-aarch64 \
+            --bootcode /tmp/bootcode.bin
+
+      - name: Validate BCM2835 SDHOST register latches and reset values
+        run: |
+          python3 scripts/vc4/raspi3-sdhost-registers-smoke.py \
+            build/qemu-system-aarch64
+
       - name: Preserve synthetic SD boot-ROM regression at VPU 0x200
         run: |
           python3 scripts/vc4/raspi3-bootrom-0200-smoke.py \
@@ -160,9 +183,9 @@ jobs:
           python3 scripts/vc4/raspi3-table-branch-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Validate scalar VideoCore IV BTEST flag semantics
+      - name: Validate scalar VideoCore IV BTEST zero semantics
         run: |
-          python3 scripts/vc4/raspi3-btest-smoke.py \
+          python3 scripts/vc4/raspi3-btest-zero-smoke.py \
             build/qemu-system-aarch64
 
       - name: Validate discard-only vector80 settling delay
@@ -190,23 +213,47 @@ jobs:
           python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture next official bootcode barrier after BTEST repair
+      - name: Capture next official bootcode barrier after BTEST and bus fixes
         run: |
+          set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
             --seconds 10 \
             --icount-shift 10 \
-            --barrier-is-success
+            --barrier-is-success 2>&1 | tee /tmp/stock-bootcode.log
+          if grep -Eq \
+            'STOCK_BOOTCODE_BARRIER.*pc=0x00009820|STOCK_BOOTCODE_BARRIER.*pc=0x00007aca' \
+            /tmp/stock-bootcode.log; then
+            echo 'Known USB or SDHOST BTEST barrier remained after correction.' >&2
+            exit 1
+          fi
 
-      - name: Commit exact tested VideoCore IV BTEST semantics
+      - name: Commit exact tested BTEST, USB PHY, and SDHOST models
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
-          git add target/vc4/translate.c
+          start="$(git rev-parse HEAD)"
+
+          git add \
+            target/vc4/translate.c \
+            hw/usb/hcd-dwc2.h \
+            hw/usb/hcd-dwc2.c
           if git diff --cached --quiet; then
-            echo 'VideoCore IV BTEST semantics were already materialized.'
+            echo 'BTEST zero semantics and USB PHY settle state were already materialized.'
           else
-            git commit -m "target/vc4: fix BTEST flag semantics"
+            git commit -m "target/vc4: restore BTEST zero semantics and USB settle"
+          fi
+
+          git add \
+            include/hw/sd/bcm2835_sdhost.h \
+            hw/sd/bcm2835_sdhost.c
+          if git diff --cached --quiet; then
+            echo 'BCM2835 SDHOST register latches were already materialized.'
+          else
+            git commit -m "hw/sd: complete BCM2835 SDHOST register latches"
+          fi
+
+          if [ "$(git rev-parse HEAD)" != "$start" ]; then
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
