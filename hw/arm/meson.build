@@ -116,6 +116,7 @@ arm_common_ss.add(files('boot.c'))
 # Heterogeneous TCG regressions and VC4-first BCM2837 bring-up.
 arm_common_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', if_true: files(
   'vc4_arm_release_smoke.c',
+  'vc4_raspi3_bootrom.c',
   'vc4_raspi3_hetero.c',
 ))
 
