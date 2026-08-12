@@ -44,16 +44,18 @@ jobs:
           echo '=== official bootcode identity ==='
           wc -c /tmp/bootcode.bin
           sha256sum /tmp/bootcode.bin
-          echo '=== first 64 bytes ==='
-          od -Ax -tx1 -N64 /tmp/bootcode.bin
+          echo '=== ROM padding and entry bytes ==='
+          od -Ax -tx1 -j 480 -N96 /tmp/bootcode.bin
 
       - name: Validate source and scripts
         run: |
           git diff --check origin/agent/vc4-raspi3-bootrom-fat...HEAD
           python3 -m py_compile \
             scripts/vc4/raspi3-bootrom-fat-smoke.py \
+            scripts/vc4/raspi3-bootrom-0200-smoke.py \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
-            scripts/vc4/raspi3-stock-bootcode-state.py
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py
 
       - name: Configure linked guest targets
         run: |
@@ -79,14 +81,14 @@ jobs:
           fi
           echo 'Heterogeneous AArch64/VC4 build completed successfully.'
 
-      - name: Preserve synthetic SD boot-ROM regression
+      - name: Preserve synthetic SD boot-ROM regression at VPU 0x200
         run: |
-          python3 scripts/vc4/raspi3-bootrom-fat-smoke.py \
+          python3 scripts/vc4/raspi3-bootrom-0200-smoke.py \
             build/qemu-system-aarch64
 
       - name: Capture live state at first official bootcode barrier
         run: |
-          python3 scripts/vc4/raspi3-stock-bootcode-state.py \
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
             --barrier-is-success
