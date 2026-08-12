@@ -63,11 +63,11 @@ class QMP:
             raise RuntimeError(f"QMP {command} failed: {message['error']}")
         return message.get("return")
 
-    def hmp(self, command: str) -> str:
-        result = self.execute(
-            "human-monitor-command",
-            {"command-line": command},
-        )
+    def hmp(self, command: str, *, cpu_index: int | None = None) -> str:
+        arguments: dict[str, Any] = {"command-line": command}
+        if cpu_index is not None:
+            arguments["cpu-index"] = cpu_index
+        result = self.execute("human-monitor-command", arguments)
         return "" if result is None else str(result)
 
     def close(self) -> None:
@@ -106,12 +106,15 @@ def find_vc4_cpu(cpus: Any) -> tuple[int, list[str]]:
     if not isinstance(cpus, list):
         raise RuntimeError(f"query-cpus-fast returned {cpus!r}")
 
-    qom_types: list[str] = []
+    qom_types = [
+        str(cpu.get("qom-type", ""))
+        for cpu in cpus
+        if isinstance(cpu, dict)
+    ]
     for cpu in cpus:
         if not isinstance(cpu, dict):
             continue
         qom_type = str(cpu.get("qom-type", ""))
-        qom_types.append(qom_type)
         if "vc4" in qom_type.lower():
             index = cpu.get("cpu-index")
             if not isinstance(index, int):
@@ -207,8 +210,7 @@ def main() -> int:
 
             cpus = qmp.execute("query-cpus-fast")
             vpu_index, qom_types = find_vc4_cpu(cpus)
-            qmp.hmp(f"cpu {vpu_index}")
-            registers = qmp.hmp("info registers")
+            registers = qmp.hmp("info registers", cpu_index=vpu_index)
             cpu_summary = qmp.hmp("info cpus")
 
             pc_match = PC_RE.search(registers)
@@ -216,12 +218,16 @@ def main() -> int:
             if not pc_match:
                 raise RuntimeError(
                     "VC4 info registers did not contain a PC: "
-                    f"{registers!r}"
+                    f"cpu-index={vpu_index} qom-types={qom_types!r} "
+                    f"registers={registers!r}"
                 )
 
             pc = int(pc_match.group(1), 16)
             sr = int(sr_match.group(1), 16) if sr_match else 0
-            memory = qmp.hmp(f"x /16bx 0x{pc:x}")
+            memory = qmp.hmp(
+                f"x /16bx 0x{pc:x}",
+                cpu_index=vpu_index,
+            )
             if 0 <= pc < len(bootcode):
                 context = probe.context_bytes(bootcode, pc, 32)
             else:
