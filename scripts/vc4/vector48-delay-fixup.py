@@ -5,7 +5,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-MARKER = "Production bootcode.bin follows the vector80 delay with this exact vector48 word."
+MATERIALIZED = (
+    "static bool vc4_decode_vector48_delay(uint16_t i1, uint16_t i2,"
+)
+VECTOR80_HELPER = (
+    "static bool vc4_decode_vector80_delay(uint16_t i1, uint16_t i2,"
+)
 COMMENT_OLD = ''' * file remains unimplemented; one exact side-effect-free vector80 delay word
  * used by production bootcode.bin is accepted rather than guessed broadly.
 '''
@@ -61,11 +66,12 @@ def main() -> int:
     path = Path("target/vc4/translate.c")
     text = path.read_text(encoding="utf-8")
 
-    if MARKER in text:
+    if MATERIALIZED in text:
         print("Exact VideoCore IV vector48 delay word is already materialized.")
         return 0
 
-    if "Production bootcode.bin uses this exact discard-only vector80 word." not in text:
+    # Depend on the generated helper rather than wording in its comment.
+    if VECTOR80_HELPER not in text:
         raise RuntimeError("vector80 delay support must be materialized first")
 
     text = replace_once(text, COMMENT_OLD, COMMENT_NEW, "file comment")

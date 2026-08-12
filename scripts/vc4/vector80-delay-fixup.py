@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-MARKER = "Production bootcode.bin uses this exact discard-only vector80 word."
+MATERIALIZED = (
+    "static bool vc4_decode_vector80_delay(uint16_t i1, uint16_t i2,"
+)
 COMMENT_OLD = ''' * The scalar decoder follows the public VideoCore IV VPU encoding recovered
  * by the Raspberry Pi reverse-engineering community.  The vector ISA is
  * deliberately rejected for now rather than guessed.
@@ -77,7 +79,9 @@ def main() -> int:
     path = Path("target/vc4/translate.c")
     text = path.read_text(encoding="utf-8")
 
-    if MARKER in text:
+    # Detect the generated C structure, not prose in its explanatory comment.
+    # This remains stable when later tranches revise that comment.
+    if MATERIALIZED in text:
         print("Exact VideoCore IV vector80 delay word is already materialized.")
         return 0
 
