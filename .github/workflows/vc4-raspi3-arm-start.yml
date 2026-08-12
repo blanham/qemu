@@ -1,0 +1,98 @@
+name: Raspberry Pi 3 VC4-controlled ARM start
+
+on:
+  push:
+    branches:
+      - agent/vc4-raspi3-arm-start
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-execute:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize BCM2837 VideoCore ARM-start path
+        run: |
+          python3 -m py_compile scripts/vc4/raspi3-arm-start-bootstrap.py
+          python3 -m py_compile scripts/vc4/raspi3-arm-start-smoke.py
+          python3 scripts/vc4/raspi3-arm-start-bootstrap.py
+          chmod +x scripts/vc4/raspi3-arm-start-smoke.py
+          git diff --check
+
+      - name: Configure linked and native guest targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build AArch64 plus linked VC4 and native VC4
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-raspi3-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '=== compiler and linker diagnostics ==='
+            grep -n -E 'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-raspi3-build.log | tail -n 200 || true
+            echo '=== final 220 build lines ==='
+            tail -n 220 /tmp/vc4-raspi3-build.log
+            exit "$rc"
+          fi
+          echo 'Raspberry Pi 3 heterogeneous build completed successfully.'
+
+      - name: Verify board and device registration
+        run: |
+          build/qemu-system-aarch64 -machine help | tee /tmp/aarch64-machines.txt
+          grep -q 'raspi3b-vc4' /tmp/aarch64-machines.txt
+          grep -q 'vc4-hetero-smoke' /tmp/aarch64-machines.txt
+          grep -q 'vc4-arm-release-smoke' /tmp/aarch64-machines.txt
+          grep -R -n -E 'bcm2835-arm-control|raspi3b-vc4|R_PROC' \
+            hw include build/build.ninja | head -n 160
+
+      - name: Regress linked-frontend isolation
+        run: |
+          python3 scripts/vc4/hetero-smoke.py build/qemu-system-aarch64
+
+      - name: Regress synthetic VC4-to-ARM release
+        run: |
+          python3 scripts/vc4/arm-release-smoke.py build/qemu-system-aarch64
+
+      - name: Execute Raspberry Pi 3 hardware-register ARM start
+        run: |
+          python3 scripts/vc4/raspi3-arm-start-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Preserve the green BCM2837 implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No generated implementation changes to commit."
+            exit 0
+          fi
+          git commit -m "hw/arm: let VC4 start BCM2837 Cortex-A53"
+          git push origin HEAD:${GITHUB_REF_NAME}
