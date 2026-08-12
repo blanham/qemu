@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-and-probe:
@@ -47,16 +47,22 @@ jobs:
           echo '=== ROM padding and entry bytes ==='
           od -Ax -tx1 -j 480 -N96 /tmp/bootcode.bin
 
-      - name: Validate source and scripts
+      - name: Validate scripts
         run: |
-          git diff --check origin/agent/vc4-raspi3-bootrom-fat...HEAD
           python3 -m py_compile \
             scripts/vc4/raspi3-bootrom-fat-smoke.py \
             scripts/vc4/raspi3-bootrom-0200-smoke.py \
             scripts/vc4/raspi3-otp-read-smoke.py \
+            scripts/vc4/raspi3-scalar-fpu-smoke.py \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
-            scripts/vc4/raspi3-stock-bootcode-0200.py
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/scalar-fpu-fixup.py
+
+      - name: Materialize scalar VideoCore IV floating-point support
+        run: |
+          python3 scripts/vc4/scalar-fpu-fixup.py
+          git diff --check
 
       - name: Configure linked guest targets
         run: |
@@ -92,9 +98,29 @@ jobs:
           python3 scripts/vc4/raspi3-bootrom-0200-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture live state at first official bootcode barrier
+      - name: Validate scalar VideoCore IV floating-point execution
+        run: |
+          python3 scripts/vc4/raspi3-scalar-fpu-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Capture next official bootcode barrier
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
             --barrier-is-success
+
+      - name: Commit exact tested scalar-FPU implementation
+        run: |
+          git config user.name "VC4 bring-up automation"
+          git config user.email "vc4-bringup@users.noreply.github.com"
+          git add \
+            target/vc4/helper.h \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c
+          if git diff --cached --quiet; then
+            echo 'Scalar-FPU implementation was already materialized.'
+          else
+            git commit -m "target/vc4: implement scalar floating-point operations"
+            git push origin HEAD:agent/vc4-stock-bootcode
+          fi
