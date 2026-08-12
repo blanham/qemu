@@ -53,6 +53,7 @@ jobs:
             scripts/vc4/raspi3-bootrom-fat-smoke.py \
             scripts/vc4/raspi3-bootrom-0200-smoke.py \
             scripts/vc4/raspi3-otp-read-smoke.py \
+            scripts/vc4/raspi3-pm-image-smoke.py \
             scripts/vc4/raspi3-scalar-fpu-smoke.py \
             scripts/vc4/raspi3-pcrel48-smoke.py \
             scripts/vc4/raspi3-table-branch-smoke.py \
@@ -62,6 +63,7 @@ jobs:
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
             scripts/vc4/cprman-sdc-handshake-fixup.py \
+            scripts/vc4/pm-image-fixup.py \
             scripts/vc4/sdramc-init-fixup.py \
             scripts/vc4/pcrel48-fixup.py \
             scripts/vc4/table-branch-fixup.py \
@@ -70,6 +72,7 @@ jobs:
       - name: Materialize boot-critical hardware, ISA, and probe contracts
         run: |
           python3 scripts/vc4/cprman-sdc-handshake-fixup.py
+          python3 scripts/vc4/pm-image-fixup.py
           python3 scripts/vc4/sdramc-init-fixup.py
           python3 scripts/vc4/pcrel48-fixup.py
           python3 scripts/vc4/table-branch-fixup.py
@@ -106,6 +109,11 @@ jobs:
           python3 scripts/vc4/raspi3-otp-read-smoke.py \
             build/qemu-system-aarch64
 
+      - name: Validate PM_IMAGE power-domain handshake
+        run: |
+          python3 scripts/vc4/raspi3-pm-image-smoke.py \
+            build/qemu-system-aarch64
+
       - name: Preserve synthetic SD boot-ROM regression at VPU 0x200
         run: |
           python3 scripts/vc4/raspi3-bootrom-0200-smoke.py \
@@ -136,7 +144,7 @@ jobs:
           python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture next official bootcode barrier after timed waits
+      - name: Capture next official bootcode barrier after image power-up
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
@@ -145,14 +153,17 @@ jobs:
             --icount-shift 10 \
             --barrier-is-success
 
-      - name: Commit exact tested probe timing contract
+      - name: Commit exact tested PM_IMAGE power contract
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
-          git add scripts/vc4/raspi3-stock-bootcode-state.py
+          git add \
+            hw/misc/bcm2835_powermgt.c \
+            include/hw/misc/bcm2835_powermgt.h \
+            scripts/vc4/raspi3-stock-bootcode-state.py
           if git diff --cached --quiet; then
-            echo 'Deterministic stock-probe timing was already materialized.'
+            echo 'PM_IMAGE and deterministic probe contracts were already materialized.'
           else
-            git commit -m "tests/vc4: drive stock waits with virtual time"
+            git commit -m "hw/misc: implement BCM2835 PM_IMAGE handshake"
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
