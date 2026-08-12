@@ -49,6 +49,7 @@ jobs:
           python3 scripts/vc4/arm-release-bootstrap.py
           python3 scripts/vc4/arm-release-v2-fixup.py
           python3 scripts/vc4/arm-release-power-fixup.py
+          python3 scripts/vc4/arm-release-observe-fixup.py
           chmod +x scripts/vc4/arm-release-smoke.py
           git diff --check
 
