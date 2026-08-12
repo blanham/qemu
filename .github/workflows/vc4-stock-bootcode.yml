@@ -64,14 +64,17 @@ jobs:
             scripts/vc4/cprman-sdc-handshake-fixup.py \
             scripts/vc4/sdramc-init-fixup.py \
             scripts/vc4/pcrel48-fixup.py \
-            scripts/vc4/table-branch-fixup.py
+            scripts/vc4/table-branch-fixup.py \
+            scripts/vc4/stock-icount-fixup.py
 
-      - name: Materialize boot-critical hardware and scalar ISA contracts
+      - name: Materialize boot-critical hardware, ISA, and probe contracts
         run: |
           python3 scripts/vc4/cprman-sdc-handshake-fixup.py
           python3 scripts/vc4/sdramc-init-fixup.py
           python3 scripts/vc4/pcrel48-fixup.py
           python3 scripts/vc4/table-branch-fixup.py
+          python3 scripts/vc4/stock-icount-fixup.py
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-state.py
           git diff --check
 
       - name: Configure linked guest targets
@@ -138,17 +141,18 @@ jobs:
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
-            --seconds 30 \
+            --seconds 10 \
+            --icount-shift 10 \
             --barrier-is-success
 
-      - name: Commit exact tested table-branch implementation
+      - name: Commit exact tested probe timing contract
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
-          git add target/vc4/translate.c
+          git add scripts/vc4/raspi3-stock-bootcode-state.py
           if git diff --cached --quiet; then
-            echo 'Scalar TBB/TBH table branches were already materialized.'
+            echo 'Deterministic stock-probe timing was already materialized.'
           else
-            git commit -m "target/vc4: decode scalar table branches"
+            git commit -m "tests/vc4: drive stock waits with virtual time"
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
