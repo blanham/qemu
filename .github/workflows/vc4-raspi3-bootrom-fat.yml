@@ -1,0 +1,92 @@
+name: Raspberry Pi VC4 FAT boot-ROM chain
+
+on:
+  push:
+    branches:
+      - agent/vc4-raspi3-bootrom-fat
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Validate source and regression scripts
+        run: |
+          git diff --check origin/agent/vc4-raspi3-hetero-power...HEAD
+          python3 -m py_compile \
+            scripts/vc4/hetero-smoke.py \
+            scripts/vc4/arm-release-smoke.py \
+            scripts/vc4/raspi3-hetero-power-smoke.py \
+            scripts/vc4/raspi3-bootrom-fat-smoke.py
+
+      - name: Configure linked and native guest targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build linked AArch64 and native VC4 executables
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '=== compiler and linker diagnostics ==='
+            grep -n -E 'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-build.log | tail -n 240 || true
+            echo '=== final 260 build lines ==='
+            tail -n 260 /tmp/vc4-build.log
+            exit "$rc"
+          fi
+          echo 'Heterogeneous AArch64/VC4 build completed successfully.'
+
+      - name: Verify heterogeneous machine registration
+        run: |
+          build/qemu-system-aarch64 -machine help | tee /tmp/aarch64-machines.txt
+          grep -q 'vc4-hetero-smoke' /tmp/aarch64-machines.txt
+          grep -q 'vc4-arm-release-smoke' /tmp/aarch64-machines.txt
+          grep -q 'raspi3b-vc4-hetero' /tmp/aarch64-machines.txt
+
+      - name: Execute linked-frontend collision regression
+        run: |
+          python3 scripts/vc4/hetero-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Execute abstract VC4-to-ARM release regression
+        run: |
+          python3 scripts/vc4/arm-release-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Execute real-map BCM2837 PM_PROC regression
+        run: |
+          python3 scripts/vc4/raspi3-hetero-power-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Execute SD FAT boot-ROM regression
+        run: |
+          python3 scripts/vc4/raspi3-bootrom-fat-smoke.py \
+            build/qemu-system-aarch64
