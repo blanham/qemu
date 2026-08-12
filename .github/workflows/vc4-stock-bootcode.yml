@@ -55,17 +55,20 @@ jobs:
             scripts/vc4/raspi3-bootrom-0200-smoke.py \
             scripts/vc4/raspi3-otp-read-smoke.py \
             scripts/vc4/raspi3-scalar-fpu-smoke.py \
+            scripts/vc4/raspi3-cprman-sdc-smoke.py \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
             scripts/vc4/repair-scalar-fpu-fixup.py \
             scripts/vc4/scalar-fpu-fixup.py \
-            scripts/vc4/scalar-fpu-pc-fixup.py
+            scripts/vc4/scalar-fpu-pc-fixup.py \
+            scripts/vc4/cprman-sdc-handshake-fixup.py
 
-      - name: Materialize scalar VideoCore IV floating-point support
+      - name: Materialize VC4 scalar FPU and SDRAM-clock handshake
         run: |
           python3 scripts/vc4/scalar-fpu-fixup.py
           python3 scripts/vc4/scalar-fpu-pc-fixup.py
+          python3 scripts/vc4/cprman-sdc-handshake-fixup.py
           git diff --check
 
       - name: Configure linked guest targets
@@ -107,6 +110,11 @@ jobs:
           python3 scripts/vc4/raspi3-scalar-fpu-smoke.py \
             build/qemu-system-aarch64
 
+      - name: Validate CPRMAN SDRAM-clock UPDATE and ACCPT
+        run: |
+          python3 scripts/vc4/raspi3-cprman-sdc-smoke.py \
+            build/qemu-system-aarch64
+
       - name: Capture next official bootcode barrier
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -114,18 +122,17 @@ jobs:
             /tmp/bootcode.bin \
             --barrier-is-success
 
-      - name: Commit exact tested scalar-FPU implementation
+      - name: Commit exact tested clock-handshake implementation
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
           git add \
-            scripts/vc4/scalar-fpu-fixup.py \
-            target/vc4/helper.h \
-            target/vc4/op_helper.c \
-            target/vc4/translate.c
+            scripts/vc4/cprman-sdc-handshake-fixup.py \
+            include/hw/misc/bcm2835_cprman_internals.h \
+            hw/misc/bcm2835_cprman.c
           if git diff --cached --quiet; then
-            echo 'Scalar-FPU implementation was already materialized.'
+            echo 'SDRAM-clock handshake was already materialized.'
           else
-            git commit -m "target/vc4: implement scalar floating-point operations"
+            git commit -m "hw/misc: model BCM2835 SDRAM clock update handshake"
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
