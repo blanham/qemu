@@ -537,6 +537,18 @@ static void cprman_write(void *opaque, hwaddr offset,
 
     value &= ~R_CPRMAN_PASSWORD_MASK;
 
+    /*
+     * CM_SDCCTL is not a plain CM_CLOCKx_CTL register.  UPDATE asks the
+     * hardware to atomically accept a new SDRAM clock configuration and
+     * ACCPT reports completion.  Firmware performs both edges as polling
+     * handshakes.  The clock graph changes synchronously in QEMU, so mirror
+     * UPDATE into the read-only ACCPT bit before publishing the register.
+     */
+    if (idx == R_CM_SDCCTL) {
+        value = FIELD_DP32(value, CM_SDCCTL, ACCPT,
+                           FIELD_EX32(value, CM_SDCCTL, UPDATE));
+    }
+
     trace_bcm2835_cprman_write(offset, value);
     s->regs[idx] = value;
 
