@@ -47,9 +47,8 @@ jobs:
           echo '=== ROM padding and entry bytes ==='
           od -Ax -tx1 -j 480 -N96 /tmp/bootcode.bin
 
-      - name: Repair and validate scripts
+      - name: Validate scripts
         run: |
-          python3 scripts/vc4/repair-scalar-fpu-fixup.py
           python3 -m py_compile \
             scripts/vc4/raspi3-bootrom-fat-smoke.py \
             scripts/vc4/raspi3-bootrom-0200-smoke.py \
@@ -59,15 +58,10 @@ jobs:
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
-            scripts/vc4/repair-scalar-fpu-fixup.py \
-            scripts/vc4/scalar-fpu-fixup.py \
-            scripts/vc4/scalar-fpu-pc-fixup.py \
             scripts/vc4/cprman-sdc-handshake-fixup.py
 
-      - name: Materialize VC4 scalar FPU and SDRAM-clock handshake
+      - name: Materialize SDRAM-clock handshake
         run: |
-          python3 scripts/vc4/scalar-fpu-fixup.py
-          python3 scripts/vc4/scalar-fpu-pc-fixup.py
           python3 scripts/vc4/cprman-sdc-handshake-fixup.py
           git diff --check
 
