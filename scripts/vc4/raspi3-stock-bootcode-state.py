@@ -36,7 +36,11 @@ def load_probe_module() -> ModuleType:
 class QMP:
     def __init__(self, path: Path) -> None:
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(str(path))
+        try:
+            self.sock.connect(str(path))
+        except OSError:
+            self.sock.close()
+            raise
         self.file = self.sock.makefile("rwb", buffering=0)
         greeting = self._read_message()
         if "QMP" not in greeting:
@@ -75,16 +79,24 @@ class QMP:
         self.sock.close()
 
 
-def wait_for_socket(path: Path, proc: subprocess.Popen[bytes],
-                    timeout: float) -> None:
+def wait_for_qmp(path: Path, proc: subprocess.Popen[bytes],
+                 timeout: float) -> QMP:
+    """Wait until QEMU is accepting QMP connections, not merely bound."""
     deadline = time.monotonic() + timeout
+    last_error: OSError | None = None
+
     while time.monotonic() < deadline:
-        if path.exists():
-            return
         if proc.poll() is not None:
             raise RuntimeError(f"QEMU exited early with status {proc.returncode}")
-        time.sleep(0.01)
-    raise TimeoutError(f"socket did not appear: {path}")
+        try:
+            return QMP(path)
+        except (FileNotFoundError, ConnectionRefusedError) as exc:
+            last_error = exc
+            time.sleep(0.01)
+
+    raise TimeoutError(
+        f"QMP socket did not accept connections: {path}"
+    ) from last_error
 
 
 def flatten(text: str) -> str:
@@ -206,8 +218,7 @@ def main() -> int:
 
         qmp: QMP | None = None
         try:
-            wait_for_socket(qmp_path, proc, 10.0)
-            qmp = QMP(qmp_path)
+            qmp = wait_for_qmp(qmp_path, proc, 10.0)
             deadline = time.monotonic() + args.seconds
             illegal: re.Match[str] | None = None
 

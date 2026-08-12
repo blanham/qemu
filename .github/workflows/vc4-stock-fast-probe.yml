@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - agent/vc4-stock-bootcode
-    paths:
-      - .github/workflows/vc4-stock-fast-probe.yml
   workflow_dispatch:
 
 permissions:
@@ -35,6 +33,13 @@ jobs:
             "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
           echo '4245ec23b58158dc3e55f3e065eb4ecc0c0705d76c8db506e9f824941feee32e  /tmp/bootcode.bin' \
             | sha256sum --check --strict
+
+      - name: Validate probe scripts
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py
 
       - name: Configure and build heterogeneous system emulator
         run: |
