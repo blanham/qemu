@@ -55,14 +55,17 @@ jobs:
             scripts/vc4/raspi3-otp-read-smoke.py \
             scripts/vc4/raspi3-scalar-fpu-smoke.py \
             scripts/vc4/raspi3-cprman-sdc-smoke.py \
+            scripts/vc4/raspi3-sdramc-init-smoke.py \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
-            scripts/vc4/cprman-sdc-handshake-fixup.py
+            scripts/vc4/cprman-sdc-handshake-fixup.py \
+            scripts/vc4/sdramc-init-fixup.py
 
-      - name: Materialize SDRAM-clock handshake
+      - name: Materialize SDRAM clock and controller contracts
         run: |
           python3 scripts/vc4/cprman-sdc-handshake-fixup.py
+          python3 scripts/vc4/sdramc-init-fixup.py
           git diff --check
 
       - name: Configure linked guest targets
@@ -109,6 +112,11 @@ jobs:
           python3 scripts/vc4/raspi3-cprman-sdc-smoke.py \
             build/qemu-system-aarch64
 
+      - name: Validate SDRAM controller and PHY initialization
+        run: |
+          python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
+            build/qemu-system-aarch64
+
       - name: Capture next official bootcode barrier
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -116,17 +124,25 @@ jobs:
             /tmp/bootcode.bin \
             --barrier-is-success
 
-      - name: Commit exact tested clock-handshake implementation
+      - name: Commit exact tested SDRAM initialization implementation
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
           git add \
             scripts/vc4/cprman-sdc-handshake-fixup.py \
+            scripts/vc4/sdramc-init-fixup.py \
+            scripts/vc4/raspi3-sdramc-init-smoke.py \
             include/hw/misc/bcm2835_cprman_internals.h \
-            hw/misc/bcm2835_cprman.c
+            include/hw/misc/bcm2835_sdramc.h \
+            include/hw/arm/bcm2835_peripherals.h \
+            include/hw/raspi/raspi_platform.h \
+            hw/misc/bcm2835_cprman.c \
+            hw/misc/bcm2835_sdramc.c \
+            hw/misc/meson.build \
+            hw/arm/bcm2835_peripherals.c
           if git diff --cached --quiet; then
-            echo 'SDRAM-clock handshake was already materialized.'
+            echo 'SDRAM initialization contract was already materialized.'
           else
-            git commit -m "hw/misc: model BCM2835 SDRAM clock update handshake"
+            git commit -m "hw/misc: model BCM2835 SDRAM initialization contract"
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
