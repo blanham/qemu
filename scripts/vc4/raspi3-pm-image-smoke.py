@@ -105,7 +105,9 @@ def main() -> int:
                 )
 
             def write_image(value: int, *, password: bool = True) -> None:
-                payload = value | (PM_PASSWORD if password else 0)
+                payload = value & 0x00FFFFFF
+                if password:
+                    payload |= PM_PASSWORD
                 smoke.qtest_writel(
                     qtest,
                     PM_ARM_BASE + PM_IMAGE,
