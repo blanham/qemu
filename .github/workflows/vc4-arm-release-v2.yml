@@ -69,6 +69,7 @@ jobs:
               raise SystemExit("unexpected residual TCG fixup")
           PY
           python3 scripts/vc4/arm-release-observe-fixup.py
+          python3 scripts/vc4/arm-release-tcg-debug-fixup.py
           chmod +x scripts/vc4/arm-release-smoke.py
           git diff --check
 
