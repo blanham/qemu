@@ -1112,6 +1112,23 @@ static bool vc4_decode_scalar48(DisasContext *ctx, uint16_t i1,
         return true;
     }
 
+    /*
+     * 48-bit PC-relative load/store uses short0, short2, short1 physical
+     * halfword order.  i2 therefore holds offset bits 15:0 while i3 holds
+     * the fixed PC selector in bits 15:11 and offset bits 26:16.
+     */
+    if ((i1 & 0xff00) == 0xe700 && (i3 & 0xf800) == 0xf800) {
+        bool store = (i1 & 0x20) != 0;
+
+        format = (i1 >> 6) & 3;
+        rd = i1 & 0x1f;
+        raw = i2 | ((uint32_t)(i3 & 0x7ff) << 16);
+        offset = vc4_sext(raw, 0x04000000);
+        vc4_gen_load_store_offset(ctx, 14, store, format, rd,
+                                  VC4_REG_PC, offset, false, false);
+        return true;
+    }
+
     if ((i1 & 0xfc00) == 0xec00) {
         rs = (i1 >> 5) & 0x1f;
         rd = i1 & 0x1f;
