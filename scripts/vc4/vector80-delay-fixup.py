@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Materialize the side-effect-free VideoCore IV vector80 delay idiom."""
+"""Materialize the exact side-effect-free VideoCore IV vector80 delay idiom."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-MARKER = "A discard-only vector ALU instruction has no architectural result."
+MARKER = "Production bootcode.bin uses this exact discard-only vector80 word."
 COMMENT_OLD = ''' * The scalar decoder follows the public VideoCore IV VPU encoding recovered
  * by the Raspberry Pi reverse-engineering community.  The vector ISA is
  * deliberately rejected for now rather than guessed.
 '''
 COMMENT_NEW = ''' * The scalar decoder follows the public VideoCore IV VPU encoding recovered
  * by the Raspberry Pi reverse-engineering community.  The vector register
- * file remains unimplemented; one verified side-effect-free vector80 delay
- * idiom is accepted rather than treating the entire vector ISA as scalar.
+ * file remains unimplemented; one exact side-effect-free vector80 delay word
+ * used by production bootcode.bin is accepted rather than guessed broadly.
 '''
 HELPER_ANCHOR = '''static void vc4_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
 '''
@@ -21,32 +21,23 @@ HELPER = r'''static bool vc4_decode_vector80_delay(uint16_t i1, uint16_t i2,
                                       uint16_t i3, uint16_t i4,
                                       uint16_t i5)
 {
-    unsigned width = (i1 >> 9) & 1;
-    unsigned op = (i1 >> 3) & 0x3f;
-    unsigned repeat = i1 & 7;
-    unsigned dst = i2 >> 6;
-    unsigned src_a = ((i2 & 0x3f) << 4) | (i3 >> 12);
-    bool set_flags = (i3 & 0x0800) != 0;
-    bool immediate_b = (i3 & 0x0400) != 0;
-    unsigned predicate = i5 >> 13;
-    unsigned scalar_update = (i5 >> 6) & 0x7f;
-
     /*
-     * A discard-only vector ALU instruction has no architectural result.
-     * Production bootcode.bin uses v16mov REP32 with both D and A mapped to
-     * the discard/unused encoding after a DBUS reset write.  B and its
-     * addressing modifiers are read-only, while SETF, vector predication,
-     * accumulator and scalar-reduction updates are all disabled.
+     * Production bootcode.bin uses this exact discard-only vector80 word
+     * immediately after writing the DBUS reset command:
      *
-     * Accept only that narrow delay class.  The vector register file and all
-     * vector instructions with visible state remain deliberately unsupported.
+     *     05 fc 38 e0 00 04 c0 f3 00 00
+     *
+     * The public reverse-engineered encoding describes it as a 16-bit vector
+     * MOV, REP32, with D mapped to discard, A mapped to unused, and B supplied
+     * by an immediate.  SETF, vector predication, accumulator updates, and
+     * scalar reductions are disabled, so it has no architectural result and
+     * serves only as a hardware-settling delay.
+     *
+     * Accept only the production word.  The vector register file and every
+     * vector instruction with visible state remain deliberately unsupported.
      */
-    (void)i4;
-    return (i1 & 0xfc00) == 0xfc00 &&
-           width == 0 && op == 0 && repeat == 5 &&
-           dst == 0x380 && src_a == 0x380 &&
-           !set_flags && !immediate_b &&
-           predicate == 0 && scalar_update == 0;
+    return i1 == 0xfc05 && i2 == 0xe038 && i3 == 0x0400 &&
+           i4 == 0xf3c0 && i5 == 0x0000;
 }
 
 '''
@@ -87,17 +78,18 @@ def main() -> int:
     text = path.read_text(encoding="utf-8")
 
     if MARKER in text:
-        print("VideoCore IV vector80 delay decoding is already materialized.")
+        print("Exact VideoCore IV vector80 delay word is already materialized.")
         return 0
 
     text = replace_once(text, COMMENT_OLD, COMMENT_NEW, "file comment")
     text = replace_once(text, HELPER_ANCHOR, HELPER + HELPER_ANCHOR,
                         "vector80 helper insertion")
-    text = replace_once(text, DECL_OLD, DECL_NEW, "translator halfword declaration")
+    text = replace_once(text, DECL_OLD, DECL_NEW,
+                        "translator halfword declaration")
     text = replace_once(text, DISPATCH_OLD, DISPATCH_NEW,
                         "vector instruction dispatch")
     path.write_text(text, encoding="utf-8")
-    print("Materialized discard-only VideoCore IV vector80 delay decoding.")
+    print("Materialized exact discard-only VideoCore IV vector80 delay word.")
     return 0
 
 

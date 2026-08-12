@@ -17,7 +17,8 @@ EXACT_PC = 0x00007754
 RESULT_ADDR = 0x00047000
 
 # Stock bootcode.bin at firmware commit 3d301dd924bcd758a4c8cb19fe8531031f033f43.
-EXACT_INSN = bytes.fromhex("05 fc 38 e0 00 00 4c 0f 30 00")
+# Little-endian halfwords: fc05 e038 0400 f3c0 0000.
+EXACT_INSN = bytes.fromhex("05 fc 38 e0 00 04 c0 f3 00 00")
 
 MARKER = 0x56383044  # "V80D"
 R0_SENTINEL = 0x00102030
@@ -188,11 +189,11 @@ def main() -> int:
                 )
 
             print(
-                "VideoCore IV discard-only vector80 delay passed: "
+                "VideoCore IV exact discard-only vector80 delay passed: "
                 f"cpus={len(qom_types)} arm={arm_count} vc4={vc4_count} "
                 f"stock-pc=0x{EXACT_PC:08x} "
                 f"bytes={EXACT_INSN.hex()} "
-                "decode=v16mov-discard-rep32 "
+                "decode=v16mov-discard-rep32-immediate "
                 f"r0=0x{observed[1]:08x} "
                 f"r12=0x{observed[2]:08x} "
                 f"r13=0x{observed[3]:08x}"
