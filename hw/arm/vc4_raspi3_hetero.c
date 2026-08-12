@@ -156,7 +156,7 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     VC4Raspi3HeteroMachineState *s =
         VC4_RASPI3_HETERO_MACHINE(machine);
     BCM283XBaseState *soc = &s->soc.parent_obj;
-    BCM2835PeripheralState *peripherals = &soc->peripherals;
+    BCM2835PeripheralState *peripherals = &s->soc.peripherals;
     BCMSocPeripheralBaseState *ps =
         BCM_SOC_PERIPHERALS_BASE(peripherals);
     MemoryRegion *sysmem = get_system_memory();
