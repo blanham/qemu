@@ -52,7 +52,8 @@ jobs:
           git diff --check origin/agent/vc4-raspi3-bootrom-fat...HEAD
           python3 -m py_compile \
             scripts/vc4/raspi3-bootrom-fat-smoke.py \
-            scripts/vc4/raspi3-stock-bootcode-probe.py
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py
 
       - name: Configure linked guest targets
         run: |
@@ -83,9 +84,9 @@ jobs:
           python3 scripts/vc4/raspi3-bootrom-fat-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture first official bootcode barrier
+      - name: Capture live state at first official bootcode barrier
         run: |
-          python3 scripts/vc4/raspi3-stock-bootcode-probe.py \
+          python3 scripts/vc4/raspi3-stock-bootcode-state.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
             --barrier-is-success
