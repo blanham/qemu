@@ -28,6 +28,9 @@ DECLARE_INSTANCE_CHECKER(CprmanDsi0HsckMuxState, CPRMAN_DSI0HSCK_MUX,
 
 /* Register map */
 
+/* Oscillator-cycle countdown used by clock-measurement and settle delays. */
+REG32(CM_OSCCOUNT, 0x100)
+
 /* PLLs */
 REG32(CM_PLLA, 0x104)
     FIELD(CM_PLLA, LOADDSI0, 0, 1)
