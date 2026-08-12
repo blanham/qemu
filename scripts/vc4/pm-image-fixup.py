@@ -190,12 +190,18 @@ HEADER_REPLACEMENT = r'''    uint32_t wdog;
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
-    count = text.count(old)
-    if count == 1:
-        return text.replace(old, new), True
-    if count == 0 and new in text:
+    new_count = text.count(new)
+    if new_count == 1:
         return text, False
-    raise RuntimeError(f"expected one {label}, found {count}")
+    if new_count > 1:
+        raise RuntimeError(
+            f"expected one materialized {label}, found {new_count}"
+        )
+
+    old_count = text.count(old)
+    if old_count == 1:
+        return text.replace(old, new), True
+    raise RuntimeError(f"expected one {label}, found {old_count}")
 
 
 def main() -> int:
