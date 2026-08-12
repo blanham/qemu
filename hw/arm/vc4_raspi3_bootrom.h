@@ -10,7 +10,8 @@
 #include "qemu/typedefs.h"
 
 #define VC4_RASPI3_BOOT_CACHE_SIZE (128 * 1024)
-#define VC4_RASPI3_BOOT_ENTRY 0x8000
+/* The BCM boot ROM reserves/ignores the first 512 bytes of bootcode.bin. */
+#define VC4_RASPI3_BOOT_ENTRY 0x200
 
 typedef struct VC4Raspi3BootInfo {
     uint64_t partition_lba;
