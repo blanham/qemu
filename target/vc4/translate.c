@@ -354,7 +354,11 @@ static void vc4_gen_alu(DisasContext *ctx, unsigned cond, unsigned op,
         tcg_gen_movi_i32(result, 1);
         tcg_gen_shl_i32(result, result, tmp);
         tcg_gen_and_i32(result, result, a);
-        tcg_gen_setcondi_i32(TCG_COND_EQ, result, result, 0);
+        /*
+         * VC4 BTEST copies the selected bit into Z.  Firmware therefore uses
+         * BTEST followed by BEQ to remain in a loop while that bit is set.
+         */
+        tcg_gen_setcondi_i32(TCG_COND_NE, result, result, 0);
         tcg_gen_andi_i32(tmp, cpu_sr, ~VC4_SR_Z);
         tcg_gen_shli_i32(result, result, 3);
         tcg_gen_or_i32(cpu_sr, tmp, result);
