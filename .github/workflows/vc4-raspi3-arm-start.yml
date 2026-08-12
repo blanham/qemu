@@ -36,6 +36,31 @@ jobs:
           python3 -m py_compile scripts/vc4/raspi3-arm-start-bootstrap.py
           python3 -m py_compile scripts/vc4/raspi3-arm-start-smoke.py
           python3 scripts/vc4/raspi3-arm-start-bootstrap.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("hw/misc/bcm2835_arm_control.c")
+          text = path.read_text(encoding="utf-8")
+          old = """static void bcm2835_arm_control_init(Object *obj)
+          {
+              BCM2835ArmControlState *s = BCM2835_ARM_CONTROL(obj);
+
+              memory_region_init_io(&s->low_mr, obj,
+          """
+          new = """static void bcm2835_arm_control_init(Object *obj)
+          {
+              BCM2835ArmControlState *s = BCM2835_ARM_CONTROL(obj);
+
+              /* Hardware begins with the asynchronous bridge held stopped. */
+              s->control1 = C1_REQSTOP;
+
+              memory_region_init_io(&s->low_mr, obj,
+          """
+          if old in text:
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          elif new not in text:
+              raise SystemExit("could not initialize ARM_CONTROL1 cold state")
+          PY
           chmod +x scripts/vc4/raspi3-arm-start-smoke.py
           git diff --check
 
