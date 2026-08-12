@@ -677,6 +677,33 @@ static void vc4_gen_cmp_branch(DisasContext *ctx, unsigned cond,
     ctx->base.is_jmp = DISAS_NORETURN;
 }
 
+static void vc4_gen_table_branch(DisasContext *ctx, unsigned reg,
+                                 bool halfword)
+{
+    TCGv_i32 index = tcg_temp_new_i32();
+    TCGv_i32 address = tcg_temp_new_i32();
+    TCGv_i32 displacement = tcg_temp_new_i32();
+    TCGv_i32 target = tcg_temp_new_i32();
+    TCGv_i32 base = tcg_constant_i32(ctx->base.pc_next);
+
+    /*
+     * Table branches index signed byte/halfword entries after the instruction.
+     * Each entry is a displacement in halfwords relative to that same base.
+     */
+    if (halfword) {
+        tcg_gen_shli_i32(index, vc4_get_reg(ctx, reg), 1);
+    } else {
+        tcg_gen_mov_i32(index, vc4_get_reg(ctx, reg));
+    }
+    tcg_gen_add_i32(address, base, index);
+    vc4_gen_qemu_ld_i32(displacement, address, 0,
+                        halfword ? (MO_SW | MO_LE) : MO_SB);
+    tcg_gen_shli_i32(displacement, displacement, 1);
+    tcg_gen_add_i32(target, base, displacement);
+    tcg_gen_mov_i32(cpu_pc, target);
+    ctx->base.is_jmp = DISAS_JUMP;
+}
+
 static void vc4_gen_illegal(DisasContext *ctx, uint16_t opcode)
 {
     gen_helper_vc4_raise_illegal(tcg_env, tcg_constant_i32(ctx->pc),
@@ -746,8 +773,13 @@ static bool vc4_decode_scalar16(DisasContext *ctx, uint16_t insn)
         ctx->base.is_jmp = DISAS_JUMP;
         return true;
     }
-    if ((insn & 0xffe0) == 0x0080 || (insn & 0xffe0) == 0x00a0) {
-        return false;               /* TBB/TBH */
+    if ((insn & 0xffe0) == 0x0080) {
+        vc4_gen_table_branch(ctx, insn & 0x1f, false);
+        return true;
+    }
+    if ((insn & 0xffe0) == 0x00a0) {
+        vc4_gen_table_branch(ctx, insn & 0x1f, true);
+        return true;
     }
     if ((insn & 0xffe0) == 0x00e0) {
         vc4_set_reg_imm(ctx, insn & 0x1f, VC4_CPUID_VALUE);
