@@ -53,6 +53,7 @@ jobs:
           python3 -m py_compile \
             scripts/vc4/raspi3-bootrom-fat-smoke.py \
             scripts/vc4/raspi3-bootrom-0200-smoke.py \
+            scripts/vc4/raspi3-otp-read-smoke.py \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py
@@ -80,6 +81,11 @@ jobs:
             exit "$rc"
           fi
           echo 'Heterogeneous AArch64/VC4 build completed successfully.'
+
+      - name: Validate synchronous read-only OTP commands
+        run: |
+          python3 scripts/vc4/raspi3-otp-read-smoke.py \
+            build/qemu-system-aarch64
 
       - name: Preserve synthetic SD boot-ROM regression at VPU 0x200
         run: |
