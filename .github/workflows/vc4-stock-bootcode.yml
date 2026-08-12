@@ -47,8 +47,9 @@ jobs:
           echo '=== ROM padding and entry bytes ==='
           od -Ax -tx1 -j 480 -N96 /tmp/bootcode.bin
 
-      - name: Validate scripts
+      - name: Repair and validate scripts
         run: |
+          python3 scripts/vc4/repair-scalar-fpu-fixup.py
           python3 -m py_compile \
             scripts/vc4/raspi3-bootrom-fat-smoke.py \
             scripts/vc4/raspi3-bootrom-0200-smoke.py \
@@ -57,6 +58,7 @@ jobs:
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/repair-scalar-fpu-fixup.py \
             scripts/vc4/scalar-fpu-fixup.py \
             scripts/vc4/scalar-fpu-pc-fixup.py
 
@@ -117,6 +119,7 @@ jobs:
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
           git add \
+            scripts/vc4/scalar-fpu-fixup.py \
             target/vc4/helper.h \
             target/vc4/op_helper.c \
             target/vc4/translate.c
