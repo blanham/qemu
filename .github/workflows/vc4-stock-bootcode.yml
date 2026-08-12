@@ -83,7 +83,13 @@ jobs:
         run: |
           python3 scripts/vc4/cprman-sdc-handshake-fixup.py
           python3 scripts/vc4/cprman-osccount-fixup.py
-          python3 scripts/vc4/pm-image-fixup.py
+          if grep -q '#define R_IMAGE 0x108' hw/misc/bcm2835_powermgt.c &&
+             grep -q 'VMSTATE_UINT32_V(image, BCM2835PowerMgtState, 3)' hw/misc/bcm2835_powermgt.c &&
+             grep -q 'uint32_t image;' include/hw/misc/bcm2835_powermgt.h; then
+            echo 'BCM2835 PM_IMAGE power handshake is already materialized.'
+          else
+            python3 scripts/vc4/pm-image-fixup.py
+          fi
           python3 scripts/vc4/usb-phy-fixup.py
           python3 scripts/vc4/sdramc-init-fixup.py
           python3 scripts/vc4/pcrel48-fixup.py
