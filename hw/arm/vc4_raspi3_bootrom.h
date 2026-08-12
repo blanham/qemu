@@ -10,6 +10,7 @@
 #include "qemu/typedefs.h"
 
 #define VC4_RASPI3_BOOT_CACHE_SIZE (128 * 1024)
+#define VC4_RASPI3_BOOT_ENTRY 0x8000
 
 typedef struct VC4Raspi3BootInfo {
     uint64_t partition_lba;
