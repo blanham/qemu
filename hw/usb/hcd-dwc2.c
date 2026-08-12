@@ -62,6 +62,9 @@
 #define BCM2835_MDIO_CMD_MASK    0xf0030000
 #define BCM2835_MDIO_WRITE       0x50020000
 #define BCM2835_MDIO_READ        0x60020000
+#define BCM2835_PHY_DIVISOR_REG   0x17
+#define BCM2835_PHY_STATUS_REG    0x1b
+#define BCM2835_PHY_SETTLE        (1u << 7)
 
 /* nifty macros from Arnon's EHCI version  */
 #define get_field(data, field) \
@@ -694,15 +697,35 @@ static void dwc2_bcm2835_mdio_command(DWC2State *s,
     switch (value & BCM2835_MDIO_CMD_MASK) {
     case BCM2835_MDIO_WRITE:
         s->bcm2835_phy[reg] = value & 0xffff;
+        if (reg == BCM2835_PHY_DIVISOR_REG) {
+            /* Writing the PHY divisor starts a short settle sequence. */
+            s->bcm2835_phy_settle_pending = true;
+        }
         s->bcm2835_mdio_csr =
             (s->bcm2835_mdio_csr & BCM2835_GMDIO_CTRL_MASK) |
             s->bcm2835_phy[reg];
         break;
-    case BCM2835_MDIO_READ:
+    case BCM2835_MDIO_READ: {
+        uint16_t phy = s->bcm2835_phy[reg];
+
+        /*
+         * Firmware generations disagree on which edge of bit 7 denotes
+         * completion: the pinned stock image waits for it to become set,
+         * while the open firmware waits for it to clear.  Model the observed
+         * settle pulse: the first status read reports the edge and consumes
+         * it; a subsequent read observes the settled level.
+         */
+        if (reg == BCM2835_PHY_STATUS_REG) {
+            phy &= ~BCM2835_PHY_SETTLE;
+            if (s->bcm2835_phy_settle_pending) {
+                phy |= BCM2835_PHY_SETTLE;
+                s->bcm2835_phy_settle_pending = false;
+            }
+        }
         s->bcm2835_mdio_csr =
-            (s->bcm2835_mdio_csr & BCM2835_GMDIO_CTRL_MASK) |
-            s->bcm2835_phy[reg];
+            (s->bcm2835_mdio_csr & BCM2835_GMDIO_CTRL_MASK) | phy;
         break;
+    }
     default:
         /* 0xffffffff is the required preamble and zero is the errata dummy. */
         break;
@@ -1363,6 +1386,7 @@ static void dwc2_reset_enter(Object *obj, ResetType type)
     s->bcm2835_mdio_gen = 0;
     s->bcm2835_vbusdrv = 0;
     memset(s->bcm2835_phy, 0, sizeof(s->bcm2835_phy));
+    s->bcm2835_phy_settle_pending = false;
 
 
     s->hptxfsiz = 500 << FIFOSIZE_DEPTH_SHIFT;
@@ -1493,7 +1517,7 @@ static const VMStateDescription vmstate_dwc2_state_packet = {
 
 const VMStateDescription vmstate_dwc2_state = {
     .name = "dwc2",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(glbreg, DWC2State,
@@ -1503,6 +1527,7 @@ const VMStateDescription vmstate_dwc2_state = {
         VMSTATE_UINT32_V(bcm2835_vbusdrv, DWC2State, 2),
         VMSTATE_UINT16_ARRAY_V(bcm2835_phy, DWC2State,
                                DWC2_BCM2835_PHY_REGS, 2),
+        VMSTATE_BOOL_V(bcm2835_phy_settle_pending, DWC2State, 3),
         VMSTATE_UINT32_ARRAY(fszreg, DWC2State,
                              DWC2_FSZREG_SIZE / sizeof(uint32_t)),
         VMSTATE_UINT32_ARRAY(hreg0, DWC2State,

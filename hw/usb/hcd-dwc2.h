@@ -115,6 +115,7 @@ struct DWC2State {
     uint32_t bcm2835_mdio_gen;
     uint32_t bcm2835_vbusdrv;
     uint16_t bcm2835_phy[DWC2_BCM2835_PHY_REGS];
+    bool bcm2835_phy_settle_pending;
 
     union {
 #define DWC2_FSZREG_SIZE    0x04
