@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the BCM2837 VPU-facing OTP read command through qtest."""
+"""Exercise the BCM2837 VPU-facing OTP command handshake through qtest."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ OTP_STATUS_CMD_DONE = 1 << 0
 OTP_READ_COMMAND = 0
 OTP_PROGRAM_WORD_COMMAND = 0x14
 TEST_ROW = 36
+PRESTART_DATA = 0xA5A55A5A
 
 
 def load_handoff_module() -> ModuleType:
@@ -102,8 +103,12 @@ def main() -> int:
             def write_reg(offset: int, value: int) -> None:
                 smoke.qtest_writel(qtest, OTP_ARM_BASE + offset, value)
 
-            if read_reg(OTP_STATUS) != 0:
-                raise RuntimeError("OTP status did not reset to idle")
+            reset_status = read_reg(OTP_STATUS)
+            if reset_status != OTP_STATUS_CMD_DONE:
+                raise RuntimeError(
+                    "OTP controller did not reset ready: "
+                    f"status=0x{reset_status:08x}"
+                )
 
             # Verify the documented register masks independently of commands.
             write_reg(OTP_CONFIG, 0xFFFFFFFF)
@@ -116,12 +121,22 @@ def main() -> int:
             if read_reg(OTP_BITSEL) != 0x1F:
                 raise RuntimeError("OTP BITSEL mask was not applied")
 
-            # Issue the same read sequence used by production VideoCore code.
+            # Issue the two-phase sequence used by production VideoCore code:
+            # write the command with START clear, wait for ready, then strobe
+            # START and wait for command completion.
             write_reg(OTP_ADDR, TEST_ROW)
+            write_reg(OTP_DATA, PRESTART_DATA)
             write_reg(OTP_CTRL_HI, 0)
             write_reg(OTP_CTRL_LO, OTP_READ_COMMAND)
-            if read_reg(OTP_STATUS) != 0:
-                raise RuntimeError("OTP command-done did not clear before start")
+            prestart_status = read_reg(OTP_STATUS)
+            if prestart_status != OTP_STATUS_CMD_DONE:
+                raise RuntimeError(
+                    "OTP controller was not ready before START: "
+                    f"status=0x{prestart_status:08x}"
+                )
+            if read_reg(OTP_DATA) != PRESTART_DATA:
+                raise RuntimeError("OTP read executed before START was asserted")
+
             write_reg(OTP_CTRL_LO, OTP_READ_COMMAND | OTP_CTRL_LO_START)
 
             status = read_reg(OTP_STATUS)
@@ -137,11 +152,13 @@ def main() -> int:
             if read_reg(OTP_ADDR) != TEST_ROW:
                 raise RuntimeError("OTP address latch did not retain the row")
 
-            # An unsupported programming command must complete but never burn
-            # a bit in the emulated OTP array.
-            write_reg(OTP_CTRL_LO, 0)
+            # An unsupported programming command must remain idle before its
+            # START strobe, then complete without burning an emulated e-fuse.
             write_reg(OTP_DATA, 0xFFFFFFFF)
             write_reg(OTP_CTRL_LO, OTP_PROGRAM_WORD_COMMAND)
+            program_ready = read_reg(OTP_STATUS)
+            if program_ready != OTP_STATUS_CMD_DONE:
+                raise RuntimeError("OTP program command was not ready")
             write_reg(
                 OTP_CTRL_LO,
                 OTP_PROGRAM_WORD_COMMAND | OTP_CTRL_LO_START,
@@ -151,6 +168,8 @@ def main() -> int:
                 raise RuntimeError("unsupported OTP program command hung")
 
             write_reg(OTP_CTRL_LO, OTP_READ_COMMAND)
+            if read_reg(OTP_STATUS) != OTP_STATUS_CMD_DONE:
+                raise RuntimeError("OTP controller did not return to ready")
             write_reg(OTP_CTRL_LO, OTP_READ_COMMAND | OTP_CTRL_LO_START)
             data_after_program = read_reg(OTP_DATA)
             if data_after_program != 0:
@@ -160,10 +179,12 @@ def main() -> int:
                 )
 
             print(
-                "BCM2837 OTP read command passed: "
-                f"row={TEST_ROW} status=0x{status:08x} "
-                f"data=0x{data:08x} "
-                f"program-status=0x{program_status:08x} "
+                "BCM2837 OTP command handshake passed: "
+                f"row={TEST_ROW} reset=0x{reset_status:08x} "
+                f"prestart=0x{prestart_status:08x} "
+                f"complete=0x{status:08x} data=0x{data:08x} "
+                f"program-ready=0x{program_ready:08x} "
+                f"program-complete=0x{program_status:08x} "
                 "programming=ignored"
             )
             return 0

@@ -3,8 +3,8 @@
  *
  * The row array is also accessed directly by peripherals such as the
  * firmware-property mailbox.  The register interface below models the
- * synchronous read command used by the VideoCore boot firmware.  Irreversible
- * OTP programming commands remain deliberately unsupported.
+ * synchronous command handshake used by the VideoCore boot firmware.
+ * Irreversible OTP programming commands remain deliberately unsupported.
  *
  * Copyright (c) 2024 Rayhan Faizel <rayhan.faizel@gmail.com>
  *
@@ -126,18 +126,18 @@ static void bcm2835_otp_write(void *opaque, hwaddr addr,
         s->config = val & BCM2835_OTP_CONFIG_MASK;
         break;
     case BCM2835_OTP_CTRL_LO_REG:
-    {
-        bool old_start = s->ctrl_lo & BCM2835_OTP_CTRL_LO_START;
-        bool new_start = val & BCM2835_OTP_CTRL_LO_START;
-
         s->ctrl_lo = val;
-        if (!new_start) {
-            s->status &= ~BCM2835_OTP_STATUS_CMD_DONE;
-        } else if (!old_start) {
+        if (val & BCM2835_OTP_CTRL_LO_START) {
             bcm2835_otp_complete_command(s);
+        } else {
+            /*
+             * CMD_DONE is also the controller's idle/ready indication.
+             * VideoCore firmware first writes a command with START clear,
+             * waits for CMD_DONE, then asserts START and waits again.
+             */
+            s->status |= BCM2835_OTP_STATUS_CMD_DONE;
         }
         break;
-    }
     case BCM2835_OTP_CTRL_HI_REG:
         s->ctrl_hi = val & BCM2835_OTP_CTRL_HI_MASK;
         break;
@@ -190,7 +190,7 @@ static void bcm2835_otp_reset(DeviceState *dev)
     s->config = 0;
     s->ctrl_lo = 0;
     s->ctrl_hi = 0;
-    s->status = 0;
+    s->status = BCM2835_OTP_STATUS_CMD_DONE;
     s->bitsel = 0;
     s->data = 0;
     s->addr = 0;
