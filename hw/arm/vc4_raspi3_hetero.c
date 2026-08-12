@@ -229,10 +229,10 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
      * Overlaying a private RAM region preserves that separation: ARM address
      * zero remains ordinary SDRAM while VPU address zero contains bootcode.
      */
-    memory_region_init(&s->vpu_address_space, OBJECT(machine),
+    memory_region_init(&s->vpu_address_space, OBJECT(s->vpu_cpu),
                        "vc4-vpu-address-space", UINT64_C(1) << 32);
     memory_region_add_subregion(&s->vpu_address_space, 0, &ps->gpu_bus_mr);
-    memory_region_init_ram(&s->vpu_boot_cache, OBJECT(machine),
+    memory_region_init_ram(&s->vpu_boot_cache, OBJECT(s->vpu_cpu),
                            "vc4-vpu-boot-cache",
                            VC4_RASPI3_BOOT_CACHE_SIZE, &error_fatal);
     memory_region_add_subregion_overlap(&s->vpu_address_space, 0,
