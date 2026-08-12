@@ -152,6 +152,15 @@ def main() -> int:
     parser.add_argument("qemu", help="path to qemu-system-aarch64")
     parser.add_argument("bootcode", help="unmodified bootcode.bin")
     parser.add_argument("--seconds", type=float, default=5.0)
+    parser.add_argument(
+        "--icount-shift",
+        type=int,
+        default=10,
+        help=(
+            "advance virtual time by 2^SHIFT nanoseconds per guest "
+            "instruction; this lets polling delays progress deterministically"
+        ),
+    )
     parser.add_argument("--barrier-is-success", action="store_true")
     args = parser.parse_args()
 
@@ -179,6 +188,8 @@ def main() -> int:
             "-smp", "5",
             "-drive", f"file={image_path},format=raw,if=sd",
             "-accel", "tcg,thread=single,one-insn-per-tb=on",
+            "-icount",
+            f"shift={args.icount_shift},align=off,sleep=off",
             "-d", "unimp,guest_errors",
             "-display", "none",
             "-monitor", "none",
