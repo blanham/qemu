@@ -156,6 +156,10 @@ static void raspi_peripherals_base_init(Object *obj)
     /* CPRMAN clock manager */
     object_initialize_child(obj, "cprman", &s->cprman, TYPE_BCM2835_CPRMAN);
 
+    /* SDRAM controller plus address/data PHY status windows */
+    object_initialize_child(obj, "sdramc", &s->sdramc,
+                            TYPE_BCM2835_SDRAMC);
+
     object_property_add_const_link(OBJECT(&s->dwc2), "dma-mr",
                                    OBJECT(&s->gpu_bus_mr));
 
@@ -291,6 +295,20 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
                 sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->cprman), 0));
     qdev_connect_clock_in(DEVICE(&s->uart0), "clk",
                           qdev_get_clock_out(DEVICE(&s->cprman), "uart-out"));
+
+    /* SDRAM controller, address PHY, and data PHY. */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->sdramc), errp)) {
+        return;
+    }
+    memory_region_add_subregion(
+        &s->peri_mr, SDRAMC_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->sdramc), 0));
+    memory_region_add_subregion(
+        &s->peri_mr, SDRAMC_APHY_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->sdramc), 1));
+    memory_region_add_subregion(
+        &s->peri_mr, SDRAMC_DPHY_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->sdramc), 2));
 
     memory_region_add_subregion(&s->peri_mr, ARMCTRL_IC_OFFSET,
                 sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->ic), 0));
@@ -526,7 +544,6 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
     create_unimp(s, &s->dbus, "bcm2835-dbus", DBUS_OFFSET, 0x8000);
     create_unimp(s, &s->ave0, "bcm2835-ave0", AVE0_OFFSET, 0x8000);
     create_unimp(s, &s->v3d, "bcm2835-v3d", V3D_OFFSET, 0x1000);
-    create_unimp(s, &s->sdramc, "bcm2835-sdramc", SDRAMC_OFFSET, 0x100);
 }
 
 static void bcm2835_peripherals_class_init(ObjectClass *oc, const void *data)

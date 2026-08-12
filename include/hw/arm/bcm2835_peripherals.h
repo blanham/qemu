@@ -26,6 +26,7 @@
 #include "hw/misc/bcm2835_thermal.h"
 #include "hw/misc/bcm2835_cprman.h"
 #include "hw/misc/bcm2835_powermgt.h"
+#include "hw/misc/bcm2835_sdramc.h"
 #include "hw/sd/sdhci.h"
 #include "hw/sd/bcm2835_sdhost.h"
 #include "hw/gpio/bcm2835_gpio.h"
@@ -81,7 +82,7 @@ struct BCMSocPeripheralBaseState {
     UnimplementedDeviceState bscsl;
     UnimplementedDeviceState smi;
     DWC2State dwc2;
-    UnimplementedDeviceState sdramc;
+    BCM2835SdramcState sdramc;
 };
 
 struct BCMSocPeripheralBaseClass {
