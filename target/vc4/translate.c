@@ -3,8 +3,8 @@
  *
  * The scalar decoder follows the public VideoCore IV VPU encoding recovered
  * by the Raspberry Pi reverse-engineering community.  The vector register
- * file remains unimplemented; one exact side-effect-free vector80 delay word
- * used by production bootcode.bin is accepted rather than guessed broadly.
+ * file remains unimplemented; exact side-effect-free vector80 and vector48
+ * delay words used by production bootcode.bin are accepted rather than guessed.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -1172,6 +1172,26 @@ static bool vc4_decode_scalar48(DisasContext *ctx, uint16_t i1,
     return false;
 }
 
+static bool vc4_decode_vector48_delay(uint16_t i1, uint16_t i2,
+                                      uint16_t i3)
+{
+    /*
+     * Production bootcode.bin follows the vector80 delay with this exact
+     * vector48 word:
+     *
+     *     00 f4 38 e0 00 04
+     *
+     * The public reverse-engineered encoding describes it as a 16-bit vector
+     * MOV with D mapped to discard, A mapped to unused, and B equal to the
+     * immediate zero.  SETF and scalar side effects are disabled, so the word
+     * has no architectural result and serves only as a shorter settling delay.
+     *
+     * Accept only the production word.  Every vector48 instruction that can
+     * expose vector, flag, or scalar state remains deliberately unsupported.
+     */
+    return i1 == 0xf400 && i2 == 0xe038 && i3 == 0x0400;
+}
+
 static bool vc4_decode_vector80_delay(uint16_t i1, uint16_t i2,
                                       uint16_t i3, uint16_t i4,
                                       uint16_t i5)
@@ -1242,9 +1262,10 @@ static void vc4_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
         ctx->base.pc_next = ctx->pc + 10;
         decoded = vc4_decode_vector80_delay(i1, i2, i3, i4, i5);
     } else {
-        /* Vector48 remains separate work. */
+        i2 = vc4_lduw(ctx, ctx->pc + 2);
+        i3 = vc4_lduw(ctx, ctx->pc + 4);
         ctx->base.pc_next = ctx->pc + 6;
-        decoded = false;
+        decoded = vc4_decode_vector48_delay(i1, i2, i3);
     }
 
     if (!decoded) {
