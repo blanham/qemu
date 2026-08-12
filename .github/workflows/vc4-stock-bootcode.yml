@@ -57,11 +57,13 @@ jobs:
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
-            scripts/vc4/scalar-fpu-fixup.py
+            scripts/vc4/scalar-fpu-fixup.py \
+            scripts/vc4/scalar-fpu-pc-fixup.py
 
       - name: Materialize scalar VideoCore IV floating-point support
         run: |
           python3 scripts/vc4/scalar-fpu-fixup.py
+          python3 scripts/vc4/scalar-fpu-pc-fixup.py
           git diff --check
 
       - name: Configure linked guest targets
