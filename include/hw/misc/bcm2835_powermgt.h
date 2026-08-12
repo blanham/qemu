@@ -27,6 +27,7 @@ struct BCM2835PowerMgtState {
     uint32_t rstc;
     uint32_t rsts;
     uint32_t wdog;
+    uint32_t usb;
     uint32_t image;
     uint32_t proc;
     bool arm_powered;

@@ -47,6 +47,22 @@
 #define USB_HZ_HS       96000000
 #define USB_FRMINTVL    12000
 
+/*
+ * Broadcom's DWC2 integration exposes an MDIO control block in the otherwise
+ * unused global-register space.  The open VideoCore firmware uses these
+ * registers to initialize the USB PHY before touching the standard host core.
+ */
+#define BCM2835_GMDIOCSR         0x080
+#define BCM2835_GMDIOGEN         0x084
+#define BCM2835_GVBUSDRV         0x088
+#define BCM2835_GMDIO_RSVD       0x08c
+#define BCM2835_GMDIO_BUSY       (1u << 31)
+#define BCM2835_GMDIO_CTRL_MASK  0x000f0000
+#define BCM2835_GVBUSDRV_MASK    0x000fffff
+#define BCM2835_MDIO_CMD_MASK    0xf0030000
+#define BCM2835_MDIO_WRITE       0x50020000
+#define BCM2835_MDIO_READ        0x60020000
+
 /* nifty macros from Arnon's EHCI version  */
 #define get_field(data, field) \
     (((data) & field##_MASK) >> field##_SHIFT)
@@ -668,11 +684,52 @@ static const char *glbregnm[] = {
     "GREFCLK  ", "GINTMSK2 ", "GINTSTS2 "
 };
 
+static void dwc2_bcm2835_mdio_command(DWC2State *s,
+                                          uint32_t value)
+{
+    unsigned reg = (value >> 18) & 0x1f;
+
+    s->bcm2835_mdio_gen = value;
+
+    switch (value & BCM2835_MDIO_CMD_MASK) {
+    case BCM2835_MDIO_WRITE:
+        s->bcm2835_phy[reg] = value & 0xffff;
+        s->bcm2835_mdio_csr =
+            (s->bcm2835_mdio_csr & BCM2835_GMDIO_CTRL_MASK) |
+            s->bcm2835_phy[reg];
+        break;
+    case BCM2835_MDIO_READ:
+        s->bcm2835_mdio_csr =
+            (s->bcm2835_mdio_csr & BCM2835_GMDIO_CTRL_MASK) |
+            s->bcm2835_phy[reg];
+        break;
+    default:
+        /* 0xffffffff is the required preamble and zero is the errata dummy. */
+        break;
+    }
+
+    /* The transaction completes before the next guest-visible load. */
+    s->bcm2835_mdio_csr &= ~BCM2835_GMDIO_BUSY;
+}
+
 static uint64_t dwc2_glbreg_read(void *ptr, hwaddr addr, int index,
                                  unsigned size)
 {
     DWC2State *s = ptr;
     uint32_t val;
+
+    switch (addr) {
+    case BCM2835_GMDIOCSR:
+        return s->bcm2835_mdio_csr;
+    case BCM2835_GMDIOGEN:
+        return s->bcm2835_mdio_gen;
+    case BCM2835_GVBUSDRV:
+        return s->bcm2835_vbusdrv;
+    case BCM2835_GMDIO_RSVD:
+        return 0;
+    default:
+        break;
+    }
 
     if (addr > GINTSTS2) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%"HWADDR_PRIx"\n",
@@ -705,6 +762,22 @@ static void dwc2_glbreg_write(void *ptr, hwaddr addr, int index, uint64_t val,
     uint32_t *mmio;
     uint32_t old;
     int iflg = 0;
+
+    switch (addr) {
+    case BCM2835_GMDIOCSR:
+        s->bcm2835_mdio_csr = val & ~BCM2835_GMDIO_BUSY;
+        return;
+    case BCM2835_GMDIOGEN:
+        dwc2_bcm2835_mdio_command(s, val);
+        return;
+    case BCM2835_GVBUSDRV:
+        s->bcm2835_vbusdrv = val & BCM2835_GVBUSDRV_MASK;
+        return;
+    case BCM2835_GMDIO_RSVD:
+        return;
+    default:
+        break;
+    }
 
     if (addr > GINTSTS2) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%"HWADDR_PRIx"\n",
@@ -1286,6 +1359,12 @@ static void dwc2_reset_enter(Object *obj, ResetType type)
     s->gintmsk2 = 0;
     s->gintsts2 = 0;
 
+    s->bcm2835_mdio_csr = 0;
+    s->bcm2835_mdio_gen = 0;
+    s->bcm2835_vbusdrv = 0;
+    memset(s->bcm2835_phy, 0, sizeof(s->bcm2835_phy));
+
+
     s->hptxfsiz = 500 << FIFOSIZE_DEPTH_SHIFT;
 
     s->hcfg = 2 << HCFG_RESVALID_SHIFT;
@@ -1414,11 +1493,16 @@ static const VMStateDescription vmstate_dwc2_state_packet = {
 
 const VMStateDescription vmstate_dwc2_state = {
     .name = "dwc2",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(glbreg, DWC2State,
                              DWC2_GLBREG_SIZE / sizeof(uint32_t)),
+        VMSTATE_UINT32_V(bcm2835_mdio_csr, DWC2State, 2),
+        VMSTATE_UINT32_V(bcm2835_mdio_gen, DWC2State, 2),
+        VMSTATE_UINT32_V(bcm2835_vbusdrv, DWC2State, 2),
+        VMSTATE_UINT16_ARRAY_V(bcm2835_phy, DWC2State,
+                               DWC2_BCM2835_PHY_REGS, 2),
         VMSTATE_UINT32_ARRAY(fszreg, DWC2State,
                              DWC2_FSZREG_SIZE / sizeof(uint32_t)),
         VMSTATE_UINT32_ARRAY(hreg0, DWC2State,
