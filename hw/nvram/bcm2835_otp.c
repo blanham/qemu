@@ -17,7 +17,7 @@
 #include "migration/vmstate.h"
 
 #define BCM2835_OTP_CTRL_LO_START          BIT(0)
-#define BCM2835_OTP_STATUS_CMD_DONE        BIT(0)
+#define BCM2835_OTP_STATUS_BUSY            BIT(0)
 #define BCM2835_OTP_CONFIG_MASK            0x7
 #define BCM2835_OTP_CTRL_HI_MASK           0xffff
 #define BCM2835_OTP_BITSEL_MASK            0x1f
@@ -56,7 +56,12 @@ static void bcm2835_otp_complete_command(BCM2835OTPState *s)
 {
     uint32_t command = s->ctrl_lo & ~BCM2835_OTP_CTRL_LO_START;
 
-    s->status &= ~BCM2835_OTP_STATUS_CMD_DONE;
+    /*
+     * STATUS bit 0 is an active-high command-busy indication.  The physical
+     * controller exposes the pulse long enough for asynchronous polling;
+     * commands complete before the next guest-visible load in this model.
+     */
+    s->status |= BCM2835_OTP_STATUS_BUSY;
 
     switch (command) {
     case 0:
@@ -76,8 +81,7 @@ static void bcm2835_otp_complete_command(BCM2835OTPState *s)
         break;
     }
 
-    /* Commands are synchronous in the model. */
-    s->status |= BCM2835_OTP_STATUS_CMD_DONE;
+    s->status &= ~BCM2835_OTP_STATUS_BUSY;
 }
 
 static uint64_t bcm2835_otp_read(void *opaque, hwaddr addr, unsigned size)
@@ -126,18 +130,20 @@ static void bcm2835_otp_write(void *opaque, hwaddr addr,
         s->config = val & BCM2835_OTP_CONFIG_MASK;
         break;
     case BCM2835_OTP_CTRL_LO_REG:
+    {
+        bool old_start = s->ctrl_lo & BCM2835_OTP_CTRL_LO_START;
+        bool new_start = val & BCM2835_OTP_CTRL_LO_START;
+
         s->ctrl_lo = val;
-        if (val & BCM2835_OTP_CTRL_LO_START) {
+        if (!new_start) {
+            /* START-clear is the idle phase of the firmware handshake. */
+            s->status &= ~BCM2835_OTP_STATUS_BUSY;
+        } else if (!old_start) {
+            /* The command latch is edge-triggered by START. */
             bcm2835_otp_complete_command(s);
-        } else {
-            /*
-             * CMD_DONE is also the controller's idle/ready indication.
-             * VideoCore firmware first writes a command with START clear,
-             * waits for CMD_DONE, then asserts START and waits again.
-             */
-            s->status |= BCM2835_OTP_STATUS_CMD_DONE;
         }
         break;
+    }
     case BCM2835_OTP_CTRL_HI_REG:
         s->ctrl_hi = val & BCM2835_OTP_CTRL_HI_MASK;
         break;
@@ -190,7 +196,7 @@ static void bcm2835_otp_reset(DeviceState *dev)
     s->config = 0;
     s->ctrl_lo = 0;
     s->ctrl_hi = 0;
-    s->status = BCM2835_OTP_STATUS_CMD_DONE;
+    s->status = 0;
     s->bitsel = 0;
     s->data = 0;
     s->addr = 0;
