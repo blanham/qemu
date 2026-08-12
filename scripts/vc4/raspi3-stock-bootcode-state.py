@@ -341,10 +341,11 @@ def main() -> int:
             }
             samples.append(final_sample)
 
-            unique_pcs = {sample["pc"] for sample in samples}
-            unique_lrs = {sample["lr"] for sample in samples}
-            unique_r2 = {sample["r2"] for sample in samples}
-            unique_r3 = {sample["r3"] for sample in samples}
+            analysis_samples = samples[-min(12, len(samples)):]
+            unique_pcs = {sample["pc"] for sample in analysis_samples}
+            unique_lrs = {sample["lr"] for sample in analysis_samples}
+            unique_r2 = {sample["r2"] for sample in analysis_samples}
+            unique_r3 = {sample["r3"] for sample in analysis_samples}
 
             if len(unique_lrs) > 1 or len(unique_r3) > 1:
                 kind = "progressing-state"
@@ -364,6 +365,7 @@ def main() -> int:
                 f"kind={kind} cpu-index={vpu_index} "
                 f"pc=0x{pc:08x} sr=0x{sr:08x} context={context} "
                 f"sample-count={len(samples)} "
+                f"sample-window={len(analysis_samples)} "
                 f"unique-pcs={len(unique_pcs)} "
                 f"unique-lrs={len(unique_lrs)} "
                 f"unique-r2={len(unique_r2)} "
