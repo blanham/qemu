@@ -10,117 +10,23 @@ POWERMGT_SOURCE = Path("hw/misc/bcm2835_powermgt.c")
 DWC2_HEADER = Path("hw/usb/hcd-dwc2.h")
 DWC2_SOURCE = Path("hw/usb/hcd-dwc2.c")
 
-POWERMGT_CONSTANTS = r'''#define R_WDOG 0x24
-
-/*
- * PM_IMAGE and PM_PROC are firmware-visible power-domain registers.
-'''
-POWERMGT_CONSTANTS_NEW = r'''#define R_WDOG 0x24
-
+PM_CONSTANTS = r'''
 /* PM_USB is a one-bit controller-enable latch at 0x7e10005c. */
 #define R_USB 0x5c
 #define V_USB_CTRLEN (1u << 0)
-
-/*
- * PM_IMAGE and PM_PROC are firmware-visible power-domain registers.
 '''
 
-POWERMGT_READ = r'''    case R_WDOG:
-        res = s->wdog;
-        break;
-    case R_IMAGE:
-'''
-POWERMGT_READ_NEW = r'''    case R_WDOG:
-        res = s->wdog;
-        break;
-    case R_USB:
+PM_READ_CASE = r'''    case R_USB:
         res = s->usb;
         break;
-    case R_IMAGE:
 '''
 
-POWERMGT_WRITE = r'''    case R_WDOG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_powermgt_write: WDOG\n");
-        s->wdog = value;
-        break;
-    case R_IMAGE:
-'''
-POWERMGT_WRITE_NEW = r'''    case R_WDOG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_powermgt_write: WDOG\n");
-        s->wdog = value;
-        break;
-    case R_USB:
+PM_WRITE_CASE = r'''    case R_USB:
         s->usb = value & V_USB_CTRLEN;
         break;
-    case R_IMAGE:
 '''
 
-POWERMGT_VMSTATE_VERSION = r'''    .version_id = 3,
-'''
-POWERMGT_VMSTATE_VERSION_NEW = r'''    .version_id = 4,
-'''
-
-POWERMGT_VMSTATE = r'''        VMSTATE_UINT32(wdog, BCM2835PowerMgtState),
-        VMSTATE_UINT32_V(proc, BCM2835PowerMgtState, 2),
-'''
-POWERMGT_VMSTATE_NEW = r'''        VMSTATE_UINT32(wdog, BCM2835PowerMgtState),
-        VMSTATE_UINT32_V(usb, BCM2835PowerMgtState, 4),
-        VMSTATE_UINT32_V(proc, BCM2835PowerMgtState, 2),
-'''
-
-POWERMGT_RESET = r'''    s->wdog = 0x00000000;
-    s->image = V_IMAGE_RESET;
-'''
-POWERMGT_RESET_NEW = r'''    s->wdog = 0x00000000;
-    s->usb = 0x00000000;
-    s->image = V_IMAGE_RESET;
-'''
-
-POWERMGT_HEADER_FIELD = r'''    uint32_t wdog;
-    uint32_t image;
-'''
-POWERMGT_HEADER_FIELD_NEW = r'''    uint32_t wdog;
-    uint32_t usb;
-    uint32_t image;
-'''
-
-DWC2_HEADER_COUNT = r'''#define DWC2_NB_CHAN        8       /* Number of host channels */
-#define DWC2_MAX_XFER_SIZE  65536   /* Max transfer size expected in HCTSIZ */
-'''
-DWC2_HEADER_COUNT_NEW = r'''#define DWC2_NB_CHAN        8       /* Number of host channels */
-#define DWC2_MAX_XFER_SIZE  65536   /* Max transfer size expected in HCTSIZ */
-#define DWC2_BCM2835_PHY_REGS 32    /* MDIO-visible PHY register count */
-'''
-
-DWC2_HEADER_STATE = r'''    };
-
-    union {
-#define DWC2_FSZREG_SIZE    0x04
-'''
-DWC2_HEADER_STATE_NEW = r'''    };
-
-    /*
-     * BCM2835-specific DWC2 PHY sideband registers.  MDIO transactions
-     * complete synchronously, matching the other boot-time handshakes in
-     * the Raspberry Pi peripheral model.
-     */
-    uint32_t bcm2835_mdio_csr;
-    uint32_t bcm2835_mdio_gen;
-    uint32_t bcm2835_vbusdrv;
-    uint16_t bcm2835_phy[DWC2_BCM2835_PHY_REGS];
-
-    union {
-#define DWC2_FSZREG_SIZE    0x04
-'''
-
-DWC2_CONSTANTS = r'''#define USB_FRMINTVL    12000
-
-/* nifty macros from Arnon's EHCI version  */
-'''
-DWC2_CONSTANTS_NEW = r'''#define USB_FRMINTVL    12000
-
+DWC2_CONSTANTS = r'''
 /*
  * Broadcom's DWC2 integration exposes an MDIO control block in the otherwise
  * unused global-register space.  The open VideoCore firmware uses these
@@ -136,14 +42,21 @@ DWC2_CONSTANTS_NEW = r'''#define USB_FRMINTVL    12000
 #define BCM2835_MDIO_CMD_MASK    0xf0030000
 #define BCM2835_MDIO_WRITE       0x50020000
 #define BCM2835_MDIO_READ        0x60020000
-
-/* nifty macros from Arnon's EHCI version  */
 '''
 
-DWC2_HELPER_ANCHOR = r'''static uint64_t dwc2_glbreg_read(void *ptr, hwaddr addr, int index,
-                                 unsigned size)
+DWC2_STATE = r'''    /*
+     * BCM2835-specific DWC2 PHY sideband registers.  MDIO transactions
+     * complete synchronously, matching the other boot-time handshakes in
+     * the Raspberry Pi peripheral model.
+     */
+    uint32_t bcm2835_mdio_csr;
+    uint32_t bcm2835_mdio_gen;
+    uint32_t bcm2835_vbusdrv;
+    uint16_t bcm2835_phy[DWC2_BCM2835_PHY_REGS];
+
 '''
-DWC2_HELPER_BLOCK = r'''static void dwc2_bcm2835_mdio_command(DWC2State *s,
+
+DWC2_HELPER = r'''static void dwc2_bcm2835_mdio_command(DWC2State *s,
                                           uint32_t value)
 {
     unsigned reg = (value >> 18) & 0x1f;
@@ -171,21 +84,9 @@ DWC2_HELPER_BLOCK = r'''static void dwc2_bcm2835_mdio_command(DWC2State *s,
     s->bcm2835_mdio_csr &= ~BCM2835_GMDIO_BUSY;
 }
 
-static uint64_t dwc2_glbreg_read(void *ptr, hwaddr addr, int index,
-                                 unsigned size)
 '''
 
-DWC2_READ_BODY = r'''{
-    DWC2State *s = ptr;
-    uint32_t val;
-
-    if (addr > GINTSTS2) {
-'''
-DWC2_READ_BODY_NEW = r'''{
-    DWC2State *s = ptr;
-    uint32_t val;
-
-    switch (addr) {
+DWC2_READ_SWITCH = r'''    switch (addr) {
     case BCM2835_GMDIOCSR:
         return s->bcm2835_mdio_csr;
     case BCM2835_GMDIOGEN:
@@ -198,26 +99,9 @@ DWC2_READ_BODY_NEW = r'''{
         break;
     }
 
-    if (addr > GINTSTS2) {
 '''
 
-DWC2_WRITE_BODY = r'''{
-    DWC2State *s = ptr;
-    uint64_t orig = val;
-    uint32_t *mmio;
-    uint32_t old;
-    int iflg = 0;
-
-    if (addr > GINTSTS2) {
-'''
-DWC2_WRITE_BODY_NEW = r'''{
-    DWC2State *s = ptr;
-    uint64_t orig = val;
-    uint32_t *mmio;
-    uint32_t old;
-    int iflg = 0;
-
-    switch (addr) {
+DWC2_WRITE_SWITCH = r'''    switch (addr) {
     case BCM2835_GMDIOCSR:
         s->bcm2835_mdio_csr = val & ~BCM2835_GMDIO_BUSY;
         return;
@@ -233,52 +117,25 @@ DWC2_WRITE_BODY_NEW = r'''{
         break;
     }
 
-    if (addr > GINTSTS2) {
 '''
 
-DWC2_RESET = r'''    s->gintmsk2 = 0;
-    s->gintsts2 = 0;
-
-    s->hptxfsiz = 500 << FIFOSIZE_DEPTH_SHIFT;
-'''
-DWC2_RESET_NEW = r'''    s->gintmsk2 = 0;
-    s->gintsts2 = 0;
-
-    s->bcm2835_mdio_csr = 0;
+DWC2_RESET = r'''    s->bcm2835_mdio_csr = 0;
     s->bcm2835_mdio_gen = 0;
     s->bcm2835_vbusdrv = 0;
     memset(s->bcm2835_phy, 0, sizeof(s->bcm2835_phy));
 
-    s->hptxfsiz = 500 << FIFOSIZE_DEPTH_SHIFT;
 '''
 
-DWC2_VMSTATE_VERSION = r'''    .version_id = 1,
-    .minimum_version_id = 1,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(glbreg, DWC2State,
-'''
-DWC2_VMSTATE_VERSION_NEW = r'''    .version_id = 2,
-    .minimum_version_id = 1,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(glbreg, DWC2State,
-'''
-
-DWC2_VMSTATE_FIELDS = r'''        VMSTATE_UINT32_ARRAY(glbreg, DWC2State,
-                             DWC2_GLBREG_SIZE / sizeof(uint32_t)),
-        VMSTATE_UINT32_ARRAY(fszreg, DWC2State,
-'''
-DWC2_VMSTATE_FIELDS_NEW = r'''        VMSTATE_UINT32_ARRAY(glbreg, DWC2State,
-                             DWC2_GLBREG_SIZE / sizeof(uint32_t)),
-        VMSTATE_UINT32_V(bcm2835_mdio_csr, DWC2State, 2),
+DWC2_VMSTATE_FIELDS = r'''        VMSTATE_UINT32_V(bcm2835_mdio_csr, DWC2State, 2),
         VMSTATE_UINT32_V(bcm2835_mdio_gen, DWC2State, 2),
         VMSTATE_UINT32_V(bcm2835_vbusdrv, DWC2State, 2),
         VMSTATE_UINT16_ARRAY_V(bcm2835_phy, DWC2State,
                                DWC2_BCM2835_PHY_REGS, 2),
-        VMSTATE_UINT32_ARRAY(fszreg, DWC2State,
 '''
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
+    """Replace one exact anchor, or accept one already-materialized form."""
     new_count = text.count(new)
     if new_count == 1:
         return text, False
@@ -288,72 +145,207 @@ def replace_once(text: str, old: str, new: str, label: str) -> tuple[str, bool]:
         )
 
     old_count = text.count(old)
-    if old_count == 1:
-        return text.replace(old, new), True
-    raise RuntimeError(f"expected one {label}, found {old_count}")
+    if old_count != 1:
+        raise RuntimeError(f"expected one {label}, found {old_count}")
+    return text.replace(old, new), True
 
 
-def update(path: Path, replacements: tuple[tuple[str, str, str], ...]) -> bool:
-    text = path.read_text(encoding="utf-8")
-    changed = False
+def insert_after(text: str, anchor: str, block: str,
+                 marker: str, label: str) -> tuple[str, bool]:
+    if text.count(marker) == 1:
+        return text, False
+    if text.count(marker) > 1:
+        raise RuntimeError(
+            f"expected one materialized {label}, found {text.count(marker)}"
+        )
+    if text.count(anchor) != 1:
+        raise RuntimeError(
+            f"expected one {label} anchor, found {text.count(anchor)}"
+        )
+    return text.replace(anchor, anchor + block), True
 
-    for old, new, label in replacements:
-        text, did_change = replace_once(text, old, new, label)
-        changed |= did_change
 
-    if changed:
-        path.write_text(text, encoding="utf-8")
-    return changed
+def insert_before(text: str, anchor: str, block: str,
+                  marker: str, label: str) -> tuple[str, bool]:
+    if text.count(marker) == 1:
+        return text, False
+    if text.count(marker) > 1:
+        raise RuntimeError(
+            f"expected one materialized {label}, found {text.count(marker)}"
+        )
+    if text.count(anchor) != 1:
+        raise RuntimeError(
+            f"expected one {label} anchor, found {text.count(anchor)}"
+        )
+    return text.replace(anchor, block + anchor), True
+
+
+def write_if_changed(path: Path, original: str, updated: str) -> bool:
+    if updated == original:
+        return False
+    path.write_text(updated, encoding="utf-8")
+    return True
+
+
+def update_powermgt_header() -> bool:
+    original = POWERMGT_HEADER.read_text(encoding="utf-8")
+    text, _ = insert_after(
+        original,
+        "    uint32_t wdog;\n",
+        "    uint32_t usb;\n",
+        "    uint32_t usb;\n",
+        "PM_USB state field",
+    )
+    return write_if_changed(POWERMGT_HEADER, original, text)
+
+
+def update_powermgt_source() -> bool:
+    original = POWERMGT_SOURCE.read_text(encoding="utf-8")
+    text = original
+
+    text, _ = insert_after(
+        text,
+        "#define R_WDOG 0x24\n",
+        PM_CONSTANTS,
+        "#define R_USB 0x5c\n",
+        "PM_USB constants",
+    )
+    text, _ = insert_before(
+        text,
+        "    case R_IMAGE:\n        res = s->image;\n",
+        PM_READ_CASE,
+        "    case R_USB:\n        res = s->usb;\n",
+        "PM_USB read case",
+    )
+    text, _ = insert_before(
+        text,
+        "    case R_IMAGE:\n        bcm2835_powermgt_update_image(s, value);\n",
+        PM_WRITE_CASE,
+        "    case R_USB:\n        s->usb = value & V_USB_CTRLEN;\n",
+        "PM_USB write case",
+    )
+    text, _ = replace_once(
+        text,
+        "    .version_id = 3,\n    .minimum_version_id = 1,\n",
+        "    .version_id = 4,\n    .minimum_version_id = 1,\n",
+        "power-manager VMState version",
+    )
+    text, _ = insert_after(
+        text,
+        "        VMSTATE_UINT32(wdog, BCM2835PowerMgtState),\n",
+        "        VMSTATE_UINT32_V(usb, BCM2835PowerMgtState, 4),\n",
+        "        VMSTATE_UINT32_V(usb, BCM2835PowerMgtState, 4),\n",
+        "PM_USB VMState field",
+    )
+    text, _ = insert_after(
+        text,
+        "    s->wdog = 0x00000000;\n",
+        "    s->usb = 0x00000000;\n",
+        "    s->usb = 0x00000000;\n",
+        "PM_USB reset",
+    )
+
+    return write_if_changed(POWERMGT_SOURCE, original, text)
+
+
+def update_dwc2_header() -> bool:
+    original = DWC2_HEADER.read_text(encoding="utf-8")
+    text = original
+
+    text, _ = insert_after(
+        text,
+        "#define DWC2_MAX_XFER_SIZE  65536   /* Max transfer size expected in HCTSIZ */\n",
+        "#define DWC2_BCM2835_PHY_REGS 32    /* MDIO-visible PHY register count */\n",
+        "#define DWC2_BCM2835_PHY_REGS 32",
+        "BCM2835 PHY register count",
+    )
+    text, _ = insert_before(
+        text,
+        "    union {\n#define DWC2_FSZREG_SIZE    0x04\n",
+        DWC2_STATE,
+        "    uint32_t bcm2835_mdio_csr;\n",
+        "BCM2835 DWC2 state",
+    )
+
+    return write_if_changed(DWC2_HEADER, original, text)
+
+
+def update_dwc2_source() -> bool:
+    original = DWC2_SOURCE.read_text(encoding="utf-8")
+    text = original
+
+    text, _ = insert_after(
+        text,
+        "#define USB_FRMINTVL    12000\n",
+        DWC2_CONSTANTS,
+        "#define BCM2835_GMDIOCSR",
+        "BCM2835 DWC2 constants",
+    )
+    text, _ = insert_before(
+        text,
+        "static uint64_t dwc2_glbreg_read(void *ptr, hwaddr addr, int index,\n"
+        "                                 unsigned size)\n",
+        DWC2_HELPER,
+        "static void dwc2_bcm2835_mdio_command",
+        "BCM2835 MDIO helper",
+    )
+    text, _ = insert_before(
+        text,
+        "    if (addr > GINTSTS2) {\n"
+        "        qemu_log_mask(LOG_GUEST_ERROR, \"%s: Bad offset 0x%\"HWADDR_PRIx\"\\n\",\n"
+        "                      __func__, addr);\n"
+        "        return 0;\n"
+        "    }\n",
+        DWC2_READ_SWITCH,
+        "    case BCM2835_GMDIOCSR:\n        return s->bcm2835_mdio_csr;\n",
+        "BCM2835 sideband reads",
+    )
+    text, _ = insert_before(
+        text,
+        "    if (addr > GINTSTS2) {\n"
+        "        qemu_log_mask(LOG_GUEST_ERROR, \"%s: Bad offset 0x%\"HWADDR_PRIx\"\\n\",\n"
+        "                      __func__, addr);\n"
+        "        return;\n"
+        "    }\n",
+        DWC2_WRITE_SWITCH,
+        "    case BCM2835_GMDIOGEN:\n        dwc2_bcm2835_mdio_command(s, val);\n",
+        "BCM2835 sideband writes",
+    )
+    text, _ = insert_after(
+        text,
+        "    s->gintsts2 = 0;\n",
+        "\n" + DWC2_RESET,
+        "    s->bcm2835_mdio_csr = 0;\n",
+        "BCM2835 sideband reset",
+    )
+    text, _ = replace_once(
+        text,
+        "const VMStateDescription vmstate_dwc2_state = {\n"
+        "    .name = \"dwc2\",\n"
+        "    .version_id = 1,\n",
+        "const VMStateDescription vmstate_dwc2_state = {\n"
+        "    .name = \"dwc2\",\n"
+        "    .version_id = 2,\n",
+        "DWC2 VMState version",
+    )
+    text, _ = insert_after(
+        text,
+        "        VMSTATE_UINT32_ARRAY(glbreg, DWC2State,\n"
+        "                             DWC2_GLBREG_SIZE / sizeof(uint32_t)),\n",
+        DWC2_VMSTATE_FIELDS,
+        "        VMSTATE_UINT32_V(bcm2835_mdio_csr, DWC2State, 2),\n",
+        "BCM2835 sideband VMState fields",
+    )
+
+    return write_if_changed(DWC2_SOURCE, original, text)
 
 
 def main() -> int:
-    changed = False
-
-    changed |= update(
-        POWERMGT_HEADER,
-        ((POWERMGT_HEADER_FIELD, POWERMGT_HEADER_FIELD_NEW,
-          "PM_USB state field"),),
-    )
-    changed |= update(
-        POWERMGT_SOURCE,
-        (
-            (POWERMGT_CONSTANTS, POWERMGT_CONSTANTS_NEW,
-             "PM_USB constants"),
-            (POWERMGT_READ, POWERMGT_READ_NEW, "PM_USB read case"),
-            (POWERMGT_WRITE, POWERMGT_WRITE_NEW, "PM_USB write case"),
-            (POWERMGT_VMSTATE_VERSION, POWERMGT_VMSTATE_VERSION_NEW,
-             "power-manager VMState version"),
-            (POWERMGT_VMSTATE, POWERMGT_VMSTATE_NEW,
-             "PM_USB VMState field"),
-            (POWERMGT_RESET, POWERMGT_RESET_NEW, "PM_USB reset"),
-        ),
-    )
-    changed |= update(
-        DWC2_HEADER,
-        (
-            (DWC2_HEADER_COUNT, DWC2_HEADER_COUNT_NEW,
-             "BCM2835 PHY register count"),
-            (DWC2_HEADER_STATE, DWC2_HEADER_STATE_NEW,
-             "BCM2835 DWC2 state"),
-        ),
-    )
-    changed |= update(
-        DWC2_SOURCE,
-        (
-            (DWC2_CONSTANTS, DWC2_CONSTANTS_NEW,
-             "BCM2835 DWC2 constants"),
-            (DWC2_HELPER_ANCHOR, DWC2_HELPER_BLOCK,
-             "BCM2835 MDIO helper"),
-            (DWC2_READ_BODY, DWC2_READ_BODY_NEW,
-             "BCM2835 sideband reads"),
-            (DWC2_WRITE_BODY, DWC2_WRITE_BODY_NEW,
-             "BCM2835 sideband writes"),
-            (DWC2_RESET, DWC2_RESET_NEW, "BCM2835 sideband reset"),
-            (DWC2_VMSTATE_VERSION, DWC2_VMSTATE_VERSION_NEW,
-             "DWC2 VMState version"),
-            (DWC2_VMSTATE_FIELDS, DWC2_VMSTATE_FIELDS_NEW,
-             "BCM2835 sideband VMState fields"),
-        ),
+    changed = (
+        update_powermgt_header()
+        | update_powermgt_source()
+        | update_dwc2_header()
+        | update_dwc2_source()
     )
 
     if changed:
