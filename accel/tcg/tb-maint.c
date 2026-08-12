@@ -59,6 +59,7 @@ static bool tb_cmp(const void *ap, const void *bp)
 
     return ((tb_cflags(a) & CF_PCREL || a->pc == b->pc) &&
             a->cs_base == b->cs_base &&
+            a->tcg_ops == b->tcg_ops &&
             a->flags == b->flags &&
             (tb_cflags(a) & ~CF_INVALID) == (tb_cflags(b) & ~CF_INVALID) &&
             tb_page_addr0(a) == tb_page_addr0(b) &&
@@ -936,7 +937,7 @@ static void do_tb_phys_invalidate(TranslationBlock *tb, bool rm_from_page_list)
     /* remove the TB from the hash list */
     phys_pc = tb_page_addr0(tb);
     h = tb_hash_func(phys_pc, (orig_cflags & CF_PCREL ? 0 : tb->pc),
-                     tb->flags, tb->cs_base, orig_cflags);
+                     tb->flags, tb->cs_base, orig_cflags, tb->tcg_ops);
     if (qht_remove(&tb_ctx.htable, tb, h)) {
 
         /* remove the TB from the page list */
@@ -997,7 +998,7 @@ TranslationBlock *tb_link_page(TranslationBlock *tb)
 
     /* add in the hash table */
     h = tb_hash_func(tb_page_addr0(tb), (tb->cflags & CF_PCREL ? 0 : tb->pc),
-                     tb->flags, tb->cs_base, tb->cflags);
+                     tb->flags, tb->cs_base, tb->cflags, tb->tcg_ops);
     qht_insert(&tb_ctx.htable, tb, h, &existing_tb);
 
     /* remove TB from the page(s) if we couldn't insert it */

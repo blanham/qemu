@@ -63,9 +63,15 @@ static inline unsigned int tb_jmp_cache_hash_func(vaddr pc)
 
 static inline
 uint32_t tb_hash_func(tb_page_addr_t phys_pc, vaddr pc,
-                      uint32_t flags, uint64_t flags2, uint32_t cf_mask)
+                      uint32_t flags, uint64_t flags2, uint32_t cf_mask,
+                      const void *tcg_ops)
 {
-    return qemu_xxhash8(phys_pc, pc, flags2, flags, cf_mask);
+    /*
+     * Frontends may translate identical bytes at identical guest addresses
+     * differently.  Mix the frontend identity into the existing 64-bit key.
+     */
+    return qemu_xxhash8(phys_pc, pc,
+                        flags2 ^ (uintptr_t)tcg_ops, flags, cf_mask);
 }
 
 #endif

@@ -10,7 +10,7 @@
 
 int vc4_cpu_gdb_read_register(CPUState *cs, GByteArray *buf, int reg)
 {
-    CPUVC4State *env = cpu_env(cs);
+    CPUVC4State *env = vc4_cpu_env(cs);
 
     if (reg < 0 || reg >= VC4_NUM_REGS) {
         return 0;
@@ -20,7 +20,7 @@ int vc4_cpu_gdb_read_register(CPUState *cs, GByteArray *buf, int reg)
 
 int vc4_cpu_gdb_write_register(CPUState *cs, uint8_t *buf, int reg)
 {
-    CPUVC4State *env = cpu_env(cs);
+    CPUVC4State *env = vc4_cpu_env(cs);
 
     if (reg < 0 || reg >= VC4_NUM_REGS) {
         return 0;

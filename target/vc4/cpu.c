@@ -16,21 +16,30 @@
 #include "accel/tcg/cpu-ldst.h"
 #include "accel/tcg/cpu-ops.h"
 #include "tcg/debug-assert.h"
+#include "system/tcg.h"
 #include "hw/vc4/bcm2835_vc4_intc.h"
+
+QEMU_BUILD_BUG_ON(offsetof(VC4CPU, parent_obj) != 0);
+QEMU_BUILD_BUG_ON(offsetof(VC4CPU, env) != sizeof(CPUState));
+
+static inline CPUArchState *vc4_tcg_env(CPUState *cs)
+{
+    return (CPUArchState *)(void *)vc4_cpu_env(cs);
+}
 
 static void vc4_cpu_set_pc(CPUState *cs, vaddr value)
 {
-    cpu_env(cs)->pc = value;
+    vc4_cpu_env(cs)->pc = value;
 }
 
 static vaddr vc4_cpu_get_pc(CPUState *cs)
 {
-    return cpu_env(cs)->pc;
+    return vc4_cpu_env(cs)->pc;
 }
 
 static TCGTBCPUState vc4_get_tb_cpu_state(CPUState *cs)
 {
-    CPUVC4State *env = cpu_env(cs);
+    CPUVC4State *env = vc4_cpu_env(cs);
 
     return (TCGTBCPUState) {
         .pc = env->pc,
@@ -42,19 +51,19 @@ static void vc4_cpu_synchronize_from_tb(CPUState *cs,
                                         const TranslationBlock *tb)
 {
     tcg_debug_assert(!tcg_cflags_has(cs, CF_PCREL));
-    cpu_env(cs)->pc = tb->pc;
+    vc4_cpu_env(cs)->pc = tb->pc;
 }
 
 static void vc4_restore_state_to_opc(CPUState *cs,
                                      const TranslationBlock *tb,
                                      const uint64_t *data)
 {
-    cpu_env(cs)->pc = data[0];
+    vc4_cpu_env(cs)->pc = data[0];
 }
 
 static bool vc4_cpu_has_work(CPUState *cs)
 {
-    CPUVC4State *env = cpu_env(cs);
+    CPUVC4State *env = vc4_cpu_env(cs);
 
     return (env->sr & VC4_SR_I) &&
            cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
@@ -68,7 +77,7 @@ static int vc4_cpu_mmu_index(CPUState *cs, bool ifetch)
 static void vc4_cpu_reset_hold(Object *obj, ResetType type)
 {
     VC4CPUClass *vcc = VC4_CPU_GET_CLASS(obj);
-    CPUVC4State *env = cpu_env(CPU(obj));
+    CPUVC4State *env = vc4_cpu_env(CPU(obj));
 
     if (vcc->parent_phases.hold) {
         vcc->parent_phases.hold(obj, type);
@@ -97,6 +106,12 @@ static void vc4_cpu_realize(DeviceState *dev, Error **errp)
     VC4CPUClass *vcc = VC4_CPU_GET_CLASS(dev);
     Error *local_err = NULL;
 
+    if (qemu_tcg_mttcg_enabled()) {
+        error_setg(errp,
+                   "VideoCore IV requires single-threaded TCG for now");
+        return;
+    }
+
     cpu_exec_realizefn(cs, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
@@ -113,9 +128,14 @@ static const gchar *vc4_gdb_arch_name(CPUState *cs)
     return "videocore4";
 }
 
+static int64_t vc4_cpu_get_arch_id(CPUState *cs)
+{
+    return cs->cpu_index;
+}
+
 void vc4_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 {
-    CPUVC4State *env = cpu_env(cs);
+    CPUVC4State *env = vc4_cpu_env(cs);
     int i;
 
     qemu_fprintf(f, "pc=%08x sr=%08x\n", env->pc, env->sr);
@@ -159,18 +179,18 @@ static void vc4_cpu_set_irq(void *opaque, int irq, int level)
     }
 }
 
-static void vc4_irq_push(CPUVC4State *env, uint32_t value)
+static void vc4_irq_push(CPUState *cs, CPUVC4State *env, uint32_t value)
 {
     uint32_t sp = env->gpr[VC4_REG_SP] - 4;
 
     env->gpr[VC4_REG_SP] = sp;
-    cpu_stl_le_data(env, sp, value);
+    cpu_stl_le_data(vc4_tcg_env(cs), sp, value);
 }
 
 static bool vc4_cpu_enter_irq(VC4CPU *cpu)
 {
     CPUState *cs = CPU(cpu);
-    CPUVC4State *env = &cpu->env;
+    CPUVC4State *env = vc4_cpu_env(cs);
     uint32_t vector;
     uint32_t vector_base;
     uint32_t vector_entry;
@@ -186,15 +206,12 @@ static bool vc4_cpu_enter_irq(VC4CPU *cpu)
         env->gpr[VC4_REG_SP] = env->gpr[28];
     }
 
-    /*
-     * Hardware pushes PC and then SR onto the descending exception stack.
-     * RTI therefore sees SR at *SP and PC at *(SP + 4).
-     */
-    vc4_irq_push(env, env->pc);
-    vc4_irq_push(env, saved_sr);
+    vc4_irq_push(cs, env, env->pc);
+    vc4_irq_push(cs, env, saved_sr);
     env->exception_depth++;
 
-    vector_entry = cpu_ldl_le_data(env, vector_base + vector * 4);
+    vector_entry = cpu_ldl_le_data(vc4_tcg_env(cs),
+                                   vector_base + vector * 4);
 
     env->sr = saved_sr & ~(VC4_SR_U | VC4_SR_I | VC4_SR_S);
     if (vector_entry & 1) {
@@ -207,7 +224,7 @@ static bool vc4_cpu_enter_irq(VC4CPU *cpu)
 
 static void vc4_cpu_do_interrupt(CPUState *cs)
 {
-    CPUVC4State *env = cpu_env(cs);
+    CPUVC4State *env = vc4_cpu_env(cs);
 
     switch (cs->exception_index) {
     case VC4_EXCP_IRQ:
@@ -235,7 +252,7 @@ static void vc4_cpu_do_interrupt(CPUState *cs)
 
 static bool vc4_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
-    CPUVC4State *env = cpu_env(cs);
+    CPUVC4State *env = vc4_cpu_env(cs);
 
     if ((interrupt_request & CPU_INTERRUPT_HARD) &&
         (env->sr & VC4_SR_I)) {
@@ -292,6 +309,7 @@ static void vc4_cpu_class_init(ObjectClass *klass, const void *data)
 
     cc->class_by_name = vc4_cpu_class_by_name;
     cc->dump_state = vc4_cpu_dump_state;
+    cc->get_arch_id = vc4_cpu_get_arch_id;
     cc->set_pc = vc4_cpu_set_pc;
     cc->get_pc = vc4_cpu_get_pc;
     cc->gdb_read_register = vc4_cpu_gdb_read_register;

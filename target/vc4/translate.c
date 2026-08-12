@@ -12,13 +12,19 @@
 #include "qemu/bitops.h"
 #include "cpu.h"
 #include "tcg/tcg-op.h"
-#include "exec/helper-proto.h"
-#include "exec/helper-gen.h"
+#include "exec/helper-proto-common.h"
+#define HELPER_H "target/vc4/helper.h"
+#include "exec/helper-proto.h.inc"
+#undef HELPER_H
+#include "exec/helper-gen-common.h"
+#define HELPER_H "target/vc4/helper.h"
+#include "exec/helper-gen.h.inc"
+#undef HELPER_H
 #include "exec/translator.h"
 #include "exec/translation-block.h"
 #include "exec/log.h"
 
-#define HELPER_H "helper.h"
+#define HELPER_H "target/vc4/helper.h"
 #include "exec/helper-info.c.inc"
 #undef HELPER_H
 
@@ -79,7 +85,8 @@ static int32_t vc4_sext(uint32_t value, uint32_t sign_bit)
 
 static uint16_t vc4_lduw(DisasContext *ctx, vaddr addr)
 {
-    return translator_lduw_end(ctx->env, &ctx->base, addr, MO_LE);
+    return translator_lduw_end((CPUArchState *)(void *)ctx->env,
+                               &ctx->base, addr, MO_LE);
 }
 
 static TCGv_i32 vc4_get_reg(DisasContext *ctx, unsigned reg)
@@ -363,7 +370,7 @@ static void vc4_gen_alu(DisasContext *ctx, unsigned cond, unsigned op,
         tcg_gen_sar_i32(result, a, tmp);
         break;
     default:
-        gen_helper_complex_alu(result, tcg_constant_i32(op), a, b);
+        gen_helper_vc4_complex_alu(result, tcg_constant_i32(op), a, b);
         break;
     }
 
@@ -418,6 +425,32 @@ static MemOp vc4_store_mop(unsigned format)
     return mop[format & 3];
 }
 
+static void vc4_gen_qemu_st_i32(TCGv_i32 value, TCGv_i32 address,
+                                  TCGArg mmu_idx, MemOp memop)
+{
+#if TARGET_LONG_BITS == 64
+    TCGv_i64 wide = tcg_temp_new_i64();
+
+    tcg_gen_extu_i32_i64(wide, address);
+    tcg_gen_qemu_st_i32(value, wide, mmu_idx, memop);
+#else
+    tcg_gen_qemu_st_i32(value, address, mmu_idx, memop);
+#endif
+}
+
+static void vc4_gen_qemu_ld_i32(TCGv_i32 value, TCGv_i32 address,
+                                  TCGArg mmu_idx, MemOp memop)
+{
+#if TARGET_LONG_BITS == 64
+    TCGv_i64 wide = tcg_temp_new_i64();
+
+    tcg_gen_extu_i32_i64(wide, address);
+    tcg_gen_qemu_ld_i32(value, wide, mmu_idx, memop);
+#else
+    tcg_gen_qemu_ld_i32(value, address, mmu_idx, memop);
+#endif
+}
+
 static void vc4_gen_load_store_addr(DisasContext *ctx, unsigned cond,
                                     bool store, unsigned format, unsigned rd,
                                     TCGv_i32 address)
@@ -431,10 +464,10 @@ static void vc4_gen_load_store_addr(DisasContext *ctx, unsigned cond,
 
     skip = vc4_gen_skip_if_false(cond);
     if (store) {
-        tcg_gen_qemu_st_i32(vc4_get_reg(ctx, rd), address, 0,
+        vc4_gen_qemu_st_i32(vc4_get_reg(ctx, rd), address, 0,
                             vc4_store_mop(format));
     } else {
-        tcg_gen_qemu_ld_i32(value, address, 0, vc4_load_mop(format));
+        vc4_gen_qemu_ld_i32(value, address, 0, vc4_load_mop(format));
         vc4_set_reg(ctx, rd, value);
     }
     vc4_gen_end_predicate(skip);
@@ -467,10 +500,10 @@ static void vc4_gen_load_store_offset(DisasContext *ctx, unsigned cond,
     }
 
     if (store) {
-        tcg_gen_qemu_st_i32(vc4_get_reg(ctx, rd), address, 0,
+        vc4_gen_qemu_st_i32(vc4_get_reg(ctx, rd), address, 0,
                             vc4_store_mop(format));
     } else {
-        tcg_gen_qemu_ld_i32(value, address, 0, vc4_load_mop(format));
+        vc4_gen_qemu_ld_i32(value, address, 0, vc4_load_mop(format));
         vc4_set_reg(ctx, rd, value);
     }
 
@@ -575,7 +608,7 @@ static void vc4_gen_cmp_branch(DisasContext *ctx, unsigned cond,
 
 static void vc4_gen_illegal(DisasContext *ctx, uint16_t opcode)
 {
-    gen_helper_raise_illegal(tcg_env, tcg_constant_i32(ctx->pc),
+    gen_helper_vc4_raise_illegal(tcg_env, tcg_constant_i32(ctx->pc),
                              tcg_constant_i32(opcode));
     ctx->base.is_jmp = DISAS_NORETURN;
 }
@@ -588,14 +621,14 @@ static bool vc4_decode_scalar16(DisasContext *ctx, uint16_t insn)
     switch (insn) {
     case 0x0000:                    /* BKPT/HALT */
         tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
-        gen_helper_halt(tcg_env);
+        gen_helper_vc4_halt(tcg_env);
         ctx->base.is_jmp = DISAS_NORETURN;
         return true;
     case 0x0001:                    /* NOP */
         return true;
     case 0x0002:                    /* SLEEP */
         tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
-        gen_helper_halt(tcg_env);
+        gen_helper_vc4_halt(tcg_env);
         ctx->base.is_jmp = DISAS_NORETURN;
         return true;
     case 0x0003:                    /* USER */
@@ -624,7 +657,7 @@ static bool vc4_decode_scalar16(DisasContext *ctx, uint16_t insn)
         return true;
     }
     case 0x000a:                    /* RTI */
-        gen_helper_rti(tcg_env);
+        gen_helper_vc4_rti(tcg_env);
         ctx->base.is_jmp = DISAS_JUMP;
         return true;
     default:
@@ -675,7 +708,7 @@ static bool vc4_decode_scalar16(DisasContext *ctx, uint16_t insn)
             (lrpc || (start <= VC4_REG_PC &&
                       start + count > VC4_REG_PC));
 
-        gen_helper_push_pop(tcg_env,
+        gen_helper_vc4_push_pop(tcg_env,
                             tcg_constant_i32(push),
                             tcg_constant_i32(lrpc),
                             tcg_constant_i32(start),
@@ -896,7 +929,7 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
             tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
         }
         skip = vc4_gen_skip_if_false(cond);
-        gen_helper_div(result, vc4_get_reg(ctx, ra), vc4_get_reg(ctx, rb),
+        gen_helper_vc4_div(result, vc4_get_reg(ctx, ra), vc4_get_reg(ctx, rb),
                        tcg_constant_i32(a_unsigned),
                        tcg_constant_i32(b_unsigned));
         vc4_set_reg(ctx, rd, result);
@@ -943,7 +976,7 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
             tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
         }
         skip = vc4_gen_skip_if_false(cond);
-        gen_helper_mulhd(result, vc4_get_reg(ctx, ra), vc4_get_reg(ctx, rb),
+        gen_helper_vc4_mulhd(result, vc4_get_reg(ctx, ra), vc4_get_reg(ctx, rb),
                          tcg_constant_i32(a_unsigned),
                          tcg_constant_i32(b_unsigned));
         vc4_set_reg(ctx, rd, result);
@@ -1002,7 +1035,7 @@ static void vc4_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
 
-    ctx->env = cpu_env(cs);
+    ctx->env = vc4_cpu_env(cs);
 }
 
 static void vc4_tr_tb_start(DisasContextBase *dcbase, CPUState *cs)

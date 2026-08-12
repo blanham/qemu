@@ -9,9 +9,17 @@
 #include "qemu/log.h"
 #include "cpu.h"
 #include "hw/vc4/bcm2835_vc4_intc.h"
-#include "exec/helper-proto.h"
+#include "exec/helper-proto-common.h"
+#define HELPER_H "target/vc4/helper.h"
+#include "exec/helper-proto.h.inc"
+#undef HELPER_H
 #include "accel/tcg/cpu-ldst.h"
 #include "accel/tcg/cpu-loop.h"
+
+static inline CPUVC4State *vc4_helper_env(CPUArchState *envp)
+{
+    return (CPUVC4State *)(void *)envp;
+}
 
 static uint32_t vc4_bitreverse(uint32_t value)
 {
@@ -25,15 +33,15 @@ static uint32_t vc4_bitreverse(uint32_t value)
     return value;
 }
 
-uint32_t helper_complex_alu(uint32_t op, uint32_t a, uint32_t b)
+uint32_t helper_vc4_complex_alu(uint32_t op, uint32_t a, uint32_t b)
 {
     unsigned shift = b & 31;
     unsigned width;
 
     switch (op) {
-    case 9:                         /* ROR */
+    case 9:
         return ror32(a, shift);
-    case 14:                        /* EXTU */
+    case 14:
         width = b;
         if (width == 0) {
             return 0;
@@ -42,17 +50,17 @@ uint32_t helper_complex_alu(uint32_t op, uint32_t a, uint32_t b)
             return a;
         }
         return extract32(a, 0, width);
-    case 15:                        /* MAX */
+    case 15:
         return (int32_t)a > (int32_t)b ? a : b;
-    case 16:                        /* BSET */
+    case 16:
         return a | (1u << shift);
-    case 17:                        /* MIN */
+    case 17:
         return (int32_t)a < (int32_t)b ? a : b;
-    case 18:                        /* BCLR */
+    case 18:
         return a & ~(1u << shift);
-    case 20:                        /* BCHG */
+    case 20:
         return a ^ (1u << shift);
-    case 24:                        /* EXTS */
+    case 24:
         width = b;
         if (width == 0) {
             return 0;
@@ -61,19 +69,19 @@ uint32_t helper_complex_alu(uint32_t op, uint32_t a, uint32_t b)
             return a;
         }
         return sextract32(a, 0, width);
-    case 27:                        /* CLZ */
+    case 27:
         return b ? clz32(b) : 32;
-    case 29:                        /* BREV */
+    case 29:
         return vc4_bitreverse(b);
-    case 31:                        /* ABS */
+    case 31:
         return b == INT32_MIN ? b : ABS((int32_t)b);
     default:
         return 0;
     }
 }
 
-uint32_t helper_div(uint32_t a, uint32_t b,
-                    uint32_t a_unsigned, uint32_t b_unsigned)
+uint32_t helper_vc4_div(uint32_t a, uint32_t b,
+                        uint32_t a_unsigned, uint32_t b_unsigned)
 {
     if (b == 0) {
         return UINT32_MAX;
@@ -94,8 +102,8 @@ uint32_t helper_div(uint32_t a, uint32_t b,
     return (int32_t)a / (int32_t)b;
 }
 
-uint32_t helper_mulhd(uint32_t a, uint32_t b,
-                      uint32_t a_unsigned, uint32_t b_unsigned)
+uint32_t helper_vc4_mulhd(uint32_t a, uint32_t b,
+                          uint32_t a_unsigned, uint32_t b_unsigned)
 {
     if (a_unsigned && b_unsigned) {
         return ((uint64_t)a * (uint64_t)b) >> 32;
@@ -109,64 +117,66 @@ uint32_t helper_mulhd(uint32_t a, uint32_t b,
     return ((int64_t)(int32_t)a * (int64_t)(int32_t)b) >> 32;
 }
 
-static void vc4_push(CPUVC4State *env, unsigned reg)
+static void vc4_push(CPUArchState *envp, CPUVC4State *env, unsigned reg)
 {
     uint32_t sp = env->gpr[VC4_REG_SP] - 4;
 
     env->gpr[VC4_REG_SP] = sp;
-    cpu_stl_le_data(env, sp, vc4_env_get_reg(env, reg));
+    cpu_stl_le_data(envp, sp, vc4_env_get_reg(env, reg));
 }
 
-static void vc4_pop(CPUVC4State *env, unsigned reg)
+static void vc4_pop(CPUArchState *envp, CPUVC4State *env, unsigned reg)
 {
     uint32_t sp = env->gpr[VC4_REG_SP];
-    uint32_t value = cpu_ldl_le_data(env, sp);
+    uint32_t value = cpu_ldl_le_data(envp, sp);
 
     vc4_env_set_reg(env, reg, value);
     env->gpr[VC4_REG_SP] = sp + 4;
 }
 
-void helper_push_pop(CPUVC4State *env, uint32_t push, uint32_t lrpc,
-                     uint32_t start, uint32_t count)
+void helper_vc4_push_pop(CPUArchState *envp, uint32_t push, uint32_t lrpc,
+                         uint32_t start, uint32_t count)
 {
+    CPUVC4State *env = vc4_helper_env(envp);
     int i;
 
     if (push) {
         if (lrpc) {
-            vc4_push(env, VC4_REG_LR);
+            vc4_push(envp, env, VC4_REG_LR);
         }
         if (lrpc && (((count - 1) & 0xf) == 0xf)) {
             if ((count - 1) == 0x1f) {
-                vc4_push(env, start);
+                vc4_push(envp, env, start);
             }
         } else {
             for (i = 0; i < count; i++) {
-                vc4_push(env, (start + i) % VC4_NUM_REGS);
+                vc4_push(envp, env, (start + i) % VC4_NUM_REGS);
             }
         }
     } else {
         if (lrpc && (((count - 1) & 0xf) == 0xf)) {
             if ((count - 1) == 0x1f) {
-                vc4_pop(env, start);
+                vc4_pop(envp, env, start);
             }
         } else {
             for (i = count - 1; i >= 0; i--) {
-                vc4_pop(env, (start + i) % VC4_NUM_REGS);
+                vc4_pop(envp, env, (start + i) % VC4_NUM_REGS);
             }
         }
         if (lrpc) {
-            vc4_pop(env, VC4_REG_PC);
+            vc4_pop(envp, env, VC4_REG_PC);
         }
     }
 }
 
-void helper_rti(CPUVC4State *env)
+void helper_vc4_rti(CPUArchState *envp)
 {
-    VC4CPU *cpu = env_archcpu(env);
+    CPUVC4State *env = vc4_helper_env(envp);
+    VC4CPU *cpu = vc4_env_archcpu(env);
     uint32_t sp = env->gpr[VC4_REG_SP];
 
-    env->sr = cpu_ldl_le_data(env, sp);
-    env->pc = cpu_ldl_le_data(env, sp + 4);
+    env->sr = cpu_ldl_le_data(envp, sp);
+    env->pc = cpu_ldl_le_data(envp, sp + 4);
     env->gpr[VC4_REG_SP] = sp + 8;
 
     if (env->exception_depth) {
@@ -182,10 +192,11 @@ void helper_rti(CPUVC4State *env)
     }
 }
 
-G_NORETURN void helper_raise_illegal(CPUVC4State *env, uint32_t pc,
-                                     uint32_t opcode)
+G_NORETURN void helper_vc4_raise_illegal(CPUArchState *envp, uint32_t pc,
+                                         uint32_t opcode)
 {
-    CPUState *cs = env_cpu(env);
+    CPUVC4State *env = vc4_helper_env(envp);
+    CPUState *cs = env_cpu(envp);
 
     env->pc = pc;
     cs->exception_index = VC4_EXCP_ILLEGAL;
@@ -195,10 +206,12 @@ G_NORETURN void helper_raise_illegal(CPUVC4State *env, uint32_t pc,
     cpu_loop_exit(cs);
 }
 
-G_NORETURN void helper_halt(CPUVC4State *env)
+G_NORETURN void helper_vc4_halt(CPUArchState *envp)
 {
-    CPUState *cs = env_cpu(env);
+    CPUVC4State *env = vc4_helper_env(envp);
+    CPUState *cs = env_cpu(envp);
 
+    qemu_log_mask(CPU_LOG_EXEC, "VideoCore IV: HALT at 0x%08x\n", env->pc);
     cs->halted = 1;
     cpu_loop_exit(cs);
 }

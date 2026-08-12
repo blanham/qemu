@@ -90,61 +90,6 @@ replace_once(
     "VC4-first CPU realization order",
 )
 
-# Generic TCG historically assumes one guest ISA per executable and only runs
-# the first realized CPU class's translator initializer.  A heterogeneous
-# executable needs each distinct TCGCPUOps frontend to register its globals
-# before either ISA emits code.
-tcg_exec = ROOT / "accel/tcg/cpu-exec.c"
-replace_once(
-    tcg_exec,
-    (
-        "bool tcg_exec_realizefn(CPUState *cpu, Error **errp)\n"
-        "{\n"
-        "    static bool tcg_target_initialized;\n\n"
-        "    if (!tcg_target_initialized) {\n"
-        "        /* Check mandatory TCGCPUOps handlers */\n"
-        "        const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;\n"
-        "#ifndef CONFIG_USER_ONLY\n"
-        "        assert(tcg_ops->cpu_exec_halt);\n"
-        "        assert(tcg_ops->cpu_exec_interrupt);\n"
-        "        assert(tcg_ops->cpu_exec_reset);\n"
-        "        assert(tcg_ops->pointer_wrap);\n"
-        "#endif /* !CONFIG_USER_ONLY */\n"
-        "        assert(tcg_ops->translate_code);\n"
-        "        assert(tcg_ops->get_tb_cpu_state);\n"
-        "        assert(tcg_ops->mmu_index);\n"
-        "        tcg_ops->initialize();\n"
-        "        tcg_target_initialized = true;\n"
-        "    }\n\n"
-    ),
-    (
-        "bool tcg_exec_realizefn(CPUState *cpu, Error **errp)\n"
-        "{\n"
-        "    static GHashTable *initialized_tcg_ops;\n"
-        "    const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;\n\n"
-        "    if (!initialized_tcg_ops) {\n"
-        "        initialized_tcg_ops = g_hash_table_new(g_direct_hash,\n"
-        "                                                g_direct_equal);\n"
-        "    }\n\n"
-        "    if (!g_hash_table_contains(initialized_tcg_ops, tcg_ops)) {\n"
-        "        /* Check mandatory TCGCPUOps handlers for each frontend. */\n"
-        "#ifndef CONFIG_USER_ONLY\n"
-        "        assert(tcg_ops->cpu_exec_halt);\n"
-        "        assert(tcg_ops->cpu_exec_interrupt);\n"
-        "        assert(tcg_ops->cpu_exec_reset);\n"
-        "        assert(tcg_ops->pointer_wrap);\n"
-        "#endif /* !CONFIG_USER_ONLY */\n"
-        "        assert(tcg_ops->translate_code);\n"
-        "        assert(tcg_ops->get_tb_cpu_state);\n"
-        "        assert(tcg_ops->mmu_index);\n"
-        "        tcg_ops->initialize();\n"
-        "        g_hash_table_add(initialized_tcg_ops, (gpointer)tcg_ops);\n"
-        "    }\n\n"
-    ),
-    "per-frontend TCG initialization",
-)
-
-
 smoke = ROOT / "scripts/vc4/arm-release-smoke.py"
 replace_once(
     smoke,

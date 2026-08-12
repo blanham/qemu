@@ -69,6 +69,9 @@ struct TranslationBlock {
      */
     uint64_t cs_base;
 
+    /* TCG frontend which generated this block (normally CPUClass::tcg_ops). */
+    const void *tcg_ops;
+
     uint32_t flags; /* flags defining in which context the code was generated */
     uint32_t cflags;    /* compile flags */
 

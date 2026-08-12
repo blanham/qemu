@@ -4,13 +4,13 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-DEF_HELPER_FLAGS_3(complex_alu, TCG_CALL_NO_RWG_SE,
+DEF_HELPER_FLAGS_3(vc4_complex_alu, TCG_CALL_NO_RWG_SE,
                    i32, i32, i32, i32)
-DEF_HELPER_FLAGS_4(div, TCG_CALL_NO_RWG_SE,
+DEF_HELPER_FLAGS_4(vc4_div, TCG_CALL_NO_RWG_SE,
                    i32, i32, i32, i32, i32)
-DEF_HELPER_FLAGS_4(mulhd, TCG_CALL_NO_RWG_SE,
+DEF_HELPER_FLAGS_4(vc4_mulhd, TCG_CALL_NO_RWG_SE,
                    i32, i32, i32, i32, i32)
-DEF_HELPER_5(push_pop, void, env, i32, i32, i32, i32)
-DEF_HELPER_1(rti, void, env)
-DEF_HELPER_3(raise_illegal, noreturn, env, i32, i32)
-DEF_HELPER_1(halt, noreturn, env)
+DEF_HELPER_5(vc4_push_pop, void, env, i32, i32, i32, i32)
+DEF_HELPER_1(vc4_rti, void, env)
+DEF_HELPER_3(vc4_raise_illegal, noreturn, env, i32, i32)
+DEF_HELPER_1(vc4_halt, noreturn, env)

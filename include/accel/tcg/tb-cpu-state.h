@@ -17,6 +17,9 @@ typedef struct TCGTBCPUState {
     uint32_t flags;
     uint32_t cflags;
     uint64_t cs_base;
+
+    /* Distinguish translation frontends in a heterogeneous process. */
+    const void *tcg_ops;
 } TCGTBCPUState;
 
 #endif

@@ -166,6 +166,7 @@ static bool tb_lookup_cmp(const void *p, const void *d)
     if ((tb_cflags(tb) & CF_PCREL || tb->pc == desc->s.pc) &&
         tb_page_addr0(tb) == desc->page_addr0 &&
         tb->cs_base == desc->s.cs_base &&
+        tb->tcg_ops == desc->s.tcg_ops &&
         tb->flags == desc->s.flags &&
         tb_cflags(tb) == desc->s.cflags) {
         /* check next page if needed */
@@ -209,7 +210,7 @@ static TranslationBlock *tb_htable_lookup(CPUState *cpu, TCGTBCPUState s)
     }
     desc.page_addr0 = phys_pc;
     h = tb_hash_func(phys_pc, (s.cflags & CF_PCREL ? 0 : s.pc),
-                     s.flags, s.cs_base, s.cflags);
+                     s.flags, s.cs_base, s.cflags, s.tcg_ops);
     return qht_lookup_custom(&tb_ctx.htable, &desc, h, tb_lookup_cmp);
 }
 
@@ -243,6 +244,7 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
     if (likely(tb &&
                jc->array[hash].pc == s.pc &&
                tb->cs_base == s.cs_base &&
+               tb->tcg_ops == s.tcg_ops &&
                tb->flags == s.flags &&
                tb_cflags(tb) == s.cflags)) {
         goto hit;
@@ -389,6 +391,7 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     cpu->neg.can_do_io = true;
 
     TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+    s.tcg_ops = cpu->cc->tcg_ops;
     s.cflags = curr_cflags(cpu);
 
     if (check_for_breakpoints(cpu, s.pc, &s.cflags)) {
@@ -945,6 +948,7 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
         while (!cpu_handle_interrupt(cpu, &last_tb)) {
             TranslationBlock *tb;
             TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
+            s.tcg_ops = cpu->cc->tcg_ops;
             s.cflags = cpu->cflags_next_tb;
 
             /*
@@ -1048,25 +1052,37 @@ int cpu_exec(CPUState *cpu)
     return ret;
 }
 
+static GHashTable *tcg_initialized_ops;
+
+void tcg_exec_initialize_frontend(const TCGCPUOps *tcg_ops)
+{
+    if (!tcg_initialized_ops) {
+        tcg_initialized_ops = g_hash_table_new(g_direct_hash, g_direct_equal);
+    }
+
+    if (g_hash_table_contains(tcg_initialized_ops, tcg_ops)) {
+        return;
+    }
+
+    /* Check mandatory TCGCPUOps handlers for every linked frontend. */
+#ifndef CONFIG_USER_ONLY
+    assert(tcg_ops->cpu_exec_halt);
+    assert(tcg_ops->cpu_exec_interrupt);
+    assert(tcg_ops->cpu_exec_reset);
+    assert(tcg_ops->pointer_wrap);
+#endif /* !CONFIG_USER_ONLY */
+    assert(tcg_ops->translate_code);
+    assert(tcg_ops->get_tb_cpu_state);
+    assert(tcg_ops->mmu_index);
+    tcg_ops->initialize();
+    g_hash_table_add(tcg_initialized_ops, (gpointer)tcg_ops);
+}
+
 bool tcg_exec_realizefn(CPUState *cpu, Error **errp)
 {
-    static bool tcg_target_initialized;
+    const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
 
-    if (!tcg_target_initialized) {
-        /* Check mandatory TCGCPUOps handlers */
-        const TCGCPUOps *tcg_ops = cpu->cc->tcg_ops;
-#ifndef CONFIG_USER_ONLY
-        assert(tcg_ops->cpu_exec_halt);
-        assert(tcg_ops->cpu_exec_interrupt);
-        assert(tcg_ops->cpu_exec_reset);
-        assert(tcg_ops->pointer_wrap);
-#endif /* !CONFIG_USER_ONLY */
-        assert(tcg_ops->translate_code);
-        assert(tcg_ops->get_tb_cpu_state);
-        assert(tcg_ops->mmu_index);
-        tcg_ops->initialize();
-        tcg_target_initialized = true;
-    }
+    tcg_exec_initialize_frontend(tcg_ops);
 
     cpu->tb_jmp_cache = g_new0(CPUJumpCache, 1);
     tlb_init(cpu);
