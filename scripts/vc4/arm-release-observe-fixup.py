@@ -55,6 +55,41 @@ replace_once(
     "VC4 observation read cases",
 )
 
+# The first realized CPU is QEMU's boot CPU and anchors the initial TCG
+# execution order.  This fixture previously realized the powered-off A53 first
+# and the runnable firmware VPU second.  Create the VPU first, matching BCM2837
+# boot semantics and guaranteeing that the initial runnable vCPU is VC4.
+replace_once(
+    machine,
+    (
+        "    arm_obj = object_new(ARM_CPU_TYPE_NAME(\"cortex-a53\"));\n"
+        "    s->arm_cpu = CPU(arm_obj);\n"
+        "    s->arm_cpu->start_powered_off = true;\n"
+        "    if (!qdev_realize(DEVICE(s->arm_cpu), NULL, &error_fatal)) {\n"
+        "        g_assert_not_reached();\n"
+        "    }\n\n"
+        "    s->vc4_cpu = vc4_arm_release_new_vpu();\n"
+        "    s->vc4_cpu->start_powered_off = false;\n"
+        "    if (!qdev_realize(DEVICE(s->vc4_cpu), NULL, &error_fatal)) {\n"
+        "        g_assert_not_reached();\n"
+        "    }\n"
+    ),
+    (
+        "    s->vc4_cpu = vc4_arm_release_new_vpu();\n"
+        "    s->vc4_cpu->start_powered_off = false;\n"
+        "    if (!qdev_realize(DEVICE(s->vc4_cpu), NULL, &error_fatal)) {\n"
+        "        g_assert_not_reached();\n"
+        "    }\n\n"
+        "    arm_obj = object_new(ARM_CPU_TYPE_NAME(\"cortex-a53\"));\n"
+        "    s->arm_cpu = CPU(arm_obj);\n"
+        "    s->arm_cpu->start_powered_off = true;\n"
+        "    if (!qdev_realize(DEVICE(s->arm_cpu), NULL, &error_fatal)) {\n"
+        "        g_assert_not_reached();\n"
+        "    }\n"
+    ),
+    "VC4-first CPU realization order",
+)
+
 
 smoke = ROOT / "scripts/vc4/arm-release-smoke.py"
 replace_once(
