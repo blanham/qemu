@@ -57,6 +57,7 @@ jobs:
             scripts/vc4/raspi3-scalar-fpu-smoke.py \
             scripts/vc4/raspi3-pcrel48-smoke.py \
             scripts/vc4/raspi3-table-branch-smoke.py \
+            scripts/vc4/raspi3-vector80-delay-smoke.py \
             scripts/vc4/raspi3-cprman-sdc-smoke.py \
             scripts/vc4/raspi3-sdramc-init-smoke.py \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
@@ -67,6 +68,7 @@ jobs:
             scripts/vc4/sdramc-init-fixup.py \
             scripts/vc4/pcrel48-fixup.py \
             scripts/vc4/table-branch-fixup.py \
+            scripts/vc4/vector80-delay-fixup.py \
             scripts/vc4/stock-icount-fixup.py
 
       - name: Materialize boot-critical hardware, ISA, and probe contracts
@@ -76,6 +78,7 @@ jobs:
           python3 scripts/vc4/sdramc-init-fixup.py
           python3 scripts/vc4/pcrel48-fixup.py
           python3 scripts/vc4/table-branch-fixup.py
+          python3 scripts/vc4/vector80-delay-fixup.py
           python3 scripts/vc4/stock-icount-fixup.py
           python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-state.py
           git diff --check
@@ -134,6 +137,11 @@ jobs:
           python3 scripts/vc4/raspi3-table-branch-smoke.py \
             build/qemu-system-aarch64
 
+      - name: Validate discard-only vector80 settling delay
+        run: |
+          python3 scripts/vc4/raspi3-vector80-delay-smoke.py \
+            build/qemu-system-aarch64
+
       - name: Validate CPRMAN SDRAM-clock UPDATE and ACCPT
         run: |
           python3 scripts/vc4/raspi3-cprman-sdc-smoke.py \
@@ -144,7 +152,7 @@ jobs:
           python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture next official bootcode barrier after image power-up
+      - name: Capture next official bootcode barrier after vector delay
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
@@ -153,17 +161,15 @@ jobs:
             --icount-shift 10 \
             --barrier-is-success
 
-      - name: Commit exact tested PM_IMAGE power contract
+      - name: Commit exact tested vector80 delay contract
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
           git add \
-            hw/misc/bcm2835_powermgt.c \
-            include/hw/misc/bcm2835_powermgt.h \
-            scripts/vc4/raspi3-stock-bootcode-state.py
+            target/vc4/translate.c
           if git diff --cached --quiet; then
-            echo 'PM_IMAGE and deterministic probe contracts were already materialized.'
+            echo 'Discard-only vector80 delay decoding was already materialized.'
           else
-            git commit -m "hw/misc: implement BCM2835 PM_IMAGE handshake"
+            git commit -m "target/vc4: accept discard-only vector80 delay"
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
