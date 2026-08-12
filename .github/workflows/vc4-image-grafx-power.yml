@@ -1,0 +1,121 @@
+name: VC4 image and graphics power bring-up
+
+on:
+  push:
+    branches:
+      - agent/vc4-image-grafx-power-v3
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Download pinned official bootcode.bin
+        run: |
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
+          test "$(stat --format=%s /tmp/bootcode.bin)" -le 131072
+          wc -c /tmp/bootcode.bin
+          sha256sum /tmp/bootcode.bin
+
+      - name: Validate source and scripts
+        run: |
+          git diff --check origin/agent/vc4-stock-bootcode...HEAD
+          python3 -m py_compile \
+            scripts/vc4/raspi3-image-grafx-power-smoke.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-bootrom-0200-smoke.py \
+            scripts/vc4/raspi3-otp-read-smoke.py \
+            scripts/vc4/raspi3-pm-image-smoke.py \
+            scripts/vc4/raspi3-scalar-fpu-smoke.py \
+            scripts/vc4/raspi3-pcrel48-smoke.py \
+            scripts/vc4/raspi3-table-branch-smoke.py \
+            scripts/vc4/raspi3-cprman-sdc-smoke.py \
+            scripts/vc4/raspi3-sdramc-init-smoke.py
+
+      - name: Materialize retained boot-critical contracts
+        run: |
+          python3 scripts/vc4/cprman-sdc-handshake-fixup.py
+          python3 scripts/vc4/sdramc-init-fixup.py
+          python3 scripts/vc4/pcrel48-fixup.py
+          python3 scripts/vc4/table-branch-fixup.py
+          python3 scripts/vc4/stock-icount-fixup.py
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-state.py
+          git diff --check
+
+      - name: Configure linked guest targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build linked AArch64 and native VC4 executables
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '=== compiler and linker diagnostics ==='
+            grep -n -E 'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-build.log | tail -n 240 || true
+            echo '=== final 260 build lines ==='
+            tail -n 260 /tmp/vc4-build.log
+            exit "$rc"
+          fi
+          echo 'Heterogeneous AArch64/VC4 build completed successfully.'
+
+      - name: Preserve existing boot and scalar regressions
+        run: |
+          python3 scripts/vc4/raspi3-otp-read-smoke.py build/qemu-system-aarch64
+          python3 scripts/vc4/raspi3-pm-image-smoke.py build/qemu-system-aarch64
+          python3 scripts/vc4/raspi3-bootrom-0200-smoke.py build/qemu-system-aarch64
+          python3 scripts/vc4/raspi3-scalar-fpu-smoke.py build/qemu-system-aarch64
+          python3 scripts/vc4/raspi3-pcrel48-smoke.py build/qemu-system-aarch64
+          python3 scripts/vc4/raspi3-table-branch-smoke.py build/qemu-system-aarch64
+          python3 scripts/vc4/raspi3-cprman-sdc-smoke.py build/qemu-system-aarch64
+          python3 scripts/vc4/raspi3-sdramc-init-smoke.py build/qemu-system-aarch64
+
+      - name: Validate IMAGE and GRAFX power-domain handshakes
+        run: |
+          python3 scripts/vc4/raspi3-image-grafx-power-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Capture next official bootcode barrier
+        run: |
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --seconds 10 \
+            --sample-interval 0.25 \
+            --icount-shift 10 \
+            --barrier-is-success
