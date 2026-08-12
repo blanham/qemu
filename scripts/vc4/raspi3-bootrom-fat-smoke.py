@@ -24,8 +24,13 @@ FAT_COUNT = 2
 FAT_SECTORS = 2048
 SECTORS_PER_CLUSTER = 1
 ROOT_CLUSTER = 2
-BOOT_CLUSTERS = (5, 9, 7)
-BOOT_FILE_SIZE = 1300
+BOOT_ENTRY = 0x8000
+BOOT_PAYLOAD_SIZE = 1300
+BOOT_FILE_SIZE = BOOT_ENTRY + BOOT_PAYLOAD_SIZE
+BOOT_CLUSTER_COUNT = (BOOT_FILE_SIZE + SECTOR_SIZE - 1) // SECTOR_SIZE
+BOOT_CLUSTERS = (5, 9, 7) + tuple(
+    range(10, 10 + BOOT_CLUSTER_COUNT - 3)
+)
 
 PM_PROC_ARM = 0x3F100110
 PM_PROC_GPU = 0x7E100110
@@ -47,6 +52,7 @@ def word(value: int) -> bytes:
 
 
 def vc4_alu_imm32(op: int, rd: int, value: int) -> bytes:
+    """Encode the scalar 48-bit ALU-immediate form."""
     return half(0xE800 | ((op & 0x1F) << 5) | (rd & 0x1F)) + word(value)
 
 
@@ -76,30 +82,33 @@ def a64_movk(rd: int, imm16: int, shift: int = 0, *, sf: bool = True) -> int:
 
 
 def build_bootcode() -> bytes:
-    bootcode = bytearray()
+    # The BCM2837 ROM loads the entire file at VPU cache address zero and
+    # transfers control to 0x8000.  Preserve the leading 32 KiB gap found in
+    # production bootcode.bin rather than placing synthetic code at offset 0.
+    program = bytearray()
 
     # Prove that code is executing from the VPU-private cache while accesses
     # above 128 KiB still reach shared SDRAM through the GPU bus.
-    bootcode += vc4_mov32(0, VPU_MARKER_ADDR)
-    bootcode += vc4_mov32(1, VPU_MARKER_VALUE)
-    bootcode += vc4_memory_offset(True, 1, 0, 0)
+    program += vc4_mov32(0, VPU_MARKER_ADDR)
+    program += vc4_mov32(1, VPU_MARKER_VALUE)
+    program += vc4_memory_offset(True, 1, 0, 0)
 
-    bootcode += vc4_mov32(0, PM_PROC_GPU & ~0xFFF)
+    program += vc4_mov32(0, PM_PROC_GPU & ~0xFFF)
     for requested in (0x01, 0x05, 0x0D, 0x2D, 0x6D):
-        bootcode += vc4_mov32(1, 0x5A000000 | requested)
-        bootcode += vc4_memory_offset(True, 1, 0,
-                                      PM_PROC_GPU & 0xFFF)
+        program += vc4_mov32(1, 0x5A000000 | requested)
+        program += vc4_memory_offset(True, 1, 0,
+                                     PM_PROC_GPU & 0xFFF)
 
-    bootcode += half(0x0000)  # development HALT
-    if len(bootcode) > BOOT_FILE_SIZE:
-        raise AssertionError("test bootcode no longer fits synthetic file")
+    program += half(0x0000)  # architectural halt
+    if len(program) > BOOT_PAYLOAD_SIZE:
+        raise AssertionError("test program no longer fits synthetic payload")
 
-    # The useful program is in cluster 5, but the declared file crosses the
-    # deliberately fragmented 5 -> 9 -> 7 chain.  Machine initialization must
-    # traverse and read the entire chain before the VPU is allowed to run.
-    bootcode += bytes((index * 37 + 11) & 0xFF
-                      for index in range(BOOT_FILE_SIZE - len(bootcode)))
-    return bytes(bootcode)
+    program += bytes((index * 37 + 11) & 0xFF
+                     for index in range(BOOT_PAYLOAD_SIZE - len(program)))
+    bootcode = bytes(BOOT_ENTRY) + bytes(program)
+    if len(bootcode) != BOOT_FILE_SIZE:
+        raise AssertionError("unexpected synthetic bootcode size")
+    return bootcode
 
 
 def build_arm_payload() -> list[int]:
@@ -128,6 +137,12 @@ def cluster_lba(cluster: int) -> int:
 def build_sd_image(path: Path, bootcode: bytes) -> None:
     if len(bootcode) != BOOT_FILE_SIZE:
         raise ValueError("unexpected synthetic bootcode size")
+    if len(BOOT_CLUSTERS) != BOOT_CLUSTER_COUNT:
+        raise ValueError("synthetic cluster chain length mismatch")
+    if len(set(BOOT_CLUSTERS)) != len(BOOT_CLUSTERS):
+        raise ValueError("synthetic cluster chain contains duplicates")
+    if max(BOOT_CLUSTERS) * 4 >= SECTOR_SIZE:
+        raise ValueError("synthetic cluster chain no longer fits compact FAT")
 
     with path.open("w+b") as image:
         image.truncate(IMAGE_SIZE)
@@ -186,10 +201,12 @@ def build_sd_image(path: Path, bootcode: bytes) -> None:
             0: 0x0FFFFFF8,
             1: 0xFFFFFFFF,
             ROOT_CLUSTER: 0x0FFFFFFF,
-            BOOT_CLUSTERS[0]: BOOT_CLUSTERS[1],
-            BOOT_CLUSTERS[1]: BOOT_CLUSTERS[2],
-            BOOT_CLUSTERS[2]: 0x0FFFFFFF,
         }
+        for index, cluster in enumerate(BOOT_CLUSTERS):
+            fat_entries[cluster] = (
+                0x0FFFFFFF if index == len(BOOT_CLUSTERS) - 1
+                else BOOT_CLUSTERS[index + 1]
+            )
         for cluster, value in fat_entries.items():
             struct.pack_into("<I", fat, cluster * 4, value)
         for fat_index in range(FAT_COUNT):
@@ -207,8 +224,8 @@ def build_sd_image(path: Path, bootcode: bytes) -> None:
 
         for index, cluster in enumerate(BOOT_CLUSTERS):
             chunk = bootcode[index * SECTOR_SIZE:(index + 1) * SECTOR_SIZE]
-            sector = chunk.ljust(SECTOR_SIZE, b"\x00")
-            write_sector(image, cluster_lba(cluster), sector)
+            write_sector(image, cluster_lba(cluster),
+                         chunk.ljust(SECTOR_SIZE, b"\x00"))
 
 
 class LineSocket:
@@ -399,7 +416,10 @@ def main() -> int:
             print(
                 "Raspberry Pi FAT32 boot-ROM chain passed: "
                 f"cpus={len(qom_types)} partition-lba={PARTITION_LBA} "
-                f"clusters={'->'.join(str(c) for c in BOOT_CLUSTERS)} "
+                f"entry=0x{BOOT_ENTRY:08x} "
+                f"clusters={BOOT_CLUSTERS[0]}->{BOOT_CLUSTERS[1]}->"
+                f"{BOOT_CLUSTERS[2]}->...->{BOOT_CLUSTERS[-1]} "
+                f"cluster-count={len(BOOT_CLUSTERS)} "
                 f"boot-bytes={BOOT_FILE_SIZE} "
                 f"vpu-marker=0x{vpu_marker:08x} "
                 f"pm-proc=0x{proc_state:08x} "
