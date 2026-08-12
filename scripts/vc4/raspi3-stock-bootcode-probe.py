@@ -26,6 +26,7 @@ SECTORS_PER_CLUSTER = 1
 ROOT_CLUSTER = 2
 FIRST_BOOT_CLUSTER = 5
 BOOT_CACHE_SIZE = 128 * 1024
+BOOT_ENTRY = 0x8000
 
 ILLEGAL_RE = re.compile(
     r"VideoCore IV: unimplemented opcode 0x([0-9a-fA-F]+) "
@@ -56,6 +57,10 @@ def build_sd_image(path: Path, bootcode: bytes) -> tuple[int, int]:
         raise ValueError(
             f"bootcode.bin has {len(bootcode)} bytes; "
             f"VPU boot cache has {BOOT_CACHE_SIZE}"
+        )
+    if len(bootcode) <= BOOT_ENTRY:
+        raise ValueError(
+            f"bootcode.bin has no bytes at VPU entry 0x{BOOT_ENTRY:x}"
         )
 
     cluster_count = (len(bootcode) + SECTOR_SIZE - 1) // SECTOR_SIZE
@@ -179,6 +184,12 @@ def main() -> int:
 
     bootcode = bootcode_path.read_bytes()
     digest = hashlib.sha256(bootcode).hexdigest()
+    first_nonzero = next(
+        (index for index, value in enumerate(bootcode) if value),
+        None,
+    )
+    if first_nonzero is None:
+        raise ValueError("bootcode.bin contains only zero bytes")
 
     with tempfile.TemporaryDirectory(prefix="vc4-stock-bootcode-") as tmp_s:
         tmp = Path(tmp_s)
@@ -223,10 +234,15 @@ def main() -> int:
         finally:
             stop_process(proc)
             log = stderr_path.read_text(encoding="utf-8", errors="replace")
+            # Catch a final diagnostic flushed as QEMU exits or is stopped.
+            match = match or ILLEGAL_RE.search(log)
 
         print(
             "Official bootcode probe: "
             f"bytes={len(bootcode)} sha256={digest} "
+            f"first-nonzero=0x{first_nonzero:08x} "
+            f"entry=0x{BOOT_ENTRY:08x} "
+            f"entry-context={context_bytes(bootcode, BOOT_ENTRY, 24)} "
             f"clusters={FIRST_BOOT_CLUSTER}->{last_cluster} "
             f"cluster-count={cluster_count}"
         )
