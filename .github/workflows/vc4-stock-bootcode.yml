@@ -58,6 +58,7 @@ jobs:
             scripts/vc4/raspi3-scalar-fpu-smoke.py \
             scripts/vc4/raspi3-pcrel48-smoke.py \
             scripts/vc4/raspi3-table-branch-smoke.py \
+            scripts/vc4/raspi3-btest-smoke.py \
             scripts/vc4/raspi3-vector80-delay-smoke.py \
             scripts/vc4/raspi3-vector48-delay-smoke.py \
             scripts/vc4/raspi3-cprman-sdc-smoke.py \
@@ -73,6 +74,7 @@ jobs:
             scripts/vc4/sdramc-init-fixup.py \
             scripts/vc4/pcrel48-fixup.py \
             scripts/vc4/table-branch-fixup.py \
+            scripts/vc4/btest-fixup.py \
             scripts/vc4/vector80-delay-fixup.py \
             scripts/vc4/vector48-delay-fixup.py \
             scripts/vc4/stock-icount-fixup.py
@@ -86,6 +88,7 @@ jobs:
           python3 scripts/vc4/sdramc-init-fixup.py
           python3 scripts/vc4/pcrel48-fixup.py
           python3 scripts/vc4/table-branch-fixup.py
+          python3 scripts/vc4/btest-fixup.py
           python3 scripts/vc4/vector80-delay-fixup.py
           python3 scripts/vc4/vector48-delay-fixup.py
           python3 scripts/vc4/stock-icount-fixup.py
@@ -151,6 +154,11 @@ jobs:
           python3 scripts/vc4/raspi3-table-branch-smoke.py \
             build/qemu-system-aarch64
 
+      - name: Validate scalar VideoCore IV BTEST flag semantics
+        run: |
+          python3 scripts/vc4/raspi3-btest-smoke.py \
+            build/qemu-system-aarch64
+
       - name: Validate discard-only vector80 settling delay
         run: |
           python3 scripts/vc4/raspi3-vector80-delay-smoke.py \
@@ -176,7 +184,7 @@ jobs:
           python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture next official bootcode barrier after USB PHY init
+      - name: Capture next official bootcode barrier after BTEST repair
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
@@ -185,18 +193,14 @@ jobs:
             --icount-shift 10 \
             --barrier-is-success
 
-      - name: Commit exact tested USB power and PHY sideband model
+      - name: Commit exact tested VideoCore IV BTEST semantics
         run: |
           git config user.name "VC4 bring-up automation"
           git config user.email "vc4-bringup@users.noreply.github.com"
-          git add \
-            include/hw/misc/bcm2835_powermgt.h \
-            hw/misc/bcm2835_powermgt.c \
-            hw/usb/hcd-dwc2.h \
-            hw/usb/hcd-dwc2.c
+          git add target/vc4/translate.c
           if git diff --cached --quiet; then
-            echo 'BCM2835 USB power and PHY sideband was already materialized.'
+            echo 'VideoCore IV BTEST semantics were already materialized.'
           else
-            git commit -m "hw/usb: model BCM2835 USB PHY sideband"
+            git commit -m "target/vc4: fix BTEST flag semantics"
             git push origin HEAD:agent/vc4-stock-bootcode
           fi
