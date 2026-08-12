@@ -58,6 +58,7 @@ jobs:
             scripts/vc4/raspi3-table-branch-smoke.py \
             scripts/vc4/raspi3-cprman-sdc-smoke.py \
             scripts/vc4/raspi3-sdramc-init-smoke.py \
+            scripts/vc4/raspi3-image-grafx-power-smoke.py \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -136,12 +137,18 @@ jobs:
           python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
             build/qemu-system-aarch64
 
+      - name: Validate IMAGE and GRAFX power-domain handshakes
+        run: |
+          python3 scripts/vc4/raspi3-image-grafx-power-smoke.py \
+            build/qemu-system-aarch64
+
       - name: Capture next official bootcode barrier after timed waits
         run: |
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
             --seconds 10 \
+            --sample-interval 0.25 \
             --icount-shift 10 \
             --barrier-is-success
 
