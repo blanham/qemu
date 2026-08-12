@@ -116,7 +116,7 @@ bool tcg_exec_realizefn(CPUState *cpu, Error **errp)
 )
 
 
-# The simple collision machine used cpu_create(), which realizes each CPU
+# The collision machine originally used cpu_create(), which realizes each CPU
 # immediately.  Construct both objects first, initialize both frontends, then
 # realize them in the original ARM-first order.
 hetero = ROOT / "hw/arm/vc4_hetero.c"
@@ -130,29 +130,27 @@ replace_once(
     hetero,
     """    CPUState *arm;
     CPUState *vc4;
-
-    memory_region_add_subregion(sysmem, 0, machine->ram);
-    rom_add_blob_fixed("vc4-hetero-polyglot", polyglot,
-                       sizeof(polyglot), 0);
-
-    arm = cpu_create(machine->cpu_type);
-    vc4 = cpu_create(TYPE_VC4_VPU_CPU);
-
-    vc4_hetero_set_pc(arm, 0);
 """,
     """    Object *arm_obj;
     Object *vc4_obj;
     CPUState *arm;
     CPUState *vc4;
-
-    memory_region_add_subregion(sysmem, 0, machine->ram);
-    rom_add_blob_fixed("vc4-hetero-polyglot", polyglot,
-                       sizeof(polyglot), 0);
-
-    arm_obj = object_new(machine->cpu_type);
+""",
+    "collision-machine CPU object declarations",
+)
+replace_once(
+    hetero,
+    """    arm = cpu_create(machine->cpu_type);
+    vc4 = cpu_create(TYPE_VC4_VPU_CPU);
+    s->arm_cpu = arm;
+    s->vc4_cpu = vc4;
+""",
+    """    arm_obj = object_new(machine->cpu_type);
     vc4_obj = object_new(TYPE_VC4_VPU_CPU);
     arm = CPU(arm_obj);
     vc4 = CPU(vc4_obj);
+    s->arm_cpu = arm;
+    s->vc4_cpu = vc4;
 
     tcg_exec_initialize_frontend(CPU_GET_CLASS(arm)->tcg_ops);
     tcg_exec_initialize_frontend(CPU_GET_CLASS(vc4)->tcg_ops);
@@ -163,8 +161,6 @@ replace_once(
     if (!qdev_realize(DEVICE(vc4), NULL, &error_fatal)) {
         g_assert_not_reached();
     }
-
-    vc4_hetero_set_pc(arm, 0);
 """,
     "collision-machine CPU construction order",
 )
