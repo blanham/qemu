@@ -48,6 +48,9 @@ jobs:
       - name: Validate probe scripts and FAT32 image writer
         run: |
           python3 -m py_compile \
+            scripts/vc4/systimer-delay-fixture-fixup.py
+          python3 scripts/vc4/systimer-delay-fixture-fixup.py
+          python3 -m py_compile \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
