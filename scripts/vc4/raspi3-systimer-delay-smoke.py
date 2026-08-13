@@ -50,7 +50,10 @@ def a64_movk(rd: int, imm16: int, shift: int = 0, *, sf: bool = True) -> int:
 def build_arm_payload() -> list[int]:
     """Return a tiny ARM0 payload that proves execution, then spins."""
     return [
-        a64_movz(0, ARM_MARKER_ADDR, sf=True),
+        # ARM_MARKER_ADDR is above 64 KiB.  Materialize both halfwords so the
+        # marker store cannot truncate to 0x10 and overwrite this payload.
+        a64_movz(0, ARM_MARKER_ADDR & 0xFFFF, sf=True),
+        a64_movk(0, ARM_MARKER_ADDR >> 16, shift=16, sf=True),
         a64_movz(1, ARM_MARKER_VALUE & 0xFFFF, sf=False),
         a64_movk(1, ARM_MARKER_VALUE >> 16, shift=16, sf=False),
         0xB9000001,  # str w1, [x0]
