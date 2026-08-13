@@ -62,7 +62,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Cross stock timer delays under deterministic shift-14 icount
+      - name: Cross stock timer delays under maximum valid deterministic icount
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -70,8 +70,8 @@ jobs:
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 75 \
-            --icount-shift 14 \
+            --seconds 180 \
+            --icount-shift 10 \
             --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
 
           if ! grep -q '^STOCK_BOOTCODE_BARRIER ' /tmp/stock-fast.log; then
@@ -93,6 +93,9 @@ jobs:
             grep -E \
               '^(STOCK_BOOTCODE_TRACE|Official bootcode live-state probe|STOCK_BOOTCODE_BARRIER)' \
               /tmp/stock-fast.log > /tmp/stock-fast-summary.log || true
+            if ! test -s /tmp/stock-fast-summary.log; then
+              tail -n 80 /tmp/stock-fast.log > /tmp/stock-fast-summary.log
+            fi
           else
             printf '%s\n' 'The firmware probe did not create /tmp/stock-fast.log.' \
               > /tmp/stock-fast-summary.log
