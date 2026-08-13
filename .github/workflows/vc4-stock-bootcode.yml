@@ -1,4 +1,4 @@
-name: Official Raspberry Pi bootcode.bin probe
+name: Official Raspberry Pi firmware probe
 
 on:
   push:
@@ -35,15 +35,27 @@ jobs:
             libpixman-1-dev \
             zlib1g-dev
 
-      - name: Download pinned official bootcode.bin
+      - name: Download pinned official firmware trio
         run: |
-          curl --fail --location --retry 4 \
-            --output /tmp/bootcode.bin \
-            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
-          test "$(stat --format=%s /tmp/bootcode.bin)" -le 131072
-          echo '=== official bootcode identity ==='
-          wc -c /tmp/bootcode.bin
-          sha256sum /tmp/bootcode.bin
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+
+          test "$(stat --format=%s /tmp/bootcode.bin)" -eq 52624
+          test "$(stat --format=%s /tmp/start.elf)" -eq 3022336
+          test "$(stat --format=%s /tmp/fixup.dat)" -eq 7381
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+          echo '=== official firmware identity ==='
+          wc -c /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat
+          sha256sum /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat
           echo '=== ROM padding and entry bytes ==='
           od -Ax -tx1 -j 480 -N96 /tmp/bootcode.bin
 
@@ -69,6 +81,7 @@ jobs:
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-fat32-smoke.py \
             scripts/vc4/cprman-sdc-handshake-fixup.py \
             scripts/vc4/cprman-osccount-fixup.py \
             scripts/vc4/pm-image-fixup.py \
@@ -82,6 +95,10 @@ jobs:
             scripts/vc4/vector80-delay-fixup.py \
             scripts/vc4/vector48-delay-fixup.py \
             scripts/vc4/stock-icount-fixup.py
+
+      - name: Validate multi-file FAT32 firmware image
+        run: |
+          python3 scripts/vc4/raspi3-stock-fat32-smoke.py
 
       - name: Materialize boot-critical hardware, ISA, and probe contracts
         run: |
@@ -213,12 +230,14 @@ jobs:
           python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
             build/qemu-system-aarch64
 
-      - name: Capture next official bootcode barrier after BTEST and bus fixes
+      - name: Capture deterministic official firmware state
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
             --seconds 10 \
             --icount-shift 10 \
             --barrier-is-success 2>&1 | tee /tmp/stock-bootcode.log

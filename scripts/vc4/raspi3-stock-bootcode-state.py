@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture the live VideoCore IV state when stock bootcode stops progressing."""
+"""Capture the live VideoCore IV state when stock firmware stops progressing."""
 
 from __future__ import annotations
 
@@ -163,6 +163,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("qemu", help="path to qemu-system-aarch64")
     parser.add_argument("bootcode", help="unmodified bootcode.bin")
+    parser.add_argument("--start-elf", help="matching unmodified start.elf")
+    parser.add_argument("--fixup-dat", help="matching unmodified fixup.dat")
     parser.add_argument("--seconds", type=float, default=5.0)
     parser.add_argument(
         "--icount-shift",
@@ -170,7 +172,15 @@ def main() -> int:
         default=10,
         help=(
             "advance virtual time by 2^SHIFT nanoseconds per guest "
-            "instruction; this lets polling delays progress deterministically"
+            "instruction in deterministic mode"
+        ),
+    )
+    parser.add_argument(
+        "--fast-tcg",
+        action="store_true",
+        help=(
+            "use normal multi-instruction TCG and the live virtual clock; "
+            "intended for rapid barrier discovery rather than reproducibility"
         ),
     )
     parser.add_argument("--barrier-is-success", action="store_true")
@@ -185,29 +195,48 @@ def main() -> int:
 
     probe = load_probe_module()
     bootcode = bootcode_path.read_bytes()
+    firmware_files = probe.read_optional_firmware(
+        parser,
+        args.start_elf,
+        args.fixup_dat,
+    )
 
     with tempfile.TemporaryDirectory(prefix="vc4-stock-state-") as tmp_s:
         tmp = Path(tmp_s)
-        image_path = tmp / "stock-bootcode.img"
+        image_path = tmp / "stock-firmware.img"
         qmp_path = tmp / "qmp.sock"
         stderr_path = tmp / "qemu.stderr"
-        cluster_count, last_cluster = probe.build_sd_image(image_path, bootcode)
+        cluster_count, last_cluster = probe.build_sd_image(
+            image_path,
+            bootcode,
+            firmware_files,
+        )
 
+        accelerator = (
+            "tcg,thread=single"
+            if args.fast_tcg
+            else "tcg,thread=single,one-insn-per-tb=on"
+        )
         command = [
             str(qemu),
             "-M", "raspi3b-vc4-hetero",
             "-m", "1G",
             "-smp", "5",
             "-drive", f"file={image_path},format=raw,if=sd",
-            "-accel", "tcg,thread=single,one-insn-per-tb=on",
-            "-icount",
-            f"shift={args.icount_shift},align=off,sleep=off",
+            "-accel", accelerator,
+        ]
+        if not args.fast_tcg:
+            command.extend([
+                "-icount",
+                f"shift={args.icount_shift},align=off,sleep=off",
+            ])
+        command.extend([
             "-d", "unimp,guest_errors",
             "-display", "none",
             "-monitor", "none",
             "-serial", "none",
             "-qmp", f"unix:{qmp_path},server=on,wait=off",
-        ]
+        ])
 
         with stderr_path.open("wb") as stderr:
             proc = subprocess.Popen(
@@ -289,11 +318,14 @@ def main() -> int:
             else:
                 context = "outside-boot-cache"
 
+            mode = "fast-tcg" if args.fast_tcg else f"icount-shift-{args.icount_shift}"
             print(
                 "Official bootcode live-state probe: "
                 f"bytes={len(bootcode)} entry=0x{probe.BOOT_ENTRY:08x} "
                 f"clusters={probe.FIRST_BOOT_CLUSTER}->{last_cluster} "
-                f"cluster-count={cluster_count} qom-types={qom_types}"
+                f"cluster-count={cluster_count} mode={mode} "
+                f"firmware={probe.firmware_summary(bootcode, firmware_files)} "
+                f"qom-types={qom_types}"
             )
             print(
                 "STOCK_BOOTCODE_BARRIER "

@@ -26,20 +26,33 @@ jobs:
             curl ninja-build pkg-config python3 python3-venv \
             libglib2.0-dev libpixman-1-dev zlib1g-dev
 
-      - name: Download pinned official bootcode.bin
+      - name: Download pinned official firmware trio
         run: |
-          curl --fail --location --retry 4 \
-            --output /tmp/bootcode.bin \
-            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
-          echo '4245ec23b58158dc3e55f3e065eb4ecc0c0705d76c8db506e9f824941feee32e  /tmp/bootcode.bin' \
-            | sha256sum --check --strict
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
 
-      - name: Validate probe scripts
+          test "$(stat --format=%s /tmp/bootcode.bin)" -eq 52624
+          test "$(stat --format=%s /tmp/start.elf)" -eq 3022336
+          test "$(stat --format=%s /tmp/fixup.dat)" -eq 7381
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          sha256sum /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat
+
+      - name: Validate probe scripts and FAT32 image writer
         run: |
           python3 -m py_compile \
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
-            scripts/vc4/raspi3-stock-bootcode-0200.py
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-fat32-smoke.py
+          python3 scripts/vc4/raspi3-stock-fat32-smoke.py
 
       - name: Configure and build heterogeneous system emulator
         run: |
@@ -49,40 +62,26 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Trace live icount across the stock 100 ms timer delay
+      - name: Cross the stock 100 ms timer delay under fast TCG
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("scripts/vc4/raspi3-stock-bootcode-state.py")
-          text = path.read_text(encoding="utf-8")
-          old = '"-accel", "tcg,thread=single,one-insn-per-tb=on",'
-          new = '"-accel", "tcg,thread=single",'
-          if text.count(old) != 1:
-              raise SystemExit("could not locate the one-insn-per-tb probe setting")
-          path.write_text(text.replace(old, new), encoding="utf-8")
-          PY
-
           set -o pipefail
-          env VC4_ICOUNT_DEBUG=1 \
-            python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
-              build/qemu-system-aarch64 \
-              /tmp/bootcode.bin \
-              --seconds 12 \
-              --icount-shift 10 \
-              --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 30 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
 
-          echo '=== final live VC4 timer-accounting samples ==='
-          grep '^VC4_SYSTMR_ICOUNT ' /tmp/stock-fast.log | tail -n 40
-
-          if ! grep -q '^VC4_SYSTMR_ICOUNT ' /tmp/stock-fast.log; then
-            echo 'The live VC4 timer-accounting trace did not fire.' >&2
+          if ! grep -q '^STOCK_BOOTCODE_BARRIER ' /tmp/stock-fast.log; then
+            echo 'The fast stock-firmware probe produced no barrier record.' >&2
             exit 1
           fi
 
           if grep -Eq \
-            'STOCK_BOOTCODE_BARRIER.*pc=0x00000546' \
+            'STOCK_BOOTCODE_BARRIER.*pc=0x00000546|STOCK_BOOTCODE_TRACE.*stable=true.*histogram=0x00000546' \
             /tmp/stock-fast.log; then
-            echo 'Official bootcode did not cross the 100 ms timer loop.' >&2
+            echo 'Official bootcode remained in the valid 100 ms timer loop.' >&2
             exit 1
           fi
