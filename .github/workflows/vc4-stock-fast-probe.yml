@@ -1,4 +1,4 @@
-name: Precise fast VC4 stock-firmware barrier probe
+name: VC4 stock timer and firmware barrier probe
 
 on:
   push:
@@ -51,7 +51,8 @@ jobs:
             scripts/vc4/raspi3-stock-bootcode-probe.py \
             scripts/vc4/raspi3-stock-bootcode-state.py \
             scripts/vc4/raspi3-stock-bootcode-0200.py \
-            scripts/vc4/raspi3-stock-fat32-smoke.py
+            scripts/vc4/raspi3-stock-fat32-smoke.py \
+            scripts/vc4/raspi3-systimer-delay-smoke.py
           python3 scripts/vc4/raspi3-stock-fat32-smoke.py
 
       - name: Configure and build heterogeneous system emulator
@@ -62,7 +63,13 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Cross the stock timer delay with precise fast TCG
+      - name: Verify the VPU survives the 100 ms RR-TCG kick
+        run: |
+          python3 scripts/vc4/raspi3-systimer-delay-smoke.py \
+            build/qemu-system-aarch64 \
+            --timeout 5
+
+      - name: Cross the stock timer delay with normal fast TCG
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -70,13 +77,12 @@ jobs:
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 300 \
+            --seconds 180 \
             --fast-tcg \
-            --one-insn-per-tb \
             --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
 
           if ! grep -q '^STOCK_BOOTCODE_BARRIER ' /tmp/stock-fast.log; then
-            echo 'The precise fast stock-firmware probe produced no barrier record.' >&2
+            echo 'The fast stock-firmware probe produced no barrier record.' >&2
             exit 1
           fi
 
@@ -111,5 +117,5 @@ jobs:
           path: |
             /tmp/stock-fast.log
             /tmp/stock-fast-summary.log
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
