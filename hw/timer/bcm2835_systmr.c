@@ -15,6 +15,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
+#include "hw/core/cpu.h"
 #include "hw/timer/bcm2835_systmr.h"
 #include "hw/core/registerfields.h"
 #include "migration/vmstate.h"
@@ -27,6 +28,28 @@ REG32(COMPARE0,     0x0c)
 REG32(COMPARE1,     0x10)
 REG32(COMPARE2,     0x14)
 REG32(COMPARE3,     0x18)
+
+static unsigned vc4_icount_debug_reads;
+
+static CPUState *bcm2835_systmr_vc4_debug_cpu(void)
+{
+    static int enabled = -1;
+    CPUState *cpu = current_cpu;
+    const char *typename;
+
+    if (enabled < 0) {
+        enabled = g_getenv("VC4_ICOUNT_DEBUG") != NULL;
+    }
+    if (!enabled || !cpu) {
+        return NULL;
+    }
+
+    typename = object_get_typename(OBJECT(cpu));
+    if (!strstr(typename, "vc4")) {
+        return NULL;
+    }
+    return cpu;
+}
 
 static void bcm2835_systmr_timer_expire(void *opaque)
 {
@@ -41,6 +64,13 @@ static uint64_t bcm2835_systmr_read(void *opaque, hwaddr offset,
                                     unsigned size)
 {
     BCM2835SystemTimerState *s = BCM2835_SYSTIMER(opaque);
+    CPUState *debug_cpu = NULL;
+    uint64_t debug_pc = 0;
+    int64_t before_budget = 0;
+    int64_t before_extra = 0;
+    int64_t before_remaining = 0;
+    int64_t before_retired = 0;
+    uint16_t before_low = 0;
     uint64_t r = 0;
 
     switch (offset) {
@@ -52,10 +82,66 @@ static uint64_t bcm2835_systmr_read(void *opaque, hwaddr offset,
         break;
     case A_COUNTER_LOW:
     case A_COUNTER_HIGH:
+        if (offset == A_COUNTER_LOW &&
+            vc4_icount_debug_reads < 256) {
+            debug_cpu = bcm2835_systmr_vc4_debug_cpu();
+            if (debug_cpu && debug_cpu->cc->get_pc) {
+                debug_pc = debug_cpu->cc->get_pc(debug_cpu);
+            }
+            if (debug_cpu &&
+                debug_pc >= UINT64_C(0x500) &&
+                debug_pc < UINT64_C(0x580)) {
+                before_budget = debug_cpu->icount_budget;
+                before_low = debug_cpu->neg.icount_decr.u16.low;
+                before_extra = debug_cpu->icount_extra;
+                before_remaining = before_low + before_extra;
+                before_retired = before_budget - before_remaining;
+            } else {
+                debug_cpu = NULL;
+            }
+        }
+
         /* Free running counter at 1MHz */
         r = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
         r >>= 8 * (offset - A_COUNTER_LOW);
         r &= UINT32_MAX;
+
+        if (debug_cpu) {
+            int64_t after_budget = debug_cpu->icount_budget;
+            uint16_t after_low = debug_cpu->neg.icount_decr.u16.low;
+            int64_t after_extra = debug_cpu->icount_extra;
+            int64_t after_remaining = after_low + after_extra;
+            int64_t after_retired = after_budget - after_remaining;
+
+            fprintf(stderr,
+                    "VC4_SYSTMR_ICOUNT n=%u cpu=%s index=%d "
+                    "pc=0x%08" PRIx64 " time-us=%" PRIu64 " "
+                    "running=%d can-do-io=%d cflags=0x%08x "
+                    "before-budget=%" PRId64 " before-low=%u "
+                    "before-extra=%" PRId64 " before-remaining=%" PRId64 " "
+                    "before-retired=%" PRId64 " "
+                    "after-budget=%" PRId64 " after-low=%u "
+                    "after-extra=%" PRId64 " after-remaining=%" PRId64 " "
+                    "after-retired=%" PRId64 "\n",
+                    vc4_icount_debug_reads++,
+                    object_get_typename(OBJECT(debug_cpu)),
+                    debug_cpu->cpu_index,
+                    debug_pc,
+                    r,
+                    debug_cpu->running,
+                    debug_cpu->neg.can_do_io,
+                    debug_cpu->tcg_cflags,
+                    before_budget,
+                    (unsigned)before_low,
+                    before_extra,
+                    before_remaining,
+                    before_retired,
+                    after_budget,
+                    (unsigned)after_low,
+                    after_extra,
+                    after_remaining,
+                    after_retired);
+        }
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: bad offset 0x%" HWADDR_PRIx "\n",

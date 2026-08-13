@@ -49,7 +49,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Cross the stock 100 ms timer delay
+      - name: Trace live icount across the stock 100 ms timer delay
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -64,12 +64,21 @@ jobs:
           PY
 
           set -o pipefail
-          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
-            build/qemu-system-aarch64 \
-            /tmp/bootcode.bin \
-            --seconds 12 \
-            --icount-shift 10 \
-            --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
+          env VC4_ICOUNT_DEBUG=1 \
+            python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+              build/qemu-system-aarch64 \
+              /tmp/bootcode.bin \
+              --seconds 12 \
+              --icount-shift 10 \
+              --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
+
+          echo '=== final live VC4 timer-accounting samples ==='
+          grep '^VC4_SYSTMR_ICOUNT ' /tmp/stock-fast.log | tail -n 40
+
+          if ! grep -q '^VC4_SYSTMR_ICOUNT ' /tmp/stock-fast.log; then
+            echo 'The live VC4 timer-accounting trace did not fire.' >&2
+            exit 1
+          fi
 
           if grep -Eq \
             'STOCK_BOOTCODE_BARRIER.*pc=0x00000546' \
