@@ -85,3 +85,27 @@ jobs:
             echo 'Official bootcode remained within the valid 100 ms timer loop at 0x540-0x546.' >&2
             exit 1
           fi
+
+      - name: Extract compact firmware trace
+        if: always()
+        run: |
+          if test -f /tmp/stock-fast.log; then
+            grep -E \
+              '^(STOCK_BOOTCODE_TRACE|Official bootcode live-state probe|STOCK_BOOTCODE_BARRIER)' \
+              /tmp/stock-fast.log > /tmp/stock-fast-summary.log || true
+          else
+            printf '%s\n' 'The firmware probe did not create /tmp/stock-fast.log.' \
+              > /tmp/stock-fast-summary.log
+          fi
+          cat /tmp/stock-fast-summary.log
+
+      - name: Upload firmware trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-fast-trace-${{ github.run_attempt }}
+          path: |
+            /tmp/stock-fast.log
+            /tmp/stock-fast-summary.log
+          if-no-files-found: error
+          retention-days: 14
