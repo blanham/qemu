@@ -62,7 +62,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Cross the stock 100 ms timer delay under deterministic icount
+      - name: Cross stock timer delays under deterministic shift-14 icount
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -71,6 +71,7 @@ jobs:
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
             --seconds 75 \
+            --icount-shift 14 \
             --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
 
           if ! grep -q '^STOCK_BOOTCODE_BARRIER ' /tmp/stock-fast.log; then
