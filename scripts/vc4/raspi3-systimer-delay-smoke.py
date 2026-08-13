@@ -18,6 +18,7 @@ SYSTIMER_ARM_LOW = 0x3F003004
 PM_PROC_GPU = 0x7E100110
 PM_PROC_ARM = 0x3F100110
 PM_PROC_READY = 0x0000007F
+ARM_LOAD_GPU_ALIAS = 0xC0000000
 MARKER_ADDR = 0x00040000
 ELAPSED_ADDR = MARKER_ADDR + 4
 START_ADDR = MARKER_ADDR + 8
@@ -60,10 +61,10 @@ def build_arm_payload() -> list[int]:
 def build_timer_bootcode(smoke: ModuleType) -> bytes:
     program = bytearray()
 
-    # Install an ARM0 payload in shared RAM before releasing the core.  This
-    # reproduces the stock-firmware ordering that the VPU-only timer smoke
-    # missed: ARM0 is runnable while the VPU is inside its 100 ms delay loop.
-    program += smoke.vc4_mov32(6, 0)
+    # Install an ARM0 payload in shared SDRAM before releasing the core.  VPU
+    # address zero is overlaid by the private first-stage boot cache, so use
+    # one of the BCM2835 GPU RAM aliases while retaining ARM entry address zero.
+    program += smoke.vc4_mov32(6, ARM_LOAD_GPU_ALIAS)
     for offset, instruction in enumerate(build_arm_payload()):
         program += smoke.vc4_mov32(7, instruction)
         program += smoke.vc4_memory_offset(True, 7, 6, offset * 4)
