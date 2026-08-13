@@ -176,18 +176,10 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--one-insn-per-tb",
-        action="store_true",
-        help=(
-            "force one guest instruction per TCG translation block for "
-            "exact debugging; substantially slower than normal icount"
-        ),
-    )
-    parser.add_argument(
         "--fast-tcg",
         action="store_true",
         help=(
-            "use the live virtual clock without deterministic icount; "
+            "use normal multi-instruction TCG and the live virtual clock; "
             "intended for rapid barrier discovery rather than reproducibility"
         ),
     )
@@ -220,9 +212,11 @@ def main() -> int:
             firmware_files,
         )
 
-        accelerator = "tcg,thread=single"
-        if args.one_insn_per_tb:
-            accelerator += ",one-insn-per-tb=on"
+        accelerator = (
+            "tcg,thread=single"
+            if args.fast_tcg
+            else "tcg,thread=single,one-insn-per-tb=on"
+        )
         command = [
             str(qemu),
             "-M", "raspi3b-vc4-hetero",
@@ -325,8 +319,6 @@ def main() -> int:
                 context = "outside-boot-cache"
 
             mode = "fast-tcg" if args.fast_tcg else f"icount-shift-{args.icount_shift}"
-            if args.one_insn_per_tb:
-                mode += "-one-insn-per-tb"
             print(
                 "Official bootcode live-state probe: "
                 f"bytes={len(bootcode)} entry=0x{probe.BOOT_ENTRY:08x} "
