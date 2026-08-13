@@ -1,4 +1,4 @@
-name: Fast VC4 stock-firmware barrier probe
+name: Precise fast VC4 stock-firmware barrier probe
 
 on:
   push:
@@ -62,7 +62,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Cross the stock 100 ms timer delay under fast TCG
+      - name: Cross the stock timer delay with precise fast TCG
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -70,12 +70,13 @@ jobs:
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 75 \
+            --seconds 300 \
             --fast-tcg \
+            --one-insn-per-tb \
             --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
 
           if ! grep -q '^STOCK_BOOTCODE_BARRIER ' /tmp/stock-fast.log; then
-            echo 'The fast stock-firmware probe produced no barrier record.' >&2
+            echo 'The precise fast stock-firmware probe produced no barrier record.' >&2
             exit 1
           fi
 
@@ -93,6 +94,9 @@ jobs:
             grep -E \
               '^(STOCK_BOOTCODE_TRACE|Official bootcode live-state probe|STOCK_BOOTCODE_BARRIER)' \
               /tmp/stock-fast.log > /tmp/stock-fast-summary.log || true
+            if ! test -s /tmp/stock-fast-summary.log; then
+              tail -n 80 /tmp/stock-fast.log > /tmp/stock-fast-summary.log
+            fi
           else
             printf '%s\n' 'The firmware probe did not create /tmp/stock-fast.log.' \
               > /tmp/stock-fast-summary.log
