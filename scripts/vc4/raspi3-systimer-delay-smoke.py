@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that a VC4 delay loop survives the 100 ms RR-TCG kick."""
+"""Verify a VC4 delay loop after ARM0 joins single-threaded TCG."""
 
 from __future__ import annotations
 
@@ -15,10 +15,15 @@ from types import ModuleType
 DELAY_US = 100_000
 SYSTIMER_GPU_BASE = 0x7E003000
 SYSTIMER_ARM_LOW = 0x3F003004
+PM_PROC_GPU = 0x7E100110
+PM_PROC_ARM = 0x3F100110
+PM_PROC_READY = 0x0000007F
 MARKER_ADDR = 0x00040000
 ELAPSED_ADDR = MARKER_ADDR + 4
 START_ADDR = MARKER_ADDR + 8
+ARM_MARKER_ADDR = MARKER_ADDR + 0x10
 MARKER_VALUE = 0x51A7DE1A
+ARM_MARKER_VALUE = 0xB007C0DE
 
 
 def load_handoff_module() -> ModuleType:
@@ -31,17 +36,57 @@ def load_handoff_module() -> ModuleType:
     return module
 
 
+def a64_movz(rd: int, imm16: int, shift: int = 0, *, sf: bool = True) -> int:
+    base = 0xD2800000 if sf else 0x52800000
+    return base | ((shift // 16) << 21) | ((imm16 & 0xFFFF) << 5) | rd
+
+
+def a64_movk(rd: int, imm16: int, shift: int = 0, *, sf: bool = True) -> int:
+    base = 0xF2800000 if sf else 0x72800000
+    return base | ((shift // 16) << 21) | ((imm16 & 0xFFFF) << 5) | rd
+
+
+def build_arm_payload() -> list[int]:
+    """Return a tiny ARM0 payload that proves execution, then spins."""
+    return [
+        a64_movz(0, ARM_MARKER_ADDR, sf=True),
+        a64_movz(1, ARM_MARKER_VALUE & 0xFFFF, sf=False),
+        a64_movk(1, ARM_MARKER_VALUE >> 16, shift=16, sf=False),
+        0xB9000001,  # str w1, [x0]
+        0x14000000,  # b .
+    ]
+
+
 def build_timer_bootcode(smoke: ModuleType) -> bytes:
     program = bytearray()
 
-    # Match the production delay routine's register allocation and loop body.
+    # Install an ARM0 payload in shared RAM before releasing the core.  This
+    # reproduces the stock-firmware ordering that the VPU-only timer smoke
+    # missed: ARM0 is runnable while the VPU is inside its 100 ms delay loop.
+    program += smoke.vc4_mov32(6, 0)
+    for offset, instruction in enumerate(build_arm_payload()):
+        program += smoke.vc4_mov32(7, instruction)
+        program += smoke.vc4_memory_offset(True, 7, 6, offset * 4)
+
+    program += smoke.vc4_mov32(8, PM_PROC_GPU & ~0xFFF)
+    for requested in (0x01, 0x05, 0x0D, 0x2D, 0x6D):
+        program += smoke.vc4_mov32(9, 0x5A000000 | requested)
+        program += smoke.vc4_memory_offset(
+            True, 9, 8, PM_PROC_GPU & 0xFFF
+        )
+
+    # Match the production delay routine's register allocation and exact
+    # compact loop body.  In particular 0x2112 is the two-byte
+    # "ld r2, [r1, 4]" encoding used by official bootcode.bin.
     program += smoke.vc4_mov32(1, SYSTIMER_GPU_BASE)
     program += smoke.vc4_memory_offset(False, 3, 1, 4)
+    program += smoke.vc4_mov32(4, START_ADDR)
+    program += smoke.vc4_memory_offset(True, 3, 4, 0)
     program += smoke.vc4_mov32(0, DELAY_US)
 
     loop_offset = len(program)
     program += smoke.half(0x0001)  # nop
-    program += smoke.vc4_memory_offset(False, 2, 1, 4)
+    program += smoke.half(0x2112)  # ld r2, [r1, 4]
     program += smoke.half(0x4632)  # sub r2, r3
     program += smoke.half(0x8300)  # addcmpb r0, 0, r2, hs, loop
     program += smoke.half(0x4BFD)
@@ -51,8 +96,6 @@ def build_timer_bootcode(smoke: ModuleType) -> bytes:
     # Publish the final elapsed value before the completion marker.
     program += smoke.vc4_mov32(4, ELAPSED_ADDR)
     program += smoke.vc4_memory_offset(True, 2, 4, 0)
-    program += smoke.vc4_mov32(4, START_ADDR)
-    program += smoke.vc4_memory_offset(True, 3, 4, 0)
     program += smoke.vc4_mov32(4, MARKER_ADDR)
     program += smoke.vc4_mov32(5, MARKER_VALUE)
     program += smoke.vc4_memory_offset(True, 5, 4, 0)
@@ -170,11 +213,26 @@ def main() -> int:
             elapsed = readl(ELAPSED_ADDR)
             start = readl(START_ADDR)
             timer = readl(SYSTIMER_ARM_LOW)
+            arm_marker = readl(ARM_MARKER_ADDR)
+            proc_state = readl(PM_PROC_ARM)
             if marker != MARKER_VALUE:
                 raise RuntimeError(
-                    "VC4 did not resume after the 100 ms RR-TCG kick: "
+                    "VC4 did not resume after ARM0 release and the 100 ms "
+                    "RR-TCG kick: "
                     f"marker=0x{marker:08x} elapsed=0x{elapsed:08x} "
-                    f"start=0x{start:08x} timer=0x{timer:08x}"
+                    f"start=0x{start:08x} timer=0x{timer:08x} "
+                    f"arm-marker=0x{arm_marker:08x} "
+                    f"pm-proc=0x{proc_state:08x}"
+                )
+            if arm_marker != ARM_MARKER_VALUE:
+                raise RuntimeError(
+                    "ARM0 did not execute after PM_PROC release: "
+                    f"marker=0x{arm_marker:08x}"
+                )
+            if proc_state != PM_PROC_READY:
+                raise RuntimeError(
+                    "PM_PROC release did not reach ready state: "
+                    f"state=0x{proc_state:08x}"
                 )
             if elapsed < DELAY_US:
                 raise RuntimeError(
@@ -187,9 +245,11 @@ def main() -> int:
 
             mode = "one-insn-per-tb" if args.one_insn_per_tb else "normal-tb"
             print(
-                "BCM2835 VC4 system-timer delay passed: "
+                "BCM2835 VC4 post-ARM-release timer delay passed: "
                 f"mode={mode} delay={DELAY_US} elapsed={elapsed} "
                 f"start=0x{start:08x} timer=0x{timer:08x} "
+                f"arm-marker=0x{arm_marker:08x} "
+                f"pm-proc=0x{proc_state:08x} "
                 f"marker=0x{marker:08x}"
             )
             return 0
