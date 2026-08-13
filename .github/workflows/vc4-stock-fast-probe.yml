@@ -51,9 +51,29 @@ jobs:
 
       - name: Cross the stock 100 ms timer delay
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/vc4/raspi3-stock-bootcode-state.py")
+          text = path.read_text(encoding="utf-8")
+          old = '"-accel", "tcg,thread=single,one-insn-per-tb=on",'
+          new = '"-accel", "tcg,thread=single",'
+          if text.count(old) != 1:
+              raise SystemExit("could not locate the one-insn-per-tb probe setting")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+
+          set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
             --seconds 12 \
-            --icount-shift 15 \
-            --barrier-is-success
+            --icount-shift 10 \
+            --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
+
+          if grep -Eq \
+            'STOCK_BOOTCODE_BARRIER.*pc=0x00000546' \
+            /tmp/stock-fast.log; then
+            echo 'Official bootcode did not cross the 100 ms timer loop.' >&2
+            exit 1
+          fi
