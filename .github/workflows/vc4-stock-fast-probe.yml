@@ -1,4 +1,4 @@
-name: Fast VC4 stock-firmware barrier probe
+name: Deterministic VC4 stock-firmware barrier probe
 
 on:
   push:
@@ -62,7 +62,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Cross the stock 100 ms timer delay under fast TCG
+      - name: Cross the stock 100 ms timer delay under deterministic icount
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -71,11 +71,10 @@ jobs:
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
             --seconds 75 \
-            --fast-tcg \
             --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
 
           if ! grep -q '^STOCK_BOOTCODE_BARRIER ' /tmp/stock-fast.log; then
-            echo 'The fast stock-firmware probe produced no barrier record.' >&2
+            echo 'The deterministic stock-firmware probe produced no barrier record.' >&2
             exit 1
           fi
 
