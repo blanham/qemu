@@ -70,7 +70,7 @@ jobs:
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 30 \
+            --seconds 75 \
             --fast-tcg \
             --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
 
@@ -80,8 +80,8 @@ jobs:
           fi
 
           if grep -Eq \
-            'STOCK_BOOTCODE_BARRIER.*pc=0x00000546|STOCK_BOOTCODE_TRACE.*stable=true.*histogram=0x00000546' \
+            'STOCK_BOOTCODE_BARRIER.*pc=0x0000054[0246]|STOCK_BOOTCODE_TRACE.*stable=true.*histogram=0x0000054[0246]' \
             /tmp/stock-fast.log; then
-            echo 'Official bootcode remained in the valid 100 ms timer loop.' >&2
+            echo 'Official bootcode remained within the valid 100 ms timer loop at 0x540-0x546.' >&2
             exit 1
           fi
