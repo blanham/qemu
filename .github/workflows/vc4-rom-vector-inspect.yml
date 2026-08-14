@@ -1,0 +1,121 @@
+name: VC4 stock boot-ROM call inspection
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-rom-call:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download and verify pinned bootcode.bin
+        run: |
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+
+      - name: Decode the call returning to 0x6416
+        run: |
+          python3 - <<'PY' | tee /tmp/vc4-rom-call.log
+          from pathlib import Path
+
+          data = Path('/tmp/bootcode.bin').read_bytes()
+          return_pc = 0x6416
+
+          def u16(addr):
+              return int.from_bytes(data[addr:addr + 2], 'little')
+
+          def sext(value, sign_bit):
+              return (value ^ sign_bit) - sign_bit
+
+          def dump(start, end):
+              for addr in range(start, end, 16):
+                  chunk = data[addr:min(addr + 16, end)]
+                  words = ' '.join(
+                      f'{int.from_bytes(chunk[i:i + 2], "little"):04x}'
+                      for i in range(0, len(chunk), 2)
+                  )
+                  print(f'{addr:08x}: {chunk.hex(" "):<47}  {words}')
+
+          print('VC4_ROM_CALLSITE return-pc=0x%08x' % return_pc)
+          dump(0x63c0, 0x6450)
+
+          h_at_minus_2 = u16(return_pc - 2)
+          print(
+              'VC4_ROM_CALL_CANDIDATE16 '
+              f'pc=0x{return_pc - 2:08x} insn=0x{h_at_minus_2:04x}'
+          )
+          if (h_at_minus_2 & 0xffe0) == 0x0060:
+              print(
+                  'VC4_ROM_CALL16 kind=bl-register '
+                  f'reg=r{h_at_minus_2 & 0x1f} '
+                  f'lr=0x{return_pc:08x}'
+              )
+
+          i1 = u16(return_pc - 4)
+          i2 = u16(return_pc - 2)
+          print(
+              'VC4_ROM_CALL_CANDIDATE32 '
+              f'pc=0x{return_pc - 4:08x} i1=0x{i1:04x} i2=0x{i2:04x}'
+          )
+          if (i1 & 0xf080) == 0x9080:
+              raw = i2 | ((i1 & 0x7f) << 16)
+              raw |= (i1 & 0xf00) << 15
+              offset = sext(raw, 0x04000000) * 2
+              target = (return_pc - 4 + offset) & 0xffffffff
+              print(
+                  'VC4_ROM_CALL32 kind=bl-relative '
+                  f'offset={offset} target=0x{target:08x} '
+                  f'lr=0x{return_pc:08x}'
+              )
+
+          print('VC4_LOW_ROM_DIRECT_CALLS')
+          for pc in range(0x200, len(data) - 3, 2):
+              i1 = u16(pc)
+              i2 = u16(pc + 2)
+              if (i1 & 0xf080) != 0x9080:
+                  continue
+              raw = i2 | ((i1 & 0x7f) << 16)
+              raw |= (i1 & 0xf00) << 15
+              offset = sext(raw, 0x04000000) * 2
+              target = (pc + offset) & 0xffffffff
+              if target < 0x200:
+                  print(
+                      f'pc=0x{pc:08x} return=0x{pc + 4:08x} '
+                      f'target=0x{target:08x} i1=0x{i1:04x} i2=0x{i2:04x}'
+                  )
+
+          print('VC4_REGISTER_CALLS_NEAR_SITE')
+          for pc in range(0x6380, 0x6420, 2):
+              insn = u16(pc)
+              if (insn & 0xffe0) == 0x0060:
+                  print(
+                      f'pc=0x{pc:08x} return=0x{pc + 2:08x} '
+                      f'reg=r{insn & 0x1f} insn=0x{insn:04x}'
+                  )
+          PY
+
+          grep -E \
+            '^(VC4_ROM_CALL16|VC4_ROM_CALL32|VC4_LOW_ROM_DIRECT_CALLS|VC4_REGISTER_CALLS_NEAR_SITE|pc=)' \
+            /tmp/vc4-rom-call.log
+
+      - name: Upload call-site analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-rom-call-${{ github.run_attempt }}
+          path: /tmp/vc4-rom-call.log
+          if-no-files-found: error
+          retention-days: 14
