@@ -1,0 +1,140 @@
+name: VC4 active RR CPU kick
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  active-rr-cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize active-CPU RR kick targeting
+        run: |
+          python3 -m py_compile scripts/vc4/rr-active-cpu-fixup.py
+          python3 scripts/vc4/rr-active-cpu-fixup.py
+          first="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
+          python3 scripts/vc4/rr-active-cpu-fixup.py
+          second="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
+          test "$first" = "$second"
+          grep -q 'static CPUState \*rr_kick_cpu;' \
+            accel/tcg/tcg-accel-ops-rr.c
+          grep -q 'qatomic_read(&rr_kick_cpu)' \
+            accel/tcg/tcg-accel-ops-rr.c
+          grep -q 'qatomic_set(&rr_kick_cpu, cpu);' \
+            accel/tcg/tcg-accel-ops-rr.c
+          grep -q 'qatomic_set(&rr_kick_cpu, NULL);' \
+            accel/tcg/tcg-accel-ops-rr.c
+          git diff --check
+
+      - name: Configure linked targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build linked AArch64 and native VC4 executables
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-rr-active-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -n -E \
+              'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-rr-active-build.log | tail -n 240 || true
+            tail -n 260 /tmp/vc4-rr-active-build.log
+            exit "$rc"
+          fi
+
+      - name: Validate passive five-vCPU fairness
+        run: |
+          python3 scripts/vc4/raspi3-rr-passive-smoke.py \
+            build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-rr-passive.log
+
+      - name: Download pinned official bootcode.bin
+        run: |
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+
+      - name: Require stock firmware to cross the former delay frontier
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --seconds 30 \
+            --barrier-is-success \
+            2>&1 | tee /tmp/vc4-rr-active-stock.log
+
+          grep -E \
+            'STOCK_BOOTCODE_(TRACE|BARRIER)|vc4-debug-|Official bootcode' \
+            /tmp/vc4-rr-active-stock.log \
+            | tail -n 160 > /tmp/vc4-rr-active-summary.log || true
+          cat /tmp/vc4-rr-active-summary.log
+
+          if grep -Eiq \
+            'pc[=: ]+(0x)?0*544([^0-9a-f]|$)' \
+            /tmp/vc4-rr-active-stock.log; then
+            echo 'Official bootcode remained at the former 0x544 timer frontier.' \
+              >&2
+            exit 1
+          fi
+
+      - name: Preserve diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-rr-active-cpu-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-rr-active-build.log
+            /tmp/vc4-rr-passive.log
+            /tmp/vc4-rr-active-stock.log
+            /tmp/vc4-rr-active-summary.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit exact tested scheduler source
+        if: success()
+        run: |
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          git add accel/tcg/tcg-accel-ops-rr.c
+          if git diff --cached --quiet; then
+            echo 'Active RR CPU kick targeting was already materialized.'
+          else
+            git commit -m 'accel/tcg: kick the actively executing RR CPU'
+            git push origin HEAD:agent/vc4-stock-bootcode
+          fi
