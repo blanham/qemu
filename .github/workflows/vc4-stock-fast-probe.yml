@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            curl ninja-build pkg-config python3 python3-venv \
+            curl gdb ninja-build pkg-config python3 python3-venv \
             libglib2.0-dev libpixman-1-dev zlib1g-dev
 
       - name: Download pinned official firmware trio
@@ -65,6 +65,45 @@ jobs:
             --disable-docs \
             --disable-werror
           ninja -C build qemu-system-aarch64
+
+      - name: Trace external halt requests delivered to any CPU
+        run: |
+          cat > /tmp/vc4-external-halt.gdb <<'GDB'
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          break cpu_interrupt if ($rsi & 0x20) != 0
+          commands
+            silent
+            printf "VC4_EXTERNAL_HALT cpu-index=%d cpu=%p mask=0x%x\n", ((CPUState *)$rdi)->cpu_index, $rdi, $rsi
+            bt 24
+            continue
+          end
+          run
+          GDB
+
+          cat > /tmp/qemu-vc4-gdb <<'SH'
+          #!/bin/sh
+          exec gdb -q -batch \
+            -x /tmp/vc4-external-halt.gdb \
+            --args "$VC4_REAL_QEMU" "$@"
+          SH
+          chmod +x /tmp/qemu-vc4-gdb
+
+          export VC4_REAL_QEMU="$PWD/build/qemu-system-aarch64"
+          set -o pipefail
+          timeout 30s python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            /tmp/qemu-vc4-gdb \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 3 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/stock-halt-backtrace.log || true
+
+          if ! grep -q '^VC4_EXTERNAL_HALT ' /tmp/stock-halt-backtrace.log; then
+            echo 'VC4_EXTERNAL_HALT none-observed'
+          fi
 
       - name: Verify the VPU survives the 100 ms RR-TCG kick
         run: |
@@ -111,6 +150,10 @@ jobs:
               > /tmp/stock-fast-summary.log
           fi
           cat /tmp/stock-fast-summary.log
+          if test -f /tmp/stock-halt-backtrace.log; then
+            grep -E '^(VC4_EXTERNAL_HALT|#0 |#1 |#2 |#3 |#4 |#5 )' \
+              /tmp/stock-halt-backtrace.log || true
+          fi
 
       - name: Upload firmware trace
         if: always()
@@ -120,5 +163,6 @@ jobs:
           path: |
             /tmp/stock-fast.log
             /tmp/stock-fast-summary.log
+            /tmp/stock-halt-backtrace.log
           if-no-files-found: warn
           retention-days: 14
