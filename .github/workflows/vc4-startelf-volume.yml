@@ -1,0 +1,82 @@
+name: VC4 start.elf firmware volume
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-volume
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware-volume:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      BOOTCODE_BLOB: 7642d2d89e4235e7d68875ff70688bdde6e71b5a
+      START_ELF_BLOB: 0cefcf3a756740760f9903f35cc3843117853712
+      FIXUP_DAT_BLOB: 1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate volume tools
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/firmware_fat32_volume.py \
+            scripts/vc4/raspi3_startelf_volume_smoke.py
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            | tee /tmp/synthetic-volume.log
+          grep -q '^STARTELF_VOLUME_READY ' /tmp/synthetic-volume.log
+
+      - name: Download matching official VideoCore firmware
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot"
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin "${base}/bootcode.bin"
+          curl --fail --location --retry 4 \
+            --output /tmp/start.elf "${base}/start.elf"
+          curl --fail --location --retry 4 \
+            --output /tmp/fixup.dat "${base}/fixup.dat"
+
+          test "$(git hash-object /tmp/bootcode.bin)" = "$BOOTCODE_BLOB"
+          test "$(git hash-object /tmp/start.elf)" = "$START_ELF_BLOB"
+          test "$(git hash-object /tmp/fixup.dat)" = "$FIXUP_DAT_BLOB"
+
+          {
+            echo "firmware_commit=${RPI_FIRMWARE_COMMIT}"
+            stat --printf='bootcode_size=%s\n' /tmp/bootcode.bin
+            stat --printf='start_elf_size=%s\n' /tmp/start.elf
+            stat --printf='fixup_dat_size=%s\n' /tmp/fixup.dat
+            sha256sum /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat
+          } | tee /tmp/official-firmware.txt
+
+      - name: Build and reconstruct the official firmware volume
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            --bootcode /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup /tmp/fixup.dat \
+            --output /tmp/raspi3-firmware.img \
+            | tee /tmp/official-volume.log
+          grep -q '^STARTELF_VOLUME_READY ' /tmp/official-volume.log
+          stat --printf='image_size=%s\n' /tmp/raspi3-firmware.img \
+            | tee -a /tmp/official-volume.log
+          sha256sum /tmp/raspi3-firmware.img \
+            | tee -a /tmp/official-volume.log
+
+      - name: Preserve the reproducible volume report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-volume-report
+          path: |
+            /tmp/synthetic-volume.log
+            /tmp/official-firmware.txt
+            /tmp/official-volume.log
+          if-no-files-found: error
+          retention-days: 14
