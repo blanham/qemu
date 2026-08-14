@@ -1,0 +1,194 @@
+name: VC4 live start.elf frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  live-frontier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Validate live-frontier tools
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-firmware-volume.py \
+            scripts/vc4/raspi3-startelf-probe.py \
+            scripts/vc4/raspi3-startelf-live-probe.py
+          python3 scripts/vc4/raspi3-firmware-volume.py selftest
+
+      - name: Prepare pinned second-stage firmware volume
+        run: |
+          mkdir -p /tmp/vc4-live
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/vc4-live/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          cat > /tmp/vc4-live/config.txt <<'EOF'
+          arm_64bit=1
+          kernel=kernel8.img
+          disable_commandline_tags=1
+          EOF
+          python3 scripts/vc4/raspi3-startelf-probe.py \
+            make-kernel /tmp/vc4-live/kernel8.img
+          python3 scripts/vc4/raspi3-firmware-volume.py build \
+            --output /tmp/vc4-live/pi3-startelf.img \
+            BOOTCODE.BIN=/tmp/vc4-live/bootcode.bin \
+            START.ELF=/tmp/vc4-live/start.elf \
+            FIXUP.DAT=/tmp/vc4-live/fixup.dat \
+            CONFIG.TXT=/tmp/vc4-live/config.txt \
+            KERNEL8.IMG=/tmp/vc4-live/kernel8.img
+          python3 scripts/vc4/raspi3-firmware-volume.py verify \
+            --image /tmp/vc4-live/pi3-startelf.img \
+            BOOTCODE.BIN=/tmp/vc4-live/bootcode.bin \
+            START.ELF=/tmp/vc4-live/start.elf \
+            FIXUP.DAT=/tmp/vc4-live/fixup.dat \
+            CONFIG.TXT=/tmp/vc4-live/config.txt \
+            KERNEL8.IMG=/tmp/vc4-live/kernel8.img
+          sha256sum /tmp/vc4-live/* \
+            | tee /tmp/vc4-live/volume-checksums.txt
+
+      - name: Configure and build linked targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-live/build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -n -E \
+              'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-live/build.log | tail -n 240 || true
+            tail -n 260 /tmp/vc4-live/build.log
+            exit "$rc"
+          fi
+
+      - name: Capture live VPU state before VM stop
+        id: probe
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          timeout 210s python3 \
+            scripts/vc4/raspi3-startelf-live-probe.py \
+            build/qemu-system-aarch64 \
+            /tmp/vc4-live/pi3-startelf.img \
+            --seconds 180 \
+            --qemu-log /tmp/vc4-live/qemu.log \
+            --result /tmp/vc4-live/frontier.json \
+            2>&1 | tee /tmp/vc4-live/probe.log
+
+      - name: Upload live start.elf frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-live-frontier-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-live/frontier.json
+            /tmp/vc4-live/probe.log
+            /tmp/vc4-live/qemu.log
+            /tmp/vc4-live/volume-checksums.txt
+          if-no-files-found: warn
+
+      - name: Publish sticky live-frontier report
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def read(path: str, limit: int) -> str:
+              file = Path(path)
+              if not file.exists():
+                  return f'{path}: not produced'
+              text = file.read_text(errors='replace')
+              return text[-limit:]
+
+          body = f'''<!-- vc4-startelf-live-frontier -->
+          ## Live VC4 / `start.elf` frontier
+
+          Workflow: {os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}
+
+          Probe outcome: **{os.environ.get('PROBE_OUTCOME', 'unknown')}**
+
+          ### Live state captured before `qmp stop`
+
+          ```json
+          {read('/tmp/vc4-live/frontier.json', 14000)}
+          ```
+
+          ### Probe output
+
+          ```text
+          {read('/tmp/vc4-live/probe.log', 8000)}
+          ```
+
+          ### QEMU diagnostics
+
+          ```text
+          {read('/tmp/vc4-live/qemu.log', 8000)}
+          ```
+          '''
+          Path('/tmp/vc4-live/comment.md').write_text(body)
+          PY
+        env:
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+
+      - name: Update PR #4 live-frontier comment
+        if: always()
+        run: |
+          marker='<!-- vc4-startelf-live-frontier -->'
+          comment_id="$({
+            gh api "repos/${GITHUB_REPOSITORY}/issues/4/comments" \
+              --paginate \
+              --jq ".[] | select(.body | contains(\"${marker}\")) | .id"
+          } | head -n 1)"
+          body="$(cat /tmp/vc4-live/comment.md)"
+          if [ -n "$comment_id" ]; then
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
+              --raw-field body="$body"
+          else
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/issues/4/comments" \
+              --raw-field body="$body"
+          fi
+
+      - name: Require first kernel execution
+        if: always()
+        run: |
+          if [ "${{ steps.probe.outcome }}" != success ]; then
+            echo 'The official second-stage path has not executed kernel8.img.' >&2
+            exit 1
+          fi
