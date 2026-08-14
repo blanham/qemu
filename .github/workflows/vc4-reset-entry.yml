@@ -18,6 +18,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install build dependencies
         run: |
@@ -47,7 +49,7 @@ jobs:
 
       - name: Validate scripts and source tree
         run: |
-          git diff --check HEAD^
+          git diff --check origin/agent/vc4-stock-bootcode...HEAD
           python3 -m py_compile \
             scripts/vc4/raspi3-reset-entry-smoke.py \
             scripts/vc4/raspi3-bootrom-fat-smoke.py \
