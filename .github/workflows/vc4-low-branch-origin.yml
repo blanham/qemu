@@ -40,7 +40,7 @@ jobs:
           test "$(git hash-object /tmp/fixup.dat)" = \
             1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
 
-      - name: Instrument indirect branches into low memory
+      - name: Instrument table branches into boot-cache padding
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -49,7 +49,7 @@ jobs:
           text = helper.read_text()
           anchor = 'DEF_HELPER_1(vc4_rti, void, env)\n'
           insert = (
-              'DEF_HELPER_5(vc4_trace_branch, i32, env, i32, i32, i32, i32)\n'
+              'DEF_HELPER_5(vc4_trace_table, i32, env, i32, i32, i32, i32)\n'
           )
           if text.count(anchor) != 1:
               raise SystemExit('unexpected helper declaration anchor')
@@ -59,27 +59,29 @@ jobs:
           text = op.read_text()
           anchor = 'G_NORETURN void helper_vc4_raise_illegal('
           implementation = r'''
-          uint32_t helper_vc4_trace_branch(CPUArchState *envp,
-                                           uint32_t source,
-                                           uint32_t target,
-                                           uint32_t reg,
-                                           uint32_t link)
+          uint32_t helper_vc4_trace_table(CPUArchState *envp,
+                                          uint32_t source,
+                                          uint32_t target,
+                                          uint32_t reg,
+                                          uint32_t halfword)
           {
               CPUVC4State *env = vc4_helper_env(envp);
+              uint32_t index = vc4_env_get_reg(env, reg);
+              uint32_t base = source + 2;
+              uint32_t address = base + index * (halfword ? 2 : 1);
+              int32_t displacement = ((int32_t)target - (int32_t)base) / 2;
 
-              if (target < 0x200) {
+              if (source >= 0x200 && target < 0x200) {
                   qemu_log_mask(
                       LOG_GUEST_ERROR,
-                      "VC4_LOW_BRANCH source=0x%08x target=0x%08x "
-                      "reg=r%u link=%u lr=0x%08x sr=0x%08x "
-                      "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
-                      "r14=0x%08x r15=0x%08x r16=0x%08x "
-                      "r24=0x%08x sp=0x%08x\n",
-                      source, target, reg, link,
+                      "VC4_LOW_TABLE source=0x%08x target=0x%08x "
+                      "kind=%s reg=r%u index=0x%08x table=0x%08x "
+                      "disp=%d lr=0x%08x sr=0x%08x "
+                      "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x\n",
+                      source, target, halfword ? "switch" : "switch.b",
+                      reg, index, address, displacement,
                       env->gpr[VC4_REG_LR], env->sr,
-                      env->gpr[0], env->gpr[1], env->gpr[2], env->gpr[3],
-                      env->gpr[14], env->gpr[15], env->gpr[16],
-                      env->gpr[24], env->gpr[VC4_REG_SP]);
+                      env->gpr[0], env->gpr[1], env->gpr[2], env->gpr[3]);
               }
               return target;
           }
@@ -91,39 +93,26 @@ jobs:
 
           translate = Path('target/vc4/translate.c')
           text = translate.read_text()
-          start_marker = '    if ((insn & 0xffe0) == 0x0040) {'
-          end_marker = '    if ((insn & 0xffe0) == 0x0080) {'
-          start = text.find(start_marker)
-          end = text.find(end_marker, start)
-          if start < 0 or end < 0:
-              raise SystemExit('could not delimit indirect-branch decoders')
-          new = '''    if ((insn & 0xffe0) == 0x0040) {
-              unsigned reg = insn & 0x1f;
-              TCGv_i32 target = tcg_temp_new_i32();
-
-              gen_helper_vc4_trace_branch(
-                  target, tcg_env, tcg_constant_i32(ctx->pc),
-                  vc4_get_reg(ctx, reg), tcg_constant_i32(reg),
-                  tcg_constant_i32(0));
+          old = '''    tcg_gen_shli_i32(displacement, displacement, 1);
+              tcg_gen_add_i32(target, base, displacement);
               tcg_gen_mov_i32(cpu_pc, target);
               ctx->base.is_jmp = DISAS_JUMP;
-              return true;
-          }
-          if ((insn & 0xffe0) == 0x0060) {
-              unsigned reg = insn & 0x1f;
-              TCGv_i32 target = tcg_temp_new_i32();
-
-              tcg_gen_movi_i32(cpu_gpr[VC4_REG_LR], ctx->base.pc_next);
-              gen_helper_vc4_trace_branch(
-                  target, tcg_env, tcg_constant_i32(ctx->pc),
-                  vc4_get_reg(ctx, reg), tcg_constant_i32(reg),
-                  tcg_constant_i32(1));
-              tcg_gen_mov_i32(cpu_pc, target);
-              ctx->base.is_jmp = DISAS_JUMP;
-              return true;
           }
           '''
-          translate.write_text(text[:start] + new + text[end:])
+          new = '''    TCGv_i32 traced = tcg_temp_new_i32();
+
+              tcg_gen_shli_i32(displacement, displacement, 1);
+              tcg_gen_add_i32(target, base, displacement);
+              gen_helper_vc4_trace_table(
+                  traced, tcg_env, tcg_constant_i32(ctx->pc), target,
+                  tcg_constant_i32(reg), tcg_constant_i32(halfword));
+              tcg_gen_mov_i32(cpu_pc, traced);
+              ctx->base.is_jmp = DISAS_JUMP;
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected table-branch generator')
+          translate.write_text(text.replace(old, new, 1))
           PY
           git diff --check
 
@@ -135,7 +124,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Run official firmware until its first low-memory branch
+      - name: Run official firmware until its first low table target
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -143,11 +132,11 @@ jobs:
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 6 \
+            --seconds 8 \
             --fast-tcg \
             --barrier-is-success 2>&1 | tee /tmp/vc4-low-branch.log
 
-          grep '^VC4_LOW_BRANCH ' /tmp/vc4-low-branch.log \
+          grep '^VC4_LOW_TABLE ' /tmp/vc4-low-branch.log \
             | tee /tmp/vc4-low-branch-summary.log
           test -s /tmp/vc4-low-branch-summary.log
 
