@@ -1,0 +1,144 @@
+name: VC4 RR current CPU invariant
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: vc4-rr-current-cpu
+  cancel-in-progress: false
+
+jobs:
+  current-cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize RR current_cpu tracking
+        run: |
+          python3 -m py_compile scripts/vc4/rr-current-cpu-fixup.py
+          python3 scripts/vc4/rr-current-cpu-fixup.py
+          first="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
+          python3 scripts/vc4/rr-current-cpu-fixup.py
+          second="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
+          test "$first" = "$second"
+          grep -q 'current_cpu = cpu;' accel/tcg/tcg-accel-ops-rr.c
+          grep -q 'shared RR thread changes guest CPU identity every slice' \
+            accel/tcg/tcg-accel-ops-rr.c
+          git diff --check
+
+      - name: Configure and build linked targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-rr-current-build.log 2>&1
+
+      - name: Validate passive five-vCPU fairness
+        run: |
+          python3 scripts/vc4/raspi3-rr-passive-smoke.py \
+            build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-rr-current-passive.log
+
+      - name: Download pinned official bootcode.bin
+        run: |
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+
+      - name: Require stock firmware to cross the former delay frontier
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --seconds 30 \
+            --barrier-is-success \
+            2>&1 | tee /tmp/vc4-rr-current-stock.log
+
+          grep -E \
+            'STOCK_BOOTCODE_(TRACE|BARRIER)|vc4-debug-|Official bootcode' \
+            /tmp/vc4-rr-current-stock.log \
+            | tail -n 200 > /tmp/vc4-rr-current-summary.log || true
+          cat /tmp/vc4-rr-current-summary.log
+
+          if grep -Eiq \
+            'pc[=: ]+(0x)?0*544([^0-9a-f]|$)' \
+            /tmp/vc4-rr-current-stock.log; then
+            echo 'Stock firmware remained at 0x544 with current_cpu tracking.' \
+              >&2
+            exit 1
+          fi
+
+      - name: Preserve candidate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-rr-current-cpu-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-rr-current-build.log
+            /tmp/vc4-rr-current-passive.log
+            /tmp/vc4-rr-current-stock.log
+            /tmp/vc4-rr-current-summary.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report candidate on PR #4
+        if: always()
+        run: |
+          if [ ! -s /tmp/vc4-rr-current-summary.log ]; then
+            exit 0
+          fi
+          {
+            echo '<!-- vc4-rr-current-cpu -->'
+            echo '### VC4 RR `current_cpu` candidate'
+            echo
+            echo '```text'
+            tail -n 200 /tmp/vc4-rr-current-summary.log
+            echo '```'
+            echo
+            echo "Actions run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > /tmp/vc4-rr-current-comment.md
+          gh pr comment 4 --body-file /tmp/vc4-rr-current-comment.md
+
+      - name: Commit exact tested scheduler source
+        if: success()
+        run: |
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          git add accel/tcg/tcg-accel-ops-rr.c
+          git commit -m 'accel/tcg: track current CPU in shared RR thread'
+          git fetch origin agent/vc4-stock-bootcode
+          git rebase origin/agent/vc4-stock-bootcode
+          git push origin HEAD:agent/vc4-stock-bootcode
