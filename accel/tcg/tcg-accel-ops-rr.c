@@ -63,9 +63,23 @@ void rr_kick_vcpu_thread(CPUState *unused)
 static QEMUTimer *rr_kick_vcpu_timer;
 static CPUState *rr_current_cpu;
 
+/*
+ * Non-icount RR preemption must not depend on guest clock progress.
+ *
+ * In deterministic icount mode the virtual clock remains the scheduling
+ * authority.  Otherwise this timer is purely a host-side fairness mechanism:
+ * using QEMU_CLOCK_REALTIME guarantees that a CPU in a tight translated loop
+ * can be preempted even when no guest I/O or monitor traffic wakes the main
+ * loop.
+ */
+static QEMUClockType rr_kick_clock(void)
+{
+    return icount_enabled() ? QEMU_CLOCK_VIRTUAL : QEMU_CLOCK_REALTIME;
+}
+
 static inline int64_t rr_next_kick_time(void)
 {
-    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
+    return qemu_clock_get_ns(rr_kick_clock()) + TCG_KICK_PERIOD;
 }
 
 /* Kick the currently round-robin scheduled vCPU to next */
@@ -91,7 +105,7 @@ static void rr_kick_thread(void *opaque)
 static void rr_start_kick_timer(void)
 {
     if (!rr_kick_vcpu_timer && CPU_NEXT(first_cpu)) {
-        rr_kick_vcpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+        rr_kick_vcpu_timer = timer_new_ns(rr_kick_clock(),
                                            rr_kick_thread, NULL);
     }
     if (rr_kick_vcpu_timer && !timer_pending(rr_kick_vcpu_timer)) {
