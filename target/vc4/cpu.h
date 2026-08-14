@@ -70,6 +70,8 @@ struct ArchCPU {
     CPUState parent_obj;
     CPUVC4State env;
 
+    /* Board-provided reset vector; not part of architectural reset state. */
+    uint32_t reset_pc;
     BCM2835VC4IntcState *intc;
 };
 #else
@@ -77,6 +79,8 @@ struct VC4CPU {
     CPUState parent_obj;
     CPUVC4State env;
 
+    /* Board-provided reset vector; not part of architectural reset state. */
+    uint32_t reset_pc;
     BCM2835VC4IntcState *intc;
 };
 #endif
