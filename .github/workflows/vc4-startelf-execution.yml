@@ -1,0 +1,117 @@
+name: VC4 start.elf execution frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-volume
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  startelf-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Download matching official VideoCore firmware
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot"
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin "${base}/bootcode.bin"
+          curl --fail --location --retry 4 \
+            --output /tmp/start.elf "${base}/start.elf"
+          curl --fail --location --retry 4 \
+            --output /tmp/fixup.dat "${base}/fixup.dat"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build the complete firmware volume
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/firmware_fat32_volume.py \
+            scripts/vc4/raspi3_startelf_volume_smoke.py \
+            scripts/vc4/raspi3_startelf_probe.py
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            --bootcode /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup /tmp/fixup.dat \
+            --output /tmp/raspi3-firmware.img \
+            | tee /tmp/startelf-volume.log
+          grep -q '^STARTELF_VOLUME_READY ' /tmp/startelf-volume.log
+
+      - name: Configure linked QEMU targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build linked AArch64 and native VC4 executables
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/startelf-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -n -E \
+              'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/startelf-build.log | tail -n 240 || true
+            tail -n 260 /tmp/startelf-build.log
+            exit "$rc"
+          fi
+
+      - name: Probe first-stage loading of start.elf
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3_startelf_probe.py \
+            build/qemu-system-aarch64 \
+            /tmp/raspi3-firmware.img \
+            /tmp/start.elf \
+            --seconds 30 \
+            --ram-scan-mib 64 \
+            --barrier-is-success \
+            --report /tmp/startelf-probe.json \
+            2>&1 | tee /tmp/startelf-probe.log
+
+      - name: Preserve start.elf frontier evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-execution-${{ github.run_attempt }}
+          path: |
+            /tmp/startelf-volume.log
+            /tmp/startelf-build.log
+            /tmp/startelf-probe.log
+            /tmp/startelf-probe.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Require evidence that start.elf reached SDRAM
+        run: |
+          grep -q '^STARTELF_EXECUTION_FRONTIER ' /tmp/startelf-probe.log
