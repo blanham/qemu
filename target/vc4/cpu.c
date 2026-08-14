@@ -17,6 +17,7 @@
 #include "accel/tcg/cpu-ops.h"
 #include "tcg/debug-assert.h"
 #include "system/tcg.h"
+#include "hw/qdev-properties.h"
 #include "hw/vc4/bcm2835_vc4_intc.h"
 
 QEMU_BUILD_BUG_ON(offsetof(VC4CPU, parent_obj) != 0);
@@ -111,6 +112,7 @@ static int vc4_cpu_mmu_index(CPUState *cs, bool ifetch)
 
 static void vc4_cpu_reset_hold(Object *obj, ResetType type)
 {
+    VC4CPU *cpu = VC4_CPU(obj);
     VC4CPUClass *vcc = VC4_CPU_GET_CLASS(obj);
     CPUVC4State *env = vc4_cpu_env(CPU(obj));
 
@@ -119,6 +121,7 @@ static void vc4_cpu_reset_hold(Object *obj, ResetType type)
     }
 
     memset(env, 0, offsetof(CPUVC4State, end_reset_fields));
+    env->pc = cpu->reset_pc;
 }
 
 static ObjectClass *vc4_cpu_class_by_name(const char *cpu_model)
@@ -330,6 +333,10 @@ static const TCGCPUOps vc4_tcg_ops = {
     .do_interrupt = vc4_cpu_do_interrupt,
 };
 
+static const Property vc4_cpu_properties[] = {
+    DEFINE_PROP_UINT32("reset-pc", VC4CPU, reset_pc, 0),
+};
+
 static void vc4_cpu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -339,6 +346,7 @@ static void vc4_cpu_class_init(ObjectClass *klass, const void *data)
 
     device_class_set_parent_realize(dc, vc4_cpu_realize,
                                     &vcc->parent_realize);
+    device_class_set_props(dc, vc4_cpu_properties);
     resettable_class_set_parent_phases(rc, NULL, vc4_cpu_reset_hold, NULL,
                                        &vcc->parent_phases);
 
