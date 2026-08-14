@@ -1,0 +1,222 @@
+name: VC4 start.elf SDHOST frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-volume
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: vc4-startelf-sdhost-frontier
+  cancel-in-progress: false
+
+jobs:
+  sdhost-frontier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize complete frontier instrumentation
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/startelf-probe-fixup.py \
+            scripts/vc4/startelf-kernel-marker-fixup.py \
+            scripts/vc4/startelf-sdhost-snapshot-fixup.py
+          python3 scripts/vc4/startelf-probe-fixup.py
+          python3 scripts/vc4/startelf-kernel-marker-fixup.py
+          python3 scripts/vc4/startelf-sdhost-snapshot-fixup.py
+          first="$(sha256sum scripts/vc4/raspi3_startelf_probe.py)"
+          python3 scripts/vc4/startelf-probe-fixup.py
+          python3 scripts/vc4/startelf-kernel-marker-fixup.py
+          python3 scripts/vc4/startelf-sdhost-snapshot-fixup.py
+          second="$(sha256sum scripts/vc4/raspi3_startelf_probe.py)"
+          test "$first" = "$second"
+          python3 -m py_compile \
+            scripts/vc4/firmware_fat32_volume.py \
+            scripts/vc4/raspi3_startelf_volume_smoke.py \
+            scripts/vc4/raspi3_startelf_probe.py
+          grep -q 'report\["sdhost_registers"\]' \
+            scripts/vc4/raspi3_startelf_probe.py
+          grep -q 'xp /24wx 0x3f202000' \
+            scripts/vc4/raspi3_startelf_probe.py
+          git diff --check
+
+      - name: Download matching official firmware trio
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot"
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin "${base}/bootcode.bin"
+          curl --fail --location --retry 4 \
+            --output /tmp/start.elf "${base}/start.elf"
+          curl --fail --location --retry 4 \
+            --output /tmp/fixup.dat "${base}/fixup.dat"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build the complete firmware volume
+        run: |
+          python3 scripts/vc4/startelf-marker-config-fixup.py
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            --bootcode /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup /tmp/fixup.dat \
+            --output /tmp/raspi3-firmware.img \
+            2>&1 | tee /tmp/startelf-sdhost-volume.log
+          grep -q '^STARTELF_VOLUME_READY ' \
+            /tmp/startelf-sdhost-volume.log
+
+      - name: Configure and build linked targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/startelf-sdhost-build.log 2>&1
+
+      - name: Capture the live second-stage frontier
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3_startelf_probe.py \
+            build/qemu-system-aarch64 \
+            /tmp/raspi3-firmware.img \
+            /tmp/start.elf \
+            --seconds 30 \
+            --ram-scan-mib 64 \
+            --barrier-is-success \
+            --report /tmp/startelf-sdhost-report.json \
+            2>&1 | tee /tmp/startelf-sdhost-probe.log
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(
+              Path('/tmp/startelf-sdhost-report.json').read_text()
+          )
+          required = (
+              'live_vpu',
+              'registers',
+              'system_timer',
+              'sdhost_registers',
+              'power_registers',
+              'start_elf_matches',
+          )
+          missing = [key for key in required if key not in report]
+          if missing:
+              raise SystemExit(f'incomplete frontier report: {missing}')
+          print(
+              'STARTELF_SDHOST_FRONTIER_READY '
+              f"matches={len(report['start_elf_matches'])} "
+              f"marker={report.get('arm_marker')}"
+          )
+          PY
+
+      - name: Preserve frontier evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-sdhost-${{ github.run_attempt }}
+          path: |
+            /tmp/startelf-sdhost-volume.log
+            /tmp/startelf-sdhost-build.log
+            /tmp/startelf-sdhost-probe.log
+            /tmp/startelf-sdhost-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report frontier on the stacked PR
+        if: always()
+        run: |
+          pr="$(gh pr list \
+            --head agent/vc4-startelf-volume \
+            --base agent/vc4-stock-bootcode \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -z "$pr" ] || [ ! -f /tmp/startelf-sdhost-report.json ]; then
+            exit 0
+          fi
+          python3 - <<'PY' > /tmp/startelf-sdhost-comment.md
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(
+              Path('/tmp/startelf-sdhost-report.json').read_text()
+          )
+          print('<!-- vc4-startelf-sdhost-frontier -->')
+          print('### `start.elf` SDHOST frontier')
+          print()
+          print('```text')
+          print(f"machine={report.get('machine')}")
+          print(f"matches={len(report.get('start_elf_matches', []))}")
+          marker = report.get('arm_marker')
+          print(f"arm_marker={marker}")
+          live = report.get('live_vpu', {})
+          for key in sorted(live):
+              if key != 'cpu':
+                  print(f"{key}={live[key]}")
+          print('--- VPU registers ---')
+          print(str(report.get('registers', '')).strip())
+          print('--- SDHOST ---')
+          print(str(report.get('sdhost_registers', '')).strip())
+          print('--- system timer ---')
+          print(str(report.get('system_timer', '')).strip())
+          print('--- power ---')
+          print(str(report.get('power_registers', '')).strip())
+          print('```')
+          print()
+          print(
+              'Actions run: '
+              f"{os.environ['GITHUB_SERVER_URL']}/"
+              f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+              f"{os.environ['GITHUB_RUN_ID']}"
+          )
+          PY
+          gh pr comment "$pr" --body-file /tmp/startelf-sdhost-comment.md
+
+      - name: Commit exact tested snapshot instrumentation
+        if: success()
+        run: |
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          git add scripts/vc4/raspi3_startelf_probe.py
+          if git diff --cached --quiet; then
+            echo 'SDHOST snapshot instrumentation is already materialized.'
+          else
+            git commit -m 'tests/vc4: capture SDHOST at start.elf frontier'
+            git fetch origin agent/vc4-startelf-volume
+            git rebase origin/agent/vc4-startelf-volume
+            git push origin HEAD:agent/vc4-startelf-volume
+          fi
