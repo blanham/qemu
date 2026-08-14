@@ -55,6 +55,14 @@ jobs:
           set confirm off
           set breakpoint pending on
           set print thread-events off
+          set logging file /tmp/vc4-halted-gdb.log
+          set logging overwrite on
+          set logging redirect off
+          set logging enabled on
+
+          info address vc4_cpu_realize
+          info address helper_vc4_halt
+          info address vc4_cpu_do_interrupt
 
           python
           import gdb
@@ -78,8 +86,10 @@ jobs:
                   cpu = gdb.parse_and_eval("(CPUState *)0x%x" % self.address)
                   halted = int(cpu.dereference()["halted"])
                   index = int(cpu.dereference()["cpu_index"])
-                  gdb.write("VC4_HALTED_WRITE cpu-index=%d halted=%d cpu=0x%x\n" %
-                            (index, halted, self.address))
+                  gdb.write(
+                      "VC4_HALTED_WRITE cpu-index=%d halted=%d cpu=0x%x\n"
+                      % (index, halted, self.address)
+                  )
                   gdb.execute("bt 32", to_string=False)
                   return False
 
@@ -102,7 +112,10 @@ jobs:
 
           VPURealizeBreakpoint("vc4_cpu_realize", internal=False)
           VC4FunctionBreakpoint("helper_vc4_halt", "VC4_HELPER_HALT")
-          VC4FunctionBreakpoint("vc4_cpu_do_interrupt", "VC4_EXCEPTION_ENTRY")
+          VC4FunctionBreakpoint(
+              "vc4_cpu_do_interrupt",
+              "VC4_EXCEPTION_ENTRY",
+          )
           end
 
           run
@@ -125,16 +138,24 @@ jobs:
             --fixup-dat /tmp/fixup.dat \
             --seconds 4 \
             --fast-tcg \
-            --barrier-is-success 2>&1 | tee /tmp/vc4-halted-writer.log || true
+            --barrier-is-success \
+            2>&1 | tee /tmp/vc4-halted-writer.log || true
+
+          if test -f /tmp/vc4-halted-gdb.log; then
+            {
+              echo '=== dedicated GDB halt trace ==='
+              cat /tmp/vc4-halted-gdb.log
+            } | tee -a /tmp/vc4-halted-writer.log
+          fi
 
           grep -E \
             '^(VC4_REALIZE|VC4_HALTED_WRITE|VC4_HELPER_HALT|VC4_EXCEPTION_ENTRY)' \
             /tmp/vc4-halted-writer.log || true
 
           if ! grep -Eq \
-            '^(VC4_HALTED_WRITE|VC4_HELPER_HALT|VC4_EXCEPTION_ENTRY)' \
+            '^(VC4_HALTED_WRITE.*halted=1|VC4_HELPER_HALT|VC4_EXCEPTION_ENTRY)' \
             /tmp/vc4-halted-writer.log; then
-            echo 'No VPU halt writer or halt path was observed.' >&2
+            echo 'No transition to halted=1 or VC4 halt path was observed.' >&2
             exit 1
           fi
 
@@ -143,6 +164,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vc4-halted-writer-${{ github.run_attempt }}
-          path: /tmp/vc4-halted-writer.log
+          path: |
+            /tmp/vc4-halted-writer.log
+            /tmp/vc4-halted-gdb.log
           if-no-files-found: error
           retention-days: 14
