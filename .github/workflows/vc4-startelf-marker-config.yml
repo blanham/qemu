@@ -1,0 +1,85 @@
+name: VC4 marker-kernel firmware configuration
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-volume
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-startelf-marker-config
+  cancel-in-progress: false
+
+jobs:
+  marker-config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Materialize isolated marker configuration
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/startelf-marker-config-fixup.py
+          python3 scripts/vc4/startelf-marker-config-fixup.py
+          first="$(sha256sum scripts/vc4/raspi3_startelf_volume_smoke.py)"
+          python3 scripts/vc4/startelf-marker-config-fixup.py
+          second="$(sha256sum scripts/vc4/raspi3_startelf_volume_smoke.py)"
+          test "$first" = "$second"
+          python3 -m py_compile \
+            scripts/vc4/firmware_fat32_volume.py \
+            scripts/vc4/raspi3_startelf_volume_smoke.py
+          grep -q '"device_tree=\\n"' \
+            scripts/vc4/raspi3_startelf_volume_smoke.py
+          git diff --check
+
+      - name: Validate synthetic volume and exact CONFIG.TXT
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            --output /tmp/marker-config.img \
+            2>&1 | tee /tmp/marker-config.log
+          grep -q '^STARTELF_VOLUME_READY ' /tmp/marker-config.log
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, 'scripts/vc4')
+          from firmware_fat32_volume import extract_files
+
+          files = extract_files(Path('/tmp/marker-config.img'))
+          config = files['CONFIG.TXT'].decode('ascii')
+          expected = (
+              'arm_64bit=1\n'
+              'kernel=kernel8.img\n'
+              'device_tree=\n'
+              'enable_uart=1\n'
+              'disable_commandline_tags=1\n'
+          )
+          if config != expected:
+              raise SystemExit(
+                  f'CONFIG.TXT mismatch: {config!r} != {expected!r}'
+              )
+          print('STARTELF_MARKER_CONFIG_READY')
+          PY
+
+      - name: Commit exact tested marker configuration
+        if: success()
+        run: |
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          git add scripts/vc4/raspi3_startelf_volume_smoke.py
+          if git diff --cached --quiet; then
+            echo 'Marker-kernel configuration is already materialized.'
+          else
+            git commit -m 'tests/vc4: isolate marker kernel from DTB loading'
+            git fetch origin agent/vc4-startelf-volume
+            git rebase origin/agent/vc4-startelf-volume
+            git push origin HEAD:agent/vc4-startelf-volume
+          fi
