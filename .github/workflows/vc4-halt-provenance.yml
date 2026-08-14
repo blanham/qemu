@@ -1,0 +1,129 @@
+name: VC4 stock firmware halt provenance
+
+on:
+  push:
+    branches:
+      - agent/vc4-halt-provenance
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build and debugger dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl gdb ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+
+          test "$(stat --format=%s /tmp/bootcode.bin)" -eq 52624
+          test "$(stat --format=%s /tmp/start.elf)" -eq 3022336
+          test "$(stat --format=%s /tmp/fixup.dat)" -eq 7381
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Validate diagnostic scripts and FAT32 image writer
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/vc4-halt-watch.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-fat32-smoke.py
+          python3 scripts/vc4/raspi3-stock-fat32-smoke.py
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Capture every VPU halted write and architectural helper entry
+        run: |
+          cat > /tmp/vc4-halt-provenance.gdb <<'GDB'
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          set print thread-events off
+          source scripts/vc4/vc4-halt-watch.py
+          run
+          GDB
+
+          cat > /tmp/qemu-vc4-halt-gdb <<'SH'
+          #!/bin/sh
+          exec gdb -q -batch \
+            -x /tmp/vc4-halt-provenance.gdb \
+            --args "$VC4_REAL_QEMU" "$@"
+          SH
+          chmod +x /tmp/qemu-vc4-halt-gdb
+
+          export VC4_REAL_QEMU="$PWD/build/qemu-system-aarch64"
+          set -o pipefail
+          timeout 30s python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            /tmp/qemu-vc4-halt-gdb \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 5 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/vc4-halt-provenance.log
+
+          grep -q '^VC4_HALT_PROVENANCE_READY' \
+            /tmp/vc4-halt-provenance.log
+          grep -q '^VC4_HALT_WATCH_INSTALLED' \
+            /tmp/vc4-halt-provenance.log
+          grep -q '^VC4_HALTED_WRITE ' \
+            /tmp/vc4-halt-provenance.log
+
+      - name: Extract compact halt provenance
+        if: always()
+        run: |
+          if test -f /tmp/vc4-halt-provenance.log; then
+            grep -E \
+              '^(VC4_|STOCK_BOOTCODE_TRACE|Official bootcode live-state probe|STOCK_BOOTCODE_BARRIER)' \
+              /tmp/vc4-halt-provenance.log \
+              > /tmp/vc4-halt-provenance-summary.log || true
+            if ! test -s /tmp/vc4-halt-provenance-summary.log; then
+              tail -n 160 /tmp/vc4-halt-provenance.log \
+                > /tmp/vc4-halt-provenance-summary.log
+            fi
+          else
+            printf '%s\n' 'No halt-provenance log was produced.' \
+              > /tmp/vc4-halt-provenance-summary.log
+          fi
+          cat /tmp/vc4-halt-provenance-summary.log
+
+      - name: Upload halt provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-halt-provenance-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-halt-provenance.log
+            /tmp/vc4-halt-provenance-summary.log
+          if-no-files-found: warn
+          retention-days: 14
