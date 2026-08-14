@@ -69,6 +69,41 @@ static bool vc4_cpu_has_work(CPUState *cs)
            cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
 }
 
+static bool vc4_cpu_debug_halted(Object *obj, Error **errp)
+{
+    return CPU(obj)->halted;
+}
+
+static bool vc4_cpu_debug_stop(Object *obj, Error **errp)
+{
+    return CPU(obj)->stop;
+}
+
+static bool vc4_cpu_debug_stopped(Object *obj, Error **errp)
+{
+    return CPU(obj)->stopped;
+}
+
+static bool vc4_cpu_debug_exit_request(Object *obj, Error **errp)
+{
+    return qatomic_read(&CPU(obj)->exit_request);
+}
+
+static bool vc4_cpu_debug_thread_kicked(Object *obj, Error **errp)
+{
+    return qatomic_read(&CPU(obj)->thread_kicked);
+}
+
+static bool vc4_cpu_debug_hard_interrupt(Object *obj, Error **errp)
+{
+    return cpu_test_interrupt(CPU(obj), CPU_INTERRUPT_HARD);
+}
+
+static bool vc4_cpu_debug_has_work(Object *obj, Error **errp)
+{
+    return vc4_cpu_has_work(CPU(obj));
+}
+
 static int vc4_cpu_mmu_index(CPUState *cs, bool ifetch)
 {
     return 0;
@@ -306,6 +341,21 @@ static void vc4_cpu_class_init(ObjectClass *klass, const void *data)
                                     &vcc->parent_realize);
     resettable_class_set_parent_phases(rc, NULL, vc4_cpu_reset_hold, NULL,
                                        &vcc->parent_phases);
+
+    object_class_property_add_bool(klass, "vc4-debug-halted",
+                                   vc4_cpu_debug_halted, NULL);
+    object_class_property_add_bool(klass, "vc4-debug-stop",
+                                   vc4_cpu_debug_stop, NULL);
+    object_class_property_add_bool(klass, "vc4-debug-stopped",
+                                   vc4_cpu_debug_stopped, NULL);
+    object_class_property_add_bool(klass, "vc4-debug-exit-request",
+                                   vc4_cpu_debug_exit_request, NULL);
+    object_class_property_add_bool(klass, "vc4-debug-thread-kicked",
+                                   vc4_cpu_debug_thread_kicked, NULL);
+    object_class_property_add_bool(klass, "vc4-debug-hard-interrupt",
+                                   vc4_cpu_debug_hard_interrupt, NULL);
+    object_class_property_add_bool(klass, "vc4-debug-has-work",
+                                   vc4_cpu_debug_has_work, NULL);
 
     cc->class_by_name = vc4_cpu_class_by_name;
     cc->dump_state = vc4_cpu_dump_state;

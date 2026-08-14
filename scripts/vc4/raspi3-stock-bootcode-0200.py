@@ -15,6 +15,15 @@ BOOT_ENTRY = 0x200
 TRACE_SAMPLES = 12
 TRACE_INTERVAL = 0.05
 REG_RE = re.compile(r"\br(\d+)\s*=\s*([0-9a-fA-F]{1,8})\b")
+QOM_STATE_PROPERTIES = (
+    ("halted", "vc4-debug-halted"),
+    ("stop", "vc4-debug-stop"),
+    ("stopped", "vc4-debug-stopped"),
+    ("exit-request", "vc4-debug-exit-request"),
+    ("thread-kicked", "vc4-debug-thread-kicked"),
+    ("hard-interrupt", "vc4-debug-hard-interrupt"),
+    ("has-work", "vc4-debug-has-work"),
+)
 
 
 def load_state_probe() -> ModuleType:
@@ -53,6 +62,12 @@ def format_snapshot(index: int, snapshot: dict[str, Any]) -> str:
     return "/".join(fields)
 
 
+def format_qom_state(index: int, values: dict[str, Any]) -> str:
+    fields = [f"{index}:{name}={str(value).lower()}"
+              for name, value in values.items()]
+    return "/".join(fields)
+
+
 def compact_transitions(values: list[int]) -> list[int]:
     result: list[int] = []
     for value in values:
@@ -86,15 +101,58 @@ def install_trace_qmp(state: ModuleType) -> None:
                     return
                 time.sleep(0.005)
             raise TimeoutError(
-                f"QEMU did not enter {'running' if running else 'stopped'} state"
+                "QEMU did not enter "
+                f"{'running' if running else 'stopped'} state"
             )
+
+        def _vpu_qom_path(self, cpus: Any, vpu_index: int) -> str:
+            if not isinstance(cpus, list):
+                raise RuntimeError(f"query-cpus-fast returned {cpus!r}")
+            for cpu in cpus:
+                if not isinstance(cpu, dict):
+                    continue
+                if cpu.get("cpu-index") != vpu_index:
+                    continue
+                qom_path = cpu.get("qom-path")
+                if isinstance(qom_path, str) and qom_path:
+                    return qom_path
+                raise RuntimeError(
+                    f"VC4 CPU has no qom-path: {cpu!r}"
+                )
+            raise RuntimeError(
+                f"VC4 cpu-index {vpu_index} disappeared from {cpus!r}"
+            )
+
+        def _read_live_vpu_state(self, qom_path: str) -> dict[str, Any]:
+            status = super().execute("query-status")
+            values: dict[str, Any] = {
+                "running": (
+                    bool(status.get("running", False))
+                    if isinstance(status, dict) else False
+                ),
+            }
+            for label, property_name in QOM_STATE_PROPERTIES:
+                values[label] = super().execute(
+                    "qom-get",
+                    {
+                        "path": qom_path,
+                        "property": property_name,
+                    },
+                )
+            return values
 
         def _capture_stock_trace(self) -> None:
             cpus = super().execute("query-cpus-fast")
             vpu_index, _ = state.find_vc4_cpu(cpus)
+            vpu_qom_path = self._vpu_qom_path(cpus, vpu_index)
             snapshots: list[dict[str, Any]] = []
+            live_states: list[dict[str, Any]] = []
 
             for index in range(TRACE_SAMPLES):
+                # Read QEMU's scheduler-visible CPU state while the VM is
+                # still running.  Stopping the VM first would set CPUState's
+                # stopped flag and destroy the evidence we need here.
+                live_states.append(self._read_live_vpu_state(vpu_qom_path))
                 self._set_running(False)
                 registers = self.hmp("info registers", cpu_index=vpu_index)
                 snapshots.append(parse_snapshot(state, registers))
@@ -152,6 +210,7 @@ def install_trace_qmp(state: ModuleType) -> None:
                 "STOCK_BOOTCODE_TRACE "
                 f"samples={len(snapshots)} interval={TRACE_INTERVAL:.3f}s "
                 f"stable={str(stable).lower()} "
+                f"vpu-qom-path={vpu_qom_path} "
                 "histogram="
                 + ",".join(
                     f"0x{pc:08x}:{count}"
@@ -159,6 +218,11 @@ def install_trace_qmp(state: ModuleType) -> None:
                 )
                 + " transitions="
                 + "->".join(f"0x{pc:08x}" for pc in transitions)
+                + " live-cpu-state="
+                + ";".join(
+                    format_qom_state(index, values)
+                    for index, values in enumerate(live_states)
+                )
                 + " snapshots="
                 + ";".join(
                     format_snapshot(index, snapshot)
