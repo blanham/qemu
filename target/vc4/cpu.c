@@ -17,7 +17,7 @@
 #include "accel/tcg/cpu-ops.h"
 #include "tcg/debug-assert.h"
 #include "system/tcg.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/vc4/bcm2835_vc4_intc.h"
 
 QEMU_BUILD_BUG_ON(offsetof(VC4CPU, parent_obj) != 0);
