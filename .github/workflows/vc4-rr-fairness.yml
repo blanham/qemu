@@ -31,6 +31,7 @@ jobs:
           python3 -m py_compile \
             scripts/vc4/rr-realtime-kick-fixup.py \
             scripts/vc4/raspi3-rr-passive-smoke.py \
+            scripts/vc4/raspi3-rr-return-smoke.py \
             scripts/vc4/raspi3-systimer-delay-smoke.py
           python3 scripts/vc4/rr-realtime-kick-fixup.py
           python3 scripts/vc4/rr-realtime-kick-fixup.py
@@ -50,11 +51,18 @@ jobs:
             build/qemu-system-aarch64 \
             --timeout 5
 
-      - name: Validate passive RR fairness without qtest traffic
+      - name: Validate first passive handoff without qtest traffic
         run: |
           python3 scripts/vc4/raspi3-rr-passive-smoke.py \
             build/qemu-system-aarch64 \
             --quiescent-seconds 5.0
+
+      - name: Validate repeated ARM-to-VC4 RR return handoffs
+        run: |
+          python3 scripts/vc4/raspi3-rr-return-smoke.py \
+            build/qemu-system-aarch64 \
+            --delay-us 1000000 \
+            --quiescent-seconds 8.0
 
       - name: Commit exact tested scheduler change
         run: |
