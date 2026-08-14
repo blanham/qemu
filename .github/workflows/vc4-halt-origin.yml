@@ -47,12 +47,16 @@ jobs:
 
           path = Path("target/vc4/op_helper.c")
           text = path.read_text()
-          old = '''    qemu_log_mask(CPU_LOG_EXEC, "VideoCore IV: HALT at 0x%08x\\n", env->pc);
-'''
-          new = '''    qemu_log_mask(LOG_GUEST_ERROR,
-                  "VC4_ARCH_HALT next-pc=0x%08x sr=0x%08x\\n",
-                  env->pc, env->sr);
-'''
+          old = (
+              '    qemu_log_mask(CPU_LOG_EXEC, '
+              '"VideoCore IV: HALT at 0x%08x\\n", env->pc);\n'
+          )
+          new = (
+              '    qemu_log_mask(LOG_GUEST_ERROR,\n'
+              '                  "VC4_ARCH_HALT next-pc=0x%08x '
+              'sr=0x%08x\\n",\n'
+              '                  env->pc, env->sr);\n'
+          )
           if text.count(old) != 1:
               raise SystemExit("unexpected helper_vc4_halt source")
           path.write_text(text.replace(old, new))
