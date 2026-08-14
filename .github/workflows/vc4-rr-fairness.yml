@@ -1,0 +1,69 @@
+name: VC4 heterogeneous RR fairness
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fairness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize and validate RR fairness fix
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/rr-realtime-kick-fixup.py \
+            scripts/vc4/raspi3-rr-passive-smoke.py \
+            scripts/vc4/raspi3-systimer-delay-smoke.py
+          python3 scripts/vc4/rr-realtime-kick-fixup.py
+          python3 scripts/vc4/rr-realtime-kick-fixup.py
+          git diff --check
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Validate active post-release timer loop
+        run: |
+          python3 scripts/vc4/raspi3-systimer-delay-smoke.py \
+            build/qemu-system-aarch64 \
+            --timeout 5
+
+      - name: Validate passive RR fairness without qtest traffic
+        run: |
+          python3 scripts/vc4/raspi3-rr-passive-smoke.py \
+            build/qemu-system-aarch64 \
+            --quiescent-seconds 5.0
+
+      - name: Commit exact tested scheduler change
+        run: |
+          git config user.name "VC4 bring-up automation"
+          git config user.email "vc4-bringup@users.noreply.github.com"
+          git add accel/tcg/tcg-accel-ops-rr.c
+          if git diff --cached --quiet; then
+            echo 'RR fairness change is already materialized.'
+          else
+            git commit -m "accel/tcg: preempt non-icount RR CPUs by host time"
+            git push origin HEAD:agent/vc4-stock-bootcode
+          fi
