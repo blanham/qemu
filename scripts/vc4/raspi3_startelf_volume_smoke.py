@@ -31,6 +31,7 @@ from firmware_fat32_volume import (
 CONFIG_TXT = (
     "arm_64bit=1\n"
     "kernel=kernel8.img\n"
+    "device_tree=\n"
     "enable_uart=1\n"
     "disable_commandline_tags=1\n"
 ).encode("ascii")
