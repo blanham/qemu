@@ -164,7 +164,6 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     BCMSocPeripheralBaseState *ps =
         BCM_SOC_PERIPHERALS_BASE(peripherals);
     MemoryRegion *sysmem = get_system_memory();
-    CPUClass *vpu_cc;
     const char *image = machine->kernel_filename;
     uint64_t vcram_size = RASPI3_DEFAULT_VCRAM;
     ssize_t image_size;
@@ -174,6 +173,12 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
         error_report("raspi3b-vc4-hetero requires exactly 1 GiB of RAM");
         exit(EXIT_FAILURE);
     }
+
+    if (!image) {
+        image = machine->firmware;
+    }
+    s->vpu_entry = image ? machine->ram_size - vcram_size :
+                           VC4_RASPI3_BOOT_ENTRY;
 
     /*
      * Construct the VPU object first so both TCG frontends can be initialized
@@ -241,6 +246,14 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     cpu_address_space_init(s->vpu_cpu, 0, "vc4-vpu",
                            &s->vpu_address_space);
     s->vpu_cpu->start_powered_off = false;
+
+    /*
+     * qdev realization performs an initial CPU reset, and QEMU performs
+     * another machine reset before vCPUs run.  Configure the architectural
+     * reset vector before either reset instead of assigning PC afterward.
+     */
+    object_property_set_int(OBJECT(s->vpu_cpu), "reset-pc",
+                            s->vpu_entry, &error_abort);
     if (!qdev_realize(DEVICE(s->vpu_cpu), NULL, &error_fatal)) {
         g_assert_not_reached();
     }
@@ -249,12 +262,7 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
         DEVICE(&ps->powermgt), BCM2835_POWERMGT_ARM_POWER_ON, 0,
         s->arm_power_irq);
 
-    if (!image) {
-        image = machine->firmware;
-    }
-
     if (image) {
-        s->vpu_entry = machine->ram_size - vcram_size;
         image_size = load_image_targphys_as(
             image, s->vpu_entry, vcram_size, s->vpu_cpu->as, NULL);
         if (image_size < 0) {
@@ -276,17 +284,12 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
                          VC4_RASPI3_BOOT_ENTRY);
             exit(EXIT_FAILURE);
         }
-        s->vpu_entry = VC4_RASPI3_BOOT_ENTRY;
         info_report("raspi3b-vc4-hetero: loaded bootcode.bin (%u bytes) "
                     "from FAT%u boot partition at LBA %" PRIu64
                     "; entering VPU at 0x%08" HWADDR_PRIx,
                     boot_info.file_size, boot_info.fat32 ? 32 : 16,
                     boot_info.partition_lba, s->vpu_entry);
     }
-
-    vpu_cc = CPU_GET_CLASS(s->vpu_cpu);
-    g_assert(vpu_cc->set_pc);
-    vpu_cc->set_pc(s->vpu_cpu, s->vpu_entry);
 }
 
 static void vc4_raspi3_hetero_machine_class_init(ObjectClass *oc,
