@@ -106,7 +106,10 @@ class VC4HaltHelperBreakpoint(gdb.Breakpoint):
 
     def stop(self) -> bool:
         env = eval_int("(uintptr_t)$rdi", 0)
-        cpu = eval_int("(uintptr_t)env_cpu((CPUArchState *)$rdi)", 0)
+        cpu = eval_int(
+            "(uintptr_t)((char *)$rdi - sizeof(CPUState))",
+            0,
+        )
         pc = eval_int("((CPUVC4State *)$rdi)->pc")
         sr = eval_int("((CPUVC4State *)$rdi)->sr")
         cpu_index = (
