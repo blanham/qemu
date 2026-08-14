@@ -1,0 +1,154 @@
+name: VC4 reset entry and stock firmware progress
+
+on:
+  push:
+    branches:
+      - agent/vc4-reset-entry
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reset-entry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+
+          test "$(stat --format=%s /tmp/bootcode.bin)" -eq 52624
+          test "$(stat --format=%s /tmp/start.elf)" -eq 3022336
+          test "$(stat --format=%s /tmp/fixup.dat)" -eq 7381
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          sha256sum /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat
+
+      - name: Validate scripts and source tree
+        run: |
+          git diff --check HEAD^
+          python3 -m py_compile \
+            scripts/vc4/raspi3-reset-entry-smoke.py \
+            scripts/vc4/raspi3-bootrom-fat-smoke.py \
+            scripts/vc4/raspi3-bootrom-0200-smoke.py \
+            scripts/vc4/raspi3-systimer-delay-smoke.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-fat32-smoke.py
+          python3 scripts/vc4/raspi3-stock-fat32-smoke.py
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Verify reset vectors survive initial and system reset
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-reset-entry-smoke.py \
+            build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-reset-entry.log
+          grep -q '^VC4_RESET_ENTRY case=fat-bootcode ' \
+            /tmp/vc4-reset-entry.log
+          grep -q '^VC4_RESET_ENTRY case=direct-image ' \
+            /tmp/vc4-reset-entry.log
+
+      - name: Verify the synthetic 0x200 boot-ROM handoff
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-bootrom-0200-smoke.py \
+            build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-bootrom-0200.log
+
+      - name: Verify the post-ARM-release timer delay
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-systimer-delay-smoke.py \
+            build/qemu-system-aarch64 \
+            --timeout 5 \
+            2>&1 | tee /tmp/vc4-systimer-delay.log
+
+      - name: Advance pinned stock firmware beyond its 100 ms timer loop
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 30 \
+            --fast-tcg \
+            --barrier-is-success \
+            2>&1 | tee /tmp/vc4-stock-after-reset-entry.log
+
+          if ! grep -q '^STOCK_BOOTCODE_BARRIER ' \
+              /tmp/vc4-stock-after-reset-entry.log; then
+            echo 'The stock firmware probe produced no barrier record.' >&2
+            exit 1
+          fi
+
+          if grep -Eq \
+              'STOCK_BOOTCODE_BARRIER.*pc=0x0000054[0246]|STOCK_BOOTCODE_TRACE.*stable=true.*histogram=0x0000054[0246]' \
+              /tmp/vc4-stock-after-reset-entry.log; then
+            echo 'Stock firmware remained in the 100 ms loop after fixing the reset vector.' >&2
+            exit 1
+          fi
+
+      - name: Extract compact diagnostics
+        if: always()
+        run: |
+          : > /tmp/vc4-reset-entry-summary.log
+          for log in \
+            /tmp/vc4-reset-entry.log \
+            /tmp/vc4-bootrom-0200.log \
+            /tmp/vc4-systimer-delay.log \
+            /tmp/vc4-stock-after-reset-entry.log; do
+            if test -f "$log"; then
+              echo "=== $(basename "$log") ===" \
+                >> /tmp/vc4-reset-entry-summary.log
+              grep -E \
+                '^(VC4_RESET_ENTRY|Raspberry Pi FAT32 boot-ROM chain passed|BCM2835 VC4 post-ARM-release timer delay passed|STOCK_BOOTCODE_TRACE|Official bootcode live-state probe|STOCK_BOOTCODE_BARRIER)' \
+                "$log" >> /tmp/vc4-reset-entry-summary.log || \
+                tail -n 120 "$log" >> /tmp/vc4-reset-entry-summary.log
+            fi
+          done
+          cat /tmp/vc4-reset-entry-summary.log
+
+      - name: Upload reset and firmware diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-reset-entry-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-reset-entry.log
+            /tmp/vc4-bootrom-0200.log
+            /tmp/vc4-systimer-delay.log
+            /tmp/vc4-stock-after-reset-entry.log
+            /tmp/vc4-reset-entry-summary.log
+          if-no-files-found: warn
+          retention-days: 14
