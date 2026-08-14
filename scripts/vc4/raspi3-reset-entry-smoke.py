@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the Raspberry Pi VC4 reset vector before guest execution."""
+"""Verify the Raspberry Pi VC4 reset vector before and after execution."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from typing import Any
 
 BOOT_ENTRY = 0x00000200
 DIRECT_ENTRY = 0x3C000000
-SCRATCH_PC = 0x00001234
 PC_RE = re.compile(r"\bpc=([0-9a-fA-F]{1,8})\b")
 
 
@@ -71,6 +70,21 @@ class QMP:
             },
         )
         return "" if result is None else str(result)
+
+    def wait_running(self, running: bool, timeout: float = 2.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = self.execute("query-status")
+            current = bool(status.get("running", False)) if isinstance(
+                status, dict
+            ) else False
+            if current == running:
+                return
+            time.sleep(0.01)
+        raise TimeoutError(
+            "QEMU did not become "
+            f"{'running' if running else 'stopped'}"
+        )
 
     def close(self) -> None:
         self.file.close()
@@ -204,12 +218,20 @@ def probe_case(qemu: Path, name: str, expected_pc: int,
         if halted:
             raise RuntimeError(f"{name} VPU started halted at its reset vector")
 
-        qmp.hmp(f"set $pc = 0x{SCRATCH_PC:x}", cpu_index=cpu_index)
-        scratch_pc, _ = read_pc(qmp, cpu_index)
-        if scratch_pc != SCRATCH_PC:
+        # Execute enough guest code to prove PC is no longer merely carrying
+        # the configured value, then reset the stopped VM.  This avoids relying
+        # on target-specific monitor register-assignment syntax.
+        qmp.execute("cont")
+        qmp.wait_running(True)
+        time.sleep(0.05)
+        qmp.execute("stop")
+        qmp.wait_running(False)
+        executed_pc, executed_registers = read_pc(qmp, cpu_index)
+        if executed_pc == expected_pc:
             raise RuntimeError(
-                f"{name} could not perturb PC before reset: "
-                f"actual=0x{scratch_pc:08x}"
+                f"{name} VPU did not execute before reset: "
+                f"pc=0x{executed_pc:08x} "
+                f"registers={executed_registers!r}"
             )
 
         qmp.execute("system_reset")
@@ -227,7 +249,7 @@ def probe_case(qemu: Path, name: str, expected_pc: int,
         print(
             "VC4_RESET_ENTRY "
             f"case={name} cpu-index={cpu_index} "
-            f"initial=0x{initial_pc:08x} scratch=0x{scratch_pc:08x} "
+            f"initial=0x{initial_pc:08x} executed=0x{executed_pc:08x} "
             f"reset=0x{reset_pc:08x} qom-path={qom_path} "
             f"qom-types={qom_types}"
         )
