@@ -1,0 +1,154 @@
+name: VC4 start.elf probe hardening
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-volume
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-startelf-probe-hardening
+  cancel-in-progress: false
+
+jobs:
+  harden-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize and validate probe hardening
+        run: |
+          python3 -m py_compile scripts/vc4/startelf-probe-fixup.py
+          python3 scripts/vc4/startelf-probe-fixup.py
+          first="$(sha256sum scripts/vc4/raspi3_startelf_probe.py)"
+          python3 scripts/vc4/startelf-probe-fixup.py
+          second="$(sha256sum scripts/vc4/raspi3_startelf_probe.py)"
+          test "$first" = "$second"
+          python3 -m py_compile \
+            scripts/vc4/firmware_fat32_volume.py \
+            scripts/vc4/raspi3_startelf_volume_smoke.py \
+            scripts/vc4/raspi3_startelf_probe.py
+          grep -q 'cpu_index: int = 0' \
+            scripts/vc4/raspi3_startelf_probe.py
+          grep -q 'cpu_index=vpu_index' \
+            scripts/vc4/raspi3_startelf_probe.py
+          git diff --check
+
+      - name: Download matching official VideoCore firmware
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot"
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin "${base}/bootcode.bin"
+          curl --fail --location --retry 4 \
+            --output /tmp/start.elf "${base}/start.elf"
+          curl --fail --location --retry 4 \
+            --output /tmp/fixup.dat "${base}/fixup.dat"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build complete firmware volume
+        run: |
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            --bootcode /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup /tmp/fixup.dat \
+            --output /tmp/raspi3-firmware.img \
+            > /tmp/startelf-harden-volume.log
+          grep -q '^STARTELF_VOLUME_READY ' \
+            /tmp/startelf-harden-volume.log
+
+      - name: Configure and build linked targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/startelf-harden-build.log 2>&1
+
+      - name: Require a complete diagnostic report
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3_startelf_probe.py \
+            build/qemu-system-aarch64 \
+            /tmp/raspi3-firmware.img \
+            /tmp/start.elf \
+            --seconds 10 \
+            --ram-scan-mib 64 \
+            --barrier-is-success \
+            --report /tmp/startelf-harden-report.json \
+            2>&1 | tee /tmp/startelf-harden-probe.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(
+              Path('/tmp/startelf-harden-report.json').read_text()
+          )
+          if not report.get('registers'):
+              raise SystemExit('start.elf probe did not capture VPU registers')
+          if 'live_vpu' not in report:
+              raise SystemExit('start.elf probe did not capture live VPU state')
+          if 'start_elf_matches' not in report:
+              raise SystemExit('start.elf probe did not inspect guest SDRAM')
+          print(
+              'STARTELF_PROBE_REPORT_READY '
+              f"matches={len(report['start_elf_matches'])}"
+          )
+          PY
+
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-probe-hardening-${{ github.run_attempt }}
+          path: |
+            /tmp/startelf-harden-volume.log
+            /tmp/startelf-harden-build.log
+            /tmp/startelf-harden-probe.log
+            /tmp/startelf-harden-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit exact tested probe source
+        if: success()
+        run: |
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          git add scripts/vc4/raspi3_startelf_probe.py
+          if git diff --cached --quiet; then
+            echo 'Probe hardening is already materialized.'
+          else
+            git commit -m 'tests/vc4: select VPU for start.elf register capture'
+            git fetch origin agent/vc4-startelf-volume
+            git rebase origin/agent/vc4-startelf-volume
+            git push origin HEAD:agent/vc4-startelf-volume
+          fi
