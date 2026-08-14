@@ -1,0 +1,389 @@
+name: VC4 complete low-PC transfer trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-low-pc-transfer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Instrument every VC4 PC-writing path
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          helper = Path('target/vc4/helper.h')
+          text = helper.read_text()
+          text = text.replace(
+              'DEF_HELPER_5(vc4_push_pop, void, env, i32, i32, i32, i32)\n'
+              'DEF_HELPER_1(vc4_rti, void, env)\n',
+              'DEF_HELPER_6(vc4_push_pop, void, env, i32, i32, i32, i32, i32)\n'
+              'DEF_HELPER_2(vc4_rti, void, env, i32)\n'
+              'DEF_HELPER_5(vc4_trace_target, i32, env, i32, i32, i32, i32)\n',
+          )
+          if 'DEF_HELPER_5(vc4_trace_target' not in text:
+              raise SystemExit('could not update VC4 helper declarations')
+          helper.write_text(text)
+
+          op = Path('target/vc4/op_helper.c')
+          text = op.read_text()
+          anchor = 'static void vc4_push(CPUArchState *envp, CPUVC4State *env, unsigned reg)\n'
+          implementation = r'''
+          static void vc4_trace_low_target(CPUVC4State *env,
+                                           uint32_t source,
+                                           uint32_t target,
+                                           uint32_t kind,
+                                           uint32_t aux)
+          {
+              if (source >= 0x200 && target < 0x200) {
+                  qemu_log_mask(
+                      LOG_GUEST_ERROR,
+                      "VC4_LOW_TARGET source=0x%08x target=0x%08x "
+                      "kind=%u aux=0x%08x lr=0x%08x sr=0x%08x "
+                      "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
+                      "sp=0x%08x\n",
+                      source, target, kind, aux,
+                      env->gpr[VC4_REG_LR], env->sr,
+                      env->gpr[0], env->gpr[1], env->gpr[2], env->gpr[3],
+                      env->gpr[VC4_REG_SP]);
+              }
+          }
+
+          uint32_t helper_vc4_trace_target(CPUArchState *envp,
+                                           uint32_t source,
+                                           uint32_t target,
+                                           uint32_t kind,
+                                           uint32_t aux)
+          {
+              vc4_trace_low_target(vc4_helper_env(envp), source, target,
+                                   kind, aux);
+              return target;
+          }
+
+          '''
+          if text.count(anchor) != 1:
+              raise SystemExit('unexpected VC4 push helper anchor')
+          text = text.replace(anchor, implementation + anchor, 1)
+
+          old = '''void helper_vc4_push_pop(CPUArchState *envp, uint32_t push, uint32_t lrpc,
+                                   uint32_t start, uint32_t count)
+          {
+              CPUVC4State *env = vc4_helper_env(envp);
+              int i;
+          '''
+          new = '''void helper_vc4_push_pop(CPUArchState *envp, uint32_t push, uint32_t lrpc,
+                                   uint32_t start, uint32_t count,
+                                   uint32_t source)
+          {
+              CPUVC4State *env = vc4_helper_env(envp);
+              uint32_t old_pc = env->pc;
+              int i;
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected push/pop signature')
+          text = text.replace(old, new, 1)
+          old = '''        if (lrpc) {
+                      vc4_pop(envp, env, VC4_REG_PC);
+                  }
+              }
+          }
+
+          void helper_vc4_rti(CPUArchState *envp)
+          {
+          '''
+          new = '''        if (lrpc) {
+                      vc4_pop(envp, env, VC4_REG_PC);
+                  }
+              }
+
+              if (!push && env->pc != old_pc) {
+                  vc4_trace_low_target(env, source, env->pc, 10, start);
+              }
+          }
+
+          void helper_vc4_rti(CPUArchState *envp, uint32_t source)
+          {
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected push/pop and RTI boundary')
+          text = text.replace(old, new, 1)
+          old = '''    env->sr = cpu_ldl_le_data(envp, sp);
+              env->pc = cpu_ldl_le_data(envp, sp + 4);
+              env->gpr[VC4_REG_SP] = sp + 8;
+          '''
+          new = '''    env->sr = cpu_ldl_le_data(envp, sp);
+              env->pc = cpu_ldl_le_data(envp, sp + 4);
+              env->gpr[VC4_REG_SP] = sp + 8;
+              vc4_trace_low_target(env, source, env->pc, 11, 0);
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected RTI restore block')
+          op.write_text(text.replace(old, new, 1))
+
+          translate = Path('target/vc4/translate.c')
+          text = translate.read_text()
+          old = '''    } else {
+                  tcg_gen_mov_i32(cpu_pc, value);
+                  ctx->base.is_jmp = DISAS_JUMP;
+              }
+          }
+
+          static void vc4_set_reg_imm(DisasContext *ctx, unsigned reg, uint32_t value)
+          '''
+          new = '''    } else {
+                  TCGv_i32 traced = tcg_temp_new_i32();
+
+                  gen_helper_vc4_trace_target(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc), value,
+                      tcg_constant_i32(1), tcg_constant_i32(reg));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+                  ctx->base.is_jmp = DISAS_JUMP;
+              }
+          }
+
+          static void vc4_set_reg_imm(DisasContext *ctx, unsigned reg, uint32_t value)
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected dynamic PC-write block')
+          text = text.replace(old, new, 1)
+          old = '''    } else {
+                  tcg_gen_movi_i32(cpu_pc, value);
+                  ctx->base.is_jmp = DISAS_JUMP;
+              }
+          }
+
+          static TCGv_i32 vc4_gen_cond_from_sr'''
+          new = '''    } else {
+                  TCGv_i32 traced = tcg_temp_new_i32();
+
+                  gen_helper_vc4_trace_target(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc),
+                      tcg_constant_i32(value), tcg_constant_i32(2),
+                      tcg_constant_i32(reg));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+                  ctx->base.is_jmp = DISAS_JUMP;
+              }
+          }
+
+          static TCGv_i32 vc4_gen_cond_from_sr'''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected immediate PC-write block')
+          text = text.replace(old, new, 1)
+
+          start = text.find('static void vc4_gen_goto_tb(')
+          end = text.find('static void vc4_gen_cond_branch(', start)
+          if start < 0 or end < 0:
+              raise SystemExit('could not delimit direct branch generator')
+          text = text[:start] + '''static void vc4_gen_goto_tb(DisasContext *ctx, unsigned slot, uint32_t dest)
+          {
+              TCGv_i32 traced = tcg_temp_new_i32();
+
+              gen_helper_vc4_trace_target(
+                  traced, tcg_env, tcg_constant_i32(ctx->pc),
+                  tcg_constant_i32(dest), tcg_constant_i32(3),
+                  tcg_constant_i32(slot));
+              tcg_gen_mov_i32(cpu_pc, traced);
+              tcg_gen_lookup_and_goto_ptr();
+              ctx->base.is_jmp = DISAS_NORETURN;
+          }
+
+          ''' + text[end:]
+
+          old = '''    tcg_gen_brcondi_i32(TCG_COND_EQ, predicate, 0, not_taken);
+              tcg_gen_movi_i32(cpu_pc, dest);
+              tcg_gen_exit_tb(NULL, 0);
+          '''
+          new_cond = '''    tcg_gen_brcondi_i32(TCG_COND_EQ, predicate, 0, not_taken);
+              {
+                  TCGv_i32 traced = tcg_temp_new_i32();
+                  gen_helper_vc4_trace_target(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc),
+                      tcg_constant_i32(dest), tcg_constant_i32(4),
+                      tcg_constant_i32(cond));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+              }
+              tcg_gen_exit_tb(NULL, 0);
+          '''
+          if text.count(old) != 2:
+              raise SystemExit('unexpected conditional branch blocks')
+          text = text.replace(old, new_cond, 1)
+          new_cmp = new_cond.replace('tcg_constant_i32(4)',
+                                     'tcg_constant_i32(5)')
+          text = text.replace(old, new_cmp, 1)
+
+          old = '''    tcg_gen_shli_i32(displacement, displacement, 1);
+              tcg_gen_add_i32(target, base, displacement);
+              tcg_gen_mov_i32(cpu_pc, target);
+              ctx->base.is_jmp = DISAS_JUMP;
+          }
+          '''
+          new = '''    tcg_gen_shli_i32(displacement, displacement, 1);
+              tcg_gen_add_i32(target, base, displacement);
+              gen_helper_vc4_trace_target(
+                  displacement, tcg_env, tcg_constant_i32(ctx->pc), target,
+                  tcg_constant_i32(halfword ? 9 : 8),
+                  tcg_constant_i32(reg));
+              tcg_gen_mov_i32(cpu_pc, displacement);
+              ctx->base.is_jmp = DISAS_JUMP;
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected table branch block')
+          text = text.replace(old, new, 1)
+
+          old = '''    if ((insn & 0xffe0) == 0x0040) {
+                  tcg_gen_mov_i32(cpu_pc, vc4_get_reg(ctx, insn & 0x1f));
+                  ctx->base.is_jmp = DISAS_JUMP;
+                  return true;
+              }
+              if ((insn & 0xffe0) == 0x0060) {
+                  tcg_gen_movi_i32(cpu_gpr[VC4_REG_LR], ctx->base.pc_next);
+                  tcg_gen_mov_i32(cpu_pc, vc4_get_reg(ctx, insn & 0x1f));
+                  ctx->base.is_jmp = DISAS_JUMP;
+                  return true;
+              }
+          '''
+          new = '''    if ((insn & 0xffe0) == 0x0040) {
+                  unsigned reg = insn & 0x1f;
+                  TCGv_i32 traced = tcg_temp_new_i32();
+                  gen_helper_vc4_trace_target(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc),
+                      vc4_get_reg(ctx, reg), tcg_constant_i32(6),
+                      tcg_constant_i32(reg));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+                  ctx->base.is_jmp = DISAS_JUMP;
+                  return true;
+              }
+              if ((insn & 0xffe0) == 0x0060) {
+                  unsigned reg = insn & 0x1f;
+                  TCGv_i32 traced = tcg_temp_new_i32();
+                  tcg_gen_movi_i32(cpu_gpr[VC4_REG_LR], ctx->base.pc_next);
+                  gen_helper_vc4_trace_target(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc),
+                      vc4_get_reg(ctx, reg), tcg_constant_i32(7),
+                      tcg_constant_i32(reg));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+                  ctx->base.is_jmp = DISAS_JUMP;
+                  return true;
+              }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected indirect branch blocks')
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              'gen_helper_vc4_rti(tcg_env);',
+              'gen_helper_vc4_rti(tcg_env, tcg_constant_i32(ctx->pc));',
+              1,
+          )
+          old = '''        gen_helper_vc4_push_pop(tcg_env,
+                                  tcg_constant_i32(push),
+                                  tcg_constant_i32(lrpc),
+                                  tcg_constant_i32(start),
+                                  tcg_constant_i32(count));
+          '''
+          new = '''        gen_helper_vc4_push_pop(tcg_env,
+                                  tcg_constant_i32(push),
+                                  tcg_constant_i32(lrpc),
+                                  tcg_constant_i32(start),
+                                  tcg_constant_i32(count),
+                                  tcg_constant_i32(ctx->pc));
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected push/pop helper call')
+          translate.write_text(text.replace(old, new, 1))
+
+          cpu = Path('target/vc4/cpu.c')
+          text = cpu.read_text()
+          text = text.replace(
+              '    uint32_t saved_sr = env->sr;\n',
+              '    uint32_t saved_sr = env->sr;\n'
+              '    uint32_t source_pc = env->pc;\n',
+              1,
+          )
+          old = '''    env->pc = vector_entry & ~1u;
+              cs->halted = 0;
+          '''
+          new = '''    env->pc = vector_entry & ~1u;
+              if (source_pc >= 0x200 && env->pc < 0x200) {
+                  qemu_log_mask(LOG_GUEST_ERROR,
+                                "VC4_LOW_TARGET source=0x%08x "
+                                "target=0x%08x kind=12 aux=0x%08x "
+                                "lr=0x%08x sr=0x%08x\n",
+                                source_pc, env->pc, vector,
+                                env->gpr[VC4_REG_LR], env->sr);
+              }
+              cs->halted = 0;
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected IRQ PC-write block')
+          cpu.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run official firmware until first high-to-low PC transfer
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 8 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/vc4-low-pc-transfer.log
+
+          grep '^VC4_LOW_TARGET ' /tmp/vc4-low-pc-transfer.log \
+            | tee /tmp/vc4-low-pc-transfer-summary.log
+          test -s /tmp/vc4-low-pc-transfer-summary.log
+
+      - name: Upload complete low-PC trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-low-pc-transfer-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-low-pc-transfer.log
+            /tmp/vc4-low-pc-transfer-summary.log
+          if-no-files-found: warn
+          retention-days: 14
