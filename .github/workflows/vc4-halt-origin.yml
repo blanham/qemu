@@ -40,7 +40,7 @@ jobs:
           test "$(git hash-object /tmp/fixup.dat)" = \
             1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
 
-      - name: Enable low-overhead architectural halt tracing
+      - name: Enable post-entry architectural halt tracing
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -52,15 +52,18 @@ jobs:
               '"VideoCore IV: HALT at 0x%08x\\n", env->pc);\n'
           )
           new = (
-              '    qemu_log_mask(LOG_GUEST_ERROR,\n'
-              '                  "VC4_ARCH_HALT next-pc=0x%08x '
-              'sr=0x%08x\\n",\n'
-              '                  env->pc, env->sr);\n'
+              '    if (env->pc > 0x200) {\n'
+              '        qemu_log_mask(LOG_GUEST_ERROR,\n'
+              '                      "VC4_ARCH_HALT insn-pc=0x%08x '
+              'next-pc=0x%08x sr=0x%08x\\n",\n'
+              '                      env->pc - 2, env->pc, env->sr);\n'
+              '    }\n'
           )
           if text.count(old) != 1:
               raise SystemExit("unexpected helper_vc4_halt source")
           path.write_text(text.replace(old, new))
           PY
+          git diff --check
 
       - name: Configure and build heterogeneous system emulator
         run: |
@@ -70,7 +73,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Run undisturbed official-firmware probe
+      - name: Run official-firmware halt-origin probe
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -78,7 +81,7 @@ jobs:
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 180 \
+            --seconds 8 \
             --fast-tcg \
             --barrier-is-success 2>&1 | tee /tmp/vc4-halt-origin.log
 
@@ -88,7 +91,7 @@ jobs:
           cat /tmp/vc4-halt-origin-summary.log
 
           if ! grep -q '^VC4_ARCH_HALT ' /tmp/vc4-halt-origin.log; then
-            echo 'No architectural VC4 HALT/SLEEP helper call was observed.' >&2
+            echo 'No post-entry architectural VC4 HALT/SLEEP was observed.' >&2
             exit 1
           fi
 
