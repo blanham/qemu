@@ -1,0 +1,202 @@
+name: VC4 RR external kick matrix
+
+on:
+  push:
+    branches:
+      - agent/vc4-rr-kick-recovery
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vc4-rr-external-kick-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  experiment:
+    name: ${{ matrix.policy }} external kick
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        policy:
+          - all
+          - active
+          - passed
+          - active-or-passed
+
+    env:
+      POLICY: ${{ matrix.policy }}
+      RESULT_ROOT: /tmp/vc4-rr-results
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Download pinned official bootcode.bin
+        run: |
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+
+      - name: Materialize an idempotent policy and scheduler trace
+        run: |
+          set -euo pipefail
+          result_dir="${RESULT_ROOT}/${POLICY}"
+          mkdir -p "$result_dir"
+
+          python3 -m py_compile \
+            scripts/vc4/rr-external-kick-variants.py \
+            scripts/vc4/rr-slice-trace-fixup.py \
+            scripts/vc4/raspi3-rr-passive-smoke.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py
+
+          python3 scripts/vc4/rr-external-kick-variants.py "$POLICY"
+          policy_first="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
+          python3 scripts/vc4/rr-external-kick-variants.py "$POLICY"
+          policy_second="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
+          test "$policy_first" = "$policy_second"
+
+          python3 scripts/vc4/rr-slice-trace-fixup.py
+          trace_first="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
+          python3 scripts/vc4/rr-slice-trace-fixup.py
+          trace_second="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
+          test "$trace_first" = "$trace_second"
+
+          grep -q "VC4_RR_EXTERNAL_KICK_POLICY: ${POLICY}" \
+            accel/tcg/tcg-accel-ops-rr.c
+          grep -q 'VC4_RR_SLICE_TRACE_PREEXIT' \
+            accel/tcg/tcg-accel-ops-rr.c
+          grep -q 'r = tcg_cpu_exec(cpu);' \
+            accel/tcg/tcg-accel-ops-rr.c
+          git diff --check
+          git diff -- accel/tcg/tcg-accel-ops-rr.c \
+            > "$result_dir/materialized.patch"
+
+      - name: Configure and build linked targets
+        run: |
+          set -euo pipefail
+          result_dir="${RESULT_ROOT}/${POLICY}"
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror \
+            > "$result_dir/configure.log" 2>&1
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > "$result_dir/build.log" 2>&1
+
+      - name: Run fairness and stock-firmware probes
+        run: |
+          set -euo pipefail
+          result_dir="${RESULT_ROOT}/${POLICY}"
+
+          set +e
+          timeout 45s python3 scripts/vc4/raspi3-rr-passive-smoke.py \
+            build/qemu-system-aarch64 \
+            > "$result_dir/passive.log" 2>&1
+          passive_rc=$?
+
+          timeout 55s python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --seconds 30 \
+            --barrier-is-success \
+            > "$result_dir/stock.log" 2>&1
+          stock_rc=$?
+          set -e
+
+          python3 - \
+            "$POLICY" "$passive_rc" "$stock_rc" \
+            "$result_dir/stock.log" "$result_dir/result.txt" <<'PY'
+          from __future__ import annotations
+
+          from collections import Counter
+          from pathlib import Path
+          import re
+          import sys
+
+          policy, passive_rc, stock_rc, stock_name, result_name = sys.argv[1:]
+          stock = Path(stock_name).read_text(encoding="utf-8", errors="replace")
+          events = Counter(re.findall(r"\bevent=([a-z-]+)\b", stock))
+          barrier = next(
+              (line for line in stock.splitlines()
+               if line.startswith("STOCK_BOOTCODE_BARRIER ")),
+              "missing",
+          )
+          trace = next(
+              (line for line in stock.splitlines()
+               if line.startswith("STOCK_BOOTCODE_TRACE ")),
+              "missing",
+          )
+          barrier_pc = re.search(r"\bpc=0x([0-9a-fA-F]+)\b", barrier)
+          histogram = re.search(r"\bhistogram=([^ ]+)", trace)
+          transitions = re.search(r"\btransitions=([^ ]+)", trace)
+          external_poison = len(re.findall(
+              r"event=external-after[^|\n]*\bexit=1\b", stock
+          ))
+          preexit_cpus = sorted(set(re.findall(
+              r"event=preexisting-exit[^|\n]*\bsubject=(-?\d+)", stock
+          )))
+
+          lines = [
+              f"policy={policy}",
+              f"passive_rc={passive_rc}",
+              f"stock_rc={stock_rc}",
+              f"barrier_pc=0x{barrier_pc.group(1) if barrier_pc else 'unknown'}",
+              f"histogram={histogram.group(1) if histogram else 'missing'}",
+              f"transitions={transitions.group(1) if transitions else 'missing'}",
+              f"trace_events={sum(events.values())}",
+              "event_counts=" + ",".join(
+                  f"{name}:{count}" for name, count in sorted(events.items())
+              ),
+              f"external_after_exit_true={external_poison}",
+              "preexisting_exit_cpus=" + (
+                  ",".join(preexit_cpus) if preexit_cpus else "none"
+              ),
+              "barrier=" + barrier,
+              "trace=" + trace,
+          ]
+          Path(result_name).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print("\n".join(lines[:-2]))
+          PY
+
+          grep -oE 'VC4_RR_TRACE[^|]*' "$result_dir/stock.log" \
+            > "$result_dir/trace-tail.log" || true
+          grep -E \
+            'VC4_RR_TRACE|STOCK_BOOTCODE_(TRACE|BARRIER)|Official bootcode|VC4 passive RR' \
+            "$result_dir/stock.log" "$result_dir/passive.log" \
+            | tail -n 300 > "$result_dir/summary.log" || true
+
+          {
+            echo "### RR external kick policy: ${POLICY}"
+            echo
+            echo '```text'
+            cat "$result_dir/result.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve experiment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-rr-external-kick-${{ matrix.policy }}-${{ github.run_attempt }}
+          path: /tmp/vc4-rr-results/${{ matrix.policy }}
+          if-no-files-found: warn
+          retention-days: 14
