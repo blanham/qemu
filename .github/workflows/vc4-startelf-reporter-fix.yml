@@ -1,0 +1,64 @@
+name: Repair VC4 start.elf frontier reporter
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Repair reporter and remove this one-shot workflow
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/vc4-startelf-frontier-comment.yml')
+          text = path.read_text()
+          text = text.replace(
+              '''            gh api \\
+              --method PATCH \\
+              "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \\
+              --raw-field body@=/tmp/vc4-startelf/comment.md
+''',
+              '''            body="$(cat /tmp/vc4-startelf/comment.md)"
+            gh api \\
+              --method PATCH \\
+              "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \\
+              --raw-field body="$body"
+''',
+          )
+          text = text.replace(
+              '''            gh api \\
+              --method POST \\
+              "repos/${GITHUB_REPOSITORY}/issues/4/comments" \\
+              --raw-field body@=/tmp/vc4-startelf/comment.md
+''',
+              '''            body="$(cat /tmp/vc4-startelf/comment.md)"
+            gh api \\
+              --method POST \\
+              "repos/${GITHUB_REPOSITORY}/issues/4/comments" \\
+              --raw-field body="$body"
+''',
+          )
+          path.write_text(text)
+          Path('.github/workflows/vc4-startelf-reporter-fix.yml').unlink()
+          PY
+          git diff --check
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          git add \
+            .github/workflows/vc4-startelf-frontier-comment.yml \
+            .github/workflows/vc4-startelf-reporter-fix.yml
+          git commit -m 'ci/vc4: repair start.elf frontier reporter [skip ci]'
+          git push origin HEAD:agent/vc4-stock-bootcode
