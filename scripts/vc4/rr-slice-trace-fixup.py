@@ -170,8 +170,7 @@ def materialize(text: str) -> str:
     CPUState *vc4_rr_trace_cpu;
 
     /* VC4_RR_SLICE_TRACE_EXTERNAL: before external kick policy. */
-    vc4_rr_trace_event("external-enter", unused,
-                       qatomic_read(&rr_current_cpu), UINT64_MAX, -1);
+    vc4_rr_trace_event("external-enter", unused, NULL, UINT64_MAX, -1);
 '''
     external_leave = r'''
 
@@ -212,7 +211,7 @@ def materialize(text: str) -> str:
         publish
         + "            /* VC4_RR_SLICE_TRACE_PUBLISH */\n"
         + "            vc4_rr_trace_event(\"publish\", NULL, cpu,\n"
-        + "                               (uint64_t)cpu_get_pc(cpu), -1);\n",
+        + "                               UINT64_MAX, -1);\n",
         "RR current-CPU publication",
     )
 
@@ -223,7 +222,7 @@ def materialize(text: str) -> str:
     traced_preexit = """            if (qatomic_load_acquire(&cpu->exit_request)) {
                 /* VC4_RR_SLICE_TRACE_PREEXIT */
                 vc4_rr_trace_event("preexisting-exit", NULL, cpu,
-                                   (uint64_t)cpu_get_pc(cpu), -1);
+                                   UINT64_MAX, -1);
                 break;
             }
 """
@@ -232,10 +231,10 @@ def materialize(text: str) -> str:
     execute = "                r = tcg_cpu_exec(cpu);\n"
     traced_execute = """                /* VC4_RR_SLICE_TRACE_EXEC */
                 vc4_rr_trace_event("exec-before", NULL, cpu,
-                                   (uint64_t)cpu_get_pc(cpu), -1);
+                                   UINT64_MAX, -1);
                 r = tcg_cpu_exec(cpu);
                 vc4_rr_trace_event("exec-after", NULL, cpu,
-                                   (uint64_t)cpu_get_pc(cpu), r);
+                                   UINT64_MAX, r);
 """
     text = replace_once(text, execute, traced_execute, "tcg_cpu_exec call")
 
@@ -247,9 +246,7 @@ def materialize(text: str) -> str:
         )
     position = positions[-1]
     traced_rotate = rotate + """            /* VC4_RR_SLICE_TRACE_ROTATE */
-            vc4_rr_trace_event("rotate", NULL, cpu,
-                               cpu ? (uint64_t)cpu_get_pc(cpu) : UINT64_MAX,
-                               -1);
+            vc4_rr_trace_event("rotate", NULL, cpu, UINT64_MAX, -1);
 """
     text = text[:position] + traced_rotate + text[position + len(rotate) :]
 
