@@ -91,18 +91,12 @@ jobs:
 
           translate = Path('target/vc4/translate.c')
           text = translate.read_text()
-          old = '''    if ((insn & 0xffe0) == 0x0040) {
-              tcg_gen_mov_i32(cpu_pc, vc4_get_reg(ctx, insn & 0x1f));
-              ctx->base.is_jmp = DISAS_JUMP;
-              return true;
-          }
-          if ((insn & 0xffe0) == 0x0060) {
-              tcg_gen_movi_i32(cpu_gpr[VC4_REG_LR], ctx->base.pc_next);
-              tcg_gen_mov_i32(cpu_pc, vc4_get_reg(ctx, insn & 0x1f));
-              ctx->base.is_jmp = DISAS_JUMP;
-              return true;
-          }
-          '''
+          start_marker = '    if ((insn & 0xffe0) == 0x0040) {'
+          end_marker = '    if ((insn & 0xffe0) == 0x0080) {'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('could not delimit indirect-branch decoders')
           new = '''    if ((insn & 0xffe0) == 0x0040) {
               unsigned reg = insn & 0x1f;
               TCGv_i32 target = tcg_temp_new_i32();
@@ -129,9 +123,7 @@ jobs:
               return true;
           }
           '''
-          if text.count(old) != 1:
-              raise SystemExit('unexpected indirect-branch decoder anchor')
-          translate.write_text(text.replace(old, new, 1))
+          translate.write_text(text[:start] + new + text[end:])
           PY
           git diff --check
 
