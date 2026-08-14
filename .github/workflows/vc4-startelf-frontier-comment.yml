@@ -1,0 +1,110 @@
+name: VC4 start.elf frontier reporter
+
+on:
+  workflow_run:
+    workflows:
+      - VC4 start.elf and first kernel probe
+    types:
+      - completed
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.head_branch == 'agent/vc4-stock-bootcode'
+    runs-on: ubuntu-24.04
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+
+    steps:
+      - name: Download start.elf frontier artifact
+        run: |
+          mkdir -p /tmp/vc4-startelf
+          artifact_id="$({
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
+              --paginate \
+              --jq '.artifacts[] | select(.name | startswith("vc4-startelf-frontier-")) | .id'
+          } | head -n 1)"
+          if [ -z "$artifact_id" ]; then
+            echo 'No start.elf artifact was produced.' \
+              > /tmp/vc4-startelf/reporter-error.txt
+            exit 0
+          fi
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            > /tmp/vc4-startelf/artifact.zip
+          unzip -q /tmp/vc4-startelf/artifact.zip \
+            -d /tmp/vc4-startelf/artifact
+
+      - name: Publish sticky PR frontier report
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path('/tmp/vc4-startelf/artifact')
+
+          def excerpt(name: str, limit: int = 12000) -> str:
+              path = root / name
+              if not path.exists():
+                  return f'{name}: not produced'
+              text = path.read_text(errors='replace')
+              if len(text) > limit:
+                  text = text[-limit:]
+                  return f'[tail truncated to {limit} characters]\n{text}'
+              return text
+
+          body = f'''<!-- vc4-startelf-frontier -->
+          ## VC4 `start.elf` frontier
+
+          Workflow: {os.environ['RUN_URL']}
+
+          Conclusion: **{os.environ['RUN_CONCLUSION']}**
+
+          ### Probe result
+
+          ```text
+          {excerpt('startelf-probe.log')}
+          ```
+
+          ### QEMU diagnostics
+
+          ```text
+          {excerpt('startelf-qemu.log', 8000)}
+          ```
+
+          ### Firmware volume identities
+
+          ```text
+          {excerpt('volume-checksums.txt', 4000)}
+          ```
+          '''
+          Path('/tmp/vc4-startelf/comment.md').write_text(body)
+          PY
+
+          marker='<!-- vc4-startelf-frontier -->'
+          comment_id="$({
+            gh api "repos/${GITHUB_REPOSITORY}/issues/4/comments" \
+              --paginate \
+              --jq ".[] | select(.body | contains(\"${marker}\")) | .id"
+          } | head -n 1)"
+
+          if [ -n "$comment_id" ]; then
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
+              --raw-field body@=/tmp/vc4-startelf/comment.md
+          else
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/issues/4/comments" \
+              --raw-field body@=/tmp/vc4-startelf/comment.md
+          fi
