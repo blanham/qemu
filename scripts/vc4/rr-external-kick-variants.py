@@ -98,13 +98,13 @@ def remove_generated_helper(text: str) -> str:
     text = text.replace(prototype, "")
 
     definition_re = re.compile(
-        rf"\n/\* {HELPER_MARKER}: definition\. \*/\n"
+        rf"\n+/\* {HELPER_MARKER}: definition\. \*/\n"
         rf"static CPUState \*{HELPER_NAME}\(void\)\n"
         r"\{\n"
         r"    return qatomic_read\(&rr_current_cpu\);\n"
         r"\}\n",
     )
-    text, count = definition_re.subn("", text)
+    text, count = definition_re.subn("\n", text)
     if count > 1:
         raise SystemExit("found multiple generated active-CPU helpers")
     return text
@@ -160,7 +160,6 @@ def add_active_helper(text: str) -> str:
         raise SystemExit("could not uniquely locate rr_current_cpu declaration")
 
     helper_definition = f"""
-
 /* {HELPER_MARKER}: definition. */
 static CPUState *{HELPER_NAME}(void)
 {{
