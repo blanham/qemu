@@ -40,7 +40,7 @@ jobs:
           test "$(git hash-object /tmp/fixup.dat)" = \
             1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
 
-      - name: Enable post-entry architectural halt tracing
+      - name: Enable firmware-context architectural halt tracing
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -52,11 +52,12 @@ jobs:
               '"VideoCore IV: HALT at 0x%08x\\n", env->pc);\n'
           )
           new = (
-              '    if (env->pc > 0x200) {\n'
+              '    if (env->gpr[VC4_REG_LR] >= 0x200) {\n'
               '        qemu_log_mask(LOG_GUEST_ERROR,\n'
               '                      "VC4_ARCH_HALT insn-pc=0x%08x '
-              'next-pc=0x%08x sr=0x%08x\\n",\n'
-              '                      env->pc - 2, env->pc, env->sr);\n'
+              'next-pc=0x%08x lr=0x%08x sr=0x%08x\\n",\n'
+              '                      env->pc - 2, env->pc,\n'
+              '                      env->gpr[VC4_REG_LR], env->sr);\n'
               '    }\n'
           )
           if text.count(old) != 1:
@@ -91,7 +92,7 @@ jobs:
           cat /tmp/vc4-halt-origin-summary.log
 
           if ! grep -q '^VC4_ARCH_HALT ' /tmp/vc4-halt-origin.log; then
-            echo 'No post-entry architectural VC4 HALT/SLEEP was observed.' >&2
+            echo 'No firmware-context architectural VC4 HALT/SLEEP was observed.' >&2
             exit 1
           fi
 
