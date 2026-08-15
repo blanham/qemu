@@ -1,4 +1,4 @@
-name: VC4 bootcode failure leaf
+name: VC4 bootcode leaf SP trace
 
 on:
   push:
@@ -10,11 +10,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: vc4-bootcode-failure-leaf
+  group: vc4-bootcode-leaf-sp
   cancel-in-progress: true
 
 jobs:
-  trace-failure-leaf:
+  trace-leaf-sp:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -44,10 +44,10 @@ jobs:
           test "$(git hash-object /tmp/fixup.dat)" = \
             1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
 
-      - name: Instrument the failing leaf routine
+      - name: Instrument stack-pointer writes in the failing leaf
         run: |
-          python3 -m py_compile scripts/vc4/instrument-leaf-failure.py
-          python3 scripts/vc4/instrument-leaf-failure.py
+          python3 -m py_compile scripts/vc4/instrument-leaf-sp.py
+          python3 scripts/vc4/instrument-leaf-sp.py
           git diff --check
 
       - name: Configure and build heterogeneous system emulator
@@ -58,7 +58,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Capture leaf register, branch, and memory history
+      - name: Capture the stack-bank transition
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -68,21 +68,14 @@ jobs:
             --fixup-dat /tmp/fixup.dat \
             --seconds 8 \
             --fast-tcg \
-            --barrier-is-success 2>&1 | tee /tmp/vc4-failure-leaf.log
+            --barrier-is-success 2>&1 | tee /tmp/vc4-leaf-sp.log
 
           python3 - <<'PY'
           from pathlib import Path
 
-          log = Path("/tmp/vc4-failure-leaf.log")
-          summary = Path("/tmp/vc4-failure-leaf-summary.log")
-          markers = (
-              "VC4_LOW_TARGET",
-              "VC4_LEAF_FAILURE_BEGIN",
-              "VC4_LEAF_R9",
-              "VC4_LEAF_BRANCH",
-              "VC4_LEAF_MEM",
-              "VC4_LEAF_FAILURE_END",
-          )
+          log = Path("/tmp/vc4-leaf-sp.log")
+          summary = Path("/tmp/vc4-leaf-sp-summary.log")
+          markers = ("VC4_LEAF_SP", "VC4_LOW_TARGET")
           text = log.read_text(encoding="utf-8", errors="replace")
           lines = []
           for fragment in text.replace(" | ", "\n").splitlines():
@@ -96,26 +89,20 @@ jobs:
           )
           PY
 
-          cat /tmp/vc4-failure-leaf-summary.log
+          cat /tmp/vc4-leaf-sp-summary.log
+          grep -q '^VC4_LEAF_SP ' /tmp/vc4-leaf-sp-summary.log
           grep -q \
             'VC4_LOW_TARGET source=0x0000166c target=0x00000000 kind=10' \
-            /tmp/vc4-failure-leaf-summary.log
-          grep -q 'VC4_LEAF_FAILURE_BEGIN' \
-            /tmp/vc4-failure-leaf-summary.log
-          grep -q '^VC4_LEAF_R9 ' /tmp/vc4-failure-leaf-summary.log
-          grep -q '^VC4_LEAF_BRANCH ' /tmp/vc4-failure-leaf-summary.log
-          grep -q '^VC4_LEAF_MEM ' /tmp/vc4-failure-leaf-summary.log
-          grep -q 'VC4_LEAF_FAILURE_END' \
-            /tmp/vc4-failure-leaf-summary.log
+            /tmp/vc4-leaf-sp-summary.log
 
-      - name: Upload leaf trace and pinned bootcode
+      - name: Upload focused SP trace and pinned bootcode
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vc4-failure-leaf-${{ github.run_attempt }}
+          name: vc4-leaf-sp-${{ github.run_attempt }}
           path: |
-            /tmp/vc4-failure-leaf.log
-            /tmp/vc4-failure-leaf-summary.log
+            /tmp/vc4-leaf-sp.log
+            /tmp/vc4-leaf-sp-summary.log
             /tmp/bootcode.bin
           if-no-files-found: warn
           retention-days: 14
