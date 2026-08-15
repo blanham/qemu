@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/vc4-stock-bootcode
+      - agent/vc4-pc-write-origin-refresh
   workflow_dispatch:
 
 permissions:
@@ -45,19 +46,26 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          def replace_once(text: str, old: str, new: str, what: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'unexpected {what}: matches={count}')
+              return text.replace(old, new, 1)
+
           helper = Path('target/vc4/helper.h')
           text = helper.read_text()
-          anchor = 'DEF_HELPER_1(vc4_rti, void, env)\n'
-          insert = (
+          declaration = (
               'DEF_HELPER_5(vc4_trace_pc_write, i32, env, i32, i32, i32, i32)\n'
           )
-          if text.count(anchor) != 1:
-              raise SystemExit('unexpected helper declaration anchor')
-          helper.write_text(text.replace(anchor, insert + anchor, 1))
+          if declaration not in text:
+              anchor = 'DEF_HELPER_1(vc4_rti, void, env)\n'
+              text = replace_once(
+                  text, anchor, declaration + anchor,
+                  'helper declaration anchor')
+              helper.write_text(text)
 
           op = Path('target/vc4/op_helper.c')
           text = op.read_text()
-          anchor = 'G_NORETURN void helper_vc4_raise_illegal('
           implementation = r'''
           uint32_t helper_vc4_trace_pc_write(CPUArchState *envp,
                                              uint32_t source,
@@ -85,58 +93,48 @@ jobs:
           }
 
           '''
-          if text.count(anchor) != 1:
-              raise SystemExit('unexpected op-helper anchor')
-          op.write_text(text.replace(anchor, implementation + anchor, 1))
+          if 'helper_vc4_trace_pc_write(' not in text:
+              anchor = 'G_NORETURN void helper_vc4_raise_illegal('
+              text = replace_once(
+                  text, anchor, implementation + anchor,
+                  'op-helper anchor')
+              op.write_text(text)
 
           translate = Path('target/vc4/translate.c')
           text = translate.read_text()
-          old = '''    } else {
-              tcg_gen_mov_i32(cpu_pc, value);
-              ctx->base.is_jmp = DISAS_JUMP;
-          }
-          }
 
-          static void vc4_set_reg_imm'''
-          new = '''    } else {
-              TCGv_i32 traced = tcg_temp_new_i32();
+          start = text.index('static void vc4_set_reg(')
+          end = text.index('static void vc4_set_reg_imm(', start)
+          function = text[start:end]
+          old = '''        tcg_gen_mov_i32(cpu_pc, value);
+                  ctx->base.is_jmp = DISAS_JUMP;'''
+          new = '''        TCGv_i32 traced = tcg_temp_new_i32();
 
-              gen_helper_vc4_trace_pc_write(
-                  traced, tcg_env, tcg_constant_i32(ctx->pc), value,
-                  tcg_constant_i32(0), tcg_constant_i32(reg));
-              tcg_gen_mov_i32(cpu_pc, traced);
-              ctx->base.is_jmp = DISAS_JUMP;
-          }
-          }
+                  gen_helper_vc4_trace_pc_write(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc), value,
+                      tcg_constant_i32(0), tcg_constant_i32(reg));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+                  ctx->base.is_jmp = DISAS_JUMP;'''
+          function = replace_once(
+              function, old, new, 'computed PC-write source')
+          text = text[:start] + function + text[end:]
 
-          static void vc4_set_reg_imm'''
-          if text.count(old) != 1:
-              raise SystemExit('unexpected computed PC-write source')
-          text = text.replace(old, new, 1)
+          start = text.index('static void vc4_set_reg_imm(')
+          end = text.index('static TCGv_i32 vc4_gen_cond_from_sr(', start)
+          function = text[start:end]
+          old = '''        tcg_gen_movi_i32(cpu_pc, value);
+                  ctx->base.is_jmp = DISAS_JUMP;'''
+          new = '''        TCGv_i32 traced = tcg_temp_new_i32();
 
-          old = '''    } else {
-              tcg_gen_movi_i32(cpu_pc, value);
-              ctx->base.is_jmp = DISAS_JUMP;
-          }
-          }
-
-          static TCGv_i32 vc4_gen_cond_from_sr'''
-          new = '''    } else {
-              TCGv_i32 traced = tcg_temp_new_i32();
-
-              gen_helper_vc4_trace_pc_write(
-                  traced, tcg_env, tcg_constant_i32(ctx->pc),
-                  tcg_constant_i32(value), tcg_constant_i32(1),
-                  tcg_constant_i32(reg));
-              tcg_gen_mov_i32(cpu_pc, traced);
-              ctx->base.is_jmp = DISAS_JUMP;
-          }
-          }
-
-          static TCGv_i32 vc4_gen_cond_from_sr'''
-          if text.count(old) != 1:
-              raise SystemExit('unexpected immediate PC-write source')
-          translate.write_text(text.replace(old, new, 1))
+                  gen_helper_vc4_trace_pc_write(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc),
+                      tcg_constant_i32(value), tcg_constant_i32(1),
+                      tcg_constant_i32(reg));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+                  ctx->base.is_jmp = DISAS_JUMP;'''
+          function = replace_once(
+              function, old, new, 'immediate PC-write source')
+          translate.write_text(text[:start] + function + text[end:])
           PY
           git diff --check
 
