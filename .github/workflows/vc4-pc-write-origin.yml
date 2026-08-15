@@ -146,7 +146,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Run official firmware until its first low PC write
+      - name: Run official firmware and reject low PC writes
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -159,8 +159,12 @@ jobs:
             --barrier-is-success 2>&1 | tee /tmp/vc4-pc-write.log
 
           grep '^VC4_LOW_PC_WRITE ' /tmp/vc4-pc-write.log \
-            | tee /tmp/vc4-pc-write-summary.log
-          test -s /tmp/vc4-pc-write-summary.log
+            | tee /tmp/vc4-pc-write-summary.log || true
+          if test -s /tmp/vc4-pc-write-summary.log; then
+            echo 'Unexpected low-memory VC4 PC write detected.' >&2
+            exit 1
+          fi
+          echo 'No low-memory VC4 PC writes were observed.'
 
       - name: Upload PC-write trace
         if: always()
