@@ -1,0 +1,157 @@
+name: VC4 start.elf parent integration
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-volume
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-startelf-parent-integration
+  cancel-in-progress: false
+
+jobs:
+  integrate-parent:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Merge latest stock-firmware parent in the worktree
+        run: |
+          set -euo pipefail
+          git fetch origin agent/vc4-stock-bootcode
+          before="$(git rev-parse HEAD)"
+          parent="$(git rev-parse origin/agent/vc4-stock-bootcode)"
+          echo "startelf_head=${before}" | tee /tmp/startelf-parent.txt
+          echo "stock_parent=${parent}" | tee -a /tmp/startelf-parent.txt
+          if git merge-base --is-ancestor "$parent" HEAD; then
+            echo 'parent_already_integrated=true' | tee -a /tmp/startelf-parent.txt
+          else
+            git merge --no-ff --no-commit origin/agent/vc4-stock-bootcode
+            echo 'parent_already_integrated=false' | tee -a /tmp/startelf-parent.txt
+          fi
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Download matching official firmware trio
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot"
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin "${base}/bootcode.bin"
+          curl --fail --location --retry 4 \
+            --output /tmp/start.elf "${base}/start.elf"
+          curl --fail --location --retry 4 \
+            --output /tmp/fixup.dat "${base}/fixup.dat"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build and verify the complete firmware volume
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/firmware_fat32_volume.py \
+            scripts/vc4/raspi3_startelf_volume_smoke.py \
+            scripts/vc4/raspi3_startelf_probe.py
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            --bootcode /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup /tmp/fixup.dat \
+            --output /tmp/raspi3-firmware.img \
+            2>&1 | tee /tmp/startelf-parent-volume.log
+          grep -q '^STARTELF_VOLUME_READY ' \
+            /tmp/startelf-parent-volume.log
+
+      - name: Configure and build linked targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/startelf-parent-build.log 2>&1
+
+      - name: Capture the integrated start.elf frontier
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3_startelf_probe.py \
+            build/qemu-system-aarch64 \
+            /tmp/raspi3-firmware.img \
+            /tmp/start.elf \
+            --seconds 15 \
+            --ram-scan-mib 64 \
+            --barrier-is-success \
+            --report /tmp/startelf-parent-probe.json \
+            2>&1 | tee /tmp/startelf-parent-probe.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(
+              Path('/tmp/startelf-parent-probe.json').read_text()
+          )
+          required = ('machine', 'live_vpu', 'registers', 'start_elf_matches')
+          missing = [key for key in required if key not in report]
+          if missing:
+              raise SystemExit(
+                  f'incomplete integrated probe report: {missing}'
+              )
+          print(
+              'STARTELF_PARENT_PROBE_READY '
+              f"matches={len(report['start_elf_matches'])}"
+          )
+          PY
+
+      - name: Preserve integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-parent-${{ github.run_attempt }}
+          path: |
+            /tmp/startelf-parent.txt
+            /tmp/startelf-parent-volume.log
+            /tmp/startelf-parent-build.log
+            /tmp/startelf-parent-probe.log
+            /tmp/startelf-parent-probe.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit verified parent integration
+        if: success()
+        run: |
+          if git merge-base --is-ancestor \
+              origin/agent/vc4-stock-bootcode HEAD; then
+            echo 'The latest stock-firmware parent is already integrated.'
+            exit 0
+          fi
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          git commit -m 'Merge latest VC4 stock-firmware bring-up'
+          git fetch origin agent/vc4-startelf-volume
+          git rebase --rebase-merges origin/agent/vc4-startelf-volume
+          git push origin HEAD:agent/vc4-startelf-volume

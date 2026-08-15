@@ -1,0 +1,153 @@
+name: VC4 start.elf SDHOST transfer trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-volume
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: vc4-startelf-sdhost-transfer-trace
+  cancel-in-progress: false
+
+jobs:
+  trace-sdhost:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize workflow-only SDHOST trace
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/sdhost-transfer-trace-fixup.py
+          python3 scripts/vc4/sdhost-transfer-trace-fixup.py
+          first="$(sha256sum hw/sd/bcm2835_sdhost.c)"
+          python3 scripts/vc4/sdhost-transfer-trace-fixup.py
+          second="$(sha256sum hw/sd/bcm2835_sdhost.c)"
+          test "$first" = "$second"
+          grep -q 'VC4_SDHOST_CMD seq=' hw/sd/bcm2835_sdhost.c
+          grep -q 'VC4_SDHOST_DATA_READ seq=' hw/sd/bcm2835_sdhost.c
+          grep -q 'VC4_SDHOST_DATA_WRITE seq=' hw/sd/bcm2835_sdhost.c
+          git diff --check
+
+      - name: Download matching official firmware trio
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot"
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin "${base}/bootcode.bin"
+          curl --fail --location --retry 4 \
+            --output /tmp/start.elf "${base}/start.elf"
+          curl --fail --location --retry 4 \
+            --output /tmp/fixup.dat "${base}/fixup.dat"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build complete firmware volume
+        run: |
+          python3 scripts/vc4/startelf-marker-config-fixup.py
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            --bootcode /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup /tmp/fixup.dat \
+            --output /tmp/raspi3-firmware.img \
+            > /tmp/startelf-sdtrace-volume.log
+          grep -q '^STARTELF_VOLUME_READY ' \
+            /tmp/startelf-sdtrace-volume.log
+
+      - name: Configure and build linked targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/startelf-sdtrace-build.log 2>&1
+
+      - name: Trace first-stage SD activity
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/startelf-probe-fixup.py
+          python3 scripts/vc4/startelf-kernel-marker-fixup.py
+          python3 scripts/vc4/startelf-sdhost-snapshot-fixup.py
+          python3 scripts/vc4/raspi3_startelf_probe.py \
+            build/qemu-system-aarch64 \
+            /tmp/raspi3-firmware.img \
+            /tmp/start.elf \
+            --seconds 45 \
+            --ram-scan-mib 64 \
+            --barrier-is-success \
+            --report /tmp/startelf-sdtrace-report.json \
+            2>&1 | tee /tmp/startelf-sdtrace-probe.log
+
+          grep -E \
+            'VC4_SDHOST_(CMD|DATA_READ|DATA_WRITE)|STARTELF_|vc4-debug-' \
+            /tmp/startelf-sdtrace-probe.log \
+            > /tmp/startelf-sdtrace-summary.log || true
+          tail -n 600 /tmp/startelf-sdtrace-summary.log
+          test -s /tmp/startelf-sdtrace-summary.log
+
+      - name: Preserve transfer trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-sdhost-trace-${{ github.run_attempt }}
+          path: |
+            /tmp/startelf-sdtrace-volume.log
+            /tmp/startelf-sdtrace-build.log
+            /tmp/startelf-sdtrace-probe.log
+            /tmp/startelf-sdtrace-summary.log
+            /tmp/startelf-sdtrace-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report SDHOST transfer frontier
+        if: always()
+        run: |
+          pr="$(gh pr list \
+            --head agent/vc4-startelf-volume \
+            --base agent/vc4-stock-bootcode \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -z "$pr" ] || [ ! -s /tmp/startelf-sdtrace-summary.log ]; then
+            exit 0
+          fi
+          {
+            echo '<!-- vc4-startelf-sdhost-transfer-trace -->'
+            echo '### First-stage SDHOST transfer trace'
+            echo
+            echo '```text'
+            tail -n 600 /tmp/startelf-sdtrace-summary.log
+            echo '```'
+            echo
+            echo "Actions run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > /tmp/startelf-sdtrace-comment.md
+          gh pr comment "$pr" --body-file /tmp/startelf-sdtrace-comment.md
