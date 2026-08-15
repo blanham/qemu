@@ -1,4 +1,4 @@
-name: VC4 focused stack-return trace
+name: VC4 bootcode failure history
 
 on:
   push:
@@ -10,11 +10,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: vc4-focused-stack-return
+  group: vc4-bootcode-failure-history
   cancel-in-progress: true
 
 jobs:
-  trace-stack-return:
+  trace-failure-history:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -44,10 +44,10 @@ jobs:
           test "$(git hash-object /tmp/fixup.dat)" = \
             1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
 
-      - name: Instrument control transfers and the suspect stack frame
+      - name: Instrument bounded failure history
         run: |
-          python3 -m py_compile scripts/vc4/instrument-stack-return.py
-          python3 scripts/vc4/instrument-stack-return.py
+          python3 -m py_compile scripts/vc4/instrument-failure-history.py
+          python3 scripts/vc4/instrument-failure-history.py
           git diff --check
 
       - name: Configure and build heterogeneous system emulator
@@ -58,7 +58,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Trace the producer and consumer of the zero return slot
+      - name: Capture the call chain and r0 producer
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -68,41 +68,51 @@ jobs:
             --fixup-dat /tmp/fixup.dat \
             --seconds 8 \
             --fast-tcg \
-            --barrier-is-success 2>&1 | tee /tmp/vc4-stack-return.log
+            --barrier-is-success 2>&1 | tee /tmp/vc4-failure-history.log
 
           python3 - <<'PY'
           from pathlib import Path
 
-          log = Path("/tmp/vc4-stack-return.log")
-          summary = Path("/tmp/vc4-stack-return-summary.log")
+          log = Path("/tmp/vc4-failure-history.log")
+          summary = Path("/tmp/vc4-failure-history-summary.log")
+          markers = (
+              "VC4_FAILURE_HISTORY_BEGIN",
+              "VC4_FAILURE_TRANSFER",
+              "VC4_FAILURE_R0",
+              "VC4_FAILURE_HISTORY_END",
+              "VC4_LOW_TARGET",
+          )
+          text = log.read_text(encoding="utf-8", errors="replace")
           lines = []
-          for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-              for marker in ("VC4_STACK_FRAME", "VC4_LOW_TARGET"):
-                  position = line.find(marker)
-                  if position >= 0:
-                      lines.append(line[position:].rstrip())
-                      break
+          for fragment in text.replace(" | ", "\n").splitlines():
+              positions = [fragment.find(marker) for marker in markers]
+              positions = [position for position in positions if position >= 0]
+              if positions:
+                  lines.append(fragment[min(positions):].rstrip())
           summary.write_text(
               "".join(line + "\n" for line in lines),
               encoding="utf-8",
           )
           PY
 
-          cat /tmp/vc4-stack-return-summary.log
+          cat /tmp/vc4-failure-history-summary.log
           grep -q \
             'VC4_LOW_TARGET source=0x0000166c target=0x00000000 kind=10' \
-            /tmp/vc4-stack-return-summary.log
-          grep -q \
-            'VC4_STACK_FRAME phase=pre source=0x0000166c op=pop' \
-            /tmp/vc4-stack-return-summary.log
+            /tmp/vc4-failure-history-summary.log
+          grep -q 'VC4_FAILURE_HISTORY_BEGIN' \
+            /tmp/vc4-failure-history-summary.log
+          grep -q 'VC4_FAILURE_HISTORY_END' \
+            /tmp/vc4-failure-history-summary.log
+          grep -q 'VC4_FAILURE_R0' \
+            /tmp/vc4-failure-history-summary.log
 
-      - name: Upload focused stack-return trace
+      - name: Upload bootcode failure history
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vc4-stack-return-${{ github.run_attempt }}
+          name: vc4-failure-history-${{ github.run_attempt }}
           path: |
-            /tmp/vc4-stack-return.log
-            /tmp/vc4-stack-return-summary.log
+            /tmp/vc4-failure-history.log
+            /tmp/vc4-failure-history-summary.log
           if-no-files-found: warn
           retention-days: 14
