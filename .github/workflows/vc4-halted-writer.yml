@@ -1,0 +1,272 @@
+name: VC4 halted-state writer trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-halted-writer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl gdb ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Instrument indirect VC4 branches
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          helper = Path('target/vc4/helper.h')
+          text = helper.read_text()
+          anchor = 'DEF_HELPER_1(vc4_rti, void, env)\n'
+          insert = (
+              'DEF_HELPER_5(vc4_trace_branch, i32, env, i32, i32, i32, i32)\n'
+          )
+          if text.count(anchor) != 1:
+              raise SystemExit('unexpected helper declaration anchor')
+          helper.write_text(text.replace(anchor, insert + anchor, 1))
+
+          op = Path('target/vc4/op_helper.c')
+          text = op.read_text()
+          anchor = 'G_NORETURN void helper_vc4_raise_illegal('
+          implementation = r'''
+          uint32_t helper_vc4_trace_branch(CPUArchState *envp,
+                                           uint32_t source,
+                                           uint32_t target,
+                                           uint32_t reg,
+                                           uint32_t link)
+          {
+              return target;
+          }
+
+          '''
+          if text.count(anchor) != 1:
+              raise SystemExit('unexpected op-helper anchor')
+          op.write_text(text.replace(anchor, implementation + anchor, 1))
+
+          translate = Path('target/vc4/translate.c')
+          text = translate.read_text()
+          start_marker = '    if ((insn & 0xffe0) == 0x0040) {'
+          end_marker = '    if ((insn & 0xffe0) == 0x0080) {'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('could not delimit indirect-branch decoders')
+          new = '''    if ((insn & 0xffe0) == 0x0040) {
+              unsigned reg = insn & 0x1f;
+              TCGv_i32 target = tcg_temp_new_i32();
+
+              gen_helper_vc4_trace_branch(
+                  target, tcg_env, tcg_constant_i32(ctx->pc),
+                  vc4_get_reg(ctx, reg), tcg_constant_i32(reg),
+                  tcg_constant_i32(0));
+              tcg_gen_mov_i32(cpu_pc, target);
+              ctx->base.is_jmp = DISAS_JUMP;
+              return true;
+          }
+          if ((insn & 0xffe0) == 0x0060) {
+              unsigned reg = insn & 0x1f;
+              TCGv_i32 target = tcg_temp_new_i32();
+
+              tcg_gen_movi_i32(cpu_gpr[VC4_REG_LR], ctx->base.pc_next);
+              gen_helper_vc4_trace_branch(
+                  target, tcg_env, tcg_constant_i32(ctx->pc),
+                  vc4_get_reg(ctx, reg), tcg_constant_i32(reg),
+                  tcg_constant_i32(1));
+              tcg_gen_mov_i32(cpu_pc, target);
+              ctx->base.is_jmp = DISAS_JUMP;
+              return true;
+          }
+          '''
+          translate.write_text(text[:start] + new + text[end:])
+          PY
+          git diff --check
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Trace the branch and write that halt the VPU
+        run: |
+          cat > /tmp/vc4-halted-writer.gdb <<'GDB'
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          set print thread-events off
+          set logging file /tmp/vc4-halted-gdb.log
+          set logging overwrite on
+          set logging redirect off
+          set logging enabled on
+
+          info address vc4_cpu_realize
+          info address helper_vc4_trace_branch
+          info address helper_vc4_halt
+          info address vc4_cpu_do_interrupt
+
+          python
+          import gdb
+
+          vpu_address = None
+
+          def backtrace(tag):
+              gdb.write(tag + "\n")
+              gdb.execute("bt 32", to_string=False)
+
+          class VPUHaltedWatch(gdb.Breakpoint):
+              def __init__(self, address):
+                  self.address = address
+                  expression = "((CPUState *)0x%x)->halted" % address
+                  super().__init__(expression,
+                                   type=gdb.BP_WATCHPOINT,
+                                   wp_class=gdb.WP_WRITE,
+                                   internal=False)
+
+              def stop(self):
+                  cpu = gdb.parse_and_eval("(CPUState *)0x%x" % self.address)
+                  halted = int(cpu.dereference()["halted"])
+                  index = int(cpu.dereference()["cpu_index"])
+                  gdb.write(
+                      "VC4_HALTED_WRITE cpu-index=%d halted=%d cpu=0x%x\n"
+                      % (index, halted, self.address)
+                  )
+                  gdb.execute("bt 32", to_string=False)
+                  return False
+
+          class VPURealizeBreakpoint(gdb.Breakpoint):
+              def stop(self):
+                  global vpu_address
+                  vpu_address = int(gdb.parse_and_eval("(uintptr_t)$rdi"))
+                  gdb.write("VC4_REALIZE cpu=0x%x\n" % vpu_address)
+                  VPUHaltedWatch(vpu_address)
+                  return False
+
+          class VC4FunctionBreakpoint(gdb.Breakpoint):
+              def __init__(self, function, tag):
+                  self.tag = tag
+                  super().__init__(function, internal=False)
+
+              def stop(self):
+                  backtrace(self.tag)
+                  return False
+
+          class VC4LowBranchBreakpoint(gdb.Breakpoint):
+              def __init__(self):
+                  super().__init__('helper_vc4_trace_branch', internal=False)
+                  self.condition = 'target < 0x200'
+
+              def stop(self):
+                  env = gdb.parse_and_eval('(CPUVC4State *)envp')
+                  source = int(gdb.parse_and_eval('source'))
+                  target = int(gdb.parse_and_eval('target'))
+                  reg = int(gdb.parse_and_eval('reg'))
+                  link = int(gdb.parse_and_eval('link'))
+                  state = env.dereference()
+                  gpr = state['gpr']
+                  gdb.write(
+                      'VC4_LOW_BRANCH source=0x%08x target=0x%08x '
+                      'reg=r%d link=%d lr=0x%08x sr=0x%08x '
+                      'r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x '
+                      'r14=0x%08x r15=0x%08x r16=0x%08x '
+                      'r24=0x%08x sp=0x%08x\n'
+                      % (
+                          source, target, reg, link,
+                          int(gpr[26]), int(state['sr']),
+                          int(gpr[0]), int(gpr[1]), int(gpr[2]), int(gpr[3]),
+                          int(gpr[14]), int(gpr[15]), int(gpr[16]),
+                          int(gpr[24]), int(gpr[25]),
+                      )
+                  )
+                  gdb.execute('bt 16', to_string=False)
+                  return False
+
+          VPURealizeBreakpoint('vc4_cpu_realize', internal=False)
+          VC4LowBranchBreakpoint()
+          VC4FunctionBreakpoint('helper_vc4_halt', 'VC4_HELPER_HALT')
+          VC4FunctionBreakpoint(
+              'vc4_cpu_do_interrupt',
+              'VC4_EXCEPTION_ENTRY',
+          )
+          end
+
+          run
+          GDB
+
+          cat > /tmp/qemu-vc4-gdb <<'SH'
+          #!/bin/sh
+          exec gdb -q -batch \
+            -x /tmp/vc4-halted-writer.gdb \
+            --args "$VC4_REAL_QEMU" "$@"
+          SH
+          chmod +x /tmp/qemu-vc4-gdb
+
+          export VC4_REAL_QEMU="$PWD/build/qemu-system-aarch64"
+          set -o pipefail
+          timeout 60s python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            /tmp/qemu-vc4-gdb \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 8 \
+            --fast-tcg \
+            --barrier-is-success \
+            2>&1 | tee /tmp/vc4-halted-writer.log || true
+
+          if test -f /tmp/vc4-halted-gdb.log; then
+            {
+              echo '=== dedicated GDB halt trace ==='
+              cat /tmp/vc4-halted-gdb.log
+            } | tee -a /tmp/vc4-halted-writer.log
+          fi
+
+          grep -E \
+            '^(VC4_REALIZE|VC4_LOW_BRANCH|VC4_HALTED_WRITE|VC4_HELPER_HALT|VC4_EXCEPTION_ENTRY)' \
+            /tmp/vc4-halted-writer.log || true
+
+          grep -q '^VC4_LOW_BRANCH ' /tmp/vc4-halted-writer.log
+          grep -Eq \
+            '^(VC4_HALTED_WRITE.*halted=1|VC4_HELPER_HALT)' \
+            /tmp/vc4-halted-writer.log
+
+      - name: Upload halted-writer trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-halted-writer-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-halted-writer.log
+            /tmp/vc4-halted-gdb.log
+          if-no-files-found: error
+          retention-days: 14

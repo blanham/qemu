@@ -2,8 +2,9 @@
  * VideoCore IV VPU TCG translator
  *
  * The scalar decoder follows the public VideoCore IV VPU encoding recovered
- * by the Raspberry Pi reverse-engineering community.  The vector ISA is
- * deliberately rejected for now rather than guessed.
+ * by the Raspberry Pi reverse-engineering community.  The vector register
+ * file remains unimplemented; exact side-effect-free vector80 and vector48
+ * delay words used by production bootcode.bin are accepted rather than guessed.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -66,6 +67,32 @@ enum VC4AluOp {
     VC4_OP_BREV,
     VC4_OP_ASR,
     VC4_OP_ABS,
+};
+
+enum VC4FloatConvOp {
+    VC4_FCONV_FTRUNC = 0,
+    VC4_FCONV_FLOOR,
+    VC4_FCONV_FLTS,
+    VC4_FCONV_FLTU,
+};
+
+enum VC4FloatOp {
+    VC4_FOP_FADD = 0,
+    VC4_FOP_FSUB,
+    VC4_FOP_FMUL,
+    VC4_FOP_FDIV,
+    VC4_FOP_FCMP,
+    VC4_FOP_FABS,
+    VC4_FOP_FRSB,
+    VC4_FOP_FMAX,
+    VC4_FOP_FRCP,
+    VC4_FOP_FRSQRT,
+    VC4_FOP_FNMUL,
+    VC4_FOP_FMIN,
+    VC4_FOP_FCEIL,
+    VC4_FOP_FFLOOR,
+    VC4_FOP_FLOG2,
+    VC4_FOP_FEXP2,
 };
 
 typedef struct DisasContext {
@@ -329,6 +356,10 @@ static void vc4_gen_alu(DisasContext *ctx, unsigned cond, unsigned op,
         tcg_gen_movi_i32(result, 1);
         tcg_gen_shl_i32(result, result, tmp);
         tcg_gen_and_i32(result, result, a);
+        /*
+         * VC4 BTEST sets Z when the selected bit is clear.  This is the
+         * recovered scalar ISA contract and matches test-style zero flags.
+         */
         tcg_gen_setcondi_i32(TCG_COND_EQ, result, result, 0);
         tcg_gen_andi_i32(tmp, cpu_sr, ~VC4_SR_Z);
         tcg_gen_shli_i32(result, result, 3);
@@ -392,6 +423,75 @@ static void vc4_gen_alu_imm(DisasContext *ctx, unsigned cond, unsigned op,
 {
     vc4_gen_alu(ctx, cond, op, rd, vc4_get_reg(ctx, ra),
                 tcg_constant_i32(imm));
+}
+
+static void vc4_gen_float_conv(DisasContext *ctx, unsigned cond,
+                               unsigned op, unsigned rd, unsigned ra,
+                               int32_t shift)
+{
+    TCGv_i32 result = tcg_temp_new_i32();
+    TCGLabel *skip;
+
+    if (rd == VC4_REG_PC) {
+        tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
+    }
+
+    skip = vc4_gen_skip_if_false(cond);
+    gen_helper_vc4_float_conv(result, tcg_constant_i32(op),
+                              vc4_get_reg(ctx, ra),
+                              tcg_constant_i32(shift));
+    vc4_set_reg(ctx, rd, result);
+    vc4_gen_end_predicate(skip);
+}
+
+/*
+ * The six-bit immediate is an IEEE-754 shorthand. Bit 5 is the sign.
+ * A zero three-bit exponent encodes signed zero and ignores the fraction.
+ * Otherwise bits 4:2 select IEEE exponent 125 through 131, and bits 1:0
+ * become the two most-significant fraction bits.
+ */
+static uint32_t vc4_float_imm6_to_bits(unsigned imm)
+{
+    uint32_t bits;
+    unsigned exponent;
+
+    g_assert(imm < 64);
+
+    bits = (imm & 0x20) << 26;
+    exponent = (imm >> 2) & 0x7;
+    if (exponent != 0) {
+        bits |= (exponent + 124) << 23;
+        bits |= (imm & 0x3) << 21;
+    }
+    return bits;
+}
+
+static bool vc4_gen_float_op(DisasContext *ctx, unsigned cond,
+                             unsigned op, unsigned rd,
+                             unsigned ra, TCGv_i32 b)
+{
+    TCGv_i32 result = tcg_temp_new_i32();
+    TCGLabel *skip;
+
+    if (op > VC4_FOP_FEXP2) {
+        return false;
+    }
+
+    if (op != VC4_FOP_FCMP && rd == VC4_REG_PC) {
+        tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
+    }
+
+    skip = vc4_gen_skip_if_false(cond);
+    if (op == VC4_FOP_FCMP) {
+        gen_helper_vc4_float_cmp(result, vc4_get_reg(ctx, ra), b);
+        vc4_write_nzcv(result);
+    } else {
+        gen_helper_vc4_float_op(result, tcg_constant_i32(op),
+                                vc4_get_reg(ctx, ra), b);
+        vc4_set_reg(ctx, rd, result);
+    }
+    vc4_gen_end_predicate(skip);
+    return true;
 }
 
 static unsigned vc4_mem_size(unsigned format)
@@ -606,6 +706,33 @@ static void vc4_gen_cmp_branch(DisasContext *ctx, unsigned cond,
     ctx->base.is_jmp = DISAS_NORETURN;
 }
 
+static void vc4_gen_table_branch(DisasContext *ctx, unsigned reg,
+                                 bool halfword)
+{
+    TCGv_i32 index = tcg_temp_new_i32();
+    TCGv_i32 address = tcg_temp_new_i32();
+    TCGv_i32 displacement = tcg_temp_new_i32();
+    TCGv_i32 target = tcg_temp_new_i32();
+    TCGv_i32 base = tcg_constant_i32(ctx->base.pc_next);
+
+    /*
+     * Table branches index signed byte/halfword entries after the instruction.
+     * Each entry is a displacement in halfwords relative to that same base.
+     */
+    if (halfword) {
+        tcg_gen_shli_i32(index, vc4_get_reg(ctx, reg), 1);
+    } else {
+        tcg_gen_mov_i32(index, vc4_get_reg(ctx, reg));
+    }
+    tcg_gen_add_i32(address, base, index);
+    vc4_gen_qemu_ld_i32(displacement, address, 0,
+                        halfword ? (MO_SW | MO_LE) : MO_SB);
+    tcg_gen_shli_i32(displacement, displacement, 1);
+    tcg_gen_add_i32(target, base, displacement);
+    tcg_gen_mov_i32(cpu_pc, target);
+    ctx->base.is_jmp = DISAS_JUMP;
+}
+
 static void vc4_gen_illegal(DisasContext *ctx, uint16_t opcode)
 {
     gen_helper_vc4_raise_illegal(tcg_env, tcg_constant_i32(ctx->pc),
@@ -675,8 +802,13 @@ static bool vc4_decode_scalar16(DisasContext *ctx, uint16_t insn)
         ctx->base.is_jmp = DISAS_JUMP;
         return true;
     }
-    if ((insn & 0xffe0) == 0x0080 || (insn & 0xffe0) == 0x00a0) {
-        return false;               /* TBB/TBH */
+    if ((insn & 0xffe0) == 0x0080) {
+        vc4_gen_table_branch(ctx, insn & 0x1f, false);
+        return true;
+    }
+    if ((insn & 0xffe0) == 0x00a0) {
+        vc4_gen_table_branch(ctx, insn & 0x1f, true);
+        return true;
     }
     if ((insn & 0xffe0) == 0x00e0) {
         vc4_set_reg_imm(ctx, insn & 0x1f, VC4_CPUID_VALUE);
@@ -792,6 +924,37 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
         return true;
     }
 
+    if ((i1 & 0xff80) == 0xca00 && (i2 & 0x0040) != 0) {
+        cond = (i2 >> 7) & 0xf;
+        op = (i1 >> 5) & 3;
+        rd = i1 & 0x1f;
+        ra = (i2 >> 11) & 0x1f;
+        offset = vc4_sext(i2 & 0x3f, 0x20);
+        vc4_gen_float_conv(ctx, cond, op, rd, ra, offset);
+        return true;
+    }
+
+    if ((i1 & 0xfe00) == 0xc800 && (i2 & 0x0060) == 0x0000) {
+        cond = (i2 >> 7) & 0xf;
+        op = (i1 >> 5) & 0xf;
+        rd = i1 & 0x1f;
+        ra = (i2 >> 11) & 0x1f;
+        rb = i2 & 0x1f;
+        return vc4_gen_float_op(ctx, cond, op, rd, ra,
+                                vc4_get_reg(ctx, rb));
+    }
+
+    if ((i1 & 0xfe00) == 0xc800 && (i2 & 0x0040) != 0) {
+        cond = (i2 >> 7) & 0xf;
+        op = (i1 >> 5) & 0xf;
+        rd = i1 & 0x1f;
+        ra = (i2 >> 11) & 0x1f;
+        return vc4_gen_float_op(
+            ctx, cond, op, rd, ra,
+            tcg_constant_i32(
+                (int32_t)vc4_float_imm6_to_bits(i2 & 0x3f)));
+    }
+
     if ((i1 & 0xfc00) == 0xc000 && (i2 & 0x0060) == 0x0000) {
         op = (i1 >> 5) & 0x1f;
         rd = i1 & 0x1f;
@@ -868,7 +1031,7 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
     if ((i1 & 0xfc00) == 0xb000) {
         op = (i1 >> 5) & 0x1f;
         rd = i1 & 0x1f;
-        vc4_gen_alu_imm(ctx, 14, op, rd, rd, i2);
+        vc4_gen_alu_imm(ctx, 14, op, rd, rd, (int16_t)i2);
         return true;
     }
 
@@ -957,11 +1120,6 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
         return true;
     }
 
-    if ((i1 & 0xfe00) == 0xc800 ||
-        ((i1 & 0xff80) == 0xca00 && (i2 & 0x40))) {
-        return false;               /* floating-point group */
-    }
-
     if ((i1 & 0xff80) == 0xc400 && (i2 & 0x60) == 0) {
         TCGLabel *skip;
         TCGv_i32 result = tcg_temp_new_i32();
@@ -1021,6 +1179,23 @@ static bool vc4_decode_scalar48(DisasContext *ctx, uint16_t i1,
         return true;
     }
 
+    /*
+     * 48-bit PC-relative load/store uses short0, short2, short1 physical
+     * halfword order.  i2 therefore holds offset bits 15:0 while i3 holds
+     * the fixed PC selector in bits 15:11 and offset bits 26:16.
+     */
+    if ((i1 & 0xff00) == 0xe700 && (i3 & 0xf800) == 0xf800) {
+        bool store = (i1 & 0x20) != 0;
+
+        format = (i1 >> 6) & 3;
+        rd = i1 & 0x1f;
+        raw = i2 | ((uint32_t)(i3 & 0x7ff) << 16);
+        offset = vc4_sext(raw, 0x04000000);
+        vc4_gen_load_store_offset(ctx, 14, store, format, rd,
+                                  VC4_REG_PC, offset, false, false);
+        return true;
+    }
+
     if ((i1 & 0xfc00) == 0xec00) {
         rs = (i1 >> 5) & 0x1f;
         rd = i1 & 0x1f;
@@ -1029,6 +1204,49 @@ static bool vc4_decode_scalar48(DisasContext *ctx, uint16_t i1,
     }
 
     return false;
+}
+
+static bool vc4_decode_vector48_delay(uint16_t i1, uint16_t i2,
+                                      uint16_t i3)
+{
+    /*
+     * Production bootcode.bin follows the vector80 delay with this exact
+     * vector48 word:
+     *
+     *     00 f4 38 e0 00 04
+     *
+     * The public reverse-engineered encoding describes it as a 16-bit vector
+     * MOV with D mapped to discard, A mapped to unused, and B equal to the
+     * immediate zero.  SETF and scalar side effects are disabled, so the word
+     * has no architectural result and serves only as a shorter settling delay.
+     *
+     * Accept only the production word.  Every vector48 instruction that can
+     * expose vector, flag, or scalar state remains deliberately unsupported.
+     */
+    return i1 == 0xf400 && i2 == 0xe038 && i3 == 0x0400;
+}
+
+static bool vc4_decode_vector80_delay(uint16_t i1, uint16_t i2,
+                                      uint16_t i3, uint16_t i4,
+                                      uint16_t i5)
+{
+    /*
+     * Production bootcode.bin uses this exact discard-only vector80 word
+     * immediately after writing the DBUS reset command:
+     *
+     *     05 fc 38 e0 00 04 c0 f3 00 00
+     *
+     * The public reverse-engineered encoding describes it as a 16-bit vector
+     * MOV, REP32, with D mapped to discard, A mapped to unused, and B supplied
+     * by an immediate.  SETF, vector predication, accumulator updates, and
+     * scalar reductions are disabled, so it has no architectural result and
+     * serves only as a hardware-settling delay.
+     *
+     * Accept only the production word.  The vector register file and every
+     * vector instruction with visible state remain deliberately unsupported.
+     */
+    return i1 == 0xfc05 && i2 == 0xe038 && i3 == 0x0400 &&
+           i4 == 0xf3c0 && i5 == 0x0000;
 }
 
 static void vc4_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
@@ -1052,7 +1270,7 @@ static void vc4_tr_insn_start(DisasContextBase *dcbase, CPUState *cs)
 static void vc4_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
-    uint16_t i1, i2, i3;
+    uint16_t i1, i2, i3, i4, i5;
     bool decoded;
 
     ctx->pc = ctx->base.pc_next;
@@ -1070,10 +1288,18 @@ static void vc4_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
         i3 = vc4_lduw(ctx, ctx->pc + 4);
         ctx->base.pc_next = ctx->pc + 6;
         decoded = vc4_decode_scalar48(ctx, i1, i2, i3);
+    } else if ((i1 & 0xf800) == 0xf800) {
+        i2 = vc4_lduw(ctx, ctx->pc + 2);
+        i3 = vc4_lduw(ctx, ctx->pc + 4);
+        i4 = vc4_lduw(ctx, ctx->pc + 6);
+        i5 = vc4_lduw(ctx, ctx->pc + 8);
+        ctx->base.pc_next = ctx->pc + 10;
+        decoded = vc4_decode_vector80_delay(i1, i2, i3, i4, i5);
     } else {
-        /* Vector48 (0xf000) and Vector80 (0xf800) are separate work. */
-        ctx->base.pc_next = ctx->pc + ((i1 & 0xf800) == 0xf800 ? 10 : 6);
-        decoded = false;
+        i2 = vc4_lduw(ctx, ctx->pc + 2);
+        i3 = vc4_lduw(ctx, ctx->pc + 4);
+        ctx->base.pc_next = ctx->pc + 6;
+        decoded = vc4_decode_vector48_delay(i1, i2, i3);
     }
 
     if (!decoded) {

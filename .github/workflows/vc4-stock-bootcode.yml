@@ -1,0 +1,278 @@
+name: Official Raspberry Pi firmware probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+
+          test "$(stat --format=%s /tmp/bootcode.bin)" -eq 52624
+          test "$(stat --format=%s /tmp/start.elf)" -eq 3022336
+          test "$(stat --format=%s /tmp/fixup.dat)" -eq 7381
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+          echo '=== official firmware identity ==='
+          wc -c /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat
+          sha256sum /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat
+          echo '=== ROM padding and entry bytes ==='
+          od -Ax -tx1 -j 480 -N96 /tmp/bootcode.bin
+
+      - name: Validate scripts
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-bootrom-fat-smoke.py \
+            scripts/vc4/raspi3-bootrom-0200-smoke.py \
+            scripts/vc4/raspi3-otp-read-smoke.py \
+            scripts/vc4/raspi3-pm-image-smoke.py \
+            scripts/vc4/raspi3-usb-phy-smoke.py \
+            scripts/vc4/raspi3-usb-phy-settle-smoke.py \
+            scripts/vc4/raspi3-sdhost-registers-smoke.py \
+            scripts/vc4/raspi3-scalar-fpu-smoke.py \
+            scripts/vc4/raspi3-pcrel48-smoke.py \
+            scripts/vc4/raspi3-table-branch-smoke.py \
+            scripts/vc4/raspi3-btest-zero-smoke.py \
+            scripts/vc4/raspi3-vector80-delay-smoke.py \
+            scripts/vc4/raspi3-vector48-delay-smoke.py \
+            scripts/vc4/raspi3-cprman-sdc-smoke.py \
+            scripts/vc4/raspi3-cprman-osccount-smoke.py \
+            scripts/vc4/raspi3-sdramc-init-smoke.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-fat32-smoke.py \
+            scripts/vc4/cprman-sdc-handshake-fixup.py \
+            scripts/vc4/cprman-osccount-fixup.py \
+            scripts/vc4/pm-image-fixup.py \
+            scripts/vc4/usb-phy-fixup.py \
+            scripts/vc4/usb-phy-settle-fixup.py \
+            scripts/vc4/sdhost-registers-fixup.py \
+            scripts/vc4/sdramc-init-fixup.py \
+            scripts/vc4/pcrel48-fixup.py \
+            scripts/vc4/table-branch-fixup.py \
+            scripts/vc4/btest-zero-fixup.py \
+            scripts/vc4/vector80-delay-fixup.py \
+            scripts/vc4/vector48-delay-fixup.py \
+            scripts/vc4/stock-icount-fixup.py
+
+      - name: Validate multi-file FAT32 firmware image
+        run: |
+          python3 scripts/vc4/raspi3-stock-fat32-smoke.py
+
+      - name: Materialize boot-critical hardware, ISA, and probe contracts
+        run: |
+          python3 scripts/vc4/cprman-sdc-handshake-fixup.py
+          python3 scripts/vc4/cprman-osccount-fixup.py
+          if grep -q '#define R_IMAGE 0x108' hw/misc/bcm2835_powermgt.c &&
+             grep -q 'VMSTATE_UINT32_V(image, BCM2835PowerMgtState, 3)' hw/misc/bcm2835_powermgt.c &&
+             grep -q 'uint32_t image;' include/hw/misc/bcm2835_powermgt.h; then
+            echo 'BCM2835 PM_IMAGE power handshake is already materialized.'
+          else
+            python3 scripts/vc4/pm-image-fixup.py
+          fi
+          if grep -q '#define BCM2835_GMDIOCSR' hw/usb/hcd-dwc2.c &&
+             grep -q 'uint16_t bcm2835_phy\[DWC2_BCM2835_PHY_REGS\]' hw/usb/hcd-dwc2.h &&
+             grep -q 'VMSTATE_UINT16_ARRAY_V(bcm2835_phy' hw/usb/hcd-dwc2.c; then
+            echo 'BCM2835 USB power and DWC2 PHY sideband support is already materialized.'
+          else
+            python3 scripts/vc4/usb-phy-fixup.py
+          fi
+          python3 scripts/vc4/usb-phy-settle-fixup.py
+          python3 scripts/vc4/sdhost-registers-fixup.py
+          python3 scripts/vc4/sdramc-init-fixup.py
+          python3 scripts/vc4/pcrel48-fixup.py
+          python3 scripts/vc4/table-branch-fixup.py
+          python3 scripts/vc4/btest-zero-fixup.py
+          python3 scripts/vc4/vector80-delay-fixup.py
+          python3 scripts/vc4/vector48-delay-fixup.py
+          python3 scripts/vc4/stock-icount-fixup.py
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-state.py
+          git diff --check
+
+      - name: Configure linked guest targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build linked AArch64 and native VC4 executables
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '=== compiler and linker diagnostics ==='
+            grep -n -E 'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-build.log | tail -n 240 || true
+            echo '=== final 260 build lines ==='
+            tail -n 260 /tmp/vc4-build.log
+            exit "$rc"
+          fi
+          echo 'Heterogeneous AArch64/VC4 build completed successfully.'
+
+      - name: Validate synchronous read-only OTP commands
+        run: |
+          python3 scripts/vc4/raspi3-otp-read-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate PM_IMAGE power-domain handshake
+        run: |
+          python3 scripts/vc4/raspi3-pm-image-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate PM_USB and BCM2835 USB PHY sideband
+        run: |
+          python3 scripts/vc4/raspi3-usb-phy-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate BCM2835 USB PHY settle indication
+        run: |
+          python3 scripts/vc4/raspi3-usb-phy-settle-smoke.py \
+            build/qemu-system-aarch64 \
+            --bootcode /tmp/bootcode.bin
+
+      - name: Validate BCM2835 SDHOST register latches and reset values
+        run: |
+          python3 scripts/vc4/raspi3-sdhost-registers-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Preserve synthetic SD boot-ROM regression at VPU 0x200
+        run: |
+          python3 scripts/vc4/raspi3-bootrom-0200-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate scalar VideoCore IV floating-point execution
+        run: |
+          python3 scripts/vc4/raspi3-scalar-fpu-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate scalar48 PC-relative memory execution
+        run: |
+          python3 scripts/vc4/raspi3-pcrel48-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate scalar VideoCore IV table branches
+        run: |
+          python3 scripts/vc4/raspi3-table-branch-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate scalar VideoCore IV BTEST zero semantics
+        run: |
+          python3 scripts/vc4/raspi3-btest-zero-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate discard-only vector80 settling delay
+        run: |
+          python3 scripts/vc4/raspi3-vector80-delay-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate discard-only vector48 settling delay
+        run: |
+          python3 scripts/vc4/raspi3-vector48-delay-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate CPRMAN SDRAM-clock UPDATE and ACCPT
+        run: |
+          python3 scripts/vc4/raspi3-cprman-sdc-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate CPRMAN oscillator countdown
+        run: |
+          python3 scripts/vc4/raspi3-cprman-osccount-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Validate SDRAM controller and PHY initialization
+        run: |
+          python3 scripts/vc4/raspi3-sdramc-init-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Capture deterministic official firmware state
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 10 \
+            --icount-shift 10 \
+            --barrier-is-success 2>&1 | tee /tmp/stock-bootcode.log
+          if grep -Eq \
+            'STOCK_BOOTCODE_BARRIER.*pc=0x00009820|STOCK_BOOTCODE_BARRIER.*pc=0x00007aca' \
+            /tmp/stock-bootcode.log; then
+            echo 'Known USB or SDHOST BTEST barrier remained after correction.' >&2
+            exit 1
+          fi
+
+      - name: Commit exact tested BTEST, USB PHY, and SDHOST models
+        run: |
+          git config user.name "VC4 bring-up automation"
+          git config user.email "vc4-bringup@users.noreply.github.com"
+          start="$(git rev-parse HEAD)"
+
+          git add \
+            target/vc4/translate.c \
+            hw/usb/hcd-dwc2.h \
+            hw/usb/hcd-dwc2.c
+          if git diff --cached --quiet; then
+            echo 'BTEST zero semantics and USB PHY settle state were already materialized.'
+          else
+            git commit -m "target/vc4: restore BTEST zero semantics and USB settle"
+          fi
+
+          git add \
+            include/hw/sd/bcm2835_sdhost.h \
+            hw/sd/bcm2835_sdhost.c
+          if git diff --cached --quiet; then
+            echo 'BCM2835 SDHOST register latches were already materialized.'
+          else
+            git commit -m "hw/sd: complete BCM2835 SDHOST register latches"
+          fi
+
+          if [ "$(git rev-parse HEAD)" != "$start" ]; then
+            git push origin HEAD:agent/vc4-stock-bootcode
+          fi

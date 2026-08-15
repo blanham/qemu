@@ -59,6 +59,22 @@ struct BCM2835OTPState {
     /* <public> */
     MemoryRegion iomem;
     uint32_t otp_rows[BCM2835_OTP_ROW_COUNT];
+
+    /*
+     * The BCM283x VPU accesses OTP rows through a small synchronous command
+     * engine.  Keep the programmer-visible latches even though irreversible
+     * OTP programming remains deliberately unsupported.
+     */
+    uint32_t bootmode;
+    uint32_t config;
+    uint32_t ctrl_lo;
+    uint32_t ctrl_hi;
+    uint32_t status;
+    uint32_t bitsel;
+    uint32_t data;
+    uint32_t addr;
+    uint32_t write_data_read;
+    uint32_t init_status;
 };
 
 

@@ -1,10 +1,10 @@
 /*
  * BCM2835 One-Time Programmable (OTP) Memory
  *
- * The OTP implementation is mostly a stub except for the OTP rows
- * which are accessed directly by other peripherals such as the mailbox.
- *
- * The OTP registers are unimplemented due to lack of documentation.
+ * The row array is also accessed directly by peripherals such as the
+ * firmware-property mailbox.  The register interface below models the
+ * synchronous command handshake used by the VideoCore boot firmware.
+ * Irreversible OTP programming commands remain deliberately unsupported.
  *
  * Copyright (c) 2024 Rayhan Faizel <rayhan.faizel@gmail.com>
  *
@@ -16,6 +16,12 @@
 #include "hw/nvram/bcm2835_otp.h"
 #include "migration/vmstate.h"
 
+#define BCM2835_OTP_CTRL_LO_START          BIT(0)
+#define BCM2835_OTP_STATUS_CMD_DONE        BIT(0)
+#define BCM2835_OTP_CONFIG_MASK            0x7
+#define BCM2835_OTP_CTRL_HI_MASK           0xffff
+#define BCM2835_OTP_BITSEL_MASK            0x1f
+
 /* OTP rows are 1-indexed */
 uint32_t bcm2835_otp_get_row(BCM2835OTPState *s, unsigned int row)
 {
@@ -25,7 +31,7 @@ uint32_t bcm2835_otp_get_row(BCM2835OTPState *s, unsigned int row)
 }
 
 void bcm2835_otp_set_row(BCM2835OTPState *s, unsigned int row,
-                           uint32_t value)
+                         uint32_t value)
 {
     assert(row <= BCM2835_OTP_ROW_COUNT && row >= 1);
 
@@ -33,104 +39,132 @@ void bcm2835_otp_set_row(BCM2835OTPState *s, unsigned int row,
     s->otp_rows[row - 1] |= value;
 }
 
+static uint32_t bcm2835_otp_selected_row(BCM2835OTPState *s)
+{
+    if (s->addr < 1 || s->addr > BCM2835_OTP_ROW_COUNT) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm2835_otp: row address %" PRIu32
+                      " is outside 1..%u\n",
+                      s->addr, BCM2835_OTP_ROW_COUNT);
+        return 0;
+    }
+
+    return bcm2835_otp_get_row(s, s->addr);
+}
+
+static void bcm2835_otp_complete_command(BCM2835OTPState *s)
+{
+    uint32_t command = s->ctrl_lo & ~BCM2835_OTP_CTRL_LO_START;
+
+    s->status &= ~BCM2835_OTP_STATUS_CMD_DONE;
+
+    switch (command) {
+    case 0:
+        /* Read the selected row into the CPU-visible data latch. */
+        s->data = bcm2835_otp_selected_row(s);
+        break;
+    default:
+        /*
+         * Complete unsupported programming commands without changing any
+         * e-fuses.  This keeps firmware polling finite while preserving the
+         * read-only safety boundary of the model.
+         */
+        qemu_log_mask(LOG_UNIMP,
+                      "bcm2835_otp: command 0x%08" PRIx32
+                      " for row %" PRIu32 " is not implemented\n",
+                      command, s->addr);
+        break;
+    }
+
+    /* Commands are synchronous in the model. */
+    s->status |= BCM2835_OTP_STATUS_CMD_DONE;
+}
+
 static uint64_t bcm2835_otp_read(void *opaque, hwaddr addr, unsigned size)
 {
+    BCM2835OTPState *s = opaque;
+
     switch (addr) {
     case BCM2835_OTP_BOOTMODE_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_BOOTMODE_REG\n");
-        break;
+        return s->bootmode;
     case BCM2835_OTP_CONFIG_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_CONFIG_REG\n");
-        break;
+        return s->config;
     case BCM2835_OTP_CTRL_LO_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_CTRL_LO_REG\n");
-        break;
+        return s->ctrl_lo;
     case BCM2835_OTP_CTRL_HI_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_CTRL_HI_REG\n");
-        break;
+        return s->ctrl_hi;
     case BCM2835_OTP_STATUS_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_STATUS_REG\n");
-        break;
+        return s->status;
     case BCM2835_OTP_BITSEL_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_BITSEL_REG\n");
-        break;
+        return s->bitsel;
     case BCM2835_OTP_DATA_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_DATA_REG\n");
-        break;
+        return s->data;
     case BCM2835_OTP_ADDR_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_ADDR_REG\n");
-        break;
+        return s->addr;
     case BCM2835_OTP_WRITE_DATA_READ_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_WRITE_DATA_READ_REG\n");
-        break;
+        return s->write_data_read;
     case BCM2835_OTP_INIT_STATUS_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_INIT_STATUS_REG\n");
-        break;
+        return s->init_status;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Bad offset 0x%" HWADDR_PRIx "\n", __func__, addr);
+        return 0;
     }
-
-    return 0;
 }
 
 static void bcm2835_otp_write(void *opaque, hwaddr addr,
                               uint64_t value, unsigned int size)
 {
+    BCM2835OTPState *s = opaque;
+    uint32_t val = value;
+
     switch (addr) {
     case BCM2835_OTP_BOOTMODE_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_BOOTMODE_REG\n");
+        s->bootmode = val;
         break;
     case BCM2835_OTP_CONFIG_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_CONFIG_REG\n");
+        s->config = val & BCM2835_OTP_CONFIG_MASK;
         break;
     case BCM2835_OTP_CTRL_LO_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_CTRL_LO_REG\n");
+        s->ctrl_lo = val;
+        if (val & BCM2835_OTP_CTRL_LO_START) {
+            bcm2835_otp_complete_command(s);
+        } else {
+            /*
+             * CMD_DONE is also the controller's idle/ready indication.
+             * VideoCore firmware first writes a command with START clear,
+             * waits for CMD_DONE, then asserts START and waits again.
+             */
+            s->status |= BCM2835_OTP_STATUS_CMD_DONE;
+        }
         break;
     case BCM2835_OTP_CTRL_HI_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_CTRL_HI_REG\n");
+        s->ctrl_hi = val & BCM2835_OTP_CTRL_HI_MASK;
         break;
     case BCM2835_OTP_STATUS_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_STATUS_REG\n");
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm2835_otp: write to read-only status register\n");
         break;
     case BCM2835_OTP_BITSEL_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_BITSEL_REG\n");
+        s->bitsel = val & BCM2835_OTP_BITSEL_MASK;
         break;
     case BCM2835_OTP_DATA_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_DATA_REG\n");
+        s->data = val;
         break;
     case BCM2835_OTP_ADDR_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_ADDR_REG\n");
+        /* Rows above 31 exist, so do not apply the stale public 5-bit mask. */
+        s->addr = val;
         break;
     case BCM2835_OTP_WRITE_DATA_READ_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_WRITE_DATA_READ_REG\n");
+        s->write_data_read = val;
         break;
     case BCM2835_OTP_INIT_STATUS_REG:
-        qemu_log_mask(LOG_UNIMP,
-                      "bcm2835_otp: BCM2835_OTP_INIT_STATUS_REG\n");
+        s->init_status = val;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Bad offset 0x%" HWADDR_PRIx "\n", __func__, addr);
+        break;
     }
 }
 
@@ -142,24 +176,57 @@ static const MemoryRegionOps bcm2835_otp_ops = {
         .min_access_size = 4,
         .max_access_size = 4,
     },
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
 };
+
+static void bcm2835_otp_reset(DeviceState *dev)
+{
+    BCM2835OTPState *s = BCM2835_OTP(dev);
+
+    s->bootmode = 0;
+    s->config = 0;
+    s->ctrl_lo = 0;
+    s->ctrl_hi = 0;
+    s->status = BCM2835_OTP_STATUS_CMD_DONE;
+    s->bitsel = 0;
+    s->data = 0;
+    s->addr = 0;
+    s->write_data_read = 0;
+    s->init_status = 0;
+}
 
 static void bcm2835_otp_realize(DeviceState *dev, Error **errp)
 {
     BCM2835OTPState *s = BCM2835_OTP(dev);
+
     memory_region_init_io(&s->iomem, OBJECT(dev), &bcm2835_otp_ops, s,
                           TYPE_BCM2835_OTP, 0x80);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 
     memset(s->otp_rows, 0x00, sizeof(s->otp_rows));
+    bcm2835_otp_reset(dev);
 }
 
 static const VMStateDescription vmstate_bcm2835_otp = {
     .name = TYPE_BCM2835_OTP,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(otp_rows, BCM2835OTPState, BCM2835_OTP_ROW_COUNT),
+        VMSTATE_UINT32_ARRAY(otp_rows, BCM2835OTPState,
+                             BCM2835_OTP_ROW_COUNT),
+        VMSTATE_UINT32_V(bootmode, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(config, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(ctrl_lo, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(ctrl_hi, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(status, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(bitsel, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(data, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(addr, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(write_data_read, BCM2835OTPState, 2),
+        VMSTATE_UINT32_V(init_status, BCM2835OTPState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -170,6 +237,7 @@ static void bcm2835_otp_class_init(ObjectClass *klass, const void *data)
 
     dc->realize = bcm2835_otp_realize;
     dc->vmsd = &vmstate_bcm2835_otp;
+    device_class_set_legacy_reset(dc, bcm2835_otp_reset);
 }
 
 static const TypeInfo bcm2835_otp_info = {

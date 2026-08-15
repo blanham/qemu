@@ -1,0 +1,178 @@
+name: VC4 low-memory PC-write origin
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+      - agent/vc4-pc-write-origin-refresh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-pc-write:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Instrument runtime writes to r31
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, what: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'unexpected {what}: matches={count}')
+              return text.replace(old, new, 1)
+
+          helper = Path('target/vc4/helper.h')
+          text = helper.read_text()
+          declaration = (
+              'DEF_HELPER_5(vc4_trace_pc_write, i32, env, i32, i32, i32, i32)\n'
+          )
+          if declaration not in text:
+              anchor = 'DEF_HELPER_1(vc4_rti, void, env)\n'
+              text = replace_once(
+                  text, anchor, declaration + anchor,
+                  'helper declaration anchor')
+              helper.write_text(text)
+
+          op = Path('target/vc4/op_helper.c')
+          text = op.read_text()
+          implementation = r'''
+          uint32_t helper_vc4_trace_pc_write(CPUArchState *envp,
+                                             uint32_t source,
+                                             uint32_t target,
+                                             uint32_t kind,
+                                             uint32_t aux)
+          {
+              CPUVC4State *env = vc4_helper_env(envp);
+
+              if (source >= 0x200 && target < 0x200) {
+                  qemu_log_mask(
+                      LOG_GUEST_ERROR,
+                      "VC4_LOW_PC_WRITE source=0x%08x target=0x%08x "
+                      "kind=%s aux=%u lr=0x%08x sr=0x%08x "
+                      "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
+                      "r14=0x%08x r15=0x%08x r16=0x%08x "
+                      "r24=0x%08x sp=0x%08x\n",
+                      source, target, kind ? "immediate" : "computed", aux,
+                      env->gpr[VC4_REG_LR], env->sr,
+                      env->gpr[0], env->gpr[1], env->gpr[2], env->gpr[3],
+                      env->gpr[14], env->gpr[15], env->gpr[16],
+                      env->gpr[24], env->gpr[VC4_REG_SP]);
+              }
+              return target;
+          }
+
+          '''
+          if 'helper_vc4_trace_pc_write(' not in text:
+              anchor = 'G_NORETURN void helper_vc4_raise_illegal('
+              text = replace_once(
+                  text, anchor, implementation + anchor,
+                  'op-helper anchor')
+              op.write_text(text)
+
+          translate = Path('target/vc4/translate.c')
+          text = translate.read_text()
+
+          start = text.index('static void vc4_set_reg(')
+          end = text.index('static void vc4_set_reg_imm(', start)
+          function = text[start:end]
+          old = '''        tcg_gen_mov_i32(cpu_pc, value);
+                  ctx->base.is_jmp = DISAS_JUMP;'''
+          new = '''        TCGv_i32 traced = tcg_temp_new_i32();
+
+                  gen_helper_vc4_trace_pc_write(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc), value,
+                      tcg_constant_i32(0), tcg_constant_i32(reg));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+                  ctx->base.is_jmp = DISAS_JUMP;'''
+          function = replace_once(
+              function, old, new, 'computed PC-write source')
+          text = text[:start] + function + text[end:]
+
+          start = text.index('static void vc4_set_reg_imm(')
+          end = text.index('static TCGv_i32 vc4_gen_cond_from_sr(', start)
+          function = text[start:end]
+          old = '''        tcg_gen_movi_i32(cpu_pc, value);
+                  ctx->base.is_jmp = DISAS_JUMP;'''
+          new = '''        TCGv_i32 traced = tcg_temp_new_i32();
+
+                  gen_helper_vc4_trace_pc_write(
+                      traced, tcg_env, tcg_constant_i32(ctx->pc),
+                      tcg_constant_i32(value), tcg_constant_i32(1),
+                      tcg_constant_i32(reg));
+                  tcg_gen_mov_i32(cpu_pc, traced);
+                  ctx->base.is_jmp = DISAS_JUMP;'''
+          function = replace_once(
+              function, old, new, 'immediate PC-write source')
+          translate.write_text(text[:start] + function + text[end:])
+          PY
+          git diff --check
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run official firmware and reject low PC writes
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 8 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/vc4-pc-write.log
+
+          grep '^VC4_LOW_PC_WRITE ' /tmp/vc4-pc-write.log \
+            | tee /tmp/vc4-pc-write-summary.log || true
+          if test -s /tmp/vc4-pc-write-summary.log; then
+            echo 'Unexpected low-memory VC4 PC write detected.' >&2
+            exit 1
+          fi
+          echo 'No low-memory VC4 PC writes were observed.'
+
+      - name: Upload PC-write trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-pc-write-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-pc-write.log
+            /tmp/vc4-pc-write-summary.log
+          if-no-files-found: warn
+          retention-days: 14

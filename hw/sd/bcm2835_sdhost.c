@@ -52,6 +52,9 @@ DECLARE_INSTANCE_CHECKER(SDBus, BCM2835_SDHOST_BUS,
 #define SDCMD_CMD_MASK                  0x3f
 
 #define SDCDIV_MAX_CDIV                 0x7ff
+#define SDTOUT_RESET                    0x00a00000
+#define SDCDIV_RESET                    0x000001fb
+#define SDHBCT_RESET                    0x00000400
 
 #define SDHSTS_BUSY_IRPT                0x400
 #define SDHSTS_BLOCK_IRPT               0x200
@@ -262,6 +265,15 @@ static uint64_t bcm2835_sdhost_read(void *opaque, hwaddr offset,
     case SDCMD:
         res = s->cmd;
         break;
+    case SDARG:
+        res = s->cmdarg;
+        break;
+    case SDTOUT:
+        res = s->timeout;
+        break;
+    case SDCDIV:
+        res = s->cdiv;
+        break;
     case SDHSTS:
         res = s->status;
         break;
@@ -282,6 +294,9 @@ static uint64_t bcm2835_sdhost_read(void *opaque, hwaddr offset,
         break;
     case SDVDD:
         res = s->vdd;
+        break;
+    case SDHCFG:
+        res = s->config;
         break;
     case SDDATA:
         res = bcm2835_sdhost_fifo_pop(s);
@@ -323,8 +338,10 @@ static void bcm2835_sdhost_write(void *opaque, hwaddr offset,
         }
         break;
     case SDTOUT:
+        s->timeout = value;
         break;
     case SDCDIV:
+        s->cdiv = value & SDCDIV_MAX_CDIV;
         break;
     case SDHSTS:
         s->status &= ~value;
@@ -376,11 +393,13 @@ static const MemoryRegionOps bcm2835_sdhost_ops = {
 
 static const VMStateDescription vmstate_bcm2835_sdhost = {
     .name = TYPE_BCM2835_SDHOST,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(cmd, BCM2835SDHostState),
         VMSTATE_UINT32(cmdarg, BCM2835SDHostState),
+        VMSTATE_UINT32_V(timeout, BCM2835SDHostState, 2),
+        VMSTATE_UINT32_V(cdiv, BCM2835SDHostState, 2),
         VMSTATE_UINT32(status, BCM2835SDHostState),
         VMSTATE_UINT32_ARRAY(rsp, BCM2835SDHostState, 4),
         VMSTATE_UINT32(config, BCM2835SDHostState),
@@ -415,14 +434,21 @@ static void bcm2835_sdhost_reset(DeviceState *dev)
 
     s->cmd = 0;
     s->cmdarg = 0;
+    s->timeout = SDTOUT_RESET;
+    s->cdiv = SDCDIV_RESET;
+    s->status = 0;
+    memset(s->rsp, 0, sizeof(s->rsp));
     s->edm = 0x0000c60f;
     trace_bcm2835_sdhost_edm_change("device reset", s->edm);
     s->config = 0;
-    s->hbct = 0;
+    s->vdd = 0;
+    s->hbct = SDHBCT_RESET;
     s->hblc = 0;
     s->datacnt = 0;
     s->fifo_pos = 0;
     s->fifo_len = 0;
+    memset(s->fifo, 0, sizeof(s->fifo));
+    bcm2835_sdhost_update_irq(s);
 }
 
 static void bcm2835_sdhost_class_init(ObjectClass *klass, const void *data)

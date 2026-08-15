@@ -1,0 +1,136 @@
+name: Raspberry Pi VC4 scalar floating immediates
+
+on:
+  push:
+    branches:
+      - agent/vc4-float-imm6
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Validate and materialize six-bit floating immediates
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/float-imm6-fixup.py \
+            scripts/vc4/validate-vc4-float-imm6.py \
+            scripts/vc4/raspi3-scalar-float-smoke.py \
+            scripts/vc4/raspi3-float-imm6-smoke.py \
+            scripts/vc4/check-float-imm6-firmware-progress.py
+          python3 scripts/vc4/validate-vc4-float-imm6.py
+          python3 scripts/vc4/check-float-imm6-firmware-progress.py \
+            --self-test
+          python3 scripts/vc4/float-imm6-fixup.py
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          set +e
+          ninja -C build qemu-system-aarch64 \
+            > /tmp/vc4-float-imm6-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -n -E \
+              'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-float-imm6-build.log | tail -n 240 || true
+            tail -n 260 /tmp/vc4-float-imm6-build.log
+            exit "$rc"
+          fi
+
+      - name: Preserve scalar floating-point register behavior
+        run: |
+          python3 scripts/vc4/raspi3-scalar-float-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Execute all six-bit floating-immediate encodings
+        run: |
+          python3 scripts/vc4/raspi3-float-imm6-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Commit production decoder fix locally
+        id: production_commit
+        run: |
+          if git diff --quiet -- \
+              target/vc4/op_helper.c \
+              target/vc4/translate.c; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c
+          git commit -m "target/vc4: decode scalar float immediates"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Run pinned official firmware beyond repaired traps
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 12 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 \
+            | tee /tmp/vc4-float-imm6-firmware.log
+          python3 scripts/vc4/check-float-imm6-firmware-progress.py \
+            /tmp/vc4-float-imm6-firmware.log \
+            | tee /tmp/vc4-float-imm6-firmware-summary.log
+
+      - name: Push validated production fix
+        if: steps.production_commit.outputs.created == 'true'
+        run: |
+          git push origin HEAD:refs/heads/agent/vc4-float-imm6
+
+      - name: Upload official-firmware evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-float-imm6-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-float-imm6-build.log
+            /tmp/vc4-float-imm6-firmware.log
+            /tmp/vc4-float-imm6-firmware-summary.log
+          if-no-files-found: warn
+          retention-days: 14

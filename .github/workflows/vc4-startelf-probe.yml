@@ -1,0 +1,156 @@
+name: VC4 start.elf and first kernel probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  startelf-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Validate firmware-volume tools
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-firmware-volume.py \
+            scripts/vc4/raspi3-startelf-probe.py
+          python3 scripts/vc4/raspi3-firmware-volume.py selftest
+
+      - name: Download pinned Raspberry Pi firmware stages
+        run: |
+          mkdir -p /tmp/vc4-firmware
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/vc4-firmware/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          expected = {
+              "bootcode.bin": "7642d2d89e4235e7d68875ff70688bdde6e71b5a",
+              "start.elf": "0cefcf3a756740760f9903f35cc3843117853712",
+              "fixup.dat": "1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6",
+          }
+          for name, wanted in expected.items():
+              data = Path("/tmp/vc4-firmware", name).read_bytes()
+              header = f"blob {len(data)}\0".encode("ascii")
+              actual = hashlib.sha1(header + data).hexdigest()
+              if actual != wanted:
+                  raise SystemExit(
+                      f"{name}: expected Git blob {wanted}, got {actual}"
+                  )
+              print(f"{name}: bytes={len(data)} git_blob={actual}")
+          PY
+
+      - name: Build full FAT32 firmware volume
+        run: |
+          cat > /tmp/vc4-firmware/config.txt <<'EOF'
+          arm_64bit=1
+          kernel=kernel8.img
+          disable_commandline_tags=1
+          EOF
+          python3 scripts/vc4/raspi3-startelf-probe.py \
+            make-kernel /tmp/vc4-firmware/kernel8.img
+          python3 scripts/vc4/raspi3-firmware-volume.py build \
+            --output /tmp/vc4-firmware/pi3-startelf.img \
+            BOOTCODE.BIN=/tmp/vc4-firmware/bootcode.bin \
+            START.ELF=/tmp/vc4-firmware/start.elf \
+            FIXUP.DAT=/tmp/vc4-firmware/fixup.dat \
+            CONFIG.TXT=/tmp/vc4-firmware/config.txt \
+            KERNEL8.IMG=/tmp/vc4-firmware/kernel8.img
+          python3 scripts/vc4/raspi3-firmware-volume.py verify \
+            --image /tmp/vc4-firmware/pi3-startelf.img \
+            BOOTCODE.BIN=/tmp/vc4-firmware/bootcode.bin \
+            START.ELF=/tmp/vc4-firmware/start.elf \
+            FIXUP.DAT=/tmp/vc4-firmware/fixup.dat \
+            CONFIG.TXT=/tmp/vc4-firmware/config.txt \
+            KERNEL8.IMG=/tmp/vc4-firmware/kernel8.img
+          sha256sum \
+            /tmp/vc4-firmware/bootcode.bin \
+            /tmp/vc4-firmware/start.elf \
+            /tmp/vc4-firmware/fixup.dat \
+            /tmp/vc4-firmware/config.txt \
+            /tmp/vc4-firmware/kernel8.img \
+            /tmp/vc4-firmware/pi3-startelf.img \
+            | tee /tmp/vc4-firmware/volume-checksums.txt
+
+      - name: Configure linked AArch64 and VC4 targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build QEMU
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -n -E \
+              'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-build.log | tail -n 240 || true
+            tail -n 260 /tmp/vc4-build.log
+            exit "$rc"
+          fi
+
+      - name: Run official start.elf and kernel probe
+        id: probe
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          timeout 150s python3 scripts/vc4/raspi3-startelf-probe.py probe \
+            build/qemu-system-aarch64 \
+            /tmp/vc4-firmware/pi3-startelf.img \
+            --seconds 120 \
+            --log /tmp/vc4-firmware/startelf-qemu.log \
+            2>&1 | tee /tmp/vc4-firmware/startelf-probe.log
+
+      - name: Upload start.elf frontier trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-frontier-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-firmware/volume-checksums.txt
+            /tmp/vc4-firmware/config.txt
+            /tmp/vc4-firmware/kernel8.img
+            /tmp/vc4-firmware/startelf-probe.log
+            /tmp/vc4-firmware/startelf-qemu.log
+          if-no-files-found: warn
+
+      - name: Require first kernel execution
+        if: always()
+        run: |
+          if [ "${{ steps.probe.outcome }}" != success ]; then
+            echo "Official start.elf has not executed kernel8.img yet." >&2
+            exit 1
+          fi

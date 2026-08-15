@@ -1,0 +1,169 @@
+name: VC4 stock boot-ROM call inspection
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-rom-call:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download and verify pinned bootcode.bin
+        run: |
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+
+      - name: Decode the call chain entering low ROM
+        run: |
+          python3 - <<'PY' | tee /tmp/vc4-rom-call.log
+          from pathlib import Path
+
+          data = Path('/tmp/bootcode.bin').read_bytes()
+          return_pc = 0x6416
+          callee = 0x14fc
+
+          def u16(addr):
+              return int.from_bytes(data[addr:addr + 2], 'little')
+
+          def sext(value, sign_bit):
+              return (value ^ sign_bit) - sign_bit
+
+          def dump(label, start, end):
+              print(label)
+              for addr in range(start, end, 16):
+                  chunk = data[addr:min(addr + 16, end)]
+                  words = ' '.join(
+                      f'{int.from_bytes(chunk[i:i + 2], "little"):04x}'
+                      for i in range(0, len(chunk), 2)
+                  )
+                  print(f'{addr:08x}: {chunk.hex(" "):<47}  {words}')
+
+          def branch32(pc, i1, i2):
+              if (i1 & 0xf080) not in (0x9000, 0x9080):
+                  return None
+              if (i1 & 0xf080) == 0x9080:
+                  raw = i2 | ((i1 & 0x7f) << 16)
+                  raw |= (i1 & 0xf00) << 15
+                  offset = sext(raw, 0x04000000) * 2
+                  kind = 'bl-relative'
+              else:
+                  raw = i2 | ((i1 & 0x7f) << 16)
+                  offset = sext(raw, 0x00400000) * 2
+                  kind = 'bcond-relative'
+              return kind, (pc + offset) & 0xffffffff, offset
+
+          print('VC4_ROM_CALLSITE return-pc=0x%08x' % return_pc)
+          dump('VC4_CALLSITE_BYTES', 0x63c0, 0x6450)
+          dump('VC4_CALLEE_14FC_BYTES', 0x14c0, 0x1600)
+
+          h_at_minus_2 = u16(return_pc - 2)
+          print(
+              'VC4_ROM_CALL_CANDIDATE16 '
+              f'pc=0x{return_pc - 2:08x} insn=0x{h_at_minus_2:04x}'
+          )
+          if (h_at_minus_2 & 0xffe0) == 0x0060:
+              print(
+                  'VC4_ROM_CALL16 kind=bl-register '
+                  f'reg=r{h_at_minus_2 & 0x1f} '
+                  f'lr=0x{return_pc:08x}'
+              )
+
+          i1 = u16(return_pc - 4)
+          i2 = u16(return_pc - 2)
+          decoded = branch32(return_pc - 4, i1, i2)
+          print(
+              'VC4_ROM_CALL_CANDIDATE32 '
+              f'pc=0x{return_pc - 4:08x} i1=0x{i1:04x} i2=0x{i2:04x}'
+          )
+          if decoded:
+              kind, target, offset = decoded
+              print(
+                  f'VC4_ROM_CALL32 kind={kind} offset={offset} '
+                  f'target=0x{target:08x} lr=0x{return_pc:08x}'
+              )
+              if target != callee:
+                  raise SystemExit(
+                      f'unexpected linked-call target 0x{target:08x}'
+                  )
+
+          print('VC4_CALLEE_CONTROL_FLOW')
+          for pc in range(0x14c0, 0x1600, 2):
+              insn = u16(pc)
+              if (insn & 0xffe0) == 0x0040:
+                  print(
+                      f'pc=0x{pc:08x} kind=b-register '
+                      f'reg=r{insn & 0x1f} insn=0x{insn:04x}'
+                  )
+              if (insn & 0xffe0) == 0x0060:
+                  print(
+                      f'pc=0x{pc:08x} kind=bl-register '
+                      f'reg=r{insn & 0x1f} insn=0x{insn:04x}'
+                  )
+              if (insn & 0xf800) == 0x1800:
+                  cond = (insn >> 7) & 0xf
+                  offset = sext(insn & 0x7f, 0x40) * 2
+                  target = (pc + offset) & 0xffffffff
+                  print(
+                      f'pc=0x{pc:08x} kind=bcond16 cond={cond} '
+                      f'target=0x{target:08x} offset={offset} '
+                      f'insn=0x{insn:04x}'
+                  )
+              if pc + 3 < len(data):
+                  decoded = branch32(pc, insn, u16(pc + 2))
+                  if decoded:
+                      kind, target, offset = decoded
+                      print(
+                          f'pc=0x{pc:08x} kind={kind} '
+                          f'target=0x{target:08x} offset={offset} '
+                          f'i1=0x{insn:04x} i2=0x{u16(pc + 2):04x}'
+                      )
+
+          print('VC4_ALL_DIRECT_BRANCHES_TO_LOW_ROM')
+          for pc in range(0x200, len(data) - 3, 2):
+              insn = u16(pc)
+              if (insn & 0xf800) == 0x1800:
+                  cond = (insn >> 7) & 0xf
+                  offset = sext(insn & 0x7f, 0x40) * 2
+                  target = (pc + offset) & 0xffffffff
+                  if target < 0x200:
+                      print(
+                          f'pc=0x{pc:08x} kind=bcond16 cond={cond} '
+                          f'target=0x{target:08x} offset={offset} '
+                          f'insn=0x{insn:04x}'
+                      )
+              decoded = branch32(pc, insn, u16(pc + 2))
+              if decoded:
+                  kind, target, offset = decoded
+                  if target < 0x200:
+                      print(
+                          f'pc=0x{pc:08x} kind={kind} '
+                          f'target=0x{target:08x} offset={offset} '
+                          f'i1=0x{insn:04x} i2=0x{u16(pc + 2):04x}'
+                      )
+          PY
+
+          grep -E \
+            '^(VC4_ROM_CALL32|VC4_CALLEE_CONTROL_FLOW|VC4_ALL_DIRECT_BRANCHES_TO_LOW_ROM|pc=)' \
+            /tmp/vc4-rom-call.log
+
+      - name: Upload call-site analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-rom-call-${{ github.run_attempt }}
+          path: /tmp/vc4-rom-call.log
+          if-no-files-found: error
+          retention-days: 14

@@ -465,6 +465,20 @@ static uint64_t cprman_read(void *opaque, hwaddr offset,
     size_t idx = offset / sizeof(uint32_t);
 
     switch (idx) {
+    case R_CM_OSCCOUNT:
+        /*
+         * Hardware consumes this count at the 19.2 MHz crystal rate while
+         * firmware polls it.  A read-driven countdown is deterministic under
+         * TCG and migration: expose the current value, consume one abstract
+         * oscillator interval, and saturate at zero.  This preserves the
+         * visible finite polling protocol without host-time dependencies.
+         */
+        r = s->regs[idx];
+        if (r != 0) {
+            s->regs[idx] = r - 1;
+        }
+        break;
+
     case R_CM_LOCK:
         r = get_cm_lock(s);
         break;
@@ -536,6 +550,18 @@ static void cprman_write(void *opaque, hwaddr offset,
     }
 
     value &= ~R_CPRMAN_PASSWORD_MASK;
+
+    /*
+     * CM_SDCCTL is not a plain CM_CLOCKx_CTL register.  UPDATE asks the
+     * hardware to atomically accept a new SDRAM clock configuration and
+     * ACCPT reports completion.  Firmware performs both edges as polling
+     * handshakes.  The clock graph changes synchronously in QEMU, so mirror
+     * UPDATE into the read-only ACCPT bit before publishing the register.
+     */
+    if (idx == R_CM_SDCCTL) {
+        value = FIELD_DP32(value, CM_SDCCTL, ACCPT,
+                           FIELD_EX32(value, CM_SDCCTL, UPDATE));
+    }
 
     trace_bcm2835_cprman_write(offset, value);
     s->regs[idx] = value;

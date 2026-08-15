@@ -1,0 +1,168 @@
+name: VC4 stock timer and firmware barrier probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl gdb ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+
+          test "$(stat --format=%s /tmp/bootcode.bin)" -eq 52624
+          test "$(stat --format=%s /tmp/start.elf)" -eq 3022336
+          test "$(stat --format=%s /tmp/fixup.dat)" -eq 7381
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          sha256sum /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat
+
+      - name: Validate probe scripts and FAT32 image writer
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/systimer-delay-fixture-fixup.py
+          python3 scripts/vc4/systimer-delay-fixture-fixup.py
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-fat32-smoke.py \
+            scripts/vc4/raspi3-systimer-delay-smoke.py
+          python3 scripts/vc4/raspi3-stock-fat32-smoke.py
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Trace external halt requests delivered to any CPU
+        run: |
+          cat > /tmp/vc4-external-halt.gdb <<'GDB'
+          set pagination off
+          set confirm off
+          set breakpoint pending on
+          break cpu_interrupt if ($rsi & 0x20) != 0
+          commands
+            silent
+            printf "VC4_EXTERNAL_HALT cpu-index=%d cpu=%p mask=0x%x\n", ((CPUState *)$rdi)->cpu_index, $rdi, $rsi
+            bt 24
+            continue
+          end
+          run
+          GDB
+
+          cat > /tmp/qemu-vc4-gdb <<'SH'
+          #!/bin/sh
+          exec gdb -q -batch \
+            -x /tmp/vc4-external-halt.gdb \
+            --args "$VC4_REAL_QEMU" "$@"
+          SH
+          chmod +x /tmp/qemu-vc4-gdb
+
+          export VC4_REAL_QEMU="$PWD/build/qemu-system-aarch64"
+          set -o pipefail
+          timeout 30s python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            /tmp/qemu-vc4-gdb \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 3 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/stock-halt-backtrace.log || true
+
+          if ! grep -q '^VC4_EXTERNAL_HALT ' /tmp/stock-halt-backtrace.log; then
+            echo 'VC4_EXTERNAL_HALT none-observed'
+          fi
+
+      - name: Verify the VPU survives the 100 ms RR-TCG kick
+        run: |
+          python3 scripts/vc4/raspi3-systimer-delay-smoke.py \
+            build/qemu-system-aarch64 \
+            --timeout 5
+
+      - name: Cross the stock timer delay with normal fast TCG
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 180 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/stock-fast.log
+
+          if ! grep -q '^STOCK_BOOTCODE_BARRIER ' /tmp/stock-fast.log; then
+            echo 'The fast stock-firmware probe produced no barrier record.' >&2
+            exit 1
+          fi
+
+          if grep -Eq \
+            'STOCK_BOOTCODE_BARRIER.*pc=0x0000054[0246]|STOCK_BOOTCODE_TRACE.*stable=true.*histogram=0x0000054[0246]' \
+            /tmp/stock-fast.log; then
+            echo 'Official bootcode remained within the valid 100 ms timer loop at 0x540-0x546.' >&2
+            exit 1
+          fi
+
+      - name: Extract compact firmware trace
+        if: always()
+        run: |
+          if test -f /tmp/stock-fast.log; then
+            grep -E \
+              '^(STOCK_BOOTCODE_TRACE|Official bootcode live-state probe|STOCK_BOOTCODE_BARRIER)' \
+              /tmp/stock-fast.log > /tmp/stock-fast-summary.log || true
+            if ! test -s /tmp/stock-fast-summary.log; then
+              tail -n 80 /tmp/stock-fast.log > /tmp/stock-fast-summary.log
+            fi
+          else
+            printf '%s\n' 'The firmware probe did not create /tmp/stock-fast.log.' \
+              > /tmp/stock-fast-summary.log
+          fi
+          cat /tmp/stock-fast-summary.log
+          if test -f /tmp/stock-halt-backtrace.log; then
+            grep -E '^(VC4_EXTERNAL_HALT|#0 |#1 |#2 |#3 |#4 |#5 )' \
+              /tmp/stock-halt-backtrace.log || true
+          fi
+
+      - name: Upload firmware trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-fast-trace-${{ github.run_attempt }}
+          path: |
+            /tmp/stock-fast.log
+            /tmp/stock-fast-summary.log
+            /tmp/stock-halt-backtrace.log
+          if-no-files-found: warn
+          retention-days: 14

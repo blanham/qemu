@@ -66,6 +66,8 @@
 #define USB_OTG_OFFSET          0x980000 /* DTC_OTG USB controller */
 #define V3D_OFFSET              0xc00000
 #define SDRAMC_OFFSET           0xe00000
+#define SDRAMC_APHY_OFFSET      0xe06000
+#define SDRAMC_DPHY_OFFSET      0xe07000
 #define L2CC_OFFSET             0xe01000 /* Level 2 Cache controller */
 #define L1CC_OFFSET             0xe02000 /* Level 1 Cache controller */
 #define ARBR1_OFFSET            0xe04000

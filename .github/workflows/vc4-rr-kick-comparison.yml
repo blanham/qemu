@@ -1,0 +1,209 @@
+name: VC4 RR kick comparison
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: vc4-rr-kick-comparison
+  cancel-in-progress: false
+
+jobs:
+  compare-rr-kicks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Download pinned official bootcode.bin
+        run: |
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+
+      - name: Validate experiment tools
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/rr-active-cpu-fixup.py \
+            scripts/vc4/rr-kick-variants.py \
+            scripts/vc4/raspi3-rr-passive-smoke.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py
+          git diff --check
+
+      - name: Compare scheduler variants
+        run: |
+          set -euo pipefail
+          base_scheduler=/tmp/tcg-accel-ops-rr.base.c
+          cp accel/tcg/tcg-accel-ops-rr.c "$base_scheduler"
+          mkdir -p /tmp/vc4-rr-results
+          winner=
+
+          test_variant() {
+            variant="$1"
+            echo "=== RR variant: ${variant} ==="
+            cp "$base_scheduler" accel/tcg/tcg-accel-ops-rr.c
+
+            case "$variant" in
+              current)
+                ;;
+              active-fallback)
+                python3 scripts/vc4/rr-active-cpu-fixup.py
+                python3 scripts/vc4/rr-kick-variants.py active-fallback
+                ;;
+              thread-peers)
+                python3 scripts/vc4/rr-kick-variants.py thread-peers
+                ;;
+              active-and-peers)
+                python3 scripts/vc4/rr-active-cpu-fixup.py
+                python3 scripts/vc4/rr-kick-variants.py active-and-peers
+                ;;
+              *)
+                echo "unknown variant ${variant}" >&2
+                return 2
+                ;;
+            esac
+
+            git diff --check
+            rm -rf build
+            ./configure \
+              --target-list=aarch64-softmmu,vc4-softmmu \
+              --disable-docs \
+              --disable-werror \
+              > "/tmp/vc4-rr-results/${variant}.configure.log" 2>&1
+            ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+              > "/tmp/vc4-rr-results/${variant}.build.log" 2>&1
+
+            python3 scripts/vc4/raspi3-rr-passive-smoke.py \
+              build/qemu-system-aarch64 \
+              > "/tmp/vc4-rr-results/${variant}.passive.log" 2>&1
+
+            set +e
+            python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+              build/qemu-system-aarch64 \
+              /tmp/bootcode.bin \
+              --seconds 30 \
+              --barrier-is-success \
+              > "/tmp/vc4-rr-results/${variant}.stock.log" 2>&1
+            stock_rc=$?
+            set -e
+            if [ "$stock_rc" -ne 0 ]; then
+              echo "${variant}: stock probe failed rc=${stock_rc}"
+              return 1
+            fi
+
+            grep -E \
+              'STOCK_BOOTCODE_(TRACE|BARRIER)|vc4-debug-|Official bootcode' \
+              "/tmp/vc4-rr-results/${variant}.stock.log" \
+              | tail -n 200 \
+              > "/tmp/vc4-rr-results/${variant}.summary.log" || true
+            cat "/tmp/vc4-rr-results/${variant}.summary.log"
+
+            if grep -Eiq \
+              'pc[=: ]+(0x)?0*544([^0-9a-f]|$)' \
+              "/tmp/vc4-rr-results/${variant}.stock.log"; then
+              echo "${variant}: remained at 0x544"
+              return 1
+            fi
+
+            cp accel/tcg/tcg-accel-ops-rr.c "/tmp/${variant}.winner.c"
+            return 0
+          }
+
+          for variant in current active-fallback thread-peers active-and-peers; do
+            if test_variant "$variant"; then
+              winner="$variant"
+              break
+            fi
+          done
+
+          cp "$base_scheduler" accel/tcg/tcg-accel-ops-rr.c
+          if [ -z "$winner" ]; then
+            {
+              echo 'RR_KICK_COMPARISON no variant crossed the 0x544 frontier.'
+              for summary in /tmp/vc4-rr-results/*.summary.log; do
+                [ -e "$summary" ] || continue
+                echo
+                echo "===== $(basename "$summary") ====="
+                cat "$summary"
+              done
+            } | tee /tmp/vc4-rr-results/result.txt
+            exit 1
+          fi
+
+          cp "/tmp/${winner}.winner.c" accel/tcg/tcg-accel-ops-rr.c
+          echo "$winner" > /tmp/vc4-rr-results/winner.txt
+          {
+            echo "RR_KICK_COMPARISON winner=${winner}"
+            cat "/tmp/vc4-rr-results/${winner}.summary.log"
+          } | tee /tmp/vc4-rr-results/result.txt
+          git diff --check
+
+      - name: Preserve comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-rr-kick-comparison-${{ github.run_attempt }}
+          path: /tmp/vc4-rr-results
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report comparison on PR #4
+        if: always()
+        run: |
+          if [ -f /tmp/vc4-rr-results/result.txt ]; then
+            {
+              echo '<!-- vc4-rr-kick-comparison -->'
+              echo '### VC4 RR kick comparison'
+              echo
+              echo '```text'
+              tail -n 220 /tmp/vc4-rr-results/result.txt
+              echo '```'
+              echo
+              echo "Actions run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            } > /tmp/vc4-rr-pr-comment.md
+            gh pr comment 4 --body-file /tmp/vc4-rr-pr-comment.md
+          fi
+
+      - name: Commit a verified winning scheduler source
+        if: success()
+        run: |
+          winner="$(cat /tmp/vc4-rr-results/winner.txt)"
+          if [ "$winner" = current ]; then
+            echo 'Current scheduler source already crosses the former frontier.'
+            exit 0
+          fi
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          git add accel/tcg/tcg-accel-ops-rr.c
+          git commit -m "accel/tcg: use ${winner} RR kick targeting"
+          git fetch origin agent/vc4-stock-bootcode
+          git rebase origin/agent/vc4-stock-bootcode
+          git push origin HEAD:agent/vc4-stock-bootcode

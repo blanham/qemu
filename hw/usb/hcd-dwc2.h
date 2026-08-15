@@ -30,6 +30,7 @@
 
 #define DWC2_NB_CHAN        8       /* Number of host channels */
 #define DWC2_MAX_XFER_SIZE  65536   /* Max transfer size expected in HCTSIZ */
+#define DWC2_BCM2835_PHY_REGS 32    /* MDIO-visible PHY register count */
 
 typedef struct DWC2Packet DWC2Packet;
 typedef struct DWC2State DWC2State;
@@ -104,6 +105,17 @@ struct DWC2State {
             uint32_t gintsts2;      /* 6c */
         };
     };
+
+    /*
+     * BCM2835-specific DWC2 PHY sideband registers.  MDIO transactions
+     * complete synchronously, matching the other boot-time handshakes in
+     * the Raspberry Pi peripheral model.
+     */
+    uint32_t bcm2835_mdio_csr;
+    uint32_t bcm2835_mdio_gen;
+    uint32_t bcm2835_vbusdrv;
+    uint16_t bcm2835_phy[DWC2_BCM2835_PHY_REGS];
+    bool bcm2835_phy_settle_pending;
 
     union {
 #define DWC2_FSZREG_SIZE    0x04

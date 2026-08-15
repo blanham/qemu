@@ -271,11 +271,17 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
                                      &boot_info, &error_fatal)) {
             g_assert_not_reached();
         }
-        s->vpu_entry = 0;
+        if (boot_info.file_size <= VC4_RASPI3_BOOT_ENTRY) {
+            error_report("bootcode.bin is too small for the VPU 0x%x entry",
+                         VC4_RASPI3_BOOT_ENTRY);
+            exit(EXIT_FAILURE);
+        }
+        s->vpu_entry = VC4_RASPI3_BOOT_ENTRY;
         info_report("raspi3b-vc4-hetero: loaded bootcode.bin (%u bytes) "
-                    "from FAT%u boot partition at LBA %" PRIu64,
+                    "from FAT%u boot partition at LBA %" PRIu64
+                    "; entering VPU at 0x%08" HWADDR_PRIx,
                     boot_info.file_size, boot_info.fat32 ? 32 : 16,
-                    boot_info.partition_lba);
+                    boot_info.partition_lba, s->vpu_entry);
     }
 
     vpu_cc = CPU_GET_CLASS(s->vpu_cpu);

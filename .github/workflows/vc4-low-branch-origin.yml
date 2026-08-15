@@ -1,0 +1,152 @@
+name: VC4 low-memory branch origin
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-low-branch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Instrument table branches into boot-cache padding
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          helper = Path('target/vc4/helper.h')
+          text = helper.read_text()
+          anchor = 'DEF_HELPER_1(vc4_rti, void, env)\n'
+          insert = (
+              'DEF_HELPER_5(vc4_trace_table, i32, env, i32, i32, i32, i32)\n'
+          )
+          if text.count(anchor) != 1:
+              raise SystemExit('unexpected helper declaration anchor')
+          helper.write_text(text.replace(anchor, insert + anchor, 1))
+
+          op = Path('target/vc4/op_helper.c')
+          text = op.read_text()
+          anchor = 'G_NORETURN void helper_vc4_raise_illegal('
+          implementation = r'''
+          uint32_t helper_vc4_trace_table(CPUArchState *envp,
+                                          uint32_t source,
+                                          uint32_t target,
+                                          uint32_t reg,
+                                          uint32_t halfword)
+          {
+              CPUVC4State *env = vc4_helper_env(envp);
+              uint32_t index = vc4_env_get_reg(env, reg);
+              uint32_t base = source + 2;
+              uint32_t address = base + index * (halfword ? 2 : 1);
+              int32_t displacement = ((int32_t)target - (int32_t)base) / 2;
+
+              if (source >= 0x200 && target < 0x200) {
+                  qemu_log_mask(
+                      LOG_GUEST_ERROR,
+                      "VC4_LOW_TABLE source=0x%08x target=0x%08x "
+                      "kind=%s reg=r%u index=0x%08x table=0x%08x "
+                      "disp=%d lr=0x%08x sr=0x%08x "
+                      "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x\n",
+                      source, target, halfword ? "switch" : "switch.b",
+                      reg, index, address, displacement,
+                      env->gpr[VC4_REG_LR], env->sr,
+                      env->gpr[0], env->gpr[1], env->gpr[2], env->gpr[3]);
+              }
+              return target;
+          }
+
+          '''
+          if text.count(anchor) != 1:
+              raise SystemExit('unexpected op-helper anchor')
+          op.write_text(text.replace(anchor, implementation + anchor, 1))
+
+          translate = Path('target/vc4/translate.c')
+          text = translate.read_text()
+          old = '''    tcg_gen_shli_i32(displacement, displacement, 1);
+              tcg_gen_add_i32(target, base, displacement);
+              tcg_gen_mov_i32(cpu_pc, target);
+              ctx->base.is_jmp = DISAS_JUMP;
+          }
+          '''
+          new = '''    TCGv_i32 traced = tcg_temp_new_i32();
+
+              tcg_gen_shli_i32(displacement, displacement, 1);
+              tcg_gen_add_i32(target, base, displacement);
+              gen_helper_vc4_trace_table(
+                  traced, tcg_env, tcg_constant_i32(ctx->pc), target,
+                  tcg_constant_i32(reg), tcg_constant_i32(halfword));
+              tcg_gen_mov_i32(cpu_pc, traced);
+              ctx->base.is_jmp = DISAS_JUMP;
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected table-branch generator')
+          translate.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run official firmware until its first low table target
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 8 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/vc4-low-branch.log
+
+          grep '^VC4_LOW_TABLE ' /tmp/vc4-low-branch.log \
+            | tee /tmp/vc4-low-branch-summary.log
+          test -s /tmp/vc4-low-branch-summary.log
+
+      - name: Upload low-branch trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-low-branch-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-low-branch.log
+            /tmp/vc4-low-branch-summary.log
+          if-no-files-found: warn
+          retention-days: 14

@@ -7,7 +7,9 @@
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
 #include "qemu/log.h"
+#include "fpu/softfloat.h"
 #include "cpu.h"
+#include "fpu/softfloat.h"
 #include "hw/vc4/bcm2835_vc4_intc.h"
 #include "exec/helper-proto-common.h"
 #define HELPER_H "target/vc4/helper.h"
@@ -117,6 +119,186 @@ uint32_t helper_vc4_mulhd(uint32_t a, uint32_t b,
     return ((int64_t)(int32_t)a * (int64_t)(int32_t)b) >> 32;
 }
 
+static void vc4_float_status_init(float_status *status,
+                                  FloatRoundMode rounding)
+{
+    memset(status, 0, sizeof(*status));
+    set_float_rounding_mode(rounding, status);
+    set_float_detect_tininess(float_tininess_after_rounding, status);
+    set_default_nan_mode(true, status);
+    set_float_default_nan_pattern(0x40, status);
+    set_snan_rule(float_snan_bit_is_zero, status);
+}
+
+/*
+ * QEMU's generic exp2 helper is polynomial based and can land one ULP below
+ * an exact power of two. VC4 firmware expects integer exponents to produce
+ * exact powers, so recognize the exactly representable int32 subset and use
+ * scalbn for that path.
+ */
+static bool vc4_float_exact_i32(float32 input, int32_t *value)
+{
+    float_status status;
+    float32 roundtrip;
+    int32_t converted;
+
+    if (float32_is_any_nan(input) || float32_is_infinity(input)) {
+        return false;
+    }
+
+    vc4_float_status_init(&status, float_round_to_zero);
+    converted = float32_to_int32_round_to_zero(input, &status);
+    roundtrip = int32_to_float32(converted, &status);
+
+    if (float32_is_zero(input) && float32_is_zero(roundtrip)) {
+        *value = 0;
+        return true;
+    }
+    if (float32_val(input) != float32_val(roundtrip)) {
+        return false;
+    }
+
+    *value = converted;
+    return true;
+}
+
+static uint32_t vc4_float_integer_scale(uint32_t value, int32_t shift)
+{
+    if (shift >= 0) {
+        return shift < 32 ? value << shift : 0;
+    }
+
+    shift = -shift;
+    return shift < 32 ? value >> shift : 0;
+}
+
+uint32_t helper_vc4_float_conv(uint32_t op, uint32_t value,
+                               uint32_t shift_raw)
+{
+    float_status status;
+    float32 input = make_float32(value);
+    int32_t shift = (int32_t)shift_raw;
+    uint32_t result;
+
+    vc4_float_status_init(&status, float_round_nearest_even);
+
+    switch (op) {
+    case 0:                         /* FTRUNC */
+        result = float32_to_int32_scalbn(input, float_round_to_zero,
+                                         0, &status);
+        return vc4_float_integer_scale(result, shift);
+    case 1:                         /* FLOOR */
+        result = float32_to_int32_scalbn(input, float_round_down,
+                                         0, &status);
+        return vc4_float_integer_scale(result, shift);
+    case 2:                         /* FLTS */
+        return float32_val(int32_to_float32_scalbn((int32_t)value,
+                                                   -shift, &status));
+    case 3:                         /* FLTU */
+        return float32_val(uint32_to_float32_scalbn(value,
+                                                    -shift, &status));
+    default:
+        return 0;
+    }
+}
+
+uint32_t helper_vc4_float_op(uint32_t op, uint32_t a, uint32_t b)
+{
+    float_status status;
+    float32 fa = make_float32(a);
+    float32 fb = make_float32(b);
+    float32 result;
+
+    vc4_float_status_init(&status, float_round_nearest_even);
+
+    switch (op) {
+    case 0:                         /* FADD */
+        result = float32_add(fa, fb, &status);
+        break;
+    case 1:                         /* FSUB */
+        result = float32_sub(fa, fb, &status);
+        break;
+    case 2:                         /* FMUL */
+        result = float32_mul(fa, fb, &status);
+        break;
+    case 3:                         /* FDIV */
+        result = float32_div(fa, fb, &status);
+        break;
+    case 5:                         /* FABS */
+        result = float32_abs(fb);
+        break;
+    case 6:                         /* FRSB */
+        result = float32_sub(fb, fa, &status);
+        break;
+    case 7:                         /* FMAX */
+        result = float32_minmax(fa, fb, &status, float_minmax_isnum);
+        break;
+    case 8:                         /* FRCP */
+        result = float32_div(float32_one, fb, &status);
+        break;
+    case 9:                         /* FRSQRT */
+        result = float32_div(float32_one,
+                             float32_sqrt(fb, &status), &status);
+        break;
+    case 10:                        /* FNMUL */
+        result = float32_chs(float32_mul(fa, fb, &status));
+        break;
+    case 11:                        /* FMIN */
+        result = float32_minmax(fa, fb, &status,
+                                float_minmax_ismin | float_minmax_isnum);
+        break;
+    case 12:                        /* FCEIL */
+        set_float_rounding_mode(float_round_up, &status);
+        result = float32_round_to_int(fb, &status);
+        break;
+    case 13:                        /* FFLOOR */
+        set_float_rounding_mode(float_round_down, &status);
+        result = float32_round_to_int(fb, &status);
+        break;
+    case 14:                        /* FLOG2 */
+        result = float32_log2(fb, &status);
+        break;
+    case 15: {                      /* FEXP2 */
+        int32_t exponent;
+
+        if (vc4_float_exact_i32(fb, &exponent)) {
+            result = float32_scalbn(float32_one,
+                                    CLAMP(exponent, -512, 512), &status);
+        } else {
+            result = float32_exp2(fb, &status);
+        }
+        break;
+    }
+    default:
+        return 0;
+    }
+
+    return float32_val(result);
+}
+
+uint32_t helper_vc4_float_cmp(uint32_t a, uint32_t b)
+{
+    float_status status;
+    FloatRelation relation;
+
+    vc4_float_status_init(&status, float_round_nearest_even);
+    relation = float32_compare(make_float32(a), make_float32(b), &status);
+
+    switch (relation) {
+    case float_relation_equal:
+        return VC4_SR_Z;
+    case float_relation_less:
+        /* Public VC4 reverse-engineering reports N|C for a < b. */
+        return VC4_SR_N | VC4_SR_C;
+    case float_relation_greater:
+        return 0;
+    case float_relation_unordered:
+        return VC4_SR_V;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static void vc4_push(CPUArchState *envp, CPUVC4State *env, unsigned reg)
 {
     uint32_t sp = env->gpr[VC4_REG_SP] - 4;
@@ -192,11 +374,329 @@ void helper_vc4_rti(CPUArchState *envp)
     }
 }
 
+/*
+ * The initial frontend keeps uncommon scalar floating-point instructions on
+ * a helper slow path.  This lets production firmware advance without hiding
+ * genuinely unknown opcodes, and the decoder can later be lowered directly
+ * to TCG once the architectural behaviour is covered by regressions.
+ */
+enum VC4FloatOp {
+    VC4_FADD = 0,
+    VC4_FSUB,
+    VC4_FMUL,
+    VC4_FDIV,
+    VC4_FCMP,
+    VC4_FABS,
+    VC4_FRSB,
+    VC4_FMAX,
+    VC4_FRCP,
+    VC4_FRSQRT,
+    VC4_FNMUL,
+    VC4_FMIN,
+    VC4_FCEIL,
+    VC4_FFLOOR,
+    VC4_FLOG2,
+    VC4_FEXP2,
+};
+
+enum VC4FloatConvOp {
+    VC4_FTRUNC = 0,
+    VC4_FLOOR,
+    VC4_FLTS,
+    VC4_FLTU,
+};
+
+static int32_t vc4_sext(uint32_t value, uint32_t sign_bit)
+{
+    return (value ^ sign_bit) - sign_bit;
+}
+
+static bool vc4_condition_passed(uint32_t sr, unsigned cond)
+{
+    bool v = (sr & VC4_SR_V) != 0;
+    bool c = (sr & VC4_SR_C) != 0;
+    bool n = (sr & VC4_SR_N) != 0;
+    bool z = (sr & VC4_SR_Z) != 0;
+    bool result;
+
+    switch (cond >> 1) {
+    case 0:                         /* EQ */
+        result = z;
+        break;
+    case 1:                         /* CS */
+        result = c;
+        break;
+    case 2:                         /* NS */
+        result = n;
+        break;
+    case 3:                         /* VS */
+        result = v;
+        break;
+    case 4:                         /* HI: !C && !Z */
+        result = !c && !z;
+        break;
+    case 5:                         /* GE: N == V */
+        result = n == v;
+        break;
+    case 6:                         /* GT: N == V && !Z */
+        result = n == v && !z;
+        break;
+    case 7:                         /* always / never */
+        result = true;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    return (cond & 1) ? !result : result;
+}
+
+static float_status vc4_float_status(FloatRoundMode rounding_mode)
+{
+    float_status status = { 0 };
+
+    set_float_rounding_mode(rounding_mode, &status);
+    return status;
+}
+
+static uint32_t vc4_float_minmax(uint32_t a_bits, uint32_t b_bits,
+                                 bool maximum, float_status *status)
+{
+    float32 a = make_float32(a_bits);
+    float32 b = make_float32(b_bits);
+    FloatRelation relation;
+
+    if (float32_is_any_nan(a)) {
+        return float32_is_any_nan(b) ?
+            float32_val(float32_default_nan(status)) : b_bits;
+    }
+    if (float32_is_any_nan(b)) {
+        return a_bits;
+    }
+
+    relation = float32_compare_quiet(a, b, status);
+    if (relation == float_relation_equal &&
+        float32_is_zero(a) && float32_is_zero(b)) {
+        /* IEEE-compatible signed-zero selection. */
+        return maximum ? (a_bits & b_bits) : (a_bits | b_bits);
+    }
+
+    if (maximum) {
+        return relation == float_relation_less ? b_bits : a_bits;
+    }
+    return relation == float_relation_greater ? b_bits : a_bits;
+}
+
+static uint32_t vc4_float_result(unsigned op, uint32_t a_bits,
+                                 uint32_t b_bits, float_status *status,
+                                 bool *writes_result, uint32_t *flags)
+{
+    float32 a = make_float32(a_bits);
+    float32 b = make_float32(b_bits);
+    float32 result;
+    FloatRelation relation;
+
+    *writes_result = true;
+    *flags = 0;
+
+    switch (op) {
+    case VC4_FADD:
+        result = float32_add(a, b, status);
+        break;
+    case VC4_FSUB:
+        result = float32_sub(a, b, status);
+        break;
+    case VC4_FMUL:
+        result = float32_mul(a, b, status);
+        break;
+    case VC4_FDIV:
+        result = float32_div(a, b, status);
+        break;
+    case VC4_FCMP:
+        relation = float32_compare_quiet(a, b, status);
+        *writes_result = false;
+        if (relation == float_relation_equal) {
+            *flags = VC4_SR_Z;
+        } else if (relation == float_relation_less) {
+            *flags = VC4_SR_N | VC4_SR_C;
+        } else if (relation == float_relation_unordered) {
+            /* The recovered scalar model leaves NZCV clear for unordered. */
+            *flags = 0;
+        }
+        return 0;
+    case VC4_FABS:
+        result = float32_abs(b);
+        break;
+    case VC4_FRSB:
+        result = float32_sub(b, a, status);
+        break;
+    case VC4_FMAX:
+        return vc4_float_minmax(a_bits, b_bits, true, status);
+    case VC4_FRCP:
+        result = float32_div(float32_one, b, status);
+        break;
+    case VC4_FRSQRT:
+        result = float32_div(float32_one, float32_sqrt(b, status), status);
+        break;
+    case VC4_FNMUL:
+        result = float32_chs(float32_mul(a, b, status));
+        break;
+    case VC4_FMIN:
+        return vc4_float_minmax(a_bits, b_bits, false, status);
+    case VC4_FCEIL:
+        set_float_rounding_mode(float_round_up, status);
+        result = float32_round_to_int(b, status);
+        break;
+    case VC4_FFLOOR:
+        set_float_rounding_mode(float_round_down, status);
+        result = float32_round_to_int(b, status);
+        break;
+    case VC4_FLOG2:
+        result = float32_log2(b, status);
+        break;
+    case VC4_FEXP2:
+        result = float32_exp2(b, status);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    return float32_val(result);
+}
+
+static uint32_t vc4_sasl(uint32_t value, int32_t shift)
+{
+    int64_t wide_shift = shift;
+
+    if (wide_shift >= 32) {
+        return 0;
+    }
+    if (wide_shift >= 0) {
+        return value << wide_shift;
+    }
+    if (wide_shift <= -32) {
+        return (value & UINT32_C(0x80000000)) ? UINT32_MAX : 0;
+    }
+    return (uint32_t)((int32_t)value >> -wide_shift);
+}
+
+static int vc4_float_scale(int32_t shift)
+{
+    int64_t scale = -(int64_t)shift;
+
+    /* More than this already overflows/underflows every float32 input. */
+    return CLAMP(scale, -512, 512);
+}
+
+static uint32_t vc4_float_convert(unsigned op, uint32_t value,
+                                  int32_t shift, float_status *status)
+{
+    float32 result;
+    int32_t converted;
+
+    switch (op) {
+    case VC4_FTRUNC:
+        converted = float32_to_int32_round_to_zero(make_float32(value),
+                                                    status);
+        return vc4_sasl(converted, shift);
+    case VC4_FLOOR:
+        set_float_rounding_mode(float_round_down, status);
+        converted = float32_to_int32(make_float32(value), status);
+        return vc4_sasl(converted, shift);
+    case VC4_FLTS:
+        result = int32_to_float32((int32_t)value, status);
+        return float32_val(float32_scalbn(result, vc4_float_scale(shift),
+                                          status));
+    case VC4_FLTU:
+        result = uint32_to_float32(value, status);
+        return float32_val(float32_scalbn(result, vc4_float_scale(shift),
+                                          status));
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static bool vc4_execute_float_slow(CPUVC4State *env, uint32_t pc,
+                                   uint16_t i1, uint16_t i2,
+                                   uint32_t *next_pc)
+{
+    unsigned cond = (i2 >> 7) & 0xf;
+    unsigned rd = i1 & 0x1f;
+    unsigned ra = (i2 >> 11) & 0x1f;
+    float_status status = vc4_float_status(float_round_nearest_even);
+    uint32_t result;
+
+    *next_pc = pc + 4;
+    if (!vc4_condition_passed(env->sr, cond)) {
+        return true;
+    }
+
+    if ((i1 & 0xfe00) == 0xc800) {
+        unsigned op = (i1 >> 5) & 0xf;
+        uint32_t a = vc4_env_get_reg(env, ra);
+        uint32_t b;
+        uint32_t flags;
+        bool writes_result;
+
+        if (i2 & 0x40) {
+            int32_t imm = vc4_sext(i2 & 0x3f, 0x20);
+
+            b = float32_val(int32_to_float32(imm, &status));
+        } else {
+            b = vc4_env_get_reg(env, i2 & 0x1f);
+        }
+
+        result = vc4_float_result(op, a, b, &status,
+                                  &writes_result, &flags);
+        if (!writes_result) {
+            env->sr = (env->sr & ~UINT32_C(0xf)) | flags;
+        } else if (rd == VC4_REG_PC) {
+            *next_pc = result;
+        } else {
+            vc4_env_set_reg(env, rd, result);
+        }
+        return true;
+    }
+
+    if ((i1 & 0xff80) == 0xca00) {
+        unsigned op = (i1 >> 5) & 3;
+        int32_t shift;
+
+        if (i2 & 0x40) {
+            shift = vc4_sext(i2 & 0x3f, 0x20);
+        } else {
+            shift = vc4_env_get_reg(env, i2 & 0x1f);
+        }
+
+        result = vc4_float_convert(op, vc4_env_get_reg(env, ra),
+                                   shift, &status);
+        if (rd == VC4_REG_PC) {
+            *next_pc = result;
+        } else {
+            vc4_env_set_reg(env, rd, result);
+        }
+        return true;
+    }
+
+    return false;
+}
+
 G_NORETURN void helper_vc4_raise_illegal(CPUArchState *envp, uint32_t pc,
                                          uint32_t opcode)
 {
     CPUVC4State *env = vc4_helper_env(envp);
     CPUState *cs = env_cpu(envp);
+    uint16_t i1 = opcode;
+    uint32_t next_pc;
+
+    if ((i1 & 0xfe00) == 0xc800 || (i1 & 0xff80) == 0xca00) {
+        uint16_t i2 = cpu_lduw_le_data(envp, pc + 2);
+
+        if (vc4_execute_float_slow(env, pc, i1, i2, &next_pc)) {
+            env->pc = next_pc;
+            cpu_loop_exit(cs);
+        }
+    }
 
     env->pc = pc;
     cs->exception_index = VC4_EXCP_ILLEGAL;
