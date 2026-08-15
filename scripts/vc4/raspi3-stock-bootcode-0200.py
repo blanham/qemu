@@ -5,11 +5,14 @@ from __future__ import annotations
 
 from collections import Counter
 import importlib.util
+import json
 from pathlib import Path
 import re
 import time
 from types import ModuleType
 from typing import Any
+
+from stock_bootcode_progress import analyze_snapshots
 
 BOOT_ENTRY = 0x200
 TRACE_SAMPLES = 12
@@ -165,6 +168,12 @@ def install_trace_qmp(state: ModuleType) -> None:
             transitions = compact_transitions(pcs)
             stable = len(histogram) == 1
             final_registers = snapshots[-1]["registers"]
+            progress = analyze_snapshots(snapshots)
+
+            print(
+                "STOCK_BOOTCODE_PROGRESS "
+                + json.dumps(progress, sort_keys=True, separators=(",", ":"))
+            )
 
             context_parts: list[str] = []
             for pc in dict.fromkeys(pcs):

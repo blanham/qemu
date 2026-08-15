@@ -36,8 +36,13 @@ jobs:
 
       - name: Validate active-CPU RR kick targeting
         run: |
-          python3 -m py_compile scripts/vc4/check-rr-active-cpu.py
+          python3 -m py_compile \
+            scripts/vc4/check-rr-active-cpu.py \
+            scripts/vc4/check-stock-bootcode-progress.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/stock_bootcode_progress.py
           python3 scripts/vc4/check-rr-active-cpu.py
+          python3 scripts/vc4/stock_bootcode_progress.py
           git diff --exit-code
 
       - name: Configure linked targets
@@ -76,7 +81,7 @@ jobs:
           test "$(git hash-object /tmp/bootcode.bin)" = \
             7642d2d89e4235e7d68875ff70688bdde6e71b5a
 
-      - name: Require stock firmware to cross the former delay frontier
+      - name: Require progress across the former delay frontier
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -87,18 +92,14 @@ jobs:
             2>&1 | tee /tmp/vc4-rr-active-stock.log
 
           grep -E \
-            'STOCK_BOOTCODE_(TRACE|BARRIER)|vc4-debug-|Official bootcode' \
+            'STOCK_BOOTCODE_(TRACE|PROGRESS|BARRIER)|vc4-debug-|Official bootcode' \
             /tmp/vc4-rr-active-stock.log \
             | tail -n 160 > /tmp/vc4-rr-active-summary.log || true
           cat /tmp/vc4-rr-active-summary.log
 
-          if grep -Eiq \
-            'pc[=: ]+(0x)?0*544([^0-9a-f]|$)' \
-            /tmp/vc4-rr-active-stock.log; then
-            echo 'Official bootcode remained at the former 0x544 timer frontier.' \
-              >&2
-            exit 1
-          fi
+          python3 scripts/vc4/check-stock-bootcode-progress.py \
+            /tmp/vc4-rr-active-stock.log \
+            | tee -a /tmp/vc4-rr-active-summary.log
 
       - name: Preserve diagnostic logs
         if: always()
