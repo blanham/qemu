@@ -1,0 +1,168 @@
+name: VC4 PM_SPAREW official firmware
+
+on:
+  push:
+    branches:
+      - agent/vc4-pm-sparew
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pm-sparew:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Exercise PM_SPAREW through qtest
+        run: |
+          python3 - <<'PY'
+          import os
+          import socket
+          import subprocess
+          import tempfile
+
+          qemu = os.path.abspath('build/qemu-system-aarch64')
+          address = 0x3f100074
+
+          with tempfile.TemporaryDirectory(prefix='vc4-pm-sparew-') as tmp:
+              qtest_path = os.path.join(tmp, 'qtest.sock')
+              qtest_log = os.path.join(tmp, 'qtest.log')
+              stderr_path = '/tmp/vc4-pm-sparew-qtest.err'
+
+              listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+              listener.bind(qtest_path)
+              listener.listen(1)
+              listener.settimeout(15)
+
+              with open(stderr_path, 'wb') as stderr:
+                  proc = subprocess.Popen([
+                      qemu,
+                      '-M', 'raspi3b',
+                      '-qtest', f'unix:{qtest_path}',
+                      '-qtest-log', qtest_log,
+                      '-display', 'none',
+                      '-audio', 'none',
+                      '-accel', 'qtest',
+                  ], stdout=subprocess.DEVNULL, stderr=stderr)
+
+                  try:
+                      conn, _ = listener.accept()
+                      conn.settimeout(10)
+                      stream = conn.makefile('rwb', buffering=0)
+
+                      def command(text):
+                          stream.write((text + '\n').encode('ascii'))
+                          while True:
+                              line = stream.readline()
+                              if not line:
+                                  raise RuntimeError(
+                                      f'qtest disconnected after {text!r}')
+                              response = line.decode('ascii').strip()
+                              if response.startswith('IRQ '):
+                                  continue
+                              if response.startswith('FAIL'):
+                                  raise RuntimeError(
+                                      f'{text!r} returned {response!r}')
+                              if response.startswith('OK'):
+                                  return response
+
+                      def readl():
+                          response = command(f'readl 0x{address:x}')
+                          fields = response.split()
+                          if len(fields) != 2:
+                              raise RuntimeError(
+                                  f'unexpected read response: {response!r}')
+                          return int(fields[1], 0)
+
+                      if readl() != 0:
+                          raise RuntimeError('PM_SPAREW reset value is not zero')
+
+                      command(f'writel 0x{address:x} 0x00123456')
+                      if readl() != 0:
+                          raise RuntimeError(
+                              'passwordless PM_SPAREW write was accepted')
+
+                      command(f'writel 0x{address:x} 0x5afffffe')
+                      if readl() != 0x00fffffe:
+                          raise RuntimeError(
+                              'PM_SPAREW did not preserve its 24-bit payload')
+
+                      command(f'writel 0x{address:x} 0x5a000002')
+                      if readl() != 2:
+                          raise RuntimeError(
+                              'official-firmware PM_SPAREW value did not read back')
+                  finally:
+                      listener.close()
+                      if proc.poll() is None:
+                          proc.terminate()
+                      proc.wait(timeout=10)
+
+          print('PM_SPAREW qtest passed')
+          PY
+
+      - name: Run pinned official firmware through the PM_SPAREW frontier
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 8 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/vc4-pm-sparew.log
+
+          if grep -Fq \
+            'bcm2835_powermgt_write: Unknown offset 0x00000074' \
+            /tmp/vc4-pm-sparew.log; then
+            echo 'Official firmware still sees PM_SPAREW as unimplemented.' >&2
+            exit 1
+          fi
+          grep -q '^STOCK_BOOTCODE_BARRIER ' /tmp/vc4-pm-sparew.log
+          echo 'Official firmware crossed PM_SPAREW without an unknown-register fault.'
+
+      - name: Upload PM_SPAREW diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-pm-sparew-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-pm-sparew.log
+            /tmp/vc4-pm-sparew-qtest.err
+          if-no-files-found: warn
+          retention-days: 14
