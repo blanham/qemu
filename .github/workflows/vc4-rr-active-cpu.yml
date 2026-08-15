@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - agent/vc4-stock-bootcode
-      - agent/vc4-ci-refresh-2026-08-15
   workflow_dispatch:
 
 permissions:
