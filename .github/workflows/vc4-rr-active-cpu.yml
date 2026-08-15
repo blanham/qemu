@@ -1,0 +1,114 @@
+name: VC4 active RR CPU invariant
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  active-rr-cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Validate active-CPU RR kick targeting
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/check-rr-active-cpu.py \
+            scripts/vc4/check-stock-bootcode-progress.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/check-rr-active-cpu.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+          git diff --exit-code
+
+      - name: Configure linked targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build linked AArch64 and native VC4 executables
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-rr-active-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -n -E \
+              'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-rr-active-build.log | tail -n 240 || true
+            tail -n 260 /tmp/vc4-rr-active-build.log
+            exit "$rc"
+          fi
+
+      - name: Validate passive five-vCPU fairness
+        run: |
+          python3 scripts/vc4/raspi3-rr-passive-smoke.py \
+            build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-rr-passive.log
+
+      - name: Download pinned official bootcode.bin
+        run: |
+          curl --fail --location --retry 4 \
+            --output /tmp/bootcode.bin \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bootcode.bin"
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+
+      - name: Require progress across the former delay frontier
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --seconds 30 \
+            --barrier-is-success \
+            2>&1 | tee /tmp/vc4-rr-active-stock.log
+
+          grep -E \
+            'STOCK_BOOTCODE_(TRACE|PROGRESS|BARRIER)|vc4-debug-|Official bootcode' \
+            /tmp/vc4-rr-active-stock.log \
+            | tail -n 160 > /tmp/vc4-rr-active-summary.log || true
+          cat /tmp/vc4-rr-active-summary.log
+
+          python3 scripts/vc4/check-stock-bootcode-progress.py \
+            /tmp/vc4-rr-active-stock.log \
+            | tee -a /tmp/vc4-rr-active-summary.log
+
+      - name: Preserve diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-rr-active-cpu-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-rr-active-build.log
+            /tmp/vc4-rr-passive.log
+            /tmp/vc4-rr-active-stock.log
+            /tmp/vc4-rr-active-summary.log
+          if-no-files-found: warn
+          retention-days: 14

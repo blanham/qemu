@@ -130,6 +130,38 @@ static void vc4_float_status_init(float_status *status,
     set_snan_rule(float_snan_bit_is_zero, status);
 }
 
+/*
+ * QEMU's generic exp2 helper is polynomial based and can land one ULP below
+ * an exact power of two. VC4 firmware expects integer exponents to produce
+ * exact powers, so recognize the exactly representable int32 subset and use
+ * scalbn for that path.
+ */
+static bool vc4_float_exact_i32(float32 input, int32_t *value)
+{
+    float_status status;
+    float32 roundtrip;
+    int32_t converted;
+
+    if (float32_is_any_nan(input) || float32_is_infinity(input)) {
+        return false;
+    }
+
+    vc4_float_status_init(&status, float_round_to_zero);
+    converted = float32_to_int32_round_to_zero(input, &status);
+    roundtrip = int32_to_float32(converted, &status);
+
+    if (float32_is_zero(input) && float32_is_zero(roundtrip)) {
+        *value = 0;
+        return true;
+    }
+    if (float32_val(input) != float32_val(roundtrip)) {
+        return false;
+    }
+
+    *value = converted;
+    return true;
+}
+
 static uint32_t vc4_float_integer_scale(uint32_t value, int32_t shift)
 {
     if (shift >= 0) {
@@ -215,12 +247,28 @@ uint32_t helper_vc4_float_op(uint32_t op, uint32_t a, uint32_t b)
         result = float32_minmax(fa, fb, &status,
                                 float_minmax_ismin | float_minmax_isnum);
         break;
-    case 12:                        /* FLD1 */
-        result = float32_one;
+    case 12:                        /* FCEIL */
+        set_float_rounding_mode(float_round_up, &status);
+        result = float32_round_to_int(fb, &status);
         break;
-    case 13:                        /* FLD0 */
-        result = float32_zero;
+    case 13:                        /* FFLOOR */
+        set_float_rounding_mode(float_round_down, &status);
+        result = float32_round_to_int(fb, &status);
         break;
+    case 14:                        /* FLOG2 */
+        result = float32_log2(fb, &status);
+        break;
+    case 15: {                      /* FEXP2 */
+        int32_t exponent;
+
+        if (vc4_float_exact_i32(fb, &exponent)) {
+            result = float32_scalbn(float32_one,
+                                    CLAMP(exponent, -512, 512), &status);
+        } else {
+            result = float32_exp2(fb, &status);
+        }
+        break;
+    }
     default:
         return 0;
     }

@@ -1,0 +1,108 @@
+name: VC4 start.elf stacked-branch sync
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-startelf-stack-sync
+  cancel-in-progress: false
+
+jobs:
+  sync-startelf-stack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-startelf-volume
+          fetch-depth: 0
+
+      - name: Merge the latest stock-firmware parent
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          stack_head="$(git rev-parse HEAD)"
+          echo "stack_head=${stack_head}" >> "$GITHUB_OUTPUT"
+          git fetch origin agent/vc4-stock-bootcode
+          parent="$(git rev-parse origin/agent/vc4-stock-bootcode)"
+          echo "parent=${parent}" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$parent" HEAD; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'The stacked branch already contains this parent.'
+            exit 0
+          fi
+          git merge --no-ff --no-commit origin/agent/vc4-stock-bootcode
+          git diff --check
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Validate firmware-volume tools
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/firmware_fat32_volume.py \
+            scripts/vc4/raspi3_startelf_volume_smoke.py \
+            scripts/vc4/raspi3_startelf_probe.py
+          python3 scripts/vc4/raspi3_startelf_volume_smoke.py \
+            2>&1 | tee /tmp/startelf-stack-volume.log
+          grep -q '^STARTELF_VOLUME_READY ' \
+            /tmp/startelf-stack-volume.log
+
+      - name: Build linked AArch64 and native VC4 targets
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/startelf-stack-build.log 2>&1
+          build/qemu-system-aarch64 -machine help \
+            | grep -E 'raspi3.*vc4|vc4.*raspi3'
+
+      - name: Preserve sync evidence
+        if: always() && steps.merge.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-stack-sync-${{ github.run_attempt }}
+          path: |
+            /tmp/startelf-stack-volume.log
+            /tmp/startelf-stack-build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit verified parent merge
+        if: success() && steps.merge.outputs.changed == 'true'
+        env:
+          STACK_HEAD: ${{ steps.merge.outputs.stack_head }}
+        run: |
+          set -euo pipefail
+          git commit -m 'Merge latest VC4 stock-firmware bring-up'
+          git fetch origin agent/vc4-startelf-volume
+          remote_head="$(git rev-parse origin/agent/vc4-startelf-volume)"
+          if [ "$remote_head" != "$STACK_HEAD" ]; then
+            echo "Stacked branch advanced from ${STACK_HEAD} to ${remote_head}; refusing to rewrite it." >&2
+            exit 1
+          fi
+          git push origin HEAD:agent/vc4-startelf-volume
