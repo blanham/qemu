@@ -1,4 +1,4 @@
-name: VC4 repaired low-PC transfer trace
+name: VC4 focused stack-return trace
 
 on:
   push:
@@ -9,8 +9,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: vc4-focused-stack-return
+  cancel-in-progress: true
+
 jobs:
-  trace-low-pc-transfer:
+  trace-stack-return:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -40,9 +44,10 @@ jobs:
           test "$(git hash-object /tmp/fixup.dat)" = \
             1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
 
-      - name: Instrument every VC4 PC-writing path
+      - name: Instrument control transfers and the suspect stack frame
         run: |
-          python3 scripts/vc4/instrument-low-pc-transfer.py
+          python3 -m py_compile scripts/vc4/instrument-stack-return.py
+          python3 scripts/vc4/instrument-stack-return.py
           git diff --check
 
       - name: Configure and build heterogeneous system emulator
@@ -53,7 +58,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Run official firmware until first high-to-low PC transfer
+      - name: Trace the producer and consumer of the zero return slot
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -63,34 +68,41 @@ jobs:
             --fixup-dat /tmp/fixup.dat \
             --seconds 8 \
             --fast-tcg \
-            --barrier-is-success 2>&1 | tee /tmp/vc4-low-pc-transfer.log
+            --barrier-is-success 2>&1 | tee /tmp/vc4-stack-return.log
 
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
-          log = Path("/tmp/vc4-low-pc-transfer.log")
-          summary = Path("/tmp/vc4-low-pc-transfer-summary.log")
-          text = log.read_text(encoding="utf-8", errors="replace")
-          matches = list(dict.fromkeys(
-              re.findall(r"VC4_LOW_TARGET [^|\n]+", text)
-          ))
+          log = Path("/tmp/vc4-stack-return.log")
+          summary = Path("/tmp/vc4-stack-return-summary.log")
+          lines = []
+          for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+              for marker in ("VC4_STACK_FRAME", "VC4_LOW_TARGET"):
+                  position = line.find(marker)
+                  if position >= 0:
+                      lines.append(line[position:].rstrip())
+                      break
           summary.write_text(
-              "".join(match.rstrip() + "\n" for match in matches),
+              "".join(line + "\n" for line in lines),
               encoding="utf-8",
           )
           PY
 
-          cat /tmp/vc4-low-pc-transfer-summary.log
-          test -s /tmp/vc4-low-pc-transfer-summary.log
+          cat /tmp/vc4-stack-return-summary.log
+          grep -q \
+            'VC4_LOW_TARGET source=0x0000166c target=0x00000000 kind=10' \
+            /tmp/vc4-stack-return-summary.log
+          grep -q \
+            'VC4_STACK_FRAME phase=pre source=0x0000166c op=pop' \
+            /tmp/vc4-stack-return-summary.log
 
-      - name: Upload complete low-PC trace
+      - name: Upload focused stack-return trace
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vc4-low-pc-transfer-${{ github.run_attempt }}
+          name: vc4-stack-return-${{ github.run_attempt }}
           path: |
-            /tmp/vc4-low-pc-transfer.log
-            /tmp/vc4-low-pc-transfer-summary.log
+            /tmp/vc4-stack-return.log
+            /tmp/vc4-stack-return-summary.log
           if-no-files-found: warn
           retention-days: 14
