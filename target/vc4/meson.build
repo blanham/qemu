@@ -1,6 +1,7 @@
 vc4_ss = ss.source_set()
 vc4_ss.add(files(
   'cpu.c',
+  'float_helper.c',
   'gdbstub.c',
   'op_helper.c',
   'translate.c',

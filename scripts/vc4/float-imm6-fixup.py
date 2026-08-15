@@ -23,6 +23,61 @@ def replace_once(path: Path, old: str, new: str, what: str) -> None:
 translate = ROOT / "target/vc4/translate.c"
 replace_once(
     translate,
+    """    VC4_FOP_FNMUL,
+    VC4_FOP_FMIN,
+    VC4_FOP_FLD1,
+    VC4_FOP_FLD0,
+};
+""",
+    """    VC4_FOP_FNMUL,
+    VC4_FOP_FMIN,
+    VC4_FOP_FCEIL,
+    VC4_FOP_FFLOOR,
+    VC4_FOP_FLOG2,
+    VC4_FOP_FEXP2,
+};
+""",
+    "complete scalar floating-point opcode names",
+)
+replace_once(
+    translate,
+    """    if (op > VC4_FOP_FLD0) {
+        return false;
+    }
+""",
+    """    if (op > VC4_FOP_FEXP2) {
+        return false;
+    }
+""",
+    "complete scalar floating-point opcode range",
+)
+replace_once(
+    translate,
+    """    if (op == VC4_FOP_FCMP) {
+        gen_helper_vc4_float_cmp(result, vc4_get_reg(ctx, ra), b);
+        vc4_write_nzcv(result);
+    } else {
+        gen_helper_vc4_float_op(result, tcg_constant_i32(op),
+                                vc4_get_reg(ctx, ra), b);
+        vc4_set_reg(ctx, rd, result);
+    }
+""",
+    """    if (op == VC4_FOP_FCMP) {
+        gen_helper_vc4_float_cmp(result, vc4_get_reg(ctx, ra), b);
+        vc4_write_nzcv(result);
+    } else if (op >= VC4_FOP_FCEIL) {
+        gen_helper_vc4_float_ext_op(result, tcg_constant_i32(op), b);
+        vc4_set_reg(ctx, rd, result);
+    } else {
+        gen_helper_vc4_float_op(result, tcg_constant_i32(op),
+                                vc4_get_reg(ctx, ra), b);
+        vc4_set_reg(ctx, rd, result);
+    }
+""",
+    "extended scalar floating-point helper dispatch",
+)
+replace_once(
+    translate,
     """    vc4_set_reg(ctx, rd, result);
     vc4_gen_end_predicate(skip);
 }
