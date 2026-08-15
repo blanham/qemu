@@ -1001,7 +1001,7 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
     if ((i1 & 0xfc00) == 0xb000) {
         op = (i1 >> 5) & 0x1f;
         rd = i1 & 0x1f;
-        vc4_gen_alu_imm(ctx, 14, op, rd, rd, i2);
+        vc4_gen_alu_imm(ctx, 14, op, rd, rd, (int16_t)i2);
         return true;
     }
 
