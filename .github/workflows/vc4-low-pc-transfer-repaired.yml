@@ -1,4 +1,4 @@
-name: VC4 bootcode failure capsule
+name: VC4 bootcode failure leaf
 
 on:
   push:
@@ -10,11 +10,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: vc4-bootcode-failure-capsule
+  group: vc4-bootcode-failure-leaf
   cancel-in-progress: true
 
 jobs:
-  trace-failure-capsule:
+  trace-failure-leaf:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -44,12 +44,10 @@ jobs:
           test "$(git hash-object /tmp/fixup.dat)" = \
             1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
 
-      - name: Instrument compact failure capsule
+      - name: Instrument the failing leaf routine
         run: |
-          python3 -m py_compile \
-            scripts/vc4/instrument-failure-history.py \
-            scripts/vc4/instrument-failure-capsule.py
-          python3 scripts/vc4/instrument-failure-capsule.py
+          python3 -m py_compile scripts/vc4/instrument-leaf-failure.py
+          python3 scripts/vc4/instrument-leaf-failure.py
           git diff --check
 
       - name: Configure and build heterogeneous system emulator
@@ -60,7 +58,7 @@ jobs:
             --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Capture the call chain and r0 producer
+      - name: Capture leaf register, branch, and memory history
         run: |
           set -o pipefail
           python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
@@ -70,19 +68,20 @@ jobs:
             --fixup-dat /tmp/fixup.dat \
             --seconds 8 \
             --fast-tcg \
-            --barrier-is-success 2>&1 | tee /tmp/vc4-failure-capsule.log
+            --barrier-is-success 2>&1 | tee /tmp/vc4-failure-leaf.log
 
           python3 - <<'PY'
           from pathlib import Path
 
-          log = Path("/tmp/vc4-failure-capsule.log")
-          summary = Path("/tmp/vc4-failure-capsule-summary.log")
+          log = Path("/tmp/vc4-failure-leaf.log")
+          summary = Path("/tmp/vc4-failure-leaf-summary.log")
           markers = (
-              "VC4_FAILURE_HISTORY_BEGIN",
-              "VC4_FAILURE_TRANSFER",
-              "VC4_FAILURE_R0",
-              "VC4_FAILURE_HISTORY_END",
               "VC4_LOW_TARGET",
+              "VC4_LEAF_FAILURE_BEGIN",
+              "VC4_LEAF_R9",
+              "VC4_LEAF_BRANCH",
+              "VC4_LEAF_MEM",
+              "VC4_LEAF_FAILURE_END",
           )
           text = log.read_text(encoding="utf-8", errors="replace")
           lines = []
@@ -97,26 +96,26 @@ jobs:
           )
           PY
 
-          cat /tmp/vc4-failure-capsule-summary.log
+          cat /tmp/vc4-failure-leaf-summary.log
           grep -q \
             'VC4_LOW_TARGET source=0x0000166c target=0x00000000 kind=10' \
-            /tmp/vc4-failure-capsule-summary.log
-          grep -q 'VC4_FAILURE_HISTORY_BEGIN transfers=32 r0_writes=12' \
-            /tmp/vc4-failure-capsule-summary.log
-          grep -q 'VC4_FAILURE_HISTORY_END' \
-            /tmp/vc4-failure-capsule-summary.log
-          test "$(grep -c '^VC4_FAILURE_TRANSFER ' \
-            /tmp/vc4-failure-capsule-summary.log)" -eq 32
-          test "$(grep -c '^VC4_FAILURE_R0 ' \
-            /tmp/vc4-failure-capsule-summary.log)" -eq 12
+            /tmp/vc4-failure-leaf-summary.log
+          grep -q 'VC4_LEAF_FAILURE_BEGIN' \
+            /tmp/vc4-failure-leaf-summary.log
+          grep -q '^VC4_LEAF_R9 ' /tmp/vc4-failure-leaf-summary.log
+          grep -q '^VC4_LEAF_BRANCH ' /tmp/vc4-failure-leaf-summary.log
+          grep -q '^VC4_LEAF_MEM ' /tmp/vc4-failure-leaf-summary.log
+          grep -q 'VC4_LEAF_FAILURE_END' \
+            /tmp/vc4-failure-leaf-summary.log
 
-      - name: Upload bootcode failure capsule
+      - name: Upload leaf trace and pinned bootcode
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vc4-failure-capsule-${{ github.run_attempt }}
+          name: vc4-failure-leaf-${{ github.run_attempt }}
           path: |
-            /tmp/vc4-failure-capsule.log
-            /tmp/vc4-failure-capsule-summary.log
+            /tmp/vc4-failure-leaf.log
+            /tmp/vc4-failure-leaf-summary.log
+            /tmp/bootcode.bin
           if-no-files-found: warn
           retention-days: 14
