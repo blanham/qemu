@@ -79,44 +79,10 @@ def repair_arm_trace() -> None:
     )
 
 
-def repair_frontier_reporter() -> None:
-    path = Path(".github/workflows/vc4-startelf-frontier-comment.yml")
-    text = path.read_text(encoding="utf-8")
-    old_field = "--raw-field body@=/tmp/vc4-startelf/comment.md"
-    new_field = '--raw-field body="$body"'
-
-    if old_field in text:
-        count = text.count(old_field)
-        if count != 2:
-            raise SystemExit(
-                f"unexpected reporter body-field count: {count}"
-            )
-        anchor = '''          if [ -n "$comment_id" ]; then
-'''
-        if text.count(anchor) != 1:
-            raise SystemExit("unexpected reporter conditional anchor")
-        text = text.replace(
-            anchor,
-            '''          body="$(cat /tmp/vc4-startelf/comment.md)"
-          if [ -n "$comment_id" ]; then
-''',
-            1,
-        )
-        text = text.replace(old_field, new_field)
-        path.write_text(text, encoding="utf-8")
-    elif text.count(new_field) != 2 or "body=\"$(cat " not in text:
-        raise SystemExit("unexpected repaired reporter state")
-
-    obsolete = Path(".github/workflows/vc4-startelf-reporter-fix.yml")
-    if obsolete.exists():
-        obsolete.unlink()
-
-
 def main() -> int:
     repair_probe()
     repair_live_probe()
     repair_arm_trace()
-    repair_frontier_reporter()
     print("repaired VC4 start.elf probes for raspi3b-vc4-hetero")
     return 0
 
