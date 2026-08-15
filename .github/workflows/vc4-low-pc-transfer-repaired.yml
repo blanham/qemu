@@ -1,4 +1,4 @@
-name: VC4 bootcode failure history
+name: VC4 bootcode failure capsule
 
 on:
   push:
@@ -10,11 +10,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: vc4-bootcode-failure-history
+  group: vc4-bootcode-failure-capsule
   cancel-in-progress: true
 
 jobs:
-  trace-failure-history:
+  trace-failure-capsule:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -44,10 +44,12 @@ jobs:
           test "$(git hash-object /tmp/fixup.dat)" = \
             1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
 
-      - name: Instrument bounded failure history
+      - name: Instrument compact failure capsule
         run: |
-          python3 -m py_compile scripts/vc4/instrument-failure-history.py
-          python3 scripts/vc4/instrument-failure-history.py
+          python3 -m py_compile \
+            scripts/vc4/instrument-failure-history.py \
+            scripts/vc4/instrument-failure-capsule.py
+          python3 scripts/vc4/instrument-failure-capsule.py
           git diff --check
 
       - name: Configure and build heterogeneous system emulator
@@ -68,13 +70,13 @@ jobs:
             --fixup-dat /tmp/fixup.dat \
             --seconds 8 \
             --fast-tcg \
-            --barrier-is-success 2>&1 | tee /tmp/vc4-failure-history.log
+            --barrier-is-success 2>&1 | tee /tmp/vc4-failure-capsule.log
 
           python3 - <<'PY'
           from pathlib import Path
 
-          log = Path("/tmp/vc4-failure-history.log")
-          summary = Path("/tmp/vc4-failure-history-summary.log")
+          log = Path("/tmp/vc4-failure-capsule.log")
+          summary = Path("/tmp/vc4-failure-capsule-summary.log")
           markers = (
               "VC4_FAILURE_HISTORY_BEGIN",
               "VC4_FAILURE_TRANSFER",
@@ -95,24 +97,26 @@ jobs:
           )
           PY
 
-          cat /tmp/vc4-failure-history-summary.log
+          cat /tmp/vc4-failure-capsule-summary.log
           grep -q \
             'VC4_LOW_TARGET source=0x0000166c target=0x00000000 kind=10' \
-            /tmp/vc4-failure-history-summary.log
-          grep -q 'VC4_FAILURE_HISTORY_BEGIN' \
-            /tmp/vc4-failure-history-summary.log
+            /tmp/vc4-failure-capsule-summary.log
+          grep -q 'VC4_FAILURE_HISTORY_BEGIN transfers=32 r0_writes=12' \
+            /tmp/vc4-failure-capsule-summary.log
           grep -q 'VC4_FAILURE_HISTORY_END' \
-            /tmp/vc4-failure-history-summary.log
-          grep -q 'VC4_FAILURE_R0' \
-            /tmp/vc4-failure-history-summary.log
+            /tmp/vc4-failure-capsule-summary.log
+          test "$(grep -c '^VC4_FAILURE_TRANSFER ' \
+            /tmp/vc4-failure-capsule-summary.log)" -eq 32
+          test "$(grep -c '^VC4_FAILURE_R0 ' \
+            /tmp/vc4-failure-capsule-summary.log)" -eq 12
 
-      - name: Upload bootcode failure history
+      - name: Upload bootcode failure capsule
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vc4-failure-history-${{ github.run_attempt }}
+          name: vc4-failure-capsule-${{ github.run_attempt }}
           path: |
-            /tmp/vc4-failure-history.log
-            /tmp/vc4-failure-history-summary.log
+            /tmp/vc4-failure-capsule.log
+            /tmp/vc4-failure-capsule-summary.log
           if-no-files-found: warn
           retention-days: 14
