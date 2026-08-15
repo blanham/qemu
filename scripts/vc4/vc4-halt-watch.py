@@ -34,11 +34,11 @@ def prefixed_backtrace(prefix: str, depth: int = 40) -> None:
 class VC4HaltedWatchpoint(gdb.Breakpoint):
     def __init__(self, cpu_address: int) -> None:
         self.cpu_address = cpu_address
-        self.expression = (
+        self.watch_expression = (
             f"((CPUState *)0x{cpu_address:x})->halted"
         )
         super().__init__(
-            self.expression,
+            self.watch_expression,
             type=gdb.BP_WATCHPOINT,
             wp_class=gdb.WP_WRITE,
             internal=False,
@@ -46,7 +46,7 @@ class VC4HaltedWatchpoint(gdb.Breakpoint):
         self.silent = True
         print(
             "VC4_HALT_WATCH_INSTALLED "
-            f"cpu=0x{cpu_address:x} expression={self.expression}",
+            f"cpu=0x{cpu_address:x} expression={self.watch_expression}",
             flush=True,
         )
 
@@ -94,7 +94,15 @@ class VC4RealizeBreakpoint(gdb.Breakpoint):
             flush=True,
         )
         if cpu_address:
-            self.watchpoint = VC4HaltedWatchpoint(cpu_address)
+            try:
+                self.watchpoint = VC4HaltedWatchpoint(cpu_address)
+            except gdb.error as exc:
+                print(
+                    "VC4_HALT_WATCH_INSTALL_FAILED "
+                    f"cpu=0x{cpu_address:x} error={exc}",
+                    flush=True,
+                )
+                raise
             self.enabled = False
         return False
 
