@@ -1,0 +1,88 @@
+name: VC4 stock-firmware MMIO frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-mmio-frontier
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-mmio-frontier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Check the MMIO probe
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/analyze-stock-mmio-frontier.py
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Capture and summarize the ordered MMIO frontier
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-mmio-frontier
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 20 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 scripts/vc4/analyze-stock-mmio-frontier.py \
+            "$out/qemu-mmio.log" \
+            --json "$out/mmio-frontier.json" \
+            | tee "$out/mmio-frontier.txt"
+
+          test -s "$out/mmio-frontier.json"
+          grep -q '"grstctl"' "$out/mmio-frontier.json"
+
+      - name: Upload MMIO frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-mmio-frontier-${{ github.run_attempt }}
+          path: /tmp/vc4-mmio-frontier
+          if-no-files-found: warn
+          retention-days: 14
