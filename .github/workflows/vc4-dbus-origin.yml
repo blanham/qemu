@@ -142,31 +142,31 @@ jobs:
 
           log_path = Path('/tmp/vc4-dbus-origin.log')
           log = log_path.read_text(errors='replace')
-          lines = [
-              line for line in log.splitlines()
-              if line.startswith('bcm2835-dbus:')
-          ]
-          if not lines:
-              raise SystemExit('official firmware did not reach a DBUS access')
-
           access_re = re.compile(
-              r'offset 0x([0-9a-fA-F]+).*?'
-              r'(?:value 0x([0-9a-fA-F]+).*?)?'
-              r'cpu (-?\d+), pc 0x([0-9a-fA-F]+)'
+              r'bcm2835-dbus: unimplemented device '
+              r'(?P<operation>read|write)\s+'
+              r'\(size (?P<size>\d+), '
+              r'offset 0x(?P<offset>[0-9a-fA-F]+)'
+              r'(?:, value 0x(?P<value>[0-9a-fA-F]+))?'
+              r', cpu (?P<cpu>-?\d+), '
+              r'pc 0x(?P<pc>[0-9a-fA-F]+)\)'
           )
           records = []
-          for line in lines:
-              match = access_re.search(line)
-              if not match:
-                  raise SystemExit(f'unparseable DBUS diagnostic: {line}')
+          for match in access_re.finditer(log):
               records.append({
-                  'line': line,
-                  'offset': int(match.group(1), 16),
-                  'value': (int(match.group(2), 16)
-                            if match.group(2) is not None else None),
-                  'cpu': int(match.group(3)),
-                  'pc': int(match.group(4), 16),
+                  'line': match.group(0),
+                  'operation': match.group('operation'),
+                  'size': int(match.group('size')),
+                  'offset': int(match.group('offset'), 16),
+                  'value': (int(match.group('value'), 16)
+                            if match.group('value') is not None else None),
+                  'cpu': int(match.group('cpu')),
+                  'pc': int(match.group('pc'), 16),
               })
+          if not records:
+              raise SystemExit(
+                  'official firmware did not expose a parseable DBUS access'
+              )
 
           firmware = Path('/tmp/bootcode.bin').read_bytes()
           entry = 0x200
