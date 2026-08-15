@@ -1,0 +1,140 @@
+name: VC4 bootcode retry frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-bootcode-retry-frontier
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vc4-bootcode-retry-frontier-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  retry-flow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize bounded bootcode flow tracing
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/bootcode-flow-trace-fixup.py \
+            scripts/vc4/summarize-bootcode-flow.py
+          python3 scripts/vc4/bootcode-flow-trace-fixup.py
+          first="$(sha256sum \
+            target/vc4/helper.h \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c)"
+          python3 scripts/vc4/bootcode-flow-trace-fixup.py
+          second="$(sha256sum \
+            target/vc4/helper.h \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c)"
+          test "$first" = "$second"
+          grep -q 'VC4_BOOT_FLOW_TRACE' target/vc4/helper.h
+          grep -q 'VC4_BOOT_FLOW_TRACE' target/vc4/op_helper.c
+          grep -q 'VC4_BOOT_FLOW_TRACE' target/vc4/translate.c
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          mkdir -p /tmp/vc4-boot-flow
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/vc4-boot-flow/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/vc4-boot-flow/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/vc4-boot-flow/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/vc4-boot-flow/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build linked heterogeneous target
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          set +e
+          ninja -C build qemu-system-aarch64 \
+            > /tmp/vc4-boot-flow/build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -n -E \
+              'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-boot-flow/build.log | tail -n 240 || true
+            tail -n 320 /tmp/vc4-boot-flow/build.log
+            exit "$rc"
+          fi
+
+      - name: Trace the three production delay callers
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/vc4-boot-flow/bootcode.bin \
+            --start-elf /tmp/vc4-boot-flow/start.elf \
+            --fixup-dat /tmp/vc4-boot-flow/fixup.dat \
+            --seconds 20 \
+            --barrier-is-success \
+            2>&1 | tee /tmp/vc4-boot-flow/qemu.log
+
+          grep -F 'VC4_BOOT_FLOW ' /tmp/vc4-boot-flow/qemu.log \
+            > /tmp/vc4-boot-flow/raw-flow.log
+          test -s /tmp/vc4-boot-flow/raw-flow.log
+
+          python3 scripts/vc4/summarize-bootcode-flow.py \
+            --require-all-callers \
+            /tmp/vc4-boot-flow/qemu.log \
+            | tee /tmp/vc4-boot-flow/summary.log
+
+      - name: Print focused retry evidence
+        if: always()
+        run: |
+          if test -f /tmp/vc4-boot-flow/summary.log; then
+            cat /tmp/vc4-boot-flow/summary.log
+          fi
+          if test -f /tmp/vc4-boot-flow/raw-flow.log; then
+            echo '--- first 80 raw records ---'
+            head -n 80 /tmp/vc4-boot-flow/raw-flow.log
+            echo '--- last 80 raw records ---'
+            tail -n 80 /tmp/vc4-boot-flow/raw-flow.log
+          fi
+
+      - name: Preserve bootcode retry trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-bootcode-retry-frontier-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-boot-flow/build.log
+            /tmp/vc4-boot-flow/qemu.log
+            /tmp/vc4-boot-flow/raw-flow.log
+            /tmp/vc4-boot-flow/summary.log
+          if-no-files-found: warn
+          retention-days: 14
