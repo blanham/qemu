@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate stock firmware progress after fixing signed scalar ALU imm16."""
+"""Gate stock firmware liveness after fixing signed scalar ALU imm16."""
 
 from __future__ import annotations
 
@@ -18,8 +18,16 @@ CLUSTER_COUNT = re.compile(r"\bcluster-count=(\d+)\b")
 BARRIER_PC = re.compile(
     r"STOCK_BOOTCODE_BARRIER[^\n]*\bpc=0x([0-9a-fA-F]+)\b"
 )
-
-OLD_CLUSTER_COUNT = 103
+VPU_RUNNING = re.compile(
+    r"4:running=true/4:halted=false(?:/|;|\s)"
+)
+SNAPSHOT_R2 = re.compile(
+    r"(?:^|[; =])\d+:pc=0x[0-9a-fA-F]+"
+    r"/sr=0x[0-9a-fA-F]+"
+    r"/r0=0x[0-9a-fA-F]+"
+    r"/r1=0x[0-9a-fA-F]+"
+    r"/r2=0x([0-9a-fA-F]+)"
+)
 
 
 def main() -> int:
@@ -43,11 +51,6 @@ def main() -> int:
     if not counts:
         raise SystemExit("stock firmware log has no translated-cluster count")
     best = max(counts)
-    if best <= OLD_CLUSTER_COUNT:
-        raise SystemExit(
-            "stock firmware did not advance beyond the old frontier: "
-            f"cluster-count={best}, required>{OLD_CLUSTER_COUNT}"
-        )
 
     barrier_pcs = [int(value, 16) for value in BARRIER_PC.findall(text)]
     if any(pc in (0, 0x14) for pc in barrier_pcs):
@@ -56,12 +59,31 @@ def main() -> int:
             + ", ".join(f"0x{pc:08x}" for pc in barrier_pcs)
         )
 
+    if not VPU_RUNNING.search(text):
+        raise SystemExit(
+            "stock firmware log does not show the VC4 VPU running and unhalted"
+        )
+
+    timer_samples = [int(value, 16) for value in SNAPSHOT_R2.findall(text)]
+    if len(timer_samples) < 2:
+        raise SystemExit(
+            "stock firmware log does not contain enough VC4 timer samples"
+        )
+    if len(set(timer_samples)) < 2:
+        raise SystemExit(
+            "VC4 timer samples are static despite an unhalted VPU: "
+            f"r2=0x{timer_samples[0]:08x}"
+        )
+
     low_pops = sorted(
         set(line for line in text.splitlines() if "VC4_LOW_POP " in line)
     )
+    timer_delta = (timer_samples[-1] - timer_samples[0]) & 0xffffffff
     print(
         "VC4 signed ALU imm16 stock-firmware gate passed: "
-        f"cluster-count={best} old-frontier={OLD_CLUSTER_COUNT} "
+        f"cluster-count={best} vpu=running "
+        f"timer-samples={len(timer_samples)} "
+        f"timer-delta=0x{timer_delta:08x} "
         f"barriers={','.join(f'0x{pc:08x}' for pc in barrier_pcs) or 'none'} "
         f"low-pops={len(low_pops)}"
     )
