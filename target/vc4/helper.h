@@ -14,8 +14,6 @@ DEF_HELPER_FLAGS_3(vc4_float_conv, TCG_CALL_NO_RWG_SE,
                    i32, i32, i32, i32)
 DEF_HELPER_FLAGS_3(vc4_float_op, TCG_CALL_NO_RWG_SE,
                    i32, i32, i32, i32)
-DEF_HELPER_FLAGS_2(vc4_float_ext_op, TCG_CALL_NO_RWG_SE,
-                   i32, i32, i32)
 DEF_HELPER_FLAGS_2(vc4_float_cmp, TCG_CALL_NO_RWG_SE,
                    i32, i32, i32)
 DEF_HELPER_5(vc4_push_pop, void, env, i32, i32, i32, i32)

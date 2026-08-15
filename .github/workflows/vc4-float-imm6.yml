@@ -88,14 +88,18 @@ jobs:
       - name: Commit production decoder fix locally
         id: production_commit
         run: |
-          if git diff --quiet -- target/vc4/translate.c; then
+          if git diff --quiet -- \
+              target/vc4/op_helper.c \
+              target/vc4/translate.c; then
             echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "VC4 CI"
           git config user.email "vc4-ci@users.noreply.github.com"
-          git add target/vc4/translate.c
-          git commit -m "target/vc4: decode six-bit floating immediates"
+          git add \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c
+          git commit -m "target/vc4: decode scalar float immediates"
           echo "created=true" >> "$GITHUB_OUTPUT"
 
       - name: Run pinned official firmware beyond repaired traps

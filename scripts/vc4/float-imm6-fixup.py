@@ -20,6 +20,96 @@ def replace_once(path: Path, old: str, new: str, what: str) -> None:
         raise SystemExit(f"could not locate {what} in {path}")
 
 
+op_helper = ROOT / "target/vc4/op_helper.c"
+replace_once(
+    op_helper,
+    """static uint32_t vc4_float_integer_scale(uint32_t value, int32_t shift)
+{
+""",
+    """/*
+ * QEMU's generic exp2 helper is polynomial based and can land one ULP below
+ * an exact power of two. VC4 firmware expects integer exponents to produce
+ * exact powers, so recognize the exactly representable int32 subset and use
+ * scalbn for that path.
+ */
+static bool vc4_float_exact_i32(float32 input, int32_t *value)
+{
+    float_status status;
+    float32 roundtrip;
+    int32_t converted;
+
+    if (float32_is_any_nan(input) || float32_is_infinity(input)) {
+        return false;
+    }
+
+    vc4_float_status_init(&status, float_round_to_zero);
+    converted = float32_to_int32_round_to_zero(input, &status);
+    roundtrip = int32_to_float32(converted, &status);
+
+    if (float32_is_zero(input) && float32_is_zero(roundtrip)) {
+        *value = 0;
+        return true;
+    }
+    if (float32_val(input) != float32_val(roundtrip)) {
+        return false;
+    }
+
+    *value = converted;
+    return true;
+}
+
+static uint32_t vc4_float_integer_scale(uint32_t value, int32_t shift)
+{
+""",
+    "exact integer scalar exp2 support",
+)
+replace_once(
+    op_helper,
+    """    case 11:                        /* FMIN */
+        result = float32_minmax(fa, fb, &status,
+                                float_minmax_ismin | float_minmax_isnum);
+        break;
+    case 12:                        /* FLD1 */
+        result = float32_one;
+        break;
+    case 13:                        /* FLD0 */
+        result = float32_zero;
+        break;
+    default:
+        return 0;
+""",
+    """    case 11:                        /* FMIN */
+        result = float32_minmax(fa, fb, &status,
+                                float_minmax_ismin | float_minmax_isnum);
+        break;
+    case 12:                        /* FCEIL */
+        set_float_rounding_mode(float_round_up, &status);
+        result = float32_round_to_int(fb, &status);
+        break;
+    case 13:                        /* FFLOOR */
+        set_float_rounding_mode(float_round_down, &status);
+        result = float32_round_to_int(fb, &status);
+        break;
+    case 14:                        /* FLOG2 */
+        result = float32_log2(fb, &status);
+        break;
+    case 15: {                      /* FEXP2 */
+        int32_t exponent;
+
+        if (vc4_float_exact_i32(fb, &exponent)) {
+            result = float32_scalbn(float32_one,
+                                    CLAMP(exponent, -512, 512), &status);
+        } else {
+            result = float32_exp2(fb, &status);
+        }
+        break;
+    }
+    default:
+        return 0;
+""",
+    "complete scalar floating-point helper opcodes",
+)
+
 translate = ROOT / "target/vc4/translate.c"
 replace_once(
     translate,
@@ -50,31 +140,6 @@ replace_once(
     }
 """,
     "complete scalar floating-point opcode range",
-)
-replace_once(
-    translate,
-    """    if (op == VC4_FOP_FCMP) {
-        gen_helper_vc4_float_cmp(result, vc4_get_reg(ctx, ra), b);
-        vc4_write_nzcv(result);
-    } else {
-        gen_helper_vc4_float_op(result, tcg_constant_i32(op),
-                                vc4_get_reg(ctx, ra), b);
-        vc4_set_reg(ctx, rd, result);
-    }
-""",
-    """    if (op == VC4_FOP_FCMP) {
-        gen_helper_vc4_float_cmp(result, vc4_get_reg(ctx, ra), b);
-        vc4_write_nzcv(result);
-    } else if (op >= VC4_FOP_FCEIL) {
-        gen_helper_vc4_float_ext_op(result, tcg_constant_i32(op), b);
-        vc4_set_reg(ctx, rd, result);
-    } else {
-        gen_helper_vc4_float_op(result, tcg_constant_i32(op),
-                                vc4_get_reg(ctx, ra), b);
-        vc4_set_reg(ctx, rd, result);
-    }
-""",
-    "extended scalar floating-point helper dispatch",
 )
 replace_once(
     translate,
@@ -139,4 +204,4 @@ replace_once(
     "six-bit floating-immediate decode",
 )
 
-print("Materialized VC4 six-bit scalar floating immediates.")
+print("Materialized VC4 scalar float opcodes and six-bit immediates.")
