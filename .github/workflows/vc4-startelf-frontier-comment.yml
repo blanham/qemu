@@ -96,15 +96,16 @@ jobs:
               --paginate \
               --jq ".[] | select(.body | contains(\"${marker}\")) | .id"
           } | head -n 1)"
+          body="$(cat /tmp/vc4-startelf/comment.md)"
 
           if [ -n "$comment_id" ]; then
             gh api \
               --method PATCH \
               "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
-              --raw-field body@=/tmp/vc4-startelf/comment.md
+              --raw-field body="$body"
           else
             gh api \
               --method POST \
               "repos/${GITHUB_REPOSITORY}/issues/4/comments" \
-              --raw-field body@=/tmp/vc4-startelf/comment.md
+              --raw-field body="$body"
           fi

@@ -174,9 +174,11 @@ def probe(qemu: Path, image: Path, seconds: float, log_path: Path) -> int:
         command = [
             str(qemu),
             "-M",
-            "raspi3b-vc4",
+            "raspi3b-vc4-hetero",
             "-m",
             "1G",
+            "-smp",
+            "5",
             "-accel",
             "tcg,thread=single",
             "-S",

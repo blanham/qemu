@@ -1,0 +1,148 @@
+name: VC4 repaired start.elf heterogeneous probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-hetero-probe
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  startelf-hetero:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Apply heterogeneous start.elf probe repair
+        run: |
+          python3 scripts/vc4/startelf-hetero-fixup.py
+          python3 -m py_compile \
+            scripts/vc4/startelf-hetero-fixup.py \
+            scripts/vc4/raspi3-startelf-probe.py \
+            scripts/vc4/raspi3-startelf-live-probe.py \
+            scripts/vc4/raspi3-startelf-arm-trace.py \
+            scripts/vc4/raspi3-firmware-volume.py
+          python3 scripts/vc4/raspi3-firmware-volume.py selftest
+          git diff --check
+          test "$(grep -R --include='raspi3-startelf*.py' -l 'raspi3b-vc4$' scripts/vc4 | wc -l)" -eq 0
+
+      - name: Commit production probe repair locally
+        id: production_commit
+        run: |
+          if git diff --quiet -- \
+              scripts/vc4/raspi3-startelf-probe.py \
+              scripts/vc4/raspi3-startelf-live-probe.py \
+              scripts/vc4/raspi3-startelf-arm-trace.py \
+              .github/workflows/vc4-startelf-frontier-comment.yml \
+              .github/workflows/vc4-startelf-reporter-fix.yml; then
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add \
+            scripts/vc4/raspi3-startelf-probe.py \
+            scripts/vc4/raspi3-startelf-live-probe.py \
+            scripts/vc4/raspi3-startelf-arm-trace.py \
+            .github/workflows/vc4-startelf-frontier-comment.yml \
+            .github/workflows/vc4-startelf-reporter-fix.yml
+          git commit -m "ci/vc4: repair start.elf heterogeneous probes"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download pinned Raspberry Pi firmware stages
+        run: |
+          mkdir -p /tmp/vc4-startelf
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/vc4-startelf/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/vc4-startelf/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/vc4-startelf/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/vc4-startelf/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build full FAT32 firmware volume
+        run: |
+          cat > /tmp/vc4-startelf/config.txt <<'EOF'
+          arm_64bit=1
+          kernel=kernel8.img
+          disable_commandline_tags=1
+          EOF
+          python3 scripts/vc4/raspi3-startelf-probe.py \
+            make-kernel /tmp/vc4-startelf/kernel8.img
+          python3 scripts/vc4/raspi3-firmware-volume.py build \
+            --output /tmp/vc4-startelf/pi3-startelf.img \
+            BOOTCODE.BIN=/tmp/vc4-startelf/bootcode.bin \
+            START.ELF=/tmp/vc4-startelf/start.elf \
+            FIXUP.DAT=/tmp/vc4-startelf/fixup.dat \
+            CONFIG.TXT=/tmp/vc4-startelf/config.txt \
+            KERNEL8.IMG=/tmp/vc4-startelf/kernel8.img
+          python3 scripts/vc4/raspi3-firmware-volume.py verify \
+            --image /tmp/vc4-startelf/pi3-startelf.img \
+            BOOTCODE.BIN=/tmp/vc4-startelf/bootcode.bin \
+            START.ELF=/tmp/vc4-startelf/start.elf \
+            FIXUP.DAT=/tmp/vc4-startelf/fixup.dat \
+            CONFIG.TXT=/tmp/vc4-startelf/config.txt \
+            KERNEL8.IMG=/tmp/vc4-startelf/kernel8.img
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run repaired official start.elf frontier probe
+        run: |
+          set +e
+          timeout 150s python3 scripts/vc4/raspi3-startelf-probe.py probe \
+            build/qemu-system-aarch64 \
+            /tmp/vc4-startelf/pi3-startelf.img \
+            --seconds 120 \
+            --log /tmp/vc4-startelf/startelf-qemu.log \
+            > /tmp/vc4-startelf/startelf-probe.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/vc4-startelf/startelf-probe.log
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && [ "$rc" -ne 3 ]; then
+            echo "start.elf probe failed before producing a frontier: rc=$rc" >&2
+            exit "$rc"
+          fi
+          grep -q '^STARTELF_PROBE ' /tmp/vc4-startelf/startelf-probe.log
+          ! grep -q 'unsupported machine type' /tmp/vc4-startelf/startelf-qemu.log
+
+      - name: Push validated production probe repair
+        if: steps.production_commit.outputs.created == 'true'
+        run: |
+          git push origin HEAD:refs/heads/agent/vc4-startelf-hetero-probe
+
+      - name: Upload repaired start.elf frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-hetero-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-startelf/startelf-probe.log
+            /tmp/vc4-startelf/startelf-qemu.log
+            /tmp/vc4-startelf/config.txt
+          if-no-files-found: warn
+          retention-days: 14
