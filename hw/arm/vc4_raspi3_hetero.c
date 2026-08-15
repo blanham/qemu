@@ -22,6 +22,7 @@
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "hw/sd/sd.h"
+#include "hw/usb/usb.h"
 #include "hw/vc4/bcm2835_vc4_intc.h"
 #include "accel/tcg/cpu-ops.h"
 #include "exec/cpu-common.h"
@@ -38,6 +39,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(VC4Raspi3HeteroMachineState,
 
 #define RASPI3_BOARD_REVISION 0x00a02082u
 #define RASPI3_DEFAULT_VCRAM (64 * MiB)
+#define RASPI3_LAN9514_HUB_PORTS 5
 #define VC4_IC0_OFFSET 0x2000
 #define VC4_IC1_OFFSET 0x2800
 
@@ -143,6 +145,22 @@ static BlockBackend *vc4_raspi3_create_sdcard(BCM283XBaseState *soc)
     return blk;
 }
 
+static void vc4_raspi3_create_onboard_usb_hub(BCMSocPeripheralBaseState *ps)
+{
+    USBDevice *hub = USB_DEVICE(qdev_new("usb-hub"));
+
+    /*
+     * A Pi 3B's DWC2 root port is permanently wired to the LAN9514.  From the
+     * host's point of view that device is a hub with four external downstream
+     * ports and one internal Ethernet function.  The generic hub supplies the
+     * board-level connection and enumeration topology until the SMSC Ethernet
+     * function itself is modelled.
+     */
+    object_property_set_int(OBJECT(hub), "ports",
+                            RASPI3_LAN9514_HUB_PORTS, &error_abort);
+    usb_realize_and_unref(hub, &ps->dwc2.bus, &error_fatal);
+}
+
 static void vc4_raspi3_machine_initfn(Object *obj)
 {
     VC4Raspi3HeteroMachineState *s =
@@ -198,6 +216,7 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     object_property_set_int(OBJECT(soc), "enabled-cpus", 0, &error_abort);
     qdev_realize(DEVICE(soc), NULL, &error_fatal);
 
+    vc4_raspi3_create_onboard_usb_hub(ps);
     s->sd_blk = vc4_raspi3_create_sdcard(soc);
 
     for (i = 0; i < ARRAY_SIZE(s->vpu_intc); i++) {
