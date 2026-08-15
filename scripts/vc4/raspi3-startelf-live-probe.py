@@ -139,8 +139,9 @@ def run_probe(
         qtest_path = temp_path / "qtest.sock"
         command = [
             str(qemu),
-            "-M", "raspi3b-vc4",
+            "-M", "raspi3b-vc4-hetero",
             "-m", "1G",
+            "-smp", "5",
             "-accel", "tcg,thread=single",
             "-S",
             "-drive", f"file={image},if=sd,format=raw",
