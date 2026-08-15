@@ -89,8 +89,10 @@ enum VC4FloatOp {
     VC4_FOP_FRSQRT,
     VC4_FOP_FNMUL,
     VC4_FOP_FMIN,
-    VC4_FOP_FLD1,
-    VC4_FOP_FLD0,
+    VC4_FOP_FCEIL,
+    VC4_FOP_FFLOOR,
+    VC4_FOP_FLOG2,
+    VC4_FOP_FEXP2,
 };
 
 typedef struct DisasContext {
@@ -442,6 +444,28 @@ static void vc4_gen_float_conv(DisasContext *ctx, unsigned cond,
     vc4_gen_end_predicate(skip);
 }
 
+/*
+ * The six-bit immediate is an IEEE-754 shorthand. Bit 5 is the sign.
+ * A zero three-bit exponent encodes signed zero and ignores the fraction.
+ * Otherwise bits 4:2 select IEEE exponent 125 through 131, and bits 1:0
+ * become the two most-significant fraction bits.
+ */
+static uint32_t vc4_float_imm6_to_bits(unsigned imm)
+{
+    uint32_t bits;
+    unsigned exponent;
+
+    g_assert(imm < 64);
+
+    bits = (imm & 0x20) << 26;
+    exponent = (imm >> 2) & 0x7;
+    if (exponent != 0) {
+        bits |= (exponent + 124) << 23;
+        bits |= (imm & 0x3) << 21;
+    }
+    return bits;
+}
+
 static bool vc4_gen_float_op(DisasContext *ctx, unsigned cond,
                              unsigned op, unsigned rd,
                              unsigned ra, TCGv_i32 b)
@@ -449,7 +473,7 @@ static bool vc4_gen_float_op(DisasContext *ctx, unsigned cond,
     TCGv_i32 result = tcg_temp_new_i32();
     TCGLabel *skip;
 
-    if (op > VC4_FOP_FLD0) {
+    if (op > VC4_FOP_FEXP2) {
         return false;
     }
 
@@ -921,8 +945,14 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
     }
 
     if ((i1 & 0xfe00) == 0xc800 && (i2 & 0x0040) != 0) {
-        /* The six-bit floating immediate encoding is not verified yet. */
-        return false;
+        cond = (i2 >> 7) & 0xf;
+        op = (i1 >> 5) & 0xf;
+        rd = i1 & 0x1f;
+        ra = (i2 >> 11) & 0x1f;
+        return vc4_gen_float_op(
+            ctx, cond, op, rd, ra,
+            tcg_constant_i32(
+                (int32_t)vc4_float_imm6_to_bits(i2 & 0x3f)));
     }
 
     if ((i1 & 0xfc00) == 0xc000 && (i2 & 0x0060) == 0x0000) {
