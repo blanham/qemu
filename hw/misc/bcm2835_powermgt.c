@@ -11,6 +11,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "hw/irq.h"
 #include "hw/misc/bcm2835_powermgt.h"
 #include "migration/vmstate.h"
 #include "system/runstate.h"
@@ -27,6 +28,10 @@
 /* PM_USB is a one-bit controller-enable latch at 0x7e10005c. */
 #define R_USB 0x5c
 #define V_USB_CTRLEN (1u << 0)
+
+/* PM_SPAREW is a 24-bit firmware scratch register at 0x7e100074. */
+#define R_SPAREW 0x74
+#define V_SPAREW_MASK 0x00ffffff
 
 /*
  * PM_IMAGE and PM_PROC are firmware-visible power-domain registers.  Their
@@ -122,6 +127,9 @@ static uint64_t bcm2835_powermgt_read(void *opaque, hwaddr offset,
     case R_USB:
         res = s->usb;
         break;
+    case R_SPAREW:
+        res = s->sparew;
+        break;
     case R_IMAGE:
         res = s->image;
         break;
@@ -179,6 +187,9 @@ static void bcm2835_powermgt_write(void *opaque, hwaddr offset,
     case R_USB:
         s->usb = value & V_USB_CTRLEN;
         break;
+    case R_SPAREW:
+        s->sparew = value & V_SPAREW_MASK;
+        break;
     case R_IMAGE:
         bcm2835_powermgt_update_image(s, value);
         break;
@@ -212,7 +223,7 @@ static int bcm2835_powermgt_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_bcm2835_powermgt = {
     .name = TYPE_BCM2835_POWERMGT,
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .post_load = bcm2835_powermgt_post_load,
     .fields = (const VMStateField[]) {
@@ -220,6 +231,7 @@ static const VMStateDescription vmstate_bcm2835_powermgt = {
         VMSTATE_UINT32(rsts, BCM2835PowerMgtState),
         VMSTATE_UINT32(wdog, BCM2835PowerMgtState),
         VMSTATE_UINT32_V(usb, BCM2835PowerMgtState, 4),
+        VMSTATE_UINT32_V(sparew, BCM2835PowerMgtState, 5),
         VMSTATE_UINT32_V(proc, BCM2835PowerMgtState, 2),
         VMSTATE_UINT32_V(image, BCM2835PowerMgtState, 3),
         VMSTATE_BOOL_V(arm_powered, BCM2835PowerMgtState, 2),
@@ -247,6 +259,7 @@ static void bcm2835_powermgt_reset(DeviceState *dev)
     s->rsts = 0x00001000;
     s->wdog = 0x00000000;
     s->usb = 0x00000000;
+    s->sparew = 0x00000000;
     s->image = V_IMAGE_RESET;
     s->proc = 0;
     s->arm_powered = false;
