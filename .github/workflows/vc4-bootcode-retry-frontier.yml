@@ -41,21 +41,29 @@ jobs:
         run: |
           python3 -m py_compile \
             scripts/vc4/bootcode-flow-trace-fixup.py \
+            scripts/vc4/stock-probe-log-fixup.py \
             scripts/vc4/summarize-bootcode-flow.py
+          python3 scripts/vc4/summarize-bootcode-flow.py --selftest
           python3 scripts/vc4/bootcode-flow-trace-fixup.py
+          python3 scripts/vc4/stock-probe-log-fixup.py
           first="$(sha256sum \
             target/vc4/helper.h \
             target/vc4/op_helper.c \
-            target/vc4/translate.c)"
+            target/vc4/translate.c \
+            scripts/vc4/raspi3-stock-bootcode-state.py)"
           python3 scripts/vc4/bootcode-flow-trace-fixup.py
+          python3 scripts/vc4/stock-probe-log-fixup.py
           second="$(sha256sum \
             target/vc4/helper.h \
             target/vc4/op_helper.c \
-            target/vc4/translate.c)"
+            target/vc4/translate.c \
+            scripts/vc4/raspi3-stock-bootcode-state.py)"
           test "$first" = "$second"
           grep -q 'VC4_BOOT_FLOW_TRACE' target/vc4/helper.h
           grep -q 'VC4_BOOT_FLOW_TRACE' target/vc4/op_helper.c
           grep -q 'VC4_BOOT_FLOW_TRACE' target/vc4/translate.c
+          grep -q 'VC4_RAW_QEMU_LOG_EXPORT' \
+            scripts/vc4/raspi3-stock-bootcode-state.py
           git diff --check
 
       - name: Download pinned official firmware trio
@@ -101,17 +109,17 @@ jobs:
             --start-elf /tmp/vc4-boot-flow/start.elf \
             --fixup-dat /tmp/vc4-boot-flow/fixup.dat \
             --seconds 20 \
+            --qemu-log /tmp/vc4-boot-flow/qemu.stderr.log \
             --barrier-is-success \
             2>&1 | tee /tmp/vc4-boot-flow/qemu.log
 
-          grep -F 'VC4_BOOT_FLOW ' /tmp/vc4-boot-flow/qemu.log \
-            > /tmp/vc4-boot-flow/raw-flow.log
-          test -s /tmp/vc4-boot-flow/raw-flow.log
-
+          test -s /tmp/vc4-boot-flow/qemu.stderr.log
           python3 scripts/vc4/summarize-bootcode-flow.py \
             --require-all-callers \
-            /tmp/vc4-boot-flow/qemu.log \
+            --raw-output /tmp/vc4-boot-flow/raw-flow.log \
+            /tmp/vc4-boot-flow/qemu.stderr.log \
             | tee /tmp/vc4-boot-flow/summary.log
+          test -s /tmp/vc4-boot-flow/raw-flow.log
 
       - name: Print focused retry evidence
         if: always()
@@ -120,9 +128,9 @@ jobs:
             cat /tmp/vc4-boot-flow/summary.log
           fi
           if test -f /tmp/vc4-boot-flow/raw-flow.log; then
-            echo '--- first 80 raw records ---'
+            echo '--- first 80 normalized records ---'
             head -n 80 /tmp/vc4-boot-flow/raw-flow.log
-            echo '--- last 80 raw records ---'
+            echo '--- last 80 normalized records ---'
             tail -n 80 /tmp/vc4-boot-flow/raw-flow.log
           fi
 
@@ -134,6 +142,7 @@ jobs:
           path: |
             /tmp/vc4-boot-flow/build.log
             /tmp/vc4-boot-flow/qemu.log
+            /tmp/vc4-boot-flow/qemu.stderr.log
             /tmp/vc4-boot-flow/raw-flow.log
             /tmp/vc4-boot-flow/summary.log
           if-no-files-found: warn
