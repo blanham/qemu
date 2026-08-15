@@ -75,13 +75,19 @@ jobs:
 
           cat > /tmp/qemu-vc4-halt-gdb <<'SH'
           #!/bin/sh
+          : "${VC4_GDB_LOG:?VC4_GDB_LOG must name the debugger log}"
           exec gdb -q -batch \
             -x /tmp/vc4-halt-provenance.gdb \
-            --args "$VC4_REAL_QEMU" "$@"
+            --args "$VC4_REAL_QEMU" "$@" \
+            >>"$VC4_GDB_LOG" 2>&1
           SH
           chmod +x /tmp/qemu-vc4-halt-gdb
 
           export VC4_REAL_QEMU="$PWD/build/qemu-system-aarch64"
+          export VC4_GDB_LOG=/tmp/vc4-halt-gdb.log
+          : > "$VC4_GDB_LOG"
+
+          set +e
           set -o pipefail
           timeout 30s python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
             /tmp/qemu-vc4-halt-gdb \
@@ -91,6 +97,11 @@ jobs:
             --seconds 5 \
             --fast-tcg \
             --barrier-is-success 2>&1 | tee /tmp/vc4-halt-provenance.log
+          probe_status=${PIPESTATUS[0]}
+          set -e
+
+          cat "$VC4_GDB_LOG" | tee -a /tmp/vc4-halt-provenance.log
+          test "$probe_status" -eq 0
 
           grep -q '^VC4_HALT_PROVENANCE_READY' \
             /tmp/vc4-halt-provenance.log
@@ -125,5 +136,6 @@ jobs:
           path: |
             /tmp/vc4-halt-provenance.log
             /tmp/vc4-halt-provenance-summary.log
+            /tmp/vc4-halt-gdb.log
           if-no-files-found: warn
           retention-days: 14
