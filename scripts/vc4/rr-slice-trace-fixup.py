@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Add bounded diagnostics around single-threaded TCG RR CPU slices.
 
-This is a workflow-only diagnostic.  The generated scheduler source must never
-be committed.  It records the CPU chosen for each execution slice, its
-runnable-state fields, the result returned by ``tcg_cpus_exec()``, and realtime
-kick callbacks.  Output is bounded to avoid hiding the useful tail in CI logs.
+This is a workflow-only diagnostic. The generated scheduler source must never
+be committed. It records the CPU selected for each execution slice, the result
+returned by ``tcg_cpu_exec()``, and host-timer kick callbacks. Output is bounded
+to keep the useful tail visible in CI logs.
 
 SPDX-License-Identifier: GPL-2.0-or-later
 """
@@ -26,86 +26,79 @@ def main() -> int:
         return 0
 
     declaration = re.search(
-        r"^(static QEMUTimer \*rr_kick_vcpu_timer;.*)$",
+        r"^static CPUState \*rr_current_cpu;[ \t]*$",
         text,
         re.MULTILINE,
     )
     if declaration is None:
-        raise SystemExit("could not locate RR kick timer declaration")
+        raise SystemExit("could not locate current RR CPU declaration")
     counters = """
 
 /* VC4_RR_SLICE_TRACE: bounded workflow-only diagnostics. */
 static unsigned rr_trace_slice_count;
 static unsigned rr_trace_kick_count;
 """
-    text = (
-        text[: declaration.end()]
-        + counters
-        + text[declaration.end() :]
-    )
+    text = text[: declaration.end()] + counters + text[declaration.end() :]
 
     callback = re.search(
-        r"static void rr_kick_vcpu_thread\(void \*opaque\)\n\{\n",
+        r"^static void rr_kick_thread\(void \*opaque\)\n\{\n",
         text,
+        re.MULTILINE,
     )
     if callback is None:
-        raise SystemExit("could not locate RR kick callback")
-    active_expression = "NULL"
-    if "static CPUState *rr_kick_cpu;" in text:
-        active_expression = "qatomic_read(&rr_kick_cpu)"
-    callback_trace = f"""    CPUState *trace_owner = opaque;
-    CPUState *trace_active = {active_expression};
+        raise SystemExit("could not locate RR host-timer callback")
+    callback_trace = """    CPUState *trace_cpu = qatomic_read(&rr_current_cpu);
 
-    if (rr_trace_kick_count < 256) {{
+    (void)opaque;
+    if (rr_trace_kick_count < 256) {
         fprintf(stderr,
-                \"VC4_RR_KICK seq=%u owner=%d active=%d \"
-                \"owner_halted=%d owner_stop=%d owner_stopped=%d \"
-                \"owner_exit=%d owner_kicked=%d\\n\",
+                "VC4_RR_KICK seq=%u cpu=%d halted=%d stop=%d "
+                "stopped=%d exit=%d kicked=%d\\n",
                 rr_trace_kick_count,
-                trace_owner ? trace_owner->cpu_index : -1,
-                trace_active ? trace_active->cpu_index : -1,
-                trace_owner ? trace_owner->halted : -1,
-                trace_owner ? trace_owner->stop : -1,
-                trace_owner ? trace_owner->stopped : -1,
-                trace_owner ? qatomic_read(&trace_owner->exit_request) : -1,
-                trace_owner ? qatomic_read(&trace_owner->thread_kicked) : -1);
-    }}
+                trace_cpu ? trace_cpu->cpu_index : -1,
+                trace_cpu ? trace_cpu->halted : -1,
+                trace_cpu ? trace_cpu->stop : -1,
+                trace_cpu ? cpu_is_stopped(trace_cpu) : -1,
+                trace_cpu ? qatomic_read(&trace_cpu->exit_request) : -1,
+                trace_cpu ? qatomic_read(&trace_cpu->thread_kicked) : -1);
+    }
     rr_trace_kick_count++;
+
 """
     text = text[: callback.end()] + callback_trace + text[callback.end() :]
 
     call = re.search(
-        r"^(?P<indent>[ \t]*)(?P<prefix>[^\n;]*?)"
-        r"tcg_cpus_exec\(cpu\)(?P<suffix>[^\n;]*;)[ \t]*$",
+        r"^(?P<indent>[ \t]*)(?P<result>[A-Za-z_][A-Za-z0-9_]*)"
+        r"[ \t]*=[ \t]*tcg_cpu_exec\(cpu\);[ \t]*$",
         text,
         re.MULTILINE,
     )
     if call is None:
-        raise SystemExit("could not locate tcg_cpus_exec(cpu) statement")
+        raise SystemExit("could not locate tcg_cpu_exec(cpu) statement")
     indent = call.group("indent")
-    original = call.group(0).lstrip()
-    enter = f"""{indent}if (rr_trace_slice_count < 512) {{
+    result = call.group("result")
+    replacement = f"""{indent}if (rr_trace_slice_count < 512) {{
 {indent}    fprintf(stderr,
-{indent}            \"VC4_RR_SLICE enter seq=%u cpu=%d type=%s \"
-{indent}            \"halted=%d stop=%d stopped=%d exit=%d kicked=%d\\n\",
+{indent}            "VC4_RR_SLICE enter seq=%u cpu=%d type=%s "
+{indent}            "halted=%d stop=%d stopped=%d exit=%d kicked=%d\\n",
 {indent}            rr_trace_slice_count, cpu->cpu_index,
 {indent}            object_get_typename(OBJECT(cpu)), cpu->halted,
-{indent}            cpu->stop, cpu->stopped,
+{indent}            cpu->stop, cpu_is_stopped(cpu),
 {indent}            qatomic_read(&cpu->exit_request),
 {indent}            qatomic_read(&cpu->thread_kicked));
 {indent}}}
-{indent}{original}
+{indent}{result} = tcg_cpu_exec(cpu);
 {indent}if (rr_trace_slice_count < 512) {{
 {indent}    fprintf(stderr,
-{indent}            \"VC4_RR_SLICE leave seq=%u cpu=%d \"
-{indent}            \"halted=%d stop=%d stopped=%d exit=%d kicked=%d\\n\",
-{indent}            rr_trace_slice_count, cpu->cpu_index, cpu->halted,
-{indent}            cpu->stop, cpu->stopped,
+{indent}            "VC4_RR_SLICE leave seq=%u cpu=%d result=%d "
+{indent}            "halted=%d stop=%d stopped=%d exit=%d kicked=%d\\n",
+{indent}            rr_trace_slice_count, cpu->cpu_index, {result},
+{indent}            cpu->halted, cpu->stop, cpu_is_stopped(cpu),
 {indent}            qatomic_read(&cpu->exit_request),
 {indent}            qatomic_read(&cpu->thread_kicked));
 {indent}}}
 {indent}rr_trace_slice_count++;"""
-    text = text[: call.start()] + enter + text[call.end() :]
+    text = text[: call.start()] + replacement + text[call.end() :]
 
     PATH.write_text(text, encoding="utf-8")
     print("Materialized bounded RR slice diagnostics.")

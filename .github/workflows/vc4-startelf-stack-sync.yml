@@ -28,6 +28,10 @@ jobs:
         id: merge
         run: |
           set -euo pipefail
+          git config user.name 'VC4 bring-up automation'
+          git config user.email 'vc4-bringup@users.noreply.github.com'
+          stack_head="$(git rev-parse HEAD)"
+          echo "stack_head=${stack_head}" >> "$GITHUB_OUTPUT"
           git fetch origin agent/vc4-stock-bootcode
           parent="$(git rev-parse origin/agent/vc4-stock-bootcode)"
           echo "parent=${parent}" >> "$GITHUB_OUTPUT"
@@ -90,10 +94,15 @@ jobs:
 
       - name: Commit verified parent merge
         if: success() && steps.merge.outputs.changed == 'true'
+        env:
+          STACK_HEAD: ${{ steps.merge.outputs.stack_head }}
         run: |
-          git config user.name 'VC4 bring-up automation'
-          git config user.email 'vc4-bringup@users.noreply.github.com'
+          set -euo pipefail
           git commit -m 'Merge latest VC4 stock-firmware bring-up'
           git fetch origin agent/vc4-startelf-volume
-          git rebase --rebase-merges origin/agent/vc4-startelf-volume
+          remote_head="$(git rev-parse origin/agent/vc4-startelf-volume)"
+          if [ "$remote_head" != "$STACK_HEAD" ]; then
+            echo "Stacked branch advanced from ${STACK_HEAD} to ${remote_head}; refusing to rewrite it." >&2
+            exit 1
+          fi
           git push origin HEAD:agent/vc4-startelf-volume

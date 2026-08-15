@@ -8,10 +8,9 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
-  group: vc4-rr-slice-trace
+  group: vc4-rr-slice-trace-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -21,7 +20,6 @@ jobs:
 
     env:
       RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
-      GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@v5
@@ -48,6 +46,7 @@ jobs:
           second="$(sha256sum accel/tcg/tcg-accel-ops-rr.c)"
           test "$first" = "$second"
           grep -q 'VC4_RR_SLICE enter' accel/tcg/tcg-accel-ops-rr.c
+          grep -q 'VC4_RR_SLICE leave' accel/tcg/tcg-accel-ops-rr.c
           grep -q 'VC4_RR_KICK seq=' accel/tcg/tcg-accel-ops-rr.c
           git diff --check
 
@@ -96,21 +95,3 @@ jobs:
             /tmp/vc4-rr-slice-summary.log
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Report trace on PR #4
-        if: always()
-        run: |
-          if [ ! -s /tmp/vc4-rr-slice-summary.log ]; then
-            exit 0
-          fi
-          {
-            echo '<!-- vc4-rr-slice-trace -->'
-            echo '### VC4 RR slice trace'
-            echo
-            echo '```text'
-            tail -n 500 /tmp/vc4-rr-slice-summary.log
-            echo '```'
-            echo
-            echo "Actions run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          } > /tmp/vc4-rr-slice-comment.md
-          gh pr comment 4 --body-file /tmp/vc4-rr-slice-comment.md
