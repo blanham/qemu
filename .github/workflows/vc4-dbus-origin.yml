@@ -1,0 +1,214 @@
+name: VC4 DBUS official-firmware write origin
+
+on:
+  push:
+    branches:
+      - agent/vc4-dbus-origin
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-dbus-origin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Instrument unimplemented MMIO accesses with CPU and PC
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('hw/misc/unimp.c')
+          text = path.read_text()
+
+          include_anchor = '#include "hw/core/sysbus.h"\n'
+          include = '#include "hw/core/cpu.h"\n'
+          if include not in text:
+              if text.count(include_anchor) != 1:
+                  raise SystemExit('unexpected sysbus include anchor')
+              text = text.replace(include_anchor, include_anchor + include, 1)
+
+          read_start = text.index('static uint64_t unimp_read(')
+          write_start = text.index('static void unimp_write(', read_start)
+          ops_start = text.index('static const MemoryRegionOps unimp_ops',
+                                 write_start)
+
+          replacement = r'''static vaddr unimp_current_pc(int *cpu_index)
+          {
+              CPUState *cpu = current_cpu;
+              CPUClass *cc;
+
+              *cpu_index = -1;
+              if (!cpu) {
+                  return 0;
+              }
+
+              *cpu_index = cpu->cpu_index;
+              cc = CPU_GET_CLASS(cpu);
+              return cc->get_pc ? cc->get_pc(cpu) : 0;
+          }
+
+          static uint64_t unimp_read(void *opaque, hwaddr offset, unsigned size)
+          {
+              UnimplementedDeviceState *s = UNIMPLEMENTED_DEVICE(opaque);
+              int cpu_index;
+              vaddr pc = unimp_current_pc(&cpu_index);
+
+              qemu_log_mask(LOG_UNIMP, "%s: unimplemented device read  "
+                            "(size %d, offset 0x%0*" HWADDR_PRIx
+                            ", cpu %d, pc 0x%016" PRIx64 ")\n",
+                            s->name, size, s->offset_fmt_width, offset,
+                            cpu_index, (uint64_t)pc);
+              return 0;
+          }
+
+          static void unimp_write(void *opaque, hwaddr offset,
+                                  uint64_t value, unsigned size)
+          {
+              UnimplementedDeviceState *s = UNIMPLEMENTED_DEVICE(opaque);
+              int cpu_index;
+              vaddr pc = unimp_current_pc(&cpu_index);
+
+              qemu_log_mask(LOG_UNIMP, "%s: unimplemented device write "
+                            "(size %d, offset 0x%0*" HWADDR_PRIx
+                            ", value 0x%0*" PRIx64
+                            ", cpu %d, pc 0x%016" PRIx64 ")\n",
+                            s->name, size, s->offset_fmt_width, offset,
+                            size << 1, value, cpu_index, (uint64_t)pc);
+          }
+
+          '''
+
+          text = text[:read_start] + replacement + text[ops_start:]
+          path.write_text(text)
+          PY
+
+          git diff --check
+          git diff -- hw/misc/unimp.c | tee /tmp/vc4-dbus-origin-instrumentation.diff
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run pinned official firmware through the DBUS access
+        run: |
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 12 \
+            --fast-tcg \
+            --barrier-is-success 2>&1 | tee /tmp/vc4-dbus-origin.log
+
+      - name: Extract DBUS access sequence and firmware source context
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          log_path = Path('/tmp/vc4-dbus-origin.log')
+          log = log_path.read_text(errors='replace')
+          lines = [
+              line for line in log.splitlines()
+              if line.startswith('bcm2835-dbus:')
+          ]
+          if not lines:
+              raise SystemExit('official firmware did not reach a DBUS access')
+
+          access_re = re.compile(
+              r'offset 0x([0-9a-fA-F]+).*?'
+              r'(?:value 0x([0-9a-fA-F]+).*?)?'
+              r'cpu (-?\d+), pc 0x([0-9a-fA-F]+)'
+          )
+          records = []
+          for line in lines:
+              match = access_re.search(line)
+              if not match:
+                  raise SystemExit(f'unparseable DBUS diagnostic: {line}')
+              records.append({
+                  'line': line,
+                  'offset': int(match.group(1), 16),
+                  'value': (int(match.group(2), 16)
+                            if match.group(2) is not None else None),
+                  'cpu': int(match.group(3)),
+                  'pc': int(match.group(4), 16),
+              })
+
+          firmware = Path('/tmp/bootcode.bin').read_bytes()
+          entry = 0x200
+          output = [
+              f'DBUS_ACCESS_COUNT {len(records)}',
+              *[f'DBUS_ACCESS {record["line"]}' for record in records],
+          ]
+
+          for pc in dict.fromkeys(record['pc'] for record in records):
+              if not entry <= pc < entry + len(firmware):
+                  output.append(
+                      f'DBUS_PC_CONTEXT pc=0x{pc:08x} outside-bootcode=true'
+                  )
+                  continue
+
+              offset = pc - entry
+              begin = max(0, offset - 96)
+              end = min(len(firmware), offset + 128)
+              output.append(
+                  f'DBUS_PC_CONTEXT pc=0x{pc:08x} '
+                  f'file-offset=0x{offset:x} range=0x{begin:x}:0x{end:x}'
+              )
+              for row in range(begin, end, 16):
+                  chunk = firmware[row:min(row + 16, end)]
+                  output.append(
+                      f'  {entry + row:08x}: '
+                      + ' '.join(f'{byte:02x}' for byte in chunk)
+                  )
+
+          summary = '\n'.join(output) + '\n'
+          Path('/tmp/vc4-dbus-origin-summary.log').write_text(summary)
+          print(summary, end='')
+          PY
+
+      - name: Upload DBUS-origin diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-dbus-origin-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-dbus-origin.log
+            /tmp/vc4-dbus-origin-summary.log
+            /tmp/vc4-dbus-origin-instrumentation.diff
+          if-no-files-found: warn
+          retention-days: 14
