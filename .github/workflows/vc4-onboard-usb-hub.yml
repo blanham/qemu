@@ -79,7 +79,7 @@ jobs:
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 60 \
+            --seconds 75 \
             --out-dir "$out" 2>&1 | tee "$out/probe.log"
 
           python3 scripts/vc4/analyze-stock-mmio-frontier.py \
