@@ -1,0 +1,218 @@
+name: VC4 software-interrupt entry v3
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-exception-v3
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-vc4-swi:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Install workflow step extractor
+        run: |
+          cat > /tmp/extract-run-step.py <<'PY'
+          #!/usr/bin/env python3
+          from pathlib import Path
+          import sys
+
+          if len(sys.argv) != 3:
+              raise SystemExit('usage: extract-run-step.py WORKFLOW STEP_NAME')
+          workflow = Path(sys.argv[1])
+          step_name = sys.argv[2]
+          lines = workflow.read_text().splitlines()
+          marker = f'      - name: {step_name}'
+          try:
+              index = lines.index(marker)
+          except ValueError as error:
+              raise SystemExit(f'missing workflow step {step_name!r}') from error
+          index += 1
+          while index < len(lines) and lines[index] != '        run: |':
+              index += 1
+          if index == len(lines):
+              raise SystemExit(f'step {step_name!r} has no run body')
+          index += 1
+          body: list[str] = []
+          while index < len(lines):
+              line = lines[index]
+              if line.startswith('      - name: ') or line.startswith('      - uses: '):
+                  break
+              if line.startswith('          '):
+                  body.append(line[10:])
+              elif line:
+                  raise SystemExit(
+                      f'unexpected indentation in {step_name!r}: {line!r}'
+                  )
+              else:
+                  body.append('')
+              index += 1
+          print('\n'.join(body))
+          PY
+          chmod +x /tmp/extract-run-step.py
+
+      - name: Repair SWI source and wire the heterogeneous INTC
+        run: |
+          python3 /tmp/extract-run-step.py \
+            .github/workflows/vc4-swi-exception-v2.yml \
+            'Repair SWI source and wire the heterogeneous INTC' \
+            > /tmp/vc4-swi-repair.sh
+          bash /tmp/vc4-swi-repair.sh
+
+      - name: Preserve focused-test memory and exception diagnostics
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          test = Path('scripts/vc4/check-swi-exception.py')
+          text = test.read_text()
+          text = text.replace(
+              'import socket\nimport struct\n',
+              'import shutil\nimport socket\nimport struct\n',
+              1)
+
+          marker = '\n\ndef run_case(qemu: Path, register_form: bool) -> dict[str, Any]:\n'
+          persistent = '''
+
+          class PersistentTemporaryDirectory:
+              def __init__(self, path: Path) -> None:
+                  self.path = path
+
+              def __enter__(self) -> str:
+                  shutil.rmtree(self.path, ignore_errors=True)
+                  self.path.mkdir(parents=True)
+                  return str(self.path)
+
+              def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
+                  return False
+          '''
+          if marker not in text:
+              raise SystemExit('could not locate focused SWI run_case')
+          text = text.replace(marker, persistent + marker, 1)
+          text = text.replace(
+              "    with tempfile.TemporaryDirectory(prefix=f'vc4-swi-{name}-') as tmp_s:\n"
+              "        tmp = Path(tmp_s)\n",
+              "    with PersistentTemporaryDirectory(\n"
+              "            Path('/tmp/vc4-swi-exception/unit') / name) as tmp_s:\n"
+              "        tmp = Path(tmp_s)\n",
+              1)
+          text = text.replace(
+              "        stack_path = tmp / 'stack.bin'\n"
+              "        image_path.write_bytes(image)\n",
+              "        stack_path = tmp / 'stack.bin'\n"
+              "        pre_memory_path = tmp / 'pre-run-memory.bin'\n"
+              "        image_path.write_bytes(image)\n",
+              1)
+          text = text.replace(
+              "            qmp = QMP(qmp_path)\n"
+              "            qmp.execute('cont')\n",
+              "            qmp = QMP(qmp_path)\n"
+              "            qmp.hmp(f'pmemsave 0 {len(image)} {pre_memory_path}')\n"
+              "            qmp.execute('cont')\n",
+              1)
+          test.write_text(text)
+          PY
+          python3 -m py_compile scripts/vc4/check-swi-exception.py
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          python3 /tmp/extract-run-step.py \
+            .github/workflows/vc4-swi-exception-v2.yml \
+            'Download pinned official firmware trio' \
+            > /tmp/vc4-swi-download.sh
+          bash /tmp/vc4-swi-download.sh
+
+      - name: Check VC4 probes
+        run: |
+          python3 /tmp/extract-run-step.py \
+            .github/workflows/vc4-swi-exception-v2.yml \
+            'Check VC4 probes' \
+            > /tmp/vc4-swi-probes.sh
+          bash /tmp/vc4-swi-probes.sh
+
+      - name: Build standalone and heterogeneous emulators
+        run: |
+          python3 /tmp/extract-run-step.py \
+            .github/workflows/vc4-swi-exception-v2.yml \
+            'Build standalone and heterogeneous emulators' \
+            > /tmp/vc4-swi-build.sh
+          bash /tmp/vc4-swi-build.sh
+
+      - name: Exercise immediate and register-form SWI entry
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-swi-exception
+          rm -rf "$out"
+          mkdir -p "$out/unit"
+          build/qemu-system-vc4 -M help | grep -F raspi3b-vc4
+          python3 scripts/vc4/check-swi-exception.py \
+            build/qemu-system-vc4 \
+            --json "$out/unit-summary.json" 2>&1 | tee "$out/unit.log"
+
+      - name: Run official firmware beyond swi 0
+        run: |
+          python3 /tmp/extract-run-step.py \
+            .github/workflows/vc4-swi-exception-v2.yml \
+            'Run official firmware beyond swi 0' \
+            > /tmp/vc4-swi-official.sh
+          bash /tmp/vc4-swi-official.sh
+
+      - name: Assert the software-interrupt frontier is crossed
+        run: |
+          python3 /tmp/extract-run-step.py \
+            .github/workflows/vc4-swi-exception-v2.yml \
+            'Assert the software-interrupt frontier is crossed' \
+            > /tmp/vc4-swi-assert.sh
+          bash /tmp/vc4-swi-assert.sh
+
+      - name: Restore the clean focused regression
+        run: |
+          bash /tmp/vc4-swi-repair.sh
+          python3 -m py_compile scripts/vc4/check-swi-exception.py
+          git diff --check
+
+      - name: Commit validated VC4 software-interrupt support
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            hw/arm/vc4_raspi3_hetero.c \
+            scripts/vc4/check-swi-exception.py \
+            target/vc4/cpu.c \
+            target/vc4/cpu.h \
+            target/vc4/helper.h \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c
+          git rm \
+            .github/workflows/vc4-swi-exception.yml \
+            .github/workflows/vc4-swi-exception-v2.yml \
+            .github/workflows/vc4-swi-exception-v3.yml
+          git commit -m 'target/vc4: implement software-interrupt entry'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload VC4 software-interrupt frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-swi-exception-v3-${{ github.run_attempt }}
+          path: /tmp/vc4-swi-exception
+          if-no-files-found: warn
+          retention-days: 14
