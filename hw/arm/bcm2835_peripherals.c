@@ -162,6 +162,9 @@ static void raspi_peripherals_base_init(Object *obj)
     /* VideoCore L1 cache controller */
     object_initialize_child(obj, "l1cc", &s->l1cc, TYPE_BCM2835_L1CC);
 
+    /* VideoCore L2 cache controller */
+    object_initialize_child(obj, "l2cc", &s->l2cc, TYPE_BCM2835_L2CC);
+
     /* SDRAM controller plus address/data PHY status windows */
     object_initialize_child(obj, "sdramc", &s->sdramc,
                             TYPE_BCM2835_SDRAMC);
@@ -309,6 +312,14 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(
         &s->peri_mr, L1CC_OFFSET,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->l1cc), 0));
+
+    /* VideoCore L2 cache controller */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->l2cc), errp)) {
+        return;
+    }
+    memory_region_add_subregion(
+        &s->peri_mr, L2CC_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->l2cc), 0));
 
     /* SDRAM controller, address PHY, and data PHY. */
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->sdramc), errp)) {
