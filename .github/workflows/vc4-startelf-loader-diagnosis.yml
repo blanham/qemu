@@ -1,0 +1,390 @@
+name: VC4 start.elf loader diagnosis
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-loader-diagnosis
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose-loader-and-entry:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Add temporary VC4 entry fetch and scalar-store logging
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          helper = Path('target/vc4/helper.h')
+          text = helper.read_text()
+          declarations = (
+              'DEF_HELPER_3(vc4_trace_fetch, void, env, i32, i32)\n'
+              'DEF_HELPER_5(vc4_trace_store, void, env, i32, i32, i32, i32)\n'
+          )
+          if 'DEF_HELPER_3(vc4_trace_fetch' not in text:
+              text = text.rstrip() + '\n' + declarations
+              helper.write_text(text)
+
+          op = Path('target/vc4/op_helper.c')
+          text = op.read_text()
+          if '#include "qemu/log.h"\n' not in text:
+              text = text.replace('#include "qemu/osdep.h"\n',
+                                  '#include "qemu/osdep.h"\n'
+                                  '#include "qemu/log.h"\n', 1)
+          implementation = r'''
+          static bool vc4_entry_trace_address(uint32_t address)
+          {
+              uint32_t low = address & 0x0fffffff;
+
+              return low >= 0x0ec00000 && low < 0x0f000000;
+          }
+
+          void HELPER(vc4_trace_fetch)(CPUVC4State *env, uint32_t pc,
+                                       uint32_t opcode)
+          {
+              if (vc4_entry_trace_address(pc)) {
+                  qemu_log("VC4_ENTRY_FETCH pc=0x%08x opcode=0x%04x "
+                           "sp=0x%08x lr=0x%08x sr=0x%08x\n",
+                           pc, opcode, env->gpr[VC4_REG_SP],
+                           env->gpr[VC4_REG_LR], env->sr);
+              }
+          }
+
+          void HELPER(vc4_trace_store)(CPUVC4State *env, uint32_t address,
+                                       uint32_t value, uint32_t size,
+                                       uint32_t pc)
+          {
+              static uint8_t seen_pages[1024];
+              uint32_t page;
+              uint32_t low;
+
+              if (!vc4_entry_trace_address(address)) {
+                  return;
+              }
+
+              low = address & 0x003fffff;
+              page = low >> 12;
+              if (low < 0x400 || !seen_pages[page]) {
+                  seen_pages[page] = 1;
+                  qemu_log("VC4_ENTRY_STORE pc=0x%08x addr=0x%08x "
+                           "size=%u value=0x%08x\n",
+                           pc, address, size, value);
+              }
+          }
+
+          '''
+          if 'void HELPER(vc4_trace_fetch)' not in text:
+              text = text.rstrip() + '\n\n' + implementation
+              op.write_text(text)
+
+          translate = Path('target/vc4/translate.c')
+          text = translate.read_text()
+          fetch_anchor = '''    i1 = vc4_lduw(ctx, ctx->pc);
+          '''
+          fetch_insert = '''    i1 = vc4_lduw(ctx, ctx->pc);
+              gen_helper_vc4_trace_fetch(tcg_env,
+                                         tcg_constant_i32(ctx->pc),
+                                         tcg_constant_i32(i1));
+          '''
+          if fetch_insert not in text:
+              if text.count(fetch_anchor) != 1:
+                  raise SystemExit('VC4 instruction-fetch anchor missing')
+              text = text.replace(fetch_anchor, fetch_insert, 1)
+
+          store_anchor = '''        vc4_gen_qemu_st_i32(vc4_get_reg(ctx, rd), address, 0,
+                                      vc4_store_mop(format));
+          '''
+          store_insert = '''        gen_helper_vc4_trace_store(
+                  tcg_env, address, vc4_get_reg(ctx, rd),
+                  tcg_constant_i32(vc4_mem_size(format)),
+                  tcg_constant_i32(ctx->pc));
+              vc4_gen_qemu_st_i32(vc4_get_reg(ctx, rd), address, 0,
+                                  vc4_store_mop(format));
+          '''
+          if store_insert not in text:
+              count = text.count(store_anchor)
+              if count != 2:
+                  raise SystemExit(
+                      f'expected two VC4 scalar-store anchors, found {count}'
+                  )
+              text = text.replace(store_anchor, store_insert)
+          translate.write_text(text)
+          PY
+          git diff --check
+
+      - name: Teach the stock probe to append dynamic trace events
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/raspi3-stock-bootcode-mmio.py')
+          text = path.read_text()
+          if 'import os\n' not in text:
+              text = text.replace('import importlib.util\n',
+                                  'import importlib.util\nimport os\n', 1)
+          old = '''    events_path.write_text("\\n".join(TRACE_EVENTS) + "\\n")
+              raw_log.unlink(missing_ok=True)
+          '''
+          new = '''    events = list(TRACE_EVENTS)
+              extra_events = os.environ.get("VC4_EXTRA_TRACE_EVENTS")
+              if extra_events:
+                  events.extend(
+                      line.strip()
+                      for line in Path(extra_events).read_text().splitlines()
+                      if line.strip() and not line.lstrip().startswith("#")
+                  )
+              events_path.write_text("\\n".join(dict.fromkeys(events)) + "\\n")
+              raw_log.unlink(missing_ok=True)
+          '''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('event-file creation anchor missing')
+              path.write_text(text.replace(old, new, 1))
+          PY
+          grep -hE '^bcm2835_dma[^[:space:](]*\(' hw/dma/trace-events \
+            | sed -E 's/\(.*$//' \
+            | sort -u \
+            > /tmp/vc4-loader-dma-events
+          test -s /tmp/vc4-loader-dma-events
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-mmio.py
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Parse expected entry bytes
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import struct
+
+          image = Path('/tmp/start.elf').read_bytes()
+          entry = struct.unpack_from('<I', image, 24)[0]
+          phoff = struct.unpack_from('<I', image, 28)[0]
+          phentsize = struct.unpack_from('<H', image, 42)[0]
+          phnum = struct.unpack_from('<H', image, 44)[0]
+          selected = None
+          for index in range(phnum):
+              off = phoff + index * phentsize
+              values = struct.unpack_from('<IIIIIIII', image, off)
+              p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align = values
+              if p_type == 1 and p_vaddr <= entry < p_vaddr + p_memsz:
+                  selected = {
+                      'index': index,
+                      'offset': p_offset,
+                      'vaddr': p_vaddr,
+                      'paddr': p_paddr,
+                      'filesz': p_filesz,
+                      'memsz': p_memsz,
+                      'flags': p_flags,
+                      'align': p_align,
+                  }
+                  break
+          if selected is None:
+              raise SystemExit('entry point is outside PT_LOAD segments')
+          file_offset = selected['offset'] + entry - selected['vaddr']
+          report = {
+              'entry': entry,
+              'entry_segment': selected,
+              'entry_file_offset': file_offset,
+              'expected_bytes': image[file_offset:file_offset + 64].hex(),
+              'expected_opcode': int.from_bytes(
+                  image[file_offset:file_offset + 2], 'little'
+              ),
+          }
+          Path('/tmp/vc4-entry-expected.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Configure and build diagnostic emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run complete official firmware loader path
+        env:
+          VC4_EXTRA_TRACE_EVENTS: /tmp/vc4-loader-dma-events
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-startelf-loader-diagnosis
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 90 \
+            --trace-samples 340 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --qemu-debug-filter 0x0ec00000..0xf0000000 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          test -s "$out/qemu-mmio.log"
+          test -s "$out/probe.log"
+          cp /tmp/vc4-entry-expected.json "$out/expected.json"
+          cp /tmp/vc4-loader-dma-events "$out/dma-events"
+
+      - name: Classify loader, alias, or decoder failure
+        run: |
+          set -euo pipefail
+          mkdir -p docs/devel/vc4
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-startelf-loader-diagnosis')
+          expected = json.loads(out.joinpath('expected.json').read_text())
+          trace = out.joinpath('qemu-mmio.log').read_text(
+              errors='replace'
+          ).splitlines()
+          probe = out.joinpath('probe.log').read_text(
+              errors='replace'
+          ).splitlines()
+
+          fetch_lines = [
+              line for line in trace if line.startswith('VC4_ENTRY_FETCH ')
+          ]
+          store_lines = [
+              line for line in trace if line.startswith('VC4_ENTRY_STORE ')
+          ]
+          dma_lines = [
+              line for line in trace if line.startswith('bcm2835_dma')
+          ]
+          barrier = next((
+              line for line in reversed(probe)
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ), '')
+          barrier_match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          barrier_pc = (
+              int(barrier_match.group(1), 16) if barrier_match else None
+          )
+
+          entry = expected['entry']
+          entry_fetch = next((
+              line for line in fetch_lines
+              if f'pc=0x{entry:08x}' in line
+          ), None)
+          actual_opcode = None
+          if entry_fetch:
+              match = re.search(r'opcode=0x([0-9a-fA-F]{4})', entry_fetch)
+              if match:
+                  actual_opcode = int(match.group(1), 16)
+
+          entry_store_lines = []
+          for line in store_lines:
+              match = re.search(r'addr=0x([0-9a-fA-F]+)', line)
+              if not match:
+                  continue
+              address = int(match.group(1), 16)
+              if (address & 0x0fffffff) < 0x0ec00400:
+                  entry_store_lines.append(line)
+
+          if actual_opcode == expected['expected_opcode']:
+              classification = 'entry-loaded-decoder-or-runtime'
+          elif entry_store_lines:
+              classification = 'entry-written-alias-or-coherency'
+          elif dma_lines:
+              classification = 'entry-not-scalar-written-dma-or-loader'
+          else:
+              classification = 'entry-not-written-no-dma-evidence'
+
+          report = {
+              'schema_version': 1,
+              'classification': classification,
+              'entry': f'0x{entry:08x}',
+              'entry_segment': expected['entry_segment'],
+              'entry_file_offset': expected['entry_file_offset'],
+              'expected_opcode': f"0x{expected['expected_opcode']:04x}",
+              'actual_opcode': (
+                  f'0x{actual_opcode:04x}' if actual_opcode is not None
+                  else None
+              ),
+              'entry_fetch': entry_fetch,
+              'barrier_pc': (
+                  f'0x{barrier_pc:08x}' if barrier_pc is not None else None
+              ),
+              'barrier': barrier,
+              'fetch_count': len(fetch_lines),
+              'scalar_store_count': len(store_lines),
+              'entry_scalar_store_count': len(entry_store_lines),
+              'dma_event_count': len(dma_lines),
+              'entry_scalar_stores': entry_store_lines[-200:],
+              'last_scalar_stores': store_lines[-400:],
+              'last_dma_events': dma_lines[-400:],
+              'last_entry_fetches': fetch_lines[-400:],
+              'diagnostics': [
+                  line for line in trace
+                  if ('illegal' in line.lower() or
+                      'unimplemented' in line.lower() or
+                      'guest error' in line.lower())
+              ][-400:],
+          }
+          Path('docs/devel/vc4/startelf-loader-diagnosis.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          actual_text = report['actual_opcode'] or 'none'
+          message = (
+              'ci/vc4: classify start.elf loader '
+              f"class={classification} "
+              f"expected={report['expected_opcode']} actual={actual_text} "
+              f"stores={len(store_lines)} entry_stores={len(entry_store_lines)} "
+              f"dma={len(dma_lines)} barrier={report['barrier_pc']} [skip ci]"
+          )
+          Path('/tmp/vc4-loader-diagnosis-message').write_text(message)
+          print(message)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/startelf-loader-diagnosis.json
+          git rm .github/workflows/vc4-startelf-loader-diagnosis.yml
+          git commit -m "$(cat /tmp/vc4-loader-diagnosis-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload loader diagnosis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-loader-diagnosis-${{ github.run_attempt }}
+          path: /tmp/vc4-startelf-loader-diagnosis
+          if-no-files-found: warn
+          retention-days: 14
