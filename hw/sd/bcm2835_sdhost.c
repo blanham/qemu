@@ -132,13 +132,20 @@ static void bcm2835_sdhost_update_data_flag(BCM2835SDHostState *s)
                 s->fifo_len < BCM2835_SDHOST_FIFO_LEN;
     }
 
+    /*
+     * SDHSTS is a write-one-to-clear status register.  DATA_FLAG is
+     * latched when the FIFO first becomes serviceable and remains
+     * asserted after the last word is drained until software clears
+     * it or terminates the transfer with CMD12.  Stock bootcode.bin
+     * relies on that final assertion to leave its completion poll
+     * and issue STOP_TRANSMISSION; treating the bit as a live
+     * fifo-not-empty level strands the card in sending-data state.
+     */
     if (ready) {
         s->status |= SDHSTS_DATA_FLAG;
         if (s->config & SDHCFG_DATA_IRPT_EN) {
             s->status |= SDHSTS_SDIO_IRPT;
         }
-    } else {
-        s->status &= ~SDHSTS_DATA_FLAG;
     }
 }
 
