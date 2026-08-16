@@ -1,0 +1,370 @@
+name: VC4 start.elf storage frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-read-frontier
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-startelf-frontier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Add temporary GPIO and storage trace points
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def ensure(path: str, old: str, new: str, label: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          ensure(
+              'hw/gpio/trace-events',
+              '# imx_gpio.c\n',
+              '# bcm2835_gpio.c\n'
+              'bcm2835_gpio_write(uint64_t offset, uint64_t value, unsigned size, uint32_t lev0, uint32_t lev1) "offset 0x%03" PRIx64 " value 0x%08" PRIx64 " size %u lev0 0x%08x lev1 0x%08x"\n'
+              'bcm2835_gpio_sd_bus_select(const char *controller, unsigned function) "%s function %u"\n\n'
+              '# imx_gpio.c\n',
+              'GPIO trace events')
+
+          ensure(
+              'hw/gpio/bcm2835_gpio.c',
+              '#include "hw/core/irq.h"\n',
+              '#include "hw/core/irq.h"\n'
+              '#include "trace.h"\n',
+              'GPIO trace include')
+
+          ensure(
+              'hw/gpio/bcm2835_gpio.c',
+              '        sdbus_reparent_card(s->sdbus_sdhost, s->sdbus_sdhci);\n'
+              '        s->sd_fsel = 0;\n',
+              '        sdbus_reparent_card(s->sdbus_sdhost, s->sdbus_sdhci);\n'
+              '        s->sd_fsel = 0;\n'
+              '        trace_bcm2835_gpio_sd_bus_select("sdhci", 0);\n',
+              'SDHCI selection trace')
+
+          ensure(
+              'hw/gpio/bcm2835_gpio.c',
+              '        sdbus_reparent_card(s->sdbus_sdhci, s->sdbus_sdhost);\n'
+              '        s->sd_fsel = 4;\n',
+              '        sdbus_reparent_card(s->sdbus_sdhci, s->sdbus_sdhost);\n'
+              '        s->sd_fsel = 4;\n'
+              '        trace_bcm2835_gpio_sd_bus_select("sdhost", 4);\n',
+              'SDHOST selection trace')
+
+          ensure(
+              'hw/gpio/bcm2835_gpio.c',
+              '    }\n'
+              '    return;\n\n'
+              'err_out:\n',
+              '    }\n'
+              '    trace_bcm2835_gpio_write(offset, value, size,\n'
+              '                             s->lev0, s->lev1);\n'
+              '    return;\n\n'
+              'err_out:\n',
+              'GPIO write trace')
+
+          ensure(
+              'hw/gpio/bcm2835_gpio.c',
+              '    sdbus_reparent_card(&s->sdbus, s->sdbus_sdhci);\n\n'
+              '    s->lev0 = 0;\n',
+              '    sdbus_reparent_card(&s->sdbus, s->sdbus_sdhci);\n'
+              '    trace_bcm2835_gpio_sd_bus_select("sdhci-reset", 0);\n\n'
+              '    s->lev0 = 0;\n',
+              'GPIO reset bus trace')
+
+          extra_events = '''    "bcm2835_gpio_write",
+              "bcm2835_gpio_sd_bus_select",
+              "bcm2835_sdhost_read",
+              "bcm2835_sdhost_write",
+              "bcm2835_sdhost_edm_change",
+              "bcm2835_sdhost_update_irq",
+              "sdhci_set_inserted",
+              "sdhci_send_command",
+              "sdhci_error",
+              "sdhci_response4",
+              "sdhci_response16",
+              "sdhci_end_transfer",
+              "sdhci_access",
+              "sdhci_read_dataport",
+              "sdhci_write_dataport",
+              "sdbus_command",
+              "sdbus_set_voltage",
+              "sdbus_get_dat_lines",
+              "sdbus_get_cmd_line",
+              "sdcard_normal_command",
+              "sdcard_app_command",
+              "sdcard_response",
+              "sdcard_powerup",
+              "sdcard_inquiry_cmd41",
+              "sdcard_reset",
+              "sdcard_set_rca",
+              "sdcard_set_blocklen",
+              "sdcard_set_block_count",
+              "sdcard_inserted",
+              "sdcard_ejected",
+              "sdcard_req_addr",
+              "sdcard_read_block",
+          '''
+          ensure(
+              'scripts/vc4/raspi3-stock-bootcode-mmio.py',
+              '    "usb_port_reset",\n)\n',
+              '    "usb_port_reset",\n' + extra_events + ')\n',
+              'storage trace event list')
+
+          Path('/tmp/vc4-startelf-instrumentation.patch').write_text(
+              __import__('subprocess').check_output(
+                  ['git', 'diff', '--',
+                   'hw/gpio/bcm2835_gpio.c',
+                   'hw/gpio/trace-events',
+                   'scripts/vc4/raspi3-stock-bootcode-mmio.py'],
+                  text=True,
+              )
+          )
+          PY
+
+          git diff --check
+          test -s /tmp/vc4-startelf-instrumentation.patch
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Check probe scripts
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+
+      - name: Configure and build traced heterogeneous emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run official firmware through the start.elf failure frontier
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-startelf-read-frontier
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp /tmp/vc4-startelf-instrumentation.patch "$out/"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 75 \
+            --trace-samples 200 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm \
+            --qemu-debug-filter 0x520..0x620 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          test -s "$out/qemu-mmio.log"
+          test -s "$out/run/stock-firmware.img"
+
+      - name: Verify FAT layout and summarize storage activity
+        run: |
+          out=/tmp/vc4-startelf-read-frontier
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from collections import Counter
+          import hashlib
+          import importlib.util
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-startelf-read-frontier')
+          probe_path = Path('scripts/vc4/raspi3-stock-bootcode-probe.py')
+          spec = importlib.util.spec_from_file_location('vc4_stock_probe', probe_path)
+          if spec is None or spec.loader is None:
+              raise SystemExit('could not import the stock image builder')
+          probe = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(probe)
+
+          expected = {
+              'BOOTCODE.BIN': Path('/tmp/bootcode.bin').read_bytes(),
+              'START.ELF': Path('/tmp/start.elf').read_bytes(),
+              'FIXUP.DAT': Path('/tmp/fixup.dat').read_bytes(),
+          }
+          chains = probe.verify_fat32_image(
+              out / 'run' / 'stock-firmware.img', expected
+          )
+          manifest = {
+              name: {
+                  'bytes': len(content),
+                  'sha256': hashlib.sha256(content).hexdigest(),
+                  'first_cluster': chain[0] if chain else None,
+                  'last_cluster': chain[-1] if chain else None,
+                  'cluster_count': len(chain),
+              }
+              for name, content in expected.items()
+              for chain in (chains[name],)
+          }
+          (out / 'fat-layout.json').write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + '\n'
+          )
+
+          lines = (out / 'qemu-mmio.log').read_text(
+              encoding='utf-8', errors='replace'
+          ).splitlines()
+          prefixes = (
+              'bcm2835_gpio_',
+              'bcm2835_sdhost_',
+              'sdhci_',
+              'sdbus_',
+              'sdcard_',
+          )
+          storage_lines = [
+              line for line in lines
+              if line.startswith(prefixes)
+          ]
+          (out / 'storage-events.log').write_text(
+              '\n'.join(storage_lines) + ('\n' if storage_lines else '')
+          )
+
+          counts = Counter(
+              line.split(maxsplit=1)[0]
+              for line in storage_lines
+              if line
+          )
+          gpio_re = re.compile(
+              r'^bcm2835_gpio_write offset 0x([0-9a-f]+) '
+              r'value 0x([0-9a-f]+) size (\d+) '
+              r'lev0 0x([0-9a-f]+) lev1 0x([0-9a-f]+)$'
+          )
+          gpio_writes = []
+          for index, line in enumerate(storage_lines):
+              match = gpio_re.match(line)
+              if not match:
+                  continue
+              gpio_writes.append({
+                  'storage_line': index + 1,
+                  'offset': f'0x{int(match.group(1), 16):03x}',
+                  'value': f'0x{int(match.group(2), 16):08x}',
+                  'size': int(match.group(3)),
+                  'lev0': f'0x{int(match.group(4), 16):08x}',
+                  'lev1': f'0x{int(match.group(5), 16):08x}',
+              })
+
+          progress = None
+          probe_lines = (out / 'probe.log').read_text(
+              encoding='utf-8', errors='replace'
+          ).splitlines()
+          for line in probe_lines:
+              if line.startswith('STOCK_BOOTCODE_PROGRESS '):
+                  progress = json.loads(line.split(' ', 1)[1])
+
+          delay_returns = [] if progress is None else [
+              generation['return_pc']
+              for generation in progress.get('delay_generations', [])
+          ]
+          short_groups = []
+          group = []
+          for return_pc in delay_returns:
+              if return_pc == 0x5b0:
+                  if group:
+                      short_groups.append(group)
+                      group = []
+              else:
+                  group.append(return_pc)
+          if group:
+              short_groups.append(group)
+
+          four_short_pattern = any(
+              len(candidate) >= 8
+              and candidate[:8] == [0x596, 0x5a2] * 4
+              for candidate in short_groups
+          )
+
+          summary = {
+              'schema_version': 1,
+              'event_counts': dict(sorted(counts.items())),
+              'storage_event_count': len(storage_lines),
+              'gpio_write_count': len(gpio_writes),
+              'gpio_writes': gpio_writes,
+              'sd_bus_selections': [
+                  line for line in storage_lines
+                  if line.startswith('bcm2835_gpio_sd_bus_select')
+              ],
+              'sdbus_commands': [
+                  line for line in storage_lines
+                  if line.startswith('sdbus_command')
+              ],
+              'sd_read_blocks': [
+                  line for line in storage_lines
+                  if line.startswith('sdcard_read_block')
+              ],
+              'first_storage_events': storage_lines[:120],
+              'last_storage_events': storage_lines[-120:],
+              'delay_return_pcs': [f'0x{value:08x}' for value in delay_returns],
+              'four_short_flash_timing_pattern': four_short_pattern,
+              'inferred_boot_error': (
+                  'start*.elf-not-found'
+                  if four_short_pattern else 'unclassified'
+              ),
+          }
+          (out / 'storage-summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+
+          if not gpio_writes:
+              raise SystemExit('no BCM2835 GPIO writes were captured')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+          test -s "$out/fat-layout.json"
+          test -s "$out/storage-summary.json"
+          test -s "$out/storage-events.log"
+
+      - name: Upload start.elf storage frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-read-frontier-${{ github.run_attempt }}
+          path: /tmp/vc4-startelf-read-frontier
+          if-no-files-found: warn
+          retention-days: 14
