@@ -1,0 +1,269 @@
+name: VC4 DBUS control integration
+
+on:
+  push:
+    branches:
+      - agent/vc4-dbus-control-v2
+    paths:
+      - .github/workflows/vc4-dbus-control-materialize.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  materialize-test-and-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize the validated DBUS model and qtests
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/vc4-dbus-artifact
+          gh run download 31893728401 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name vc4-dbus-control-files-1 \
+            --dir /tmp/vc4-dbus-artifact
+
+          install -D -m 0644 \
+            /tmp/vc4-dbus-artifact/hw/arm/bcm2835_peripherals.c \
+            hw/arm/bcm2835_peripherals.c
+          install -D -m 0644 \
+            /tmp/vc4-dbus-artifact/hw/misc/bcm2835_dbus.c \
+            hw/misc/bcm2835_dbus.c
+          install -D -m 0644 \
+            /tmp/vc4-dbus-artifact/hw/misc/meson.build \
+            hw/misc/meson.build
+          install -D -m 0644 \
+            /tmp/vc4-dbus-artifact/include/hw/arm/bcm2835_peripherals.h \
+            include/hw/arm/bcm2835_peripherals.h
+          install -D -m 0644 \
+            /tmp/vc4-dbus-artifact/include/hw/misc/bcm2835_dbus.h \
+            include/hw/misc/bcm2835_dbus.h
+
+          cat > tests/qtest/bcm2835-dbus-test.c <<'EOF'
+          /*
+           * QTest testcase for BCM2835 DBUS firmware control
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "libqtest-single.h"
+
+          #define DBUS_BASE          0x3f900000
+          #define DBUS_CONTROL       0x100
+          #define DBUS_PASSWORD      0x5a000000
+          #define DBUS_CONTROL_MASK  0x00ffffff
+
+          static void test_control(void)
+          {
+              const uint64_t addr = DBUS_BASE + DBUS_CONTROL;
+
+              g_assert_cmphex(readl(addr), ==, 0);
+
+              writel(addr, 0x00123456);
+              g_assert_cmphex(readl(addr), ==, 0);
+
+              writel(addr, 0x5b123456);
+              g_assert_cmphex(readl(addr), ==, 0);
+
+              writel(addr, DBUS_PASSWORD | 0x00123456);
+              g_assert_cmphex(readl(addr), ==, 0x00123456);
+
+              writel(addr, DBUS_PASSWORD | DBUS_CONTROL_MASK);
+              g_assert_cmphex(readl(addr), ==, DBUS_CONTROL_MASK);
+
+              writel(addr, DBUS_PASSWORD);
+              g_assert_cmphex(readl(addr), ==, 0);
+          }
+
+          int main(int argc, char **argv)
+          {
+              int ret;
+
+              g_test_init(&argc, &argv, NULL);
+              qtest_add_func("/bcm2835/dbus/control", test_control);
+
+              qtest_start("-M raspi3b");
+              ret = g_test_run();
+              qtest_end();
+
+              return ret;
+          }
+          EOF
+
+          cat > tests/qtest/bcm2835-powermgt-test.c <<'EOF'
+          /*
+           * QTest testcase for BCM2835 power-management registers
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "libqtest-single.h"
+
+          #define PM_BASE          0x3f100000
+          #define PM_PASSWORD      0x5a000000
+          #define PM_SPAREW        0x74
+          #define PM_SPAREW_MASK   0x00ffffff
+
+          static void test_sparew(void)
+          {
+              const uint64_t addr = PM_BASE + PM_SPAREW;
+
+              g_assert_cmphex(readl(addr), ==, 0);
+
+              writel(addr, 0x00123456);
+              g_assert_cmphex(readl(addr), ==, 0);
+
+              writel(addr, 0x5b123456);
+              g_assert_cmphex(readl(addr), ==, 0);
+
+              writel(addr, PM_PASSWORD | 0x00123456);
+              g_assert_cmphex(readl(addr), ==, 0x00123456);
+
+              writel(addr, PM_PASSWORD | PM_SPAREW_MASK);
+              g_assert_cmphex(readl(addr), ==, PM_SPAREW_MASK);
+
+              writel(addr, PM_PASSWORD);
+              g_assert_cmphex(readl(addr), ==, 0);
+          }
+
+          int main(int argc, char **argv)
+          {
+              int ret;
+
+              g_test_init(&argc, &argv, NULL);
+              qtest_add_func("/bcm2835/powermgt/sparew", test_sparew);
+
+              qtest_start("-M raspi3b");
+              ret = g_test_run();
+              qtest_end();
+
+              return ret;
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/qtest/meson.build")
+          text = path.read_text(encoding="utf-8")
+          old = "  (config_all_devices.has_key('CONFIG_RASPI') ? ['bcm2835-dma-test', 'bcm2835-i2c-test'] : []) +  \\\n"
+          new = "  (config_all_devices.has_key('CONFIG_RASPI') ?                                      \\\n    ['bcm2835-dbus-test', 'bcm2835-dma-test', 'bcm2835-i2c-test',                  \\\n     'bcm2835-powermgt-test'] : []) +                                               \\\n"
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit("unexpected CONFIG_RASPI qtest registration")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          git diff --check
+          test -f hw/misc/bcm2835_dbus.c
+          grep -q 'BCM2835DbusState dbus' include/hw/arm/bcm2835_peripherals.h
+          grep -q "bcm2835_dbus.c" hw/misc/meson.build
+          grep -q "bcm2835-dbus-test" tests/qtest/meson.build
+          grep -q "bcm2835-powermgt-test" tests/qtest/meson.build
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build the emulator and qtests
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build \
+            qemu-system-aarch64 \
+            tests/qtest/bcm2835-dbus-test \
+            tests/qtest/bcm2835-powermgt-test
+
+      - name: Run BCM2835 firmware-control qtests
+        run: |
+          meson test -C build --print-errorlogs \
+            qtest-aarch64/bcm2835-dbus-test \
+            qtest-aarch64/bcm2835-powermgt-test
+
+      - name: Run official firmware with deterministic virtual time
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-dbus-control-v2
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 20 \
+            --trace-samples 400 \
+            --trace-interval 0.02 \
+            --deterministic \
+            --icount-shift 10 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 scripts/vc4/analyze-stock-mmio-frontier.py \
+            "$out/qemu-mmio.log" \
+            --json "$out/mmio-frontier.json" \
+            | tee "$out/mmio-frontier.txt"
+
+          ! grep -q 'bcm2835-dbus:' "$out/qemu-mmio.log"
+          ! grep -q '^VC4_LOW_PC_WRITE ' "$out/probe.log"
+          grep '^STOCK_BOOTCODE_PROGRESS ' "$out/probe.log" \
+            | tail -1 > "$out/progress.jsonl"
+          grep '^STOCK_BOOTCODE_BARRIER ' "$out/probe.log" \
+            | tail -1 > "$out/barrier.txt"
+
+      - name: Upload deterministic frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-dbus-control-v2-${{ github.run_attempt }}
+          path: /tmp/vc4-dbus-control-v2
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit the validated implementation
+        run: |
+          git config user.name "Bryce Lanham"
+          git config user.email "blanham@gmail.com"
+          git add \
+            hw/arm/bcm2835_peripherals.c \
+            hw/misc/bcm2835_dbus.c \
+            hw/misc/meson.build \
+            include/hw/arm/bcm2835_peripherals.h \
+            include/hw/misc/bcm2835_dbus.h \
+            tests/qtest/bcm2835-dbus-test.c \
+            tests/qtest/bcm2835-powermgt-test.c \
+            tests/qtest/meson.build
+          git commit -m "hw/misc/bcm2835: model DBUS firmware control"
+          git push origin HEAD:agent/vc4-dbus-control-v2
