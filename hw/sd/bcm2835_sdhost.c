@@ -56,7 +56,6 @@ DECLARE_INSTANCE_CHECKER(SDBus, BCM2835_SDHOST_BUS,
 #define SDCDIV_RESET                    0x000001fb
 #define SDHBCT_RESET                    0x00000400
 #define SDHBLC_MASK                     0x0000ffff
-#define SDHBLC_ZERO_BLOCK_COUNT         512
 
 #define SDHSTS_BUSY_IRPT                0x400
 #define SDHSTS_BLOCK_IRPT               0x200
@@ -115,10 +114,22 @@ static void bcm2835_sdhost_update_irq(BCM2835SDHostState *s)
 }
 
 
-static uint32_t bcm2835_sdhost_block_count(BCM2835SDHostState *s)
+static uint32_t bcm2835_sdhost_transfer_bytes(BCM2835SDHostState *s)
 {
-    /* The hardware counter is nine bits wide; zero encodes 512. */
-    return s->hblc ? s->hblc : SDHBLC_ZERO_BLOCK_COUNT;
+    uint64_t bytes;
+
+    /*
+     * HBLC zero does not impose a wrapped 512-block limit.  It
+     * leaves a multiblock command streaming until software issues
+     * CMD12.  The stock VideoCore bootloader relies on this reset
+     * value to read the multi-megabyte start.elf with one CMD18.
+     */
+    if (s->hblc == 0) {
+        return UINT32_MAX;
+    }
+
+    bytes = (uint64_t)s->hblc * s->hbct;
+    return MIN(bytes, (uint64_t)UINT32_MAX);
 }
 
 static void bcm2835_sdhost_update_data_flag(BCM2835SDHostState *s)
@@ -165,14 +176,11 @@ static void bcm2835_sdhost_stop_transfer(BCM2835SDHostState *s)
 
 static void bcm2835_sdhost_start_transfer(BCM2835SDHostState *s)
 {
-    uint64_t bytes;
-
     if (!(s->cmd & (SDCMD_READ_CMD | SDCMD_WRITE_CMD))) {
         return;
     }
 
-    bytes = (uint64_t)bcm2835_sdhost_block_count(s) * s->hbct;
-    s->datacnt = MIN(bytes, (uint64_t)UINT32_MAX);
+    s->datacnt = bcm2835_sdhost_transfer_bytes(s);
     s->fifo_pos = 0;
     s->fifo_len = 0;
     memset(s->fifo, 0, sizeof(s->fifo));
