@@ -1,0 +1,140 @@
+name: VC4 start.elf repair decision
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-repair
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  derive-repair-decision:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Derive the next repair from collected evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          origin_path = Path('docs/devel/vc4/startelf-memory-origin.json')
+          loader_path = Path('docs/devel/vc4/startelf-loader-diagnosis.json')
+          if not origin_path.is_file():
+              raise SystemExit('memory-origin report is missing')
+          origin = json.loads(origin_path.read_text())
+          loader = json.loads(loader_path.read_text()) if loader_path.is_file() else {}
+
+          runtime_fetches = origin.get('runtime_fetches') or []
+          fetch_records = []
+          for line in runtime_fetches:
+              pc_match = re.search(r'pc=0x([0-9a-fA-F]+)', line)
+              op_match = re.search(r'opcode=0x([0-9a-fA-F]+)', line)
+              if pc_match and op_match:
+                  fetch_records.append({
+                      'pc': int(pc_match.group(1), 16),
+                      'opcode': int(op_match.group(1), 16),
+                      'line': line,
+                  })
+          distinct_pcs = list(dict.fromkeys(record['pc'] for record in fetch_records))
+
+          write_records = []
+          for line in origin.get('first_writes', []) + origin.get('last_writes', []):
+              match = re.search(
+                  r'addr=0x([0-9a-fA-F]+) len=0x([0-9a-fA-F]+) '
+                  r'data=([0-9a-fA-F]+)', line
+              )
+              if match:
+                  write_records.append({
+                      'address': int(match.group(1), 16),
+                      'length': int(match.group(2), 16),
+                      'data': match.group(3).lower(),
+                      'line': line,
+                  })
+
+          entry = int(origin['entry'], 16)
+          entry_low = entry & 0x3fffffff
+          exact_entry_writes = [
+              record for record in write_records
+              if (record['address'] & 0x3fffffff) <= entry_low <
+                 (record['address'] & 0x3fffffff) + record['length']
+          ]
+          entry_aliases = sorted({
+              record['address'] >> 30 for record in exact_entry_writes
+          })
+
+          diagnostics = origin.get('diagnostics') or []
+          illegal = [line for line in diagnostics if 'illegal' in line.lower()]
+          expected_opcode = int(origin['expected_opcode'], 16)
+          actual_opcode = (
+              int(origin['actual_opcode'], 16)
+              if origin.get('actual_opcode') else None
+          )
+
+          classification = origin['classification']
+          if classification == 'entry-bytes-visible-to-vpu':
+              if expected_opcode == 0:
+                  action = 'trace-fixup-entry-patch'
+              elif illegal:
+                  action = 'repair-entry-opcode-decoder'
+              elif len(distinct_pcs) <= 1:
+                  action = 'trace-entry-self-stall'
+              else:
+                  action = 'extend-startelf-runtime-frontier'
+          elif classification == 'entry-written-but-not-visible':
+              action = 'test-vpu-entry-alias-remap'
+          elif classification == 'nearby-memory-written-entry-skipped':
+              action = 'trace-loader-segment-gap'
+          else:
+              action = 'trace-non-address-space-writer'
+
+          decision = {
+              'schema_version': 1,
+              'classification': classification,
+              'action': action,
+              'entry': origin['entry'],
+              'expected_opcode': origin['expected_opcode'],
+              'actual_opcode': origin.get('actual_opcode'),
+              'barrier_pc': origin.get('barrier_pc'),
+              'distinct_runtime_pcs': [f'0x{pc:08x}' for pc in distinct_pcs[:256]],
+              'runtime_fetch_count': len(fetch_records),
+              'exact_entry_write_count': len(exact_entry_writes),
+              'entry_write_aliases': entry_aliases,
+              'exact_entry_writes': exact_entry_writes[-64:],
+              'illegal_diagnostics': illegal[-64:],
+              'loader_classification': loader.get('classification'),
+              'loader_scalar_store_count': loader.get('scalar_store_count'),
+              'loader_dma_event_count': loader.get('dma_event_count'),
+          }
+          out = Path('docs/devel/vc4/startelf-repair-decision.json')
+          out.write_text(json.dumps(decision, indent=2, sort_keys=True) + '\n')
+          aliases = '-'.join(str(value) for value in entry_aliases) or 'none'
+          message = (
+              'ci/vc4: decide start.elf repair '
+              f"action={action} class={classification} "
+              f"expected={origin['expected_opcode']} "
+              f"actual={origin.get('actual_opcode') or 'none'} "
+              f"pcs={len(distinct_pcs)} entry_writes={len(exact_entry_writes)} "
+              f"aliases={aliases} barrier={origin.get('barrier_pc')} [skip ci]"
+          )
+          Path('/tmp/vc4-repair-decision-message').write_text(message)
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          print(message)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/startelf-repair-decision.json
+          git rm .github/workflows/vc4-startelf-repair-decision.yml
+          git commit -m "$(cat /tmp/vc4-repair-decision-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
