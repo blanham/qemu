@@ -17,10 +17,16 @@ TRACE_EVENTS = (
     "usb_dwc2_glbreg_write",
     "usb_dwc2_hreg0_read",
     "usb_dwc2_hreg0_write",
+    "usb_dwc2_hreg0_action",
     "usb_dwc2_hreg1_read",
     "usb_dwc2_hreg1_write",
     "usb_dwc2_pcgreg_read",
     "usb_dwc2_pcgreg_write",
+    "usb_dwc2_enable_chan",
+    "usb_dwc2_handle_packet",
+    "usb_dwc2_packet_status",
+    "usb_port_attach",
+    "usb_port_reset",
 )
 
 
@@ -61,9 +67,18 @@ class TempfileProxy:
 
 
 class SubprocessProxy:
-    def __init__(self, module: ModuleType, events_path: Path) -> None:
+    def __init__(
+        self,
+        module: ModuleType,
+        events_path: Path,
+        *,
+        qemu_debug: str | None,
+        qemu_debug_filter: str | None,
+    ) -> None:
         self._module = module
         self._events_path = events_path
+        self._qemu_debug = qemu_debug
+        self._qemu_debug_filter = qemu_debug_filter
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._module, name)
@@ -71,6 +86,10 @@ class SubprocessProxy:
     def Popen(self, command: Any, *args: Any, **kwargs: Any) -> Any:
         traced_command = list(command)
         traced_command.extend(["-trace", f"events={self._events_path}"])
+        if self._qemu_debug:
+            traced_command.extend(["-d", self._qemu_debug])
+        if self._qemu_debug_filter:
+            traced_command.extend(["-dfilter", self._qemu_debug_filter])
         return self._module.Popen(traced_command, *args, **kwargs)
 
 
@@ -82,10 +101,29 @@ def main() -> int:
     parser.add_argument("--fixup-dat", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=20.0)
+    parser.add_argument("--trace-samples", type=int, default=12)
+    parser.add_argument("--trace-interval", type=float, default=0.05)
     parser.add_argument("--icount-shift", type=int, default=10)
     parser.add_argument("--one-insn-per-tb", action="store_true")
     parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument(
+        "--qemu-debug",
+        help="optional comma-separated QEMU -d logging flags",
+    )
+    parser.add_argument(
+        "--qemu-debug-filter",
+        help="optional QEMU -dfilter address range specification",
+    )
     args = parser.parse_args()
+
+    if args.seconds <= 0:
+        parser.error("--seconds must be positive")
+    if args.trace_samples <= 0:
+        parser.error("--trace-samples must be positive")
+    if args.trace_interval < 0:
+        parser.error("--trace-interval must not be negative")
+    if args.qemu_debug_filter and not args.qemu_debug:
+        parser.error("--qemu-debug-filter requires --qemu-debug")
 
     qemu = args.qemu.resolve()
     bootcode = args.bootcode.resolve()
@@ -108,13 +146,20 @@ def main() -> int:
         script_dir / "raspi3-stock-bootcode-0200.py",
         "vc4_stock_bootcode_0200_mmio",
     )
+    boot_probe.TRACE_SAMPLES = args.trace_samples
+    boot_probe.TRACE_INTERVAL = args.trace_interval
     original_load_state_probe = boot_probe.load_state_probe
     loaded_states: list[ModuleType] = []
 
     def load_state_probe() -> ModuleType:
         state = original_load_state_probe()
         state.tempfile = TempfileProxy(state.tempfile, run_dir)
-        state.subprocess = SubprocessProxy(state.subprocess, events_path)
+        state.subprocess = SubprocessProxy(
+            state.subprocess,
+            events_path,
+            qemu_debug=args.qemu_debug,
+            qemu_debug_filter=args.qemu_debug_filter,
+        )
         loaded_states.append(state)
         return state
 
@@ -151,7 +196,11 @@ def main() -> int:
     if not raw_log.is_file():
         raise RuntimeError(f"stock-state probe did not produce {raw_log}")
 
-    print(f"VC4_MMIO_TRACE events={events_path}")
+    print(
+        "VC4_MMIO_TRACE "
+        f"samples={args.trace_samples} interval={args.trace_interval:.6f} "
+        f"events={events_path}"
+    )
     print(f"VC4_MMIO_TRACE stderr={raw_log}")
     return status
 
