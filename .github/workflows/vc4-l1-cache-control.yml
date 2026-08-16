@@ -1,0 +1,688 @@
+name: VC4 L1 cache-control model
+
+on:
+  push:
+    branches:
+      - agent/vc4-l1-cache-control
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-l1-cache-control:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize the VideoCore L1 cache-control model
+        run: |
+          cat > include/hw/misc/bcm2835_l1cc.h <<'EOF'
+          /*
+           * BCM2835 VideoCore L1 cache-control block
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+          #ifndef HW_MISC_BCM2835_L1CC_H
+          #define HW_MISC_BCM2835_L1CC_H
+
+          #include "hw/core/sysbus.h"
+          #include "qom/object.h"
+
+          #define TYPE_BCM2835_L1CC "bcm2835-l1cc"
+          OBJECT_DECLARE_SIMPLE_TYPE(BCM2835L1CCState, BCM2835_L1CC)
+
+          #define BCM2835_L1CC_MMIO_SIZE 0x1000
+
+          struct BCM2835L1CCState {
+              SysBusDevice parent_obj;
+
+              MemoryRegion iomem;
+              uint32_t ic_control[2];
+              uint32_t ic_priority[2];
+              uint32_t ic_flush_start[2];
+              uint32_t ic_flush_end[2];
+              uint32_t d_control;
+              uint32_t d_flush_start;
+              uint32_t d_flush_end;
+              uint32_t d_priority;
+          };
+
+          #endif /* HW_MISC_BCM2835_L1CC_H */
+          EOF
+
+          cat > hw/misc/bcm2835_l1cc.c <<'EOF'
+          /*
+           * BCM2835 VideoCore L1 cache-control block
+           *
+           * The VideoCore firmware programs cache-line ranges, starts a flush,
+           * and polls the command bit until hardware clears it.  QEMU has no
+           * separate emulated L1 cache at this boundary, so flushes complete
+           * synchronously while the persistent control bits remain latched.
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "hw/misc/bcm2835_l1cc.h"
+          #include "migration/vmstate.h"
+          #include "qemu/log.h"
+          #include "trace.h"
+
+          #define R_IC0_CONTROL       0x000
+          #define R_IC0_PRIORITY      0x004
+          #define R_IC0_FLUSH_START   0x008
+          #define R_IC0_FLUSH_END     0x00c
+          #define R_IC1_CONTROL       0x080
+          #define R_IC1_PRIORITY      0x084
+          #define R_IC1_FLUSH_START   0x088
+          #define R_IC1_FLUSH_END     0x08c
+          #define R_D_CONTROL         0x100
+          #define R_D_FLUSH_START     0x104
+          #define R_D_FLUSH_END       0x108
+          #define R_D_PRIORITY        0x10c
+
+          #define IC_CONTROL_MASK       0x0000007f
+          #define IC_CONTROL_FLUSH      (1u << 1)
+          #define IC_PRIORITY_MASK      0x0000ffff
+          #define IC_FLUSH_ADDR_MASK    0xffffffe0
+
+          #define D_CONTROL_MASK        0x0000000f
+          #define D_CONTROL_FLUSH_MASK  ((1u << 1) | (1u << 2))
+          #define D_FLUSH_ADDR_MASK     0x3fffffe0
+          #define D_PRIORITY_MASK       0x0fff0fff
+
+          static uint64_t bcm2835_l1cc_read(void *opaque, hwaddr offset,
+                                            unsigned size)
+          {
+              BCM2835L1CCState *s = BCM2835_L1CC(opaque);
+              uint32_t value;
+
+              switch (offset) {
+              case R_IC0_CONTROL:
+                  value = s->ic_control[0];
+                  break;
+              case R_IC0_PRIORITY:
+                  value = s->ic_priority[0];
+                  break;
+              case R_IC0_FLUSH_START:
+                  value = s->ic_flush_start[0];
+                  break;
+              case R_IC0_FLUSH_END:
+                  value = s->ic_flush_end[0];
+                  break;
+              case R_IC1_CONTROL:
+                  value = s->ic_control[1];
+                  break;
+              case R_IC1_PRIORITY:
+                  value = s->ic_priority[1];
+                  break;
+              case R_IC1_FLUSH_START:
+                  value = s->ic_flush_start[1];
+                  break;
+              case R_IC1_FLUSH_END:
+                  value = s->ic_flush_end[1];
+                  break;
+              case R_D_CONTROL:
+                  value = s->d_control;
+                  break;
+              case R_D_FLUSH_START:
+                  value = s->d_flush_start;
+                  break;
+              case R_D_FLUSH_END:
+                  value = s->d_flush_end;
+                  break;
+              case R_D_PRIORITY:
+                  value = s->d_priority;
+                  break;
+              default:
+                  qemu_log_mask(LOG_UNIMP,
+                                TYPE_BCM2835_L1CC
+                                ": unimplemented read at 0x%03" HWADDR_PRIx
+                                "\n", offset);
+                  value = 0;
+                  break;
+              }
+
+              trace_bcm2835_l1cc_read(offset, value);
+              return value;
+          }
+
+          static void bcm2835_l1cc_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size)
+          {
+              BCM2835L1CCState *s = BCM2835_L1CC(opaque);
+              uint32_t v = value;
+              uint32_t result = 0;
+
+              switch (offset) {
+              case R_IC0_CONTROL:
+                  s->ic_control[0] = (v & IC_CONTROL_MASK) &
+                                     ~IC_CONTROL_FLUSH;
+                  result = s->ic_control[0];
+                  break;
+              case R_IC0_PRIORITY:
+                  s->ic_priority[0] = v & IC_PRIORITY_MASK;
+                  result = s->ic_priority[0];
+                  break;
+              case R_IC0_FLUSH_START:
+                  s->ic_flush_start[0] = v & IC_FLUSH_ADDR_MASK;
+                  result = s->ic_flush_start[0];
+                  break;
+              case R_IC0_FLUSH_END:
+                  s->ic_flush_end[0] = v & IC_FLUSH_ADDR_MASK;
+                  result = s->ic_flush_end[0];
+                  break;
+              case R_IC1_CONTROL:
+                  s->ic_control[1] = (v & IC_CONTROL_MASK) &
+                                     ~IC_CONTROL_FLUSH;
+                  result = s->ic_control[1];
+                  break;
+              case R_IC1_PRIORITY:
+                  s->ic_priority[1] = v & IC_PRIORITY_MASK;
+                  result = s->ic_priority[1];
+                  break;
+              case R_IC1_FLUSH_START:
+                  s->ic_flush_start[1] = v & IC_FLUSH_ADDR_MASK;
+                  result = s->ic_flush_start[1];
+                  break;
+              case R_IC1_FLUSH_END:
+                  s->ic_flush_end[1] = v & IC_FLUSH_ADDR_MASK;
+                  result = s->ic_flush_end[1];
+                  break;
+              case R_D_CONTROL:
+                  s->d_control = (v & D_CONTROL_MASK) &
+                                 ~D_CONTROL_FLUSH_MASK;
+                  result = s->d_control;
+                  break;
+              case R_D_FLUSH_START:
+                  s->d_flush_start = v & D_FLUSH_ADDR_MASK;
+                  result = s->d_flush_start;
+                  break;
+              case R_D_FLUSH_END:
+                  s->d_flush_end = v & D_FLUSH_ADDR_MASK;
+                  result = s->d_flush_end;
+                  break;
+              case R_D_PRIORITY:
+                  s->d_priority = v & D_PRIORITY_MASK;
+                  result = s->d_priority;
+                  break;
+              default:
+                  qemu_log_mask(LOG_UNIMP,
+                                TYPE_BCM2835_L1CC
+                                ": unimplemented write at 0x%03" HWADDR_PRIx
+                                " (value 0x%08x)\n", offset, v);
+                  break;
+              }
+
+              trace_bcm2835_l1cc_write(offset, v, result);
+          }
+
+          static const MemoryRegionOps bcm2835_l1cc_ops = {
+              .read = bcm2835_l1cc_read,
+              .write = bcm2835_l1cc_write,
+              .impl.min_access_size = 4,
+              .impl.max_access_size = 4,
+              .valid.min_access_size = 4,
+              .valid.max_access_size = 4,
+              .endianness = DEVICE_LITTLE_ENDIAN,
+          };
+
+          static void bcm2835_l1cc_reset(DeviceState *dev)
+          {
+              BCM2835L1CCState *s = BCM2835_L1CC(dev);
+              unsigned i;
+
+              for (i = 0; i < ARRAY_SIZE(s->ic_control); i++) {
+                  s->ic_control[i] = 0;
+                  s->ic_priority[i] = 0x000034af;
+                  s->ic_flush_start[i] = 0;
+                  s->ic_flush_end[i] = 0xffffffff;
+              }
+              s->d_control = 0;
+              s->d_flush_start = 0;
+              s->d_flush_end = 0x3fffffff;
+              s->d_priority = 0;
+          }
+
+          static void bcm2835_l1cc_realize(DeviceState *dev, Error **errp)
+          {
+              BCM2835L1CCState *s = BCM2835_L1CC(dev);
+
+              memory_region_init_io(&s->iomem, OBJECT(s), &bcm2835_l1cc_ops, s,
+                                    TYPE_BCM2835_L1CC,
+                                    BCM2835_L1CC_MMIO_SIZE);
+              sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+          }
+
+          static const VMStateDescription bcm2835_l1cc_vmstate = {
+              .name = TYPE_BCM2835_L1CC,
+              .version_id = 1,
+              .minimum_version_id = 1,
+              .fields = (const VMStateField[]) {
+                  VMSTATE_UINT32_ARRAY(ic_control, BCM2835L1CCState, 2),
+                  VMSTATE_UINT32_ARRAY(ic_priority, BCM2835L1CCState, 2),
+                  VMSTATE_UINT32_ARRAY(ic_flush_start, BCM2835L1CCState, 2),
+                  VMSTATE_UINT32_ARRAY(ic_flush_end, BCM2835L1CCState, 2),
+                  VMSTATE_UINT32(d_control, BCM2835L1CCState),
+                  VMSTATE_UINT32(d_flush_start, BCM2835L1CCState),
+                  VMSTATE_UINT32(d_flush_end, BCM2835L1CCState),
+                  VMSTATE_UINT32(d_priority, BCM2835L1CCState),
+                  VMSTATE_END_OF_LIST()
+              }
+          };
+
+          static void bcm2835_l1cc_class_init(ObjectClass *klass,
+                                              const void *data)
+          {
+              DeviceClass *dc = DEVICE_CLASS(klass);
+
+              dc->realize = bcm2835_l1cc_realize;
+              device_class_set_legacy_reset(dc, bcm2835_l1cc_reset);
+              dc->vmsd = &bcm2835_l1cc_vmstate;
+          }
+
+          static const TypeInfo bcm2835_l1cc_info = {
+              .name = TYPE_BCM2835_L1CC,
+              .parent = TYPE_SYS_BUS_DEVICE,
+              .instance_size = sizeof(BCM2835L1CCState),
+              .class_init = bcm2835_l1cc_class_init,
+          };
+
+          static void bcm2835_l1cc_register_types(void)
+          {
+              type_register_static(&bcm2835_l1cc_info);
+          }
+
+          type_init(bcm2835_l1cc_register_types)
+          EOF
+
+          cat > tests/qtest/bcm2835-l1cc-test.c <<'EOF'
+          /*
+           * QTest testcase for the BCM2835 VideoCore L1 cache controller
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "libqtest-single.h"
+
+          #define L1CC_BASE           0x3fe02000u
+          #define IC0_CONTROL         (L1CC_BASE + 0x000)
+          #define IC0_PRIORITY        (L1CC_BASE + 0x004)
+          #define IC0_FLUSH_START     (L1CC_BASE + 0x008)
+          #define IC0_FLUSH_END       (L1CC_BASE + 0x00c)
+          #define IC1_CONTROL         (L1CC_BASE + 0x080)
+          #define IC1_PRIORITY        (L1CC_BASE + 0x084)
+          #define IC1_FLUSH_START     (L1CC_BASE + 0x088)
+          #define IC1_FLUSH_END       (L1CC_BASE + 0x08c)
+          #define D_CONTROL           (L1CC_BASE + 0x100)
+          #define D_FLUSH_START       (L1CC_BASE + 0x104)
+          #define D_FLUSH_END         (L1CC_BASE + 0x108)
+          #define D_PRIORITY          (L1CC_BASE + 0x10c)
+
+          static void test_reset_and_flush_completion(void)
+          {
+              g_assert_cmphex(readl(IC0_CONTROL), ==, 0);
+              g_assert_cmphex(readl(IC0_PRIORITY), ==, 0x34af);
+              g_assert_cmphex(readl(IC0_FLUSH_START), ==, 0);
+              g_assert_cmphex(readl(IC0_FLUSH_END), ==, 0xffffffff);
+              g_assert_cmphex(readl(IC1_CONTROL), ==, 0);
+              g_assert_cmphex(readl(IC1_PRIORITY), ==, 0x34af);
+              g_assert_cmphex(readl(IC1_FLUSH_START), ==, 0);
+              g_assert_cmphex(readl(IC1_FLUSH_END), ==, 0xffffffff);
+              g_assert_cmphex(readl(D_CONTROL), ==, 0);
+              g_assert_cmphex(readl(D_FLUSH_START), ==, 0);
+              g_assert_cmphex(readl(D_FLUSH_END), ==, 0x3fffffff);
+              g_assert_cmphex(readl(D_PRIORITY), ==, 0);
+
+              writel(IC0_FLUSH_START, 0x1234567f);
+              writel(IC0_FLUSH_END, 0xfedcba9f);
+              g_assert_cmphex(readl(IC0_FLUSH_START), ==, 0x12345660);
+              g_assert_cmphex(readl(IC0_FLUSH_END), ==, 0xfedcba80);
+
+              /* START_FLUSH completes synchronously, other bits persist. */
+              writel(IC0_CONTROL, 0x7f);
+              g_assert_cmphex(readl(IC0_CONTROL), ==, 0x7d);
+              writel(IC1_CONTROL, 0x03);
+              g_assert_cmphex(readl(IC1_CONTROL), ==, 0x01);
+
+              writel(IC1_PRIORITY, 0xdeadbeef);
+              g_assert_cmphex(readl(IC1_PRIORITY), ==, 0xbeef);
+
+              writel(D_FLUSH_START, 0xffffffff);
+              writel(D_FLUSH_END, 0x81234567);
+              g_assert_cmphex(readl(D_FLUSH_START), ==, 0x3fffffe0);
+              g_assert_cmphex(readl(D_FLUSH_END), ==, 0x01234560);
+
+              /* Both data-cache flush command bits self-clear. */
+              writel(D_CONTROL, 0x0f);
+              g_assert_cmphex(readl(D_CONTROL), ==, 0x09);
+              writel(D_PRIORITY, 0xffffffff);
+              g_assert_cmphex(readl(D_PRIORITY), ==, 0x0fff0fff);
+          }
+
+          int main(int argc, char **argv)
+          {
+              int ret;
+
+              g_test_init(&argc, &argv, NULL);
+              g_test_add_func("/bcm2835/l1cc/reset-and-flush-completion",
+                              test_reset_and_flush_completion);
+              qtest_start("-M raspi3b");
+              ret = g_test_run();
+              qtest_end();
+              return ret;
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def ensure(path: str, old: str, new: str, label: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          ensure(
+              'include/hw/arm/bcm2835_peripherals.h',
+              '#include "hw/misc/bcm2835_dbus.h"\n'
+              '#include "hw/misc/bcm2835_powermgt.h"\n',
+              '#include "hw/misc/bcm2835_dbus.h"\n'
+              '#include "hw/misc/bcm2835_l1cc.h"\n'
+              '#include "hw/misc/bcm2835_powermgt.h"\n',
+              'L1CC header include')
+          ensure(
+              'include/hw/arm/bcm2835_peripherals.h',
+              '    BCM2835CprmanState cprman;\n',
+              '    BCM2835CprmanState cprman;\n'
+              '    BCM2835L1CCState l1cc;\n',
+              'L1CC state member')
+
+          ensure(
+              'hw/arm/bcm2835_peripherals.c',
+              '    /* CPRMAN clock manager */\n'
+              '    object_initialize_child(obj, "cprman", &s->cprman, '
+              'TYPE_BCM2835_CPRMAN);\n\n'
+              '    /* SDRAM controller plus address/data PHY status windows */\n',
+              '    /* CPRMAN clock manager */\n'
+              '    object_initialize_child(obj, "cprman", &s->cprman, '
+              'TYPE_BCM2835_CPRMAN);\n\n'
+              '    /* VideoCore L1 cache controller */\n'
+              '    object_initialize_child(obj, "l1cc", &s->l1cc, '
+              'TYPE_BCM2835_L1CC);\n\n'
+              '    /* SDRAM controller plus address/data PHY status windows */\n',
+              'L1CC child initialization')
+          ensure(
+              'hw/arm/bcm2835_peripherals.c',
+              '    qdev_connect_clock_in(DEVICE(&s->uart0), "clk",\n'
+              '                          qdev_get_clock_out(DEVICE(&s->cprman), '
+              '"uart-out"));\n\n'
+              '    /* SDRAM controller, address PHY, and data PHY. */\n',
+              '    qdev_connect_clock_in(DEVICE(&s->uart0), "clk",\n'
+              '                          qdev_get_clock_out(DEVICE(&s->cprman), '
+              '"uart-out"));\n\n'
+              '    /* VideoCore L1 cache controller */\n'
+              '    if (!sysbus_realize(SYS_BUS_DEVICE(&s->l1cc), errp)) {\n'
+              '        return;\n'
+              '    }\n'
+              '    memory_region_add_subregion(\n'
+              '        &s->peri_mr, L1CC_OFFSET,\n'
+              '        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->l1cc), 0));\n\n'
+              '    /* SDRAM controller, address PHY, and data PHY. */\n',
+              'L1CC realization')
+
+          ensure(
+              'hw/misc/meson.build',
+              "  'bcm2835_dbus.c',\n  'bcm2835_powermgt.c',\n",
+              "  'bcm2835_dbus.c',\n  'bcm2835_l1cc.c',\n"
+              "  'bcm2835_powermgt.c',\n",
+              'L1CC build integration')
+
+          trace = Path('hw/misc/trace-events')
+          trace_text = trace.read_text()
+          events = (
+              '\n# bcm2835_l1cc.c\n'
+              'bcm2835_l1cc_read(uint64_t offset, uint32_t value) '
+              '"offset 0x%03" PRIx64 " value 0x%08x"\n'
+              'bcm2835_l1cc_write(uint64_t offset, uint32_t value, '
+              'uint32_t result) "offset 0x%03" PRIx64 '
+              '" value 0x%08x result 0x%08x"\n'
+          )
+          if '# bcm2835_l1cc.c\n' not in trace_text:
+              trace.write_text(trace_text.rstrip() + '\n' + events)
+
+          ensure(
+              'tests/qtest/meson.build',
+              "  (config_all_devices.has_key('CONFIG_RASPI') ? "
+              "['bcm2835-dbus-test', 'bcm2835-dma-test', "
+              "'bcm2835-i2c-test', 'bcm2835-sdhost-test'] : []) +  \\\n",
+              "  (config_all_devices.has_key('CONFIG_RASPI') ? "
+              "['bcm2835-dbus-test', 'bcm2835-dma-test', "
+              "'bcm2835-i2c-test', 'bcm2835-l1cc-test', "
+              "'bcm2835-sdhost-test'] : []) +  \\\n",
+              'L1CC qtest registration')
+          PY
+
+          git diff --check
+          git status --short
+
+      - name: Add temporary L1CC events to the stock-firmware tracer
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/vc4/raspi3-stock-bootcode-mmio.py')
+          text = path.read_text()
+          old = '    "usb_port_reset",\n)\n'
+          new = (
+              '    "usb_port_reset",\n'
+              '    "bcm2835_l1cc_read",\n'
+              '    "bcm2835_l1cc_write",\n'
+              ')\n'
+          )
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('stock trace event anchor missing')
+              path.write_text(text.replace(old, new, 1))
+          PY
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-mmio.py
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Check stock-firmware probes
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+
+      - name: Configure and build emulator and L1CC qtest
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build \
+            qemu-system-aarch64 \
+            tests/qtest/bcm2835-l1cc-test
+
+      - name: Exercise L1 cache-control semantics through QTest
+        run: |
+          QTEST_QEMU_BINARY="$PWD/build/qemu-system-aarch64" \
+            build/tests/qtest/bcm2835-l1cc-test
+
+      - name: Run official firmware through the L1 flush frontier
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-l1-cache-control
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 45 \
+            --trace-samples 180 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm \
+            --qemu-debug-filter 0x6800..0x7200 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          test -s "$out/qemu-mmio.log"
+          test -s "$out/probe.log"
+
+      - name: Assert synchronous flush completion and capture next frontier
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-l1-cache-control')
+          trace = (out / 'qemu-mmio.log').read_text(
+              encoding='utf-8', errors='replace'
+          ).splitlines()
+          probe = (out / 'probe.log').read_text(
+              encoding='utf-8', errors='replace'
+          ).splitlines()
+
+          if any(line.startswith('VC4_LOW_PC_WRITE ') for line in probe):
+              raise SystemExit('unexpected low-memory PC write')
+
+          writes = [
+              line for line in trace
+              if line.startswith('bcm2835_l1cc_write')
+          ]
+          reads = [
+              line for line in trace
+              if line.startswith('bcm2835_l1cc_read')
+          ]
+          if not any(
+              'offset 0x000 value 0x00000002 result 0x00000000' in line
+              for line in writes
+          ):
+              raise SystemExit('official IC0 flush command was not observed')
+          if not any(
+              'offset 0x000 value 0x00000000' in line
+              for line in reads
+          ):
+              raise SystemExit('official IC0 flush poll did not observe completion')
+
+          diagnostics = [
+              line for line in trace
+              if 'bcm2835-l1cc: unimplemented' in line
+          ]
+          if diagnostics:
+              raise SystemExit('unmodeled official L1CC access: ' + diagnostics[0])
+
+          barrier = next((
+              line for line in reversed(probe)
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ), None)
+          if barrier is None:
+              raise SystemExit('missing stock boot barrier record')
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          if not match:
+              raise SystemExit(f'barrier has no PC: {barrier}')
+          barrier_pc = int(match.group(1), 16)
+          if barrier_pc in (0x68a0, 0x7880, 0x7882):
+              raise SystemExit(
+                  f'official firmware did not cross the repaired frontier: '
+                  f'pc=0x{barrier_pc:08x}'
+              )
+
+          progress = None
+          for line in probe:
+              if line.startswith('STOCK_BOOTCODE_PROGRESS '):
+                  progress = json.loads(line.split(' ', 1)[1])
+          if progress is None:
+              raise SystemExit('missing stock progress record')
+
+          summary = {
+              'schema_version': 1,
+              'barrier_pc': f'0x{barrier_pc:08x}',
+              'l1cc_write_count': len(writes),
+              'l1cc_read_count': len(reads),
+              'l1cc_writes': writes,
+              'l1cc_reads': reads[-80:],
+              'barrier': barrier,
+              'progress': progress,
+          }
+          (out / 'summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit validated L1 cache-control model
+        run: |
+          if test -n "$(git status --porcelain -- \
+              hw/arm/bcm2835_peripherals.c \
+              hw/misc/bcm2835_l1cc.c \
+              hw/misc/meson.build \
+              hw/misc/trace-events \
+              include/hw/arm/bcm2835_peripherals.h \
+              include/hw/misc/bcm2835_l1cc.h \
+              tests/qtest/bcm2835-l1cc-test.c \
+              tests/qtest/meson.build)"; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add \
+              hw/arm/bcm2835_peripherals.c \
+              hw/misc/bcm2835_l1cc.c \
+              hw/misc/meson.build \
+              hw/misc/trace-events \
+              include/hw/arm/bcm2835_peripherals.h \
+              include/hw/misc/bcm2835_l1cc.h \
+              tests/qtest/bcm2835-l1cc-test.c \
+              tests/qtest/meson.build
+            git commit -m 'hw/misc: model BCM2835 VideoCore L1 cache control'
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          else
+            echo 'L1 cache-control implementation already matches the model.'
+          fi
+
+      - name: Upload L1 cache-control validation frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-l1-cache-control-${{ github.run_attempt }}
+          path: /tmp/vc4-l1-cache-control
+          if-no-files-found: warn
+          retention-days: 14
