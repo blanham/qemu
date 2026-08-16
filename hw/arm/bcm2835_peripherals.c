@@ -159,6 +159,9 @@ static void raspi_peripherals_base_init(Object *obj)
     /* CPRMAN clock manager */
     object_initialize_child(obj, "cprman", &s->cprman, TYPE_BCM2835_CPRMAN);
 
+    /* VideoCore L1 cache controller */
+    object_initialize_child(obj, "l1cc", &s->l1cc, TYPE_BCM2835_L1CC);
+
     /* SDRAM controller plus address/data PHY status windows */
     object_initialize_child(obj, "sdramc", &s->sdramc,
                             TYPE_BCM2835_SDRAMC);
@@ -298,6 +301,14 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
                 sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->cprman), 0));
     qdev_connect_clock_in(DEVICE(&s->uart0), "clk",
                           qdev_get_clock_out(DEVICE(&s->cprman), "uart-out"));
+
+    /* VideoCore L1 cache controller */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->l1cc), errp)) {
+        return;
+    }
+    memory_region_add_subregion(
+        &s->peri_mr, L1CC_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->l1cc), 0));
 
     /* SDRAM controller, address PHY, and data PHY. */
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->sdramc), errp)) {

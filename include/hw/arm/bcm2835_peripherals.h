@@ -26,6 +26,7 @@
 #include "hw/misc/bcm2835_thermal.h"
 #include "hw/misc/bcm2835_cprman.h"
 #include "hw/misc/bcm2835_dbus.h"
+#include "hw/misc/bcm2835_l1cc.h"
 #include "hw/misc/bcm2835_powermgt.h"
 #include "hw/misc/bcm2835_sdramc.h"
 #include "hw/sd/sdhci.h"
@@ -61,6 +62,7 @@ struct BCMSocPeripheralBaseState {
     UnimplementedDeviceState armtmr;
     BCM2835PowerMgtState powermgt;
     BCM2835CprmanState cprman;
+    BCM2835L1CCState l1cc;
     PL011State uart0;
     BCM2835AuxState aux;
     BCM2835FBState fb;
