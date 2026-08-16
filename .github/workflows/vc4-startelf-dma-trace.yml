@@ -1,0 +1,191 @@
+name: VC4 start.elf DMA placement trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-dma-trace
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  trace-startelf-placement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Teach the stock probe to append dynamic trace events
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/raspi3-stock-bootcode-mmio.py')
+          text = path.read_text()
+          if 'import os\n' not in text:
+              text = text.replace('import importlib.util\n',
+                                  'import importlib.util\nimport os\n', 1)
+          old = '''    events_path.write_text("\\n".join(TRACE_EVENTS) + "\\n")
+              raw_log.unlink(missing_ok=True)
+          '''
+          new = '''    events = list(TRACE_EVENTS)
+              extra_events = os.environ.get("VC4_EXTRA_TRACE_EVENTS")
+              if extra_events:
+                  events.extend(
+                      line.strip()
+                      for line in Path(extra_events).read_text().splitlines()
+                      if line.strip() and not line.lstrip().startswith("#")
+                  )
+              events_path.write_text("\\n".join(dict.fromkeys(events)) + "\\n")
+              raw_log.unlink(missing_ok=True)
+          '''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('event-file creation anchor missing')
+              path.write_text(text.replace(old, new, 1))
+          PY
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-mmio.py
+
+      - name: Select every BCM2835 DMA trace event
+        run: |
+          set -euo pipefail
+          grep -hE '^bcm2835_dma[^[:space:](]*\(' hw/dma/trace-events \
+            | sed -E 's/\(.*$//' \
+            | sort -u \
+            > /tmp/vc4-dma-events
+          test -s /tmp/vc4-dma-events
+          cat /tmp/vc4-dma-events
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run the complete official firmware load with DMA tracing
+        env:
+          VC4_EXTRA_TRACE_EVENTS: /tmp/vc4-dma-events
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-startelf-dma-trace
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 80 \
+            --trace-samples 300 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --qemu-debug-filter 0xcec00000..0xcec04000 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          test -s "$out/qemu-mmio.log"
+          test -s "$out/probe.log"
+          cp /tmp/vc4-dma-events "$out/dma-events"
+
+      - name: Commit DMA placement evidence
+        run: |
+          set -euo pipefail
+          mkdir -p docs/devel/vc4
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-startelf-dma-trace')
+          trace = out.joinpath('qemu-mmio.log').read_text(
+              errors='replace'
+          ).splitlines()
+          probe = out.joinpath('probe.log').read_text(
+              errors='replace'
+          ).splitlines()
+          dma = [line for line in trace if line.startswith('bcm2835_dma')]
+          barrier = next((
+              line for line in reversed(probe)
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ), '')
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          barrier_pc = '0x' + match.group(1).lower() if match else 'unknown'
+
+          interesting = []
+          for line in dma:
+              values = [int(value, 16) for value in
+                        re.findall(r'0x([0-9a-fA-F]+)', line)]
+              if any(
+                  0x0e000000 <= (value & 0x3fffffff) < 0x10000000
+                  for value in values
+              ):
+                  interesting.append(line)
+
+          report = {
+              'schema_version': 1,
+              'barrier': barrier,
+              'barrier_pc': barrier_pc,
+              'selected_events': out.joinpath('dma-events').read_text().splitlines(),
+              'dma_event_count': len(dma),
+              'entry_range_event_count': len(interesting),
+              'entry_range_events': interesting[-400:],
+              'last_dma_events': dma[-400:],
+          }
+          Path('docs/devel/vc4/startelf-dma-trace.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          last = dma[-1].replace(' ', '_')[:100] if dma else 'none'
+          message = (
+              'ci/vc4: report start.elf DMA '
+              f"events={len(dma)} entry_events={len(interesting)} "
+              f"barrier={barrier_pc} last={last} [skip ci]"
+          )
+          Path('/tmp/vc4-dma-message').write_text(message)
+          print(message)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/startelf-dma-trace.json
+          git rm .github/workflows/vc4-startelf-dma-trace.yml
+          git commit -m "$(cat /tmp/vc4-dma-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload DMA placement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-dma-trace-${{ github.run_attempt }}
+          path: /tmp/vc4-startelf-dma-trace
+          if-no-files-found: warn
+          retention-days: 14
