@@ -17,6 +17,8 @@ TRACE_EVENTS = (
     "usb_dwc2_glbreg_write",
     "usb_dwc2_hreg0_read",
     "usb_dwc2_hreg0_write",
+    "usb_dwc2_hreg1_read",
+    "usb_dwc2_hreg1_write",
     "usb_dwc2_pcgreg_read",
     "usb_dwc2_pcgreg_write",
 )

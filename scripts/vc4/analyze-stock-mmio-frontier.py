@@ -21,6 +21,17 @@ WRITE_RE = re.compile(
     r"val 0x([0-9a-fA-F]+)\s+old 0x([0-9a-fA-F]+)\s+"
     r"result 0x([0-9a-fA-F]+)"
 )
+HREG1_READ_RE = re.compile(
+    r"usb_dwc2_hreg1_read.*?"
+    r"0x([0-9a-fA-F]+)\s+([A-Za-z0-9<>]+)\s*([0-9]+)\s+"
+    r"val 0x([0-9a-fA-F]+)"
+)
+HREG1_WRITE_RE = re.compile(
+    r"usb_dwc2_hreg1_write.*?"
+    r"0x([0-9a-fA-F]+)\s+([A-Za-z0-9<>]+)\s*([0-9]+)\s+"
+    r"val 0x([0-9a-fA-F]+)\s+old 0x([0-9a-fA-F]+)\s+"
+    r"result 0x([0-9a-fA-F]+)"
+)
 DIAGNOSTIC_MARKERS = (
     "bcm2835-dbus:",
     "bcm2835_powermgt_",
@@ -36,6 +47,40 @@ def parse(path: Path) -> dict[str, Any]:
     for line_number, raw in enumerate(
         path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
     ):
+        hreg1_write = HREG1_WRITE_RE.search(raw)
+        if hreg1_write:
+            offset, register, channel, value, old, result = hreg1_write.groups()
+            entry = {
+                "line": line_number,
+                "operation": "write",
+                "block": "hreg1",
+                "offset": int(offset, 16),
+                "register": register.strip(),
+                "channel": int(channel),
+                "value": int(value, 16),
+                "old": int(old, 16),
+                "result": int(result, 16),
+            }
+            accesses.append(entry)
+            counts[f"hreg1:write:{entry['register']}"] += 1
+            continue
+
+        hreg1_read = HREG1_READ_RE.search(raw)
+        if hreg1_read:
+            offset, register, channel, value = hreg1_read.groups()
+            entry = {
+                "line": line_number,
+                "operation": "read",
+                "block": "hreg1",
+                "offset": int(offset, 16),
+                "register": register.strip(),
+                "channel": int(channel),
+                "value": int(value, 16),
+            }
+            accesses.append(entry)
+            counts[f"hreg1:read:{entry['register']}"] += 1
+            continue
+
         write = WRITE_RE.search(raw)
         if write:
             block, offset, register, value, old, result = write.groups()
@@ -77,6 +122,7 @@ def parse(path: Path) -> dict[str, Any]:
         if entry["block"] == "glbreg" and entry["offset"] == 0x10
     ]
     pcg = [entry for entry in accesses if entry["block"] == "pcgreg"]
+    host_channels = [entry for entry in accesses if entry["block"] == "hreg1"]
     reset_writes = [
         entry
         for entry in grstctl
@@ -85,12 +131,13 @@ def parse(path: Path) -> dict[str, Any]:
     ]
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "access_count": len(accesses),
         "counts": dict(sorted(counts.items())),
         "grstctl": grstctl,
         "reset_writes": reset_writes,
         "pcg": pcg,
+        "host_channels": host_channels,
         "diagnostics": diagnostics,
         "accesses": accesses,
     }
