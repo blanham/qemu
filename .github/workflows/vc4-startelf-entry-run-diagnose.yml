@@ -1,0 +1,58 @@
+name: VC4 diagnose direct entry report run
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-entry-direct-report
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Capture latest direct-entry workflow result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_json=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow vc4-startelf-entry-direct-report.yml \
+            --branch "$GITHUB_REF_NAME" \
+            --limit 1 \
+            --json databaseId,status,conclusion,headSha,url)
+          run_id=$(jq -r '.[0].databaseId' <<<"$run_json")
+          conclusion=$(jq -r '.[0].conclusion // .[0].status' <<<"$run_json")
+          test -n "$run_id"
+          mkdir -p docs/devel/vc4
+          printf '%s\n' "$run_json" > docs/devel/vc4/startelf-entry-run.json
+          gh run view "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --log-failed \
+            > docs/devel/vc4/startelf-entry-run-failed.log 2>&1 || true
+          failed_step=$(grep -oE '##\[error\].*' \
+            docs/devel/vc4/startelf-entry-run-failed.log \
+            | tail -n1 | sed 's/[[:space:]]\+/ /g' | cut -c1-140 || true)
+          if test -z "$failed_step"; then
+            failed_step=none
+          fi
+          printf 'ci/vc4: diagnose entry report run=%s conclusion=%s error=%s [skip ci]' \
+            "$run_id" "$conclusion" "$failed_step" \
+            > /tmp/diagnose-message
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            docs/devel/vc4/startelf-entry-run.json \
+            docs/devel/vc4/startelf-entry-run-failed.log
+          git commit -m "$(cat /tmp/diagnose-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
