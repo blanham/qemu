@@ -73,12 +73,16 @@ jobs:
           rm -rf "$out"
           mkdir -p "$out"
 
+          # A fixed icount scale advances the BCM2835 system timer with guest
+          # work instead of waiting several host minutes for this 2 s delay.
           python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 180 \
+            --seconds 20 \
+            --deterministic \
+            --icount-shift 10 \
             --out-dir "$out" 2>&1 | tee "$out/probe.log"
 
           python3 scripts/vc4/analyze-stock-mmio-frontier.py \
