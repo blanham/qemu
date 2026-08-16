@@ -1,0 +1,430 @@
+name: VC4 direct VPU uncached RAM alias
+
+on:
+  push:
+    branches:
+      - agent/vc4-vpu-uncached-direct-alias
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-direct-uncached-alias:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Add a hardware-general direct uncached VPU RAM alias
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('hw/arm/vc4_raspi3_hetero.c')
+          text = path.read_text()
+
+          field_anchor = '    MemoryRegion vpu_boot_cache;\n'
+          field_insert = (
+              '    MemoryRegion vpu_boot_cache;\n'
+              '    MemoryRegion vpu_uncached_ram_alias;\n'
+          )
+          if field_insert not in text:
+              if text.count(field_anchor) != 1:
+                  raise SystemExit('VPU boot-cache state anchor missing')
+              text = text.replace(field_anchor, field_insert, 1)
+
+          map_anchor = (
+              '    memory_region_add_subregion(&s->vpu_address_space, 0, '
+              '&ps->gpu_bus_mr);\n'
+          )
+          map_insert = map_anchor + '''
+              /*
+               * Keep the VPU's uncached SDRAM alias explicit at the root of
+               * its address space.  The GPU bus already contains an equivalent
+               * nested alias, but firmware executes newly loaded code through
+               * 0xc0000000 and that path must resolve directly to the shared
+               * machine RAM rather than depend on nested-container precedence.
+               */
+              memory_region_init_alias(&s->vpu_uncached_ram_alias,
+                                       OBJECT(s->vpu_cpu),
+                                       "vc4-vpu-uncached-ram",
+                                       machine->ram, 0, machine->ram_size);
+              memory_region_add_subregion_overlap(
+                  &s->vpu_address_space, UINT64_C(0xc0000000),
+                  &s->vpu_uncached_ram_alias, 1);
+          '''
+          if 'vc4-vpu-uncached-ram' not in text:
+              if text.count(map_anchor) != 1:
+                  raise SystemExit('VPU GPU-bus map anchor missing')
+              text = text.replace(map_anchor, map_insert, 1)
+
+          path.write_text(text)
+          PY
+
+          cat > tests/qtest/vc4-raspi3-address-space-test.c <<'EOF'
+          /*
+           * QTest testcase for Raspberry Pi 3 VideoCore address aliases
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "libqtest.h"
+
+          #define RAM_PHYS_TEST_ADDR      0x0ec00200u
+          #define VPU_UNCACHED_TEST_ADDR  0xcec00200u
+          #define TEST_VALUE              0x12345678u
+
+          static void test_uncached_alias(void)
+          {
+              g_autoptr(GError) error = NULL;
+              g_autofree char *path = NULL;
+              g_autofree char *quoted = NULL;
+              g_autofree char *args = NULL;
+              g_autofree char *reply = NULL;
+              QTestState *qts;
+              int fd;
+              uint8_t image[2] = { 0x01, 0x00 }; /* VC4 NOP */
+
+              fd = g_file_open_tmp("vc4-alias-XXXXXX", &path, &error);
+              g_assert_no_error(error);
+              g_assert_cmpint(fd, >=, 0);
+              g_assert_cmpint(write(fd, image, sizeof(image)), ==,
+                              sizeof(image));
+              close(fd);
+
+              quoted = g_shell_quote(path);
+              args = g_strdup_printf(
+                  "-M raspi3b-vc4-hetero -kernel %s", quoted);
+              qts = qtest_init(args);
+
+              qtest_writel(qts, RAM_PHYS_TEST_ADDR, TEST_VALUE);
+              reply = qtest_hmp(qts, "cpu 4");
+              g_clear_pointer(&reply, g_free);
+              reply = qtest_hmp(qts, "x/1wx 0x%08x",
+                                VPU_UNCACHED_TEST_ADDR);
+              g_assert_nonnull(strstr(reply, "12345678"));
+
+              qtest_quit(qts);
+              g_assert_cmpint(unlink(path), ==, 0);
+          }
+
+          int main(int argc, char **argv)
+          {
+              g_test_init(&argc, &argv, NULL);
+              g_test_add_func("/vc4/raspi3/address-space/uncached-alias",
+                              test_uncached_alias);
+              return g_test_run();
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tests/qtest/meson.build')
+          text = path.read_text()
+          old = (
+              "  (config_all_devices.has_key('CONFIG_RASPI') ? "
+              "['bcm2835-dbus-test', 'bcm2835-dma-test', "
+              "'bcm2835-i2c-test', 'bcm2835-l1cc-test', "
+              "'bcm2835-l2cc-test', 'bcm2835-sdhost-test'] : []) +  \\\n"
+          )
+          new = (
+              "  (config_all_devices.has_key('CONFIG_RASPI') ? "
+              "['bcm2835-dbus-test', 'bcm2835-dma-test', "
+              "'bcm2835-i2c-test', 'bcm2835-l1cc-test', "
+              "'bcm2835-l2cc-test', 'bcm2835-sdhost-test', "
+              "'vc4-raspi3-address-space-test'] : []) +  \\\n"
+          )
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('Raspberry Pi qtest registration anchor missing')
+              path.write_text(text.replace(old, new, 1))
+          PY
+
+          git diff --check
+
+      - name: Add temporary entry-fetch instrumentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          helper = Path('target/vc4/helper.h')
+          text = helper.read_text()
+          declaration = (
+              'DEF_HELPER_3(vc4_alias_trace_fetch, void, env, i32, i32)\n'
+          )
+          if 'DEF_HELPER_3(vc4_alias_trace_fetch' not in text:
+              helper.write_text(text.rstrip() + '\n' + declaration)
+
+          op = Path('target/vc4/op_helper.c')
+          text = op.read_text()
+          if '#include "qemu/log.h"\n' not in text:
+              text = text.replace('#include "qemu/osdep.h"\n',
+                                  '#include "qemu/osdep.h"\n'
+                                  '#include "qemu/log.h"\n', 1)
+          implementation = r'''
+          void HELPER(vc4_alias_trace_fetch)(CPUVC4State *env, uint32_t pc,
+                                             uint32_t opcode)
+          {
+              static unsigned count;
+              uint32_t low = pc & 0x0fffffff;
+
+              if (low < 0x0ec00000 || low >= 0x0f000000 ||
+                  count++ >= 8192) {
+                  return;
+              }
+              qemu_log("VC4_ALIAS_ENTRY_FETCH pc=0x%08x opcode=0x%04x "
+                       "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
+                       "sp=0x%08x lr=0x%08x sr=0x%08x\n",
+                       pc, opcode, env->gpr[0], env->gpr[1],
+                       env->gpr[2], env->gpr[3],
+                       env->gpr[VC4_REG_SP], env->gpr[VC4_REG_LR], env->sr);
+          }
+
+          '''
+          if 'void HELPER(vc4_alias_trace_fetch)' not in text:
+              op.write_text(text.rstrip() + '\n\n' + implementation)
+
+          translate = Path('target/vc4/translate.c')
+          text = translate.read_text()
+          anchor = '    i1 = vc4_lduw(ctx, ctx->pc);\n'
+          insert = (
+              '    i1 = vc4_lduw(ctx, ctx->pc);\n'
+              '    gen_helper_vc4_alias_trace_fetch(\n'
+              '        tcg_env, tcg_constant_i32(ctx->pc),\n'
+              '        tcg_constant_i32(i1));\n'
+          )
+          if insert not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit('VC4 fetch anchor missing')
+              translate.write_text(text.replace(anchor, insert, 1))
+          PY
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Parse expected start.elf entry opcode
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import struct
+
+          image = Path('/tmp/start.elf').read_bytes()
+          if image[:6] != b'\x7fELF\x01\x01':
+              raise SystemExit('expected ELF32 little-endian start.elf')
+          entry = struct.unpack_from('<I', image, 24)[0]
+          phoff = struct.unpack_from('<I', image, 28)[0]
+          phentsize = struct.unpack_from('<H', image, 42)[0]
+          phnum = struct.unpack_from('<H', image, 44)[0]
+          segment = None
+          for index in range(phnum):
+              values = struct.unpack_from(
+                  '<IIIIIIII', image, phoff + index * phentsize
+              )
+              p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align = values
+              if p_type == 1 and p_vaddr <= entry < p_vaddr + p_memsz:
+                  segment = {
+                      'index': index,
+                      'offset': p_offset,
+                      'vaddr': p_vaddr,
+                      'paddr': p_paddr,
+                      'filesz': p_filesz,
+                      'memsz': p_memsz,
+                      'flags': p_flags,
+                      'align': p_align,
+                  }
+                  break
+          if segment is None:
+              raise SystemExit('entry point is outside PT_LOAD segments')
+          file_offset = segment['offset'] + entry - segment['vaddr']
+          report = {
+              'entry': entry,
+              'segment': segment,
+              'file_offset': file_offset,
+              'expected_opcode': int.from_bytes(
+                  image[file_offset:file_offset + 2], 'little'
+              ),
+              'expected_prefix': image[file_offset:file_offset + 64].hex(),
+          }
+          Path('/tmp/vc4-alias-expected.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Configure and build candidate emulator and qtest
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build \
+            qemu-system-aarch64 \
+            tests/qtest/vc4-raspi3-address-space-test
+
+      - name: Exercise the alias through QTest
+        run: |
+          QTEST_QEMU_BINARY="$PWD/build/qemu-system-aarch64" \
+            build/tests/qtest/vc4-raspi3-address-space-test
+
+      - name: Run official firmware through the entry frontier
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-vpu-uncached-direct-alias
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 100 \
+            --trace-samples 380 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --qemu-debug-filter 0x0ec00000..0xf0000000 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          test -s "$out/qemu-mmio.log"
+          test -s "$out/probe.log"
+          cp /tmp/vc4-alias-expected.json "$out/expected.json"
+
+      - name: Classify the candidate and retain it only on real progress
+        run: |
+          set -euo pipefail
+          mkdir -p docs/devel/vc4
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-vpu-uncached-direct-alias')
+          expected = json.loads(out.joinpath('expected.json').read_text())
+          probe = out.joinpath('probe.log').read_text(
+              errors='replace'
+          ).splitlines()
+          trace = out.joinpath('qemu-mmio.log').read_text(
+              errors='replace'
+          ).splitlines()
+
+          fetches = [
+              line for line in trace
+              if line.startswith('VC4_ALIAS_ENTRY_FETCH ')
+          ]
+          entry = expected['entry']
+          entry_fetch = next((
+              line for line in fetches
+              if f'pc=0x{entry:08x}' in line
+          ), None)
+          actual_opcode = None
+          if entry_fetch:
+              match = re.search(r'opcode=0x([0-9a-fA-F]{4})', entry_fetch)
+              if match:
+                  actual_opcode = int(match.group(1), 16)
+
+          distinct_pcs = []
+          for line in fetches:
+              match = re.search(r'pc=0x([0-9a-fA-F]+)', line)
+              if match:
+                  pc = int(match.group(1), 16)
+                  if pc not in distinct_pcs:
+                      distinct_pcs.append(pc)
+
+          barrier = next((
+              line for line in reversed(probe)
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ), '')
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          barrier_pc = int(match.group(1), 16) if match else None
+
+          success = (
+              actual_opcode == expected['expected_opcode'] and
+              len(distinct_pcs) >= 4 and
+              barrier_pc is not None and barrier_pc != entry
+          )
+          result = {
+              'schema_version': 1,
+              'candidate': 'direct-vpu-uncached-ram-alias',
+              'accepted': success,
+              'entry': f'0x{entry:08x}',
+              'expected_opcode': f"0x{expected['expected_opcode']:04x}",
+              'actual_opcode': (
+                  f'0x{actual_opcode:04x}' if actual_opcode is not None
+                  else None
+              ),
+              'entry_fetch': entry_fetch,
+              'barrier_pc': (
+                  f'0x{barrier_pc:08x}' if barrier_pc is not None else None
+              ),
+              'barrier': barrier,
+              'fetch_count': len(fetches),
+              'distinct_pcs': [f'0x{pc:08x}' for pc in distinct_pcs[:512]],
+              'last_fetches': fetches[-512:],
+              'diagnostics': [
+                  line for line in trace
+                  if ('illegal' in line.lower() or
+                      'unimplemented' in line.lower() or
+                      'guest error' in line.lower())
+              ][-300:],
+          }
+          Path('docs/devel/vc4/vpu-uncached-direct-alias-result.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n'
+          )
+          Path('/tmp/vc4-alias-accepted').write_text(
+              'yes\n' if success else 'no\n'
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/vpu-uncached-direct-alias-result.json
+          if grep -qx yes /tmp/vc4-alias-accepted; then
+            git add \
+              hw/arm/vc4_raspi3_hetero.c \
+              tests/qtest/vc4-raspi3-address-space-test.c \
+              tests/qtest/meson.build
+            message='hw/arm: expose the VC4 uncached RAM alias directly'
+          else
+            message='ci/vc4: reject redundant direct uncached RAM alias [skip ci]'
+          fi
+          git rm .github/workflows/vc4-vpu-uncached-direct-alias.yml
+          git commit -m "$message"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload direct-alias evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-vpu-uncached-direct-alias-${{ github.run_attempt }}
+          path: /tmp/vc4-vpu-uncached-direct-alias
+          if-no-files-found: warn
+          retention-days: 14
