@@ -1,0 +1,333 @@
+name: VC4 start.elf entry placement probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-entry-probe
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe-startelf-entry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Add a second QMP endpoint to the stock probe
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/raspi3-stock-bootcode-mmio.py')
+          text = path.read_text()
+          if 'import os\n' not in text:
+              text = text.replace('import importlib.util\n',
+                                  'import importlib.util\nimport os\n', 1)
+          old = '''        if self._qemu_debug_filter:
+              traced_command.extend(["-dfilter", self._qemu_debug_filter])
+              return self._module.Popen(traced_command, *args, **kwargs)
+          '''
+          new = '''        if self._qemu_debug_filter:
+              traced_command.extend(["-dfilter", self._qemu_debug_filter])
+              extra_qmp = os.environ.get("VC4_EXTRA_QMP")
+              if extra_qmp:
+                  traced_command.extend([
+                      "-qmp", f"unix:{extra_qmp},server=on,wait=off",
+                  ])
+              return self._module.Popen(traced_command, *args, **kwargs)
+          '''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('SubprocessProxy Popen anchor missing')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-mmio.py
+
+      - name: Add compact storage traces
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/vc4/raspi3-stock-bootcode-mmio.py')
+          text = path.read_text()
+          old = '    "usb_port_reset",\n)\n'
+          new = '''    "usb_port_reset",
+              "sdbus_command",
+              "sdcard_normal_command",
+              "sdcard_read_block",
+          )
+          '''
+          if '    "sdcard_read_block",\n)\n' not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('stock trace event anchor missing')
+              path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Install the QMP memory sidecar
+        run: |
+          cat > /tmp/vc4-entry-sidecar.py <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import argparse
+          import json
+          from pathlib import Path
+          import socket
+          import struct
+          import time
+
+          def recv_message(stream):
+              while True:
+                  line = stream.readline()
+                  if not line:
+                      raise RuntimeError('QMP connection closed')
+                  message = json.loads(line)
+                  if 'event' not in message:
+                      return message
+
+          def execute(stream, sock, command, arguments=None):
+              request = {'execute': command}
+              if arguments is not None:
+                  request['arguments'] = arguments
+              sock.sendall((json.dumps(request) + '\n').encode())
+              response = recv_message(stream)
+              if 'error' in response:
+                  raise RuntimeError(f'QMP {command} failed: {response}')
+              return response.get('return')
+
+          def hmp(stream, sock, command):
+              return execute(
+                  stream, sock, 'human-monitor-command',
+                  {'command-line': command},
+              )
+
+          def load_segments(image):
+              if image[:4] != b'\x7fELF' or image[4] != 1 or image[5] != 1:
+                  raise RuntimeError('expected ELF32 little-endian start.elf')
+              entry = struct.unpack_from('<I', image, 24)[0]
+              phoff = struct.unpack_from('<I', image, 28)[0]
+              phentsize = struct.unpack_from('<H', image, 42)[0]
+              phnum = struct.unpack_from('<H', image, 44)[0]
+              segments = []
+              for index in range(phnum):
+                  off = phoff + index * phentsize
+                  fields = struct.unpack_from('<IIIIIIII', image, off)
+                  p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align = fields
+                  if p_type == 1:
+                      segments.append({
+                          'index': index,
+                          'offset': p_offset,
+                          'vaddr': p_vaddr,
+                          'paddr': p_paddr,
+                          'filesz': p_filesz,
+                          'memsz': p_memsz,
+                          'flags': p_flags,
+                          'align': p_align,
+                      })
+              return entry, segments
+
+          def main():
+              parser = argparse.ArgumentParser()
+              parser.add_argument('socket', type=Path)
+              parser.add_argument('start_elf', type=Path)
+              parser.add_argument('out_dir', type=Path)
+              parser.add_argument('--delay', type=float, default=55.0)
+              args = parser.parse_args()
+              args.out_dir.mkdir(parents=True, exist_ok=True)
+
+              deadline = time.monotonic() + 120
+              sock = socket.socket(socket.AF_UNIX)
+              while True:
+                  try:
+                      sock.connect(str(args.socket))
+                      break
+                  except (FileNotFoundError, ConnectionRefusedError):
+                      if time.monotonic() >= deadline:
+                          raise RuntimeError('timed out waiting for extra QMP socket')
+                      time.sleep(0.1)
+
+              stream = sock.makefile('r', encoding='utf-8')
+              greeting = recv_message(stream)
+              execute(stream, sock, 'qmp_capabilities')
+              time.sleep(args.delay)
+              execute(stream, sock, 'stop')
+              cpus = execute(stream, sock, 'query-cpus-fast')
+              hmp(stream, sock, 'cpu 4')
+              registers = hmp(stream, sock, 'info registers')
+
+              image = args.start_elf.read_bytes()
+              entry, segments = load_segments(image)
+              entry_segment = next(
+                  segment for segment in segments
+                  if segment['vaddr'] <= entry <
+                     segment['vaddr'] + segment['memsz']
+              )
+              expected_offset = (
+                  entry_segment['offset'] + entry - entry_segment['vaddr']
+              )
+              expected = image[expected_offset:expected_offset + 128]
+
+              bases = [
+                  entry & ~0x3fff,
+                  (entry & 0x3fffffff) & ~0x3fff,
+                  ((entry & 0x3fffffff) | 0x40000000) & ~0x3fff,
+                  ((entry & 0x3fffffff) | 0x80000000) & ~0x3fff,
+                  ((entry & 0x3fffffff) | 0xc0000000) & ~0x3fff,
+                  0x0ec00000,
+                  0x1ec00000,
+              ]
+              bases = list(dict.fromkeys(bases))
+              dumps = []
+              for base in bases:
+                  output = args.out_dir / f'memory-{base:08x}.bin'
+                  result = hmp(
+                      stream, sock,
+                      f'memsave 0x{base:08x} 0x4000 {output}',
+                  )
+                  data = output.read_bytes() if output.exists() else b''
+                  entry_offset = entry - base
+                  sample = (
+                      data[entry_offset:entry_offset + len(expected)]
+                      if 0 <= entry_offset < len(data) else b''
+                  )
+                  dumps.append({
+                      'base': f'0x{base:08x}',
+                      'hmp_result': result,
+                      'bytes': len(data),
+                      'entry_sample': sample.hex(),
+                      'matches_entry': sample == expected,
+                      'nonzero_bytes': sum(byte != 0 for byte in data),
+                  })
+
+              execute(stream, sock, 'cont')
+              summary = {
+                  'schema_version': 1,
+                  'greeting': greeting,
+                  'cpus': cpus,
+                  'registers': registers,
+                  'entry': f'0x{entry:08x}',
+                  'entry_segment': {
+                      key: (f'0x{value:08x}' if key in {'offset', 'vaddr', 'paddr', 'filesz', 'memsz', 'flags', 'align'} else value)
+                      for key, value in entry_segment.items()
+                  },
+                  'expected_offset': f'0x{expected_offset:08x}',
+                  'expected_entry_bytes': expected.hex(),
+                  'dumps': dumps,
+              }
+              (args.out_dir / 'entry-placement.json').write_text(
+                  json.dumps(summary, indent=2, sort_keys=True) + '\n'
+              )
+              print(json.dumps(summary, indent=2, sort_keys=True))
+
+          if __name__ == '__main__':
+              main()
+          PY
+          chmod +x /tmp/vc4-entry-sidecar.py
+          python3 -m py_compile /tmp/vc4-entry-sidecar.py
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Probe entry placement after the complete firmware load
+        env:
+          VC4_EXTRA_QMP: /tmp/vc4-entry-qmp
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-startelf-entry-probe
+          rm -rf "$out" /tmp/vc4-entry-qmp
+          mkdir -p "$out"
+
+          /tmp/vc4-entry-sidecar.py \
+            /tmp/vc4-entry-qmp /tmp/start.elf "$out" --delay 55 \
+            >"$out/sidecar.log" 2>&1 &
+          sidecar_pid=$!
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 100 \
+            --trace-samples 320 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --qemu-debug-filter 0xcec00000..0xcec04000 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+          wait "$sidecar_pid"
+
+          test -s "$out/entry-placement.json"
+          test -s "$out/probe.log"
+
+      - name: Summarize entry placement
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-startelf-entry-probe')
+          placement = json.loads((out / 'entry-placement.json').read_text())
+          probe = (out / 'probe.log').read_text(errors='replace').splitlines()
+          barrier = next(
+              (line for line in reversed(probe)
+               if line.startswith('STOCK_BOOTCODE_BARRIER ')),
+              None,
+          )
+          matches = [
+              item['base'] for item in placement['dumps']
+              if item['matches_entry']
+          ]
+          summary = {
+              'schema_version': 1,
+              'barrier': barrier,
+              'entry': placement['entry'],
+              'entry_segment': placement['entry_segment'],
+              'matching_alias_bases': matches,
+              'dumps': placement['dumps'],
+          }
+          (out / 'summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload entry-placement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-entry-probe-${{ github.run_attempt }}
+          path: /tmp/vc4-startelf-entry-probe
+          if-no-files-found: warn
+          retention-days: 14
