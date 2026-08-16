@@ -150,6 +150,9 @@ static void raspi_peripherals_base_init(Object *obj)
     /* Mphi */
     object_initialize_child(obj, "mphi", &s->mphi, TYPE_BCM2835_MPHI);
 
+    /* DBUS firmware control */
+    object_initialize_child(obj, "dbus", &s->dbus, TYPE_BCM2835_DBUS);
+
     /* DWC2 */
     object_initialize_child(obj, "dwc2", &s->dwc2, TYPE_DWC2_USB);
 
@@ -472,6 +475,14 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
         qdev_get_gpio_in_named(DEVICE(&s->ic), BCM2835_IC_GPU_IRQ,
                                INTERRUPT_HOSTPORT));
 
+    /* DBUS firmware control */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->dbus), errp)) {
+        return;
+    }
+    memory_region_add_subregion(
+        &s->peri_mr, DBUS_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->dbus), 0));
+
     /* DWC2 */
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->dwc2), errp)) {
         return;
@@ -541,7 +552,6 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
     create_unimp(s, &s->i2s, "bcm2835-i2s", I2S_OFFSET, 0x100);
     create_unimp(s, &s->smi, "bcm2835-smi", SMI_OFFSET, 0x100);
     create_unimp(s, &s->bscsl, "bcm2835-spis", BSC_SL_OFFSET, 0x100);
-    create_unimp(s, &s->dbus, "bcm2835-dbus", DBUS_OFFSET, 0x8000);
     create_unimp(s, &s->ave0, "bcm2835-ave0", AVE0_OFFSET, 0x8000);
     create_unimp(s, &s->v3d, "bcm2835-v3d", V3D_OFFSET, 0x1000);
 }

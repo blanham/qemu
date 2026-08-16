@@ -25,6 +25,7 @@
 #include "hw/misc/bcm2835_mphi.h"
 #include "hw/misc/bcm2835_thermal.h"
 #include "hw/misc/bcm2835_cprman.h"
+#include "hw/misc/bcm2835_dbus.h"
 #include "hw/misc/bcm2835_powermgt.h"
 #include "hw/misc/bcm2835_sdramc.h"
 #include "hw/sd/sdhci.h"
@@ -76,7 +77,7 @@ struct BCMSocPeripheralBaseState {
     OrIRQState orgated_i2c_irq;
     SplitIRQ orgated_i2c_irq_splitter;
     BCM2835OTPState otp;
-    UnimplementedDeviceState dbus;
+    BCM2835DbusState dbus;
     UnimplementedDeviceState ave0;
     UnimplementedDeviceState v3d;
     UnimplementedDeviceState bscsl;
