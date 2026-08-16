@@ -1,0 +1,90 @@
+name: VC4 start.elf ELF header report
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-entry-probe
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-elf-header-report:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Parse pinned start.elf program headers
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 4 \
+            --output /tmp/start.elf \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/start.elf"
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          mkdir -p docs/devel/vc4
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import struct
+
+          image = Path('/tmp/start.elf').read_bytes()
+          if image[:6] != b'\x7fELF\x01\x01':
+              raise SystemExit('expected ELF32 little-endian image')
+          entry = struct.unpack_from('<I', image, 24)[0]
+          phoff = struct.unpack_from('<I', image, 28)[0]
+          phentsize = struct.unpack_from('<H', image, 42)[0]
+          phnum = struct.unpack_from('<H', image, 44)[0]
+          segments = []
+          entry_segment = None
+          for index in range(phnum):
+              off = phoff + index * phentsize
+              values = struct.unpack_from('<IIIIIIII', image, off)
+              keys = ('type', 'offset', 'vaddr', 'paddr', 'filesz',
+                      'memsz', 'flags', 'align')
+              segment = dict(zip(keys, values))
+              segment['index'] = index
+              segments.append(segment)
+              if (segment['type'] == 1 and
+                      segment['vaddr'] <= entry <
+                      segment['vaddr'] + segment['memsz']):
+                  entry_segment = segment
+          if entry_segment is None:
+              raise SystemExit('entry point is not in a PT_LOAD segment')
+          expected_offset = (
+              entry_segment['offset'] + entry - entry_segment['vaddr']
+          )
+          report = {
+              'schema_version': 1,
+              'entry': entry,
+              'entry_segment': entry_segment,
+              'entry_file_offset': expected_offset,
+              'entry_bytes': image[expected_offset:expected_offset + 64].hex(),
+              'segments': segments,
+          }
+          Path('docs/devel/vc4/startelf-elf-layout.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          message = (
+              'ci/vc4: report start.elf layout '
+              f"entry=0x{entry:08x} "
+              f"vaddr=0x{entry_segment['vaddr']:08x} "
+              f"paddr=0x{entry_segment['paddr']:08x} "
+              f"offset=0x{entry_segment['offset']:08x} "
+              f"filesz=0x{entry_segment['filesz']:08x} [skip ci]"
+          )
+          Path('/tmp/commit-message').write_text(message)
+          print(message)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/startelf-elf-layout.json
+          git commit -m "$(cat /tmp/commit-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
