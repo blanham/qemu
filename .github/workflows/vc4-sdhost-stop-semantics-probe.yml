@@ -1,0 +1,380 @@
+name: VC4 SDHOST stop semantics probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-sdhost-stop-semantics-probe
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe-sdhost-stop-semantics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Add temporary SDHOST stop-semantics variants
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def ensure(path: str, old: str, new: str, label: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          helpers = r'''
+          /*
+           * Temporary stock-firmware experiment.  Compare transfer-counter
+           * reload, end-of-FIFO DATA_FLAG clearing, and CMD12 FIFO flush
+           * semantics without committing guessed hardware behavior.
+           */
+          static const char *bcm2835_sdhost_experiment_mode(void)
+          {
+              const char *mode = g_getenv("VC4_SDHOST_STOP_EXPERIMENT");
+
+              return mode ? mode : "baseline";
+          }
+
+          static bool bcm2835_sdhost_experiment_has(const char *feature)
+          {
+              return strstr(bcm2835_sdhost_experiment_mode(), feature) != NULL;
+          }
+
+          static void bcm2835_sdhost_experiment_trace(BCM2835SDHostState *s,
+                                                       const char *phase,
+                                                       uint32_t command)
+          {
+              trace_bcm2835_sdhost_experiment_state(
+                  bcm2835_sdhost_experiment_mode(), phase, command,
+                  s->hbct, s->hblc, s->datacnt, s->fifo_len,
+                  s->status, s->edm);
+          }
+
+          static void bcm2835_sdhost_experiment_after_command(
+              BCM2835SDHostState *s, uint32_t command)
+          {
+              uint64_t bytes_per_block;
+              uint64_t blocks;
+              uint64_t total;
+
+              if (!strcmp(bcm2835_sdhost_experiment_mode(), "baseline")) {
+                  return;
+              }
+
+              if (command == 12 &&
+                  (bcm2835_sdhost_experiment_has("stop-flush") ||
+                   bcm2835_sdhost_experiment_has("both"))) {
+                  s->datacnt = 0;
+                  s->fifo_pos = 0;
+                  s->fifo_len = 0;
+                  s->status &= ~SDHSTS_DATA_FLAG;
+                  s->edm &= ~SDEDM_FSM_MASK;
+                  s->edm |= SDEDM_FSM_DATAMODE;
+                  bcm2835_sdhost_experiment_trace(s, "cmd12-flush", command);
+                  return;
+              }
+
+              if (!(s->cmd & (SDCMD_READ_CMD | SDCMD_WRITE_CMD))) {
+                  return;
+              }
+
+              bytes_per_block = bcm2835_sdhost_experiment_has("block512") ?
+                  512 : s->hbct;
+              if (!bytes_per_block) {
+                  bytes_per_block = 512;
+              }
+              blocks = s->hblc & 0x1ff;
+              if (!blocks) {
+                  blocks = 512;
+              }
+              total = bytes_per_block * blocks;
+              s->datacnt = MIN(total, UINT32_MAX);
+              bcm2835_sdhost_experiment_trace(s, "transfer-reload", command);
+          }
+
+          static void bcm2835_sdhost_experiment_update_data_flag(
+              BCM2835SDHostState *s)
+          {
+              bool enabled =
+                  bcm2835_sdhost_experiment_has("clear-empty") ||
+                  bcm2835_sdhost_experiment_has("both");
+
+              if (!enabled || !(s->cmd & SDCMD_READ_CMD) || s->fifo_len) {
+                  return;
+              }
+              if (!s->datacnt || !sdbus_data_ready(&s->sdbus)) {
+                  s->status &= ~SDHSTS_DATA_FLAG;
+                  bcm2835_sdhost_experiment_trace(
+                      s, "read-fifo-empty", s->cmd & SDCMD_CMD_MASK);
+              }
+          }
+
+          '''
+          ensure(
+              'hw/sd/bcm2835_sdhost.c',
+              'static void bcm2835_sdhost_send_command(BCM2835SDHostState *s)\n',
+              helpers +
+              'static void bcm2835_sdhost_send_command(BCM2835SDHostState *s)\n',
+              'experiment helpers')
+          ensure(
+              'hw/sd/bcm2835_sdhost.c',
+              '    /* We never really delay commands, so if this was a '
+              "'busywait' command\n",
+              '    bcm2835_sdhost_experiment_after_command(s, request.cmd);\n'
+              '    /* We never really delay commands, so if this was a '
+              "'busywait' command\n",
+              'after-command hook')
+          ensure(
+              'hw/sd/bcm2835_sdhost.c',
+              '    bcm2835_sdhost_update_irq(s);\n\n'
+              '    s->edm &= ~(0x1f << 4);\n',
+              '    bcm2835_sdhost_experiment_update_data_flag(s);\n'
+              '    bcm2835_sdhost_update_irq(s);\n\n'
+              '    s->edm &= ~(0x1f << 4);\n',
+              'DATA_FLAG hook')
+
+          ensure(
+              'hw/sd/trace-events',
+              'bcm2835_sdhost_update_irq(uint32_t irq) "IRQ bits 0x%x"\n',
+              'bcm2835_sdhost_update_irq(uint32_t irq) "IRQ bits 0x%x"\n'
+              'bcm2835_sdhost_experiment_state(const char *mode, const char *phase, uint32_t command, uint32_t hbct, uint32_t hblc, uint32_t datacnt, int fifo_len, uint32_t status, uint32_t edm) "mode %s phase %s CMD%02u hbct 0x%x hblc 0x%x datacnt 0x%x fifo %d status 0x%x edm 0x%x"\n',
+              'experiment trace event')
+
+          storage_events = '''    "bcm2835_sdhost_write",
+              "bcm2835_sdhost_experiment_state",
+              "sdbus_command",
+              "sdcard_normal_command",
+              "sdcard_app_command",
+              "sdcard_response",
+              "sdcard_set_blocklen",
+              "sdcard_set_block_count",
+              "sdcard_req_addr",
+              "sdcard_read_block",
+          '''
+          ensure(
+              'scripts/vc4/raspi3-stock-bootcode-mmio.py',
+              '    "usb_port_reset",\n)\n',
+              '    "usb_port_reset",\n' + storage_events + ')\n',
+              'stock storage trace list')
+          PY
+
+          git diff --check
+          git status --short
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Check stock-firmware probes
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+
+      - name: Configure and build experimental emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run the stop-semantics candidates
+        run: |
+          set -o pipefail
+          root=/tmp/vc4-sdhost-stop-semantics
+          rm -rf "$root"
+          mkdir -p "$root"
+
+          modes='baseline reset-reload reset-reload-clear-empty reset-reload-stop-flush reset-reload-both block512-reload block512-reload-clear-empty block512-reload-stop-flush block512-reload-both'
+          for mode in $modes; do
+            echo "===== ${mode} ====="
+            out="$root/$mode"
+            mkdir -p "$out"
+            VC4_SDHOST_STOP_EXPERIMENT="$mode" \
+              python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+                build/qemu-system-aarch64 \
+                /tmp/bootcode.bin \
+                --start-elf /tmp/start.elf \
+                --fixup-dat /tmp/fixup.dat \
+                --seconds 20 \
+                --trace-samples 100 \
+                --trace-interval 0.05 \
+                --out-dir "$out" 2>&1 | tee "$out/probe.log"
+            test -s "$out/qemu-mmio.log"
+          done
+
+      - name: Summarize and rank the candidates
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          root = Path('/tmp/vc4-sdhost-stop-semantics')
+          modes = [
+              'baseline',
+              'reset-reload',
+              'reset-reload-clear-empty',
+              'reset-reload-stop-flush',
+              'reset-reload-both',
+              'block512-reload',
+              'block512-reload-clear-empty',
+              'block512-reload-stop-flush',
+              'block512-reload-both',
+          ]
+
+          def progress_record(lines: list[str]):
+              for line in reversed(lines):
+                  if line.startswith('STOCK_BOOTCODE_PROGRESS '):
+                      return json.loads(line.split(' ', 1)[1])
+              return None
+
+          def four_short(progress) -> bool:
+              if not progress:
+                  return False
+              returns = [
+                  item.get('return_pc')
+                  for item in progress.get('delay_generations', [])
+              ]
+              groups = []
+              group = []
+              for value in returns:
+                  if value == 0x5b0:
+                      if group:
+                          groups.append(group)
+                          group = []
+                  else:
+                      group.append(value)
+              if group:
+                  groups.append(group)
+              return any(
+                  len(candidate) >= 8 and
+                  candidate[:8] == [0x596, 0x5a2] * 4
+                  for candidate in groups
+              )
+
+          results = []
+          for mode in modes:
+              out = root / mode
+              trace_lines = (out / 'qemu-mmio.log').read_text(
+                  encoding='utf-8', errors='replace'
+              ).splitlines()
+              probe_lines = (out / 'probe.log').read_text(
+                  encoding='utf-8', errors='replace'
+              ).splitlines()
+              progress = progress_record(probe_lines)
+              commands = [
+                  line for line in trace_lines
+                  if line.startswith('sdbus_command')
+              ]
+              states = [
+                  line for line in trace_lines
+                  if line.startswith('bcm2835_sdhost_experiment_state')
+              ]
+              read_blocks = [
+                  line for line in trace_lines
+                  if line.startswith('sdcard_read_block')
+              ]
+              barrier = next((
+                  line for line in reversed(probe_lines)
+                  if line.startswith('STOCK_BOOTCODE_BARRIER ')
+              ), None)
+              barrier_pc = -1
+              if barrier:
+                  match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+                  if match:
+                      barrier_pc = int(match.group(1), 16)
+              diagnostics = [
+                  line for line in trace_lines
+                  if ('Bad offset' in line or 'Unknown offset' in line or
+                      'not implemented' in line or 'unimplemented' in line)
+              ]
+              low_pc = [
+                  line for line in probe_lines
+                  if line.startswith('VC4_LOW_PC_WRITE ')
+              ]
+              blink = four_short(progress)
+              unique_blocks = sorted(set(read_blocks))
+              score = (
+                  max(barrier_pc, 0) +
+                  len(commands) * 1000 +
+                  len(unique_blocks) * 5000 -
+                  (100000 if blink else 0) -
+                  (1000000 if low_pc else 0)
+              )
+              results.append({
+                  'mode': mode,
+                  'score': score,
+                  'barrier_pc': (
+                      None if barrier_pc < 0 else f'0x{barrier_pc:08x}'
+                  ),
+                  'barrier': barrier,
+                  'sdbus_command_count': len(commands),
+                  'commands': commands,
+                  'experiment_states': states,
+                  'read_block_count': len(read_blocks),
+                  'unique_read_blocks': unique_blocks,
+                  'four_short_startelf_error': blink,
+                  'low_pc_write_count': len(low_pc),
+                  'diagnostics': diagnostics[-80:],
+                  'progress': progress,
+              })
+
+          ranked = sorted(results, key=lambda item: item['score'], reverse=True)
+          document = {
+              'schema_version': 1,
+              'ranked_modes': [item['mode'] for item in ranked],
+              'results': results,
+          }
+          (root / 'summary.json').write_text(
+              json.dumps(document, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(document, indent=2, sort_keys=True))
+          PY
+
+          test -s /tmp/vc4-sdhost-stop-semantics/summary.json
+
+      - name: Upload SDHOST stop-semantics frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-sdhost-stop-semantics-${{ github.run_attempt }}
+          path: /tmp/vc4-sdhost-stop-semantics
+          if-no-files-found: warn
+          retention-days: 14
