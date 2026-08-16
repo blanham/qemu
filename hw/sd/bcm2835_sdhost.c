@@ -55,6 +55,8 @@ DECLARE_INSTANCE_CHECKER(SDBus, BCM2835_SDHOST_BUS,
 #define SDTOUT_RESET                    0x00a00000
 #define SDCDIV_RESET                    0x000001fb
 #define SDHBCT_RESET                    0x00000400
+#define SDHBLC_MASK                     0x0000ffff
+#define SDHBLC_ZERO_BLOCK_COUNT         512
 
 #define SDHSTS_BUSY_IRPT                0x400
 #define SDHSTS_BLOCK_IRPT               0x200
@@ -112,6 +114,69 @@ static void bcm2835_sdhost_update_irq(BCM2835SDHostState *s)
     qemu_set_irq(s->irq, !!irq);
 }
 
+
+static uint32_t bcm2835_sdhost_block_count(BCM2835SDHostState *s)
+{
+    /* The hardware counter is nine bits wide; zero encodes 512. */
+    return s->hblc ? s->hblc : SDHBLC_ZERO_BLOCK_COUNT;
+}
+
+static void bcm2835_sdhost_update_data_flag(BCM2835SDHostState *s)
+{
+    bool ready = false;
+
+    if (s->cmd & SDCMD_READ_CMD) {
+        ready = s->fifo_len != 0;
+    } else if (s->cmd & SDCMD_WRITE_CMD) {
+        ready = s->datacnt != 0 &&
+                s->fifo_len < BCM2835_SDHOST_FIFO_LEN;
+    }
+
+    if (ready) {
+        s->status |= SDHSTS_DATA_FLAG;
+        if (s->config & SDHCFG_DATA_IRPT_EN) {
+            s->status |= SDHSTS_SDIO_IRPT;
+        }
+    } else {
+        s->status &= ~SDHSTS_DATA_FLAG;
+    }
+}
+
+static void bcm2835_sdhost_stop_transfer(BCM2835SDHostState *s)
+{
+    s->datacnt = 0;
+    s->fifo_pos = 0;
+    s->fifo_len = 0;
+    memset(s->fifo, 0, sizeof(s->fifo));
+    s->status &= ~(SDHSTS_DATA_FLAG | SDHSTS_BLOCK_IRPT |
+                   SDHSTS_SDIO_IRPT);
+    s->edm &= ~(SDEDM_FSM_MASK | (0x1f << 4));
+    s->edm |= SDEDM_FSM_DATAMODE;
+    trace_bcm2835_sdhost_edm_change("stop command", s->edm);
+    bcm2835_sdhost_update_irq(s);
+}
+
+static void bcm2835_sdhost_start_transfer(BCM2835SDHostState *s)
+{
+    uint64_t bytes;
+
+    if (!(s->cmd & (SDCMD_READ_CMD | SDCMD_WRITE_CMD))) {
+        return;
+    }
+
+    bytes = (uint64_t)bcm2835_sdhost_block_count(s) * s->hbct;
+    s->datacnt = MIN(bytes, (uint64_t)UINT32_MAX);
+    s->fifo_pos = 0;
+    s->fifo_len = 0;
+    memset(s->fifo, 0, sizeof(s->fifo));
+    s->status &= ~(SDHSTS_DATA_FLAG | SDHSTS_BLOCK_IRPT |
+                   SDHSTS_SDIO_IRPT);
+    s->edm &= ~(SDEDM_FSM_MASK | (0x1f << 4));
+    s->edm |= (s->cmd & SDCMD_READ_CMD) ?
+              SDEDM_FSM_READDATA : SDEDM_FSM_WRITEDATA;
+    trace_bcm2835_sdhost_edm_change("data command", s->edm);
+}
+
 static void bcm2835_sdhost_send_command(BCM2835SDHostState *s)
 {
     SDRequest request;
@@ -138,6 +203,11 @@ static void bcm2835_sdhost_send_command(BCM2835SDHostState *s)
             s->rsp[2] = ldl_be_p(&rsp[4]);
             s->rsp[3] = ldl_be_p(&rsp[0]);
         }
+    }
+    if (request.cmd == 12) {
+        bcm2835_sdhost_stop_transfer(s);
+    } else {
+        bcm2835_sdhost_start_transfer(s);
     }
     /* We never really delay commands, so if this was a 'busywait' command
      * then we've completed it now and can raise the interrupt.
@@ -197,30 +267,18 @@ static void bcm2835_sdhost_fifo_run(BCM2835SDHostState *s)
                 n++;
                 if (n == 4) {
                     bcm2835_sdhost_fifo_push(s, value);
-                    s->status |= SDHSTS_DATA_FLAG;
-                    if (s->config & SDHCFG_DATA_IRPT_EN) {
-                        s->status |= SDHSTS_SDIO_IRPT;
-                    }
                     n = 0;
                     value = 0;
                 }
             }
             if (n != 0) {
                 bcm2835_sdhost_fifo_push(s, value);
-                s->status |= SDHSTS_DATA_FLAG;
-                if (s->config & SDHCFG_DATA_IRPT_EN) {
-                    s->status |= SDHSTS_SDIO_IRPT;
-                }
             }
         } else if (is_write) { /* write */
             n = 0;
             while (s->datacnt > 0 && (s->fifo_len > 0 || n > 0)) {
                 if (n == 0) {
                     value = bcm2835_sdhost_fifo_pop(s);
-                    s->status |= SDHSTS_DATA_FLAG;
-                    if (s->config & SDHCFG_DATA_IRPT_EN) {
-                        s->status |= SDHSTS_SDIO_IRPT;
-                    }
                     n = 4;
                 }
                 n--;
@@ -240,14 +298,10 @@ static void bcm2835_sdhost_fifo_run(BCM2835SDHostState *s)
                 (s->config & SDHCFG_BLOCK_IRPT_EN)) {
                 s->status |= SDHSTS_BLOCK_IRPT;
             }
-            /* set data interrupt after each transfer */
-            s->status |= SDHSTS_DATA_FLAG;
-            if (s->config & SDHCFG_DATA_IRPT_EN) {
-                s->status |= SDHSTS_SDIO_IRPT;
-            }
         }
     }
 
+    bcm2835_sdhost_update_data_flag(s);
     bcm2835_sdhost_update_irq(s);
 
     s->edm &= ~(0x1f << 4);
@@ -373,9 +427,7 @@ static void bcm2835_sdhost_write(void *opaque, hwaddr offset,
         s->hbct = value;
         break;
     case SDHBLC:
-        s->hblc = value;
-        s->datacnt = s->hblc * s->hbct;
-        bcm2835_sdhost_fifo_run(s);
+        s->hblc = value & SDHBLC_MASK;
         break;
 
     default:
