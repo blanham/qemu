@@ -446,3 +446,7 @@ iommu_testdev_dma_armed(bool armed) "armed=%d"
 # bcm2835_l1cc.c
 bcm2835_l1cc_read(uint64_t offset, uint32_t value) "offset 0x%03" PRIx64 " value 0x%08x"
 bcm2835_l1cc_write(uint64_t offset, uint32_t value, uint32_t result) "offset 0x%03" PRIx64 " value 0x%08x result 0x%08x"
+
+# bcm2835_l2cc.c
+bcm2835_l2cc_read(uint64_t offset, uint32_t value) "offset 0x%03" PRIx64 " value 0x%08x"
+bcm2835_l2cc_write(uint64_t offset, uint32_t value, uint32_t result) "offset 0x%03" PRIx64 " value 0x%08x result 0x%08x"
