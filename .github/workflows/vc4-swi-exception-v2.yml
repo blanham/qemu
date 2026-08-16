@@ -94,6 +94,56 @@ jobs:
               '                       qdev_get_gpio_in(DEVICE(s->vpu_cpu), 0));\n'
               '    s->vpu_cpu->start_powered_off = false;\n',
               'heterogeneous VPU interrupt-controller wiring')
+
+          test = Path('scripts/vc4/check-swi-exception.py')
+          text = test.read_text()
+          text = text.replace(
+              'VECTOR_BASE = 0x1000\n'
+              'HANDLER = 0x0200\n'
+              'EXCEPTION_STACK_TOP = 0x2000\n'
+              'IC0_VADDR = 0x7E002030\n',
+              'VECTOR_BASE = 0x0000\n'
+              'HANDLER = 0x0200\n'
+              'EXCEPTION_STACK_TOP = 0x2000\n',
+              1)
+
+          start = text.index('def mov32(')
+          end = text.index('\n\ndef parse_register', start)
+          generator = '''def mov16(register: int, value: int) -> bytes:
+              if not 0 <= register < 32:
+                  raise ValueError(register)
+              if not 0 <= value <= 0xFFFF:
+                  raise ValueError(value)
+              return struct.pack('<HH', 0xB000 | register, value)
+
+
+          def make_image(register_form: bool) -> tuple[bytes, int, int, int]:
+              # Keep the focused test independent of peripheral MMIO.  The
+              # interrupt controller resets with VADDR=0, so vectors 32/33
+              # live at 0x80/0x84.  Official firmware separately covers the
+              # real VADDR programming path through the heterogeneous machine.
+              image = bytearray(0x1100)
+              code = bytearray(mov16(28, EXCEPTION_STACK_TOP))
+              if register_form:
+                  code.extend(mov16(2, 1))
+                  code.extend(struct.pack('<H', 0x0022))  # swi r2
+                  vector = 33
+                  image[HANDLER:HANDLER + 2] = struct.pack('<H', 0x000A)
+              else:
+                  code.extend(struct.pack('<H', 0x01C0))  # swi 0
+                  vector = 32
+                  image[HANDLER:HANDLER + 2] = struct.pack('<H', 0x0000)
+
+              return_pc = len(code)
+              code.extend(struct.pack('<H', 0x0000))
+              image[:len(code)] = code
+              struct.pack_into('<I', image, VECTOR_BASE + vector * 4,
+                               HANDLER | 1)
+              final_pc = return_pc + 2 if register_form else HANDLER + 2
+              return bytes(image), vector, return_pc, final_pc
+          '''
+          text = text[:start] + generator + text[end:]
+          test.write_text(text)
           PY
 
           python3 -m py_compile scripts/vc4/check-swi-exception.py
@@ -148,6 +198,7 @@ jobs:
         run: |
           set -o pipefail
           out=/tmp/vc4-swi-exception
+          mkdir -p "$out/official"
 
           python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
             build/qemu-system-aarch64 \
