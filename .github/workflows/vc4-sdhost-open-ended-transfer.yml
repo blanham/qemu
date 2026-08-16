@@ -1,0 +1,392 @@
+name: VC4 SDHOST open-ended transfer
+
+on:
+  push:
+    branches:
+      - agent/vc4-sdhost-open-ended-transfer
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-open-ended-transfer:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Model zero HBLC as an open-ended transfer
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('hw/sd/bcm2835_sdhost.c')
+          text = path.read_text()
+
+          old = '''#define SDHBLC_MASK                     0x0000ffff
+          #define SDHBLC_ZERO_BLOCK_COUNT         512
+          '''
+          new = '''#define SDHBLC_MASK                     0x0000ffff
+          '''
+          if new not in text or 'SDHBLC_ZERO_BLOCK_COUNT' in text:
+              if text.count(old) != 1:
+                  raise SystemExit('SDHBLC constant anchor missing')
+              text = text.replace(old, new, 1)
+
+          old = '''static uint32_t bcm2835_sdhost_block_count(BCM2835SDHostState *s)
+          {
+              /* The hardware counter is nine bits wide; zero encodes 512. */
+              return s->hblc ? s->hblc : SDHBLC_ZERO_BLOCK_COUNT;
+          }
+          '''
+          new = '''static uint32_t bcm2835_sdhost_transfer_bytes(BCM2835SDHostState *s)
+          {
+              uint64_t bytes;
+
+              /*
+               * HBLC zero does not impose a wrapped 512-block limit.  It
+               * leaves a multiblock command streaming until software issues
+               * CMD12.  The stock VideoCore bootloader relies on this reset
+               * value to read the multi-megabyte start.elf with one CMD18.
+               */
+              if (s->hblc == 0) {
+                  return UINT32_MAX;
+              }
+
+              bytes = (uint64_t)s->hblc * s->hbct;
+              return MIN(bytes, (uint64_t)UINT32_MAX);
+          }
+          '''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('SDHOST block-count helper anchor missing')
+              text = text.replace(old, new, 1)
+
+          old = '''static void bcm2835_sdhost_start_transfer(BCM2835SDHostState *s)
+          {
+              uint64_t bytes;
+
+              if (!(s->cmd & (SDCMD_READ_CMD | SDCMD_WRITE_CMD))) {
+                  return;
+              }
+
+              bytes = (uint64_t)bcm2835_sdhost_block_count(s) * s->hbct;
+              s->datacnt = MIN(bytes, (uint64_t)UINT32_MAX);
+          '''
+          new = '''static void bcm2835_sdhost_start_transfer(BCM2835SDHostState *s)
+          {
+              if (!(s->cmd & (SDCMD_READ_CMD | SDCMD_WRITE_CMD))) {
+                  return;
+              }
+
+              s->datacnt = bcm2835_sdhost_transfer_bytes(s);
+          '''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('SDHOST transfer-start anchor missing')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+
+          test = Path('tests/qtest/bcm2835-sdhost-test.c')
+          text = test.read_text()
+          if '#define TEST_SECTORS 8\n' not in text:
+              if text.count('#define TEST_SECTORS 4\n') != 1:
+                  raise SystemExit('test sector-count anchor missing')
+              text = text.replace('#define TEST_SECTORS 4\n',
+                                  '#define TEST_SECTORS 8\n', 1)
+
+          old = '''    /*
+               * Stock bootcode inherits the reset HBCT/HBLC values from the
+               * boot ROM.  Zero in the 9-bit block counter denotes 512 blocks.
+               */
+          '''
+          new = '''    /*
+               * Stock bootcode inherits the reset HBCT/HBLC values from the
+               * boot ROM.  HBLC zero keeps CMD18 open until an explicit CMD12.
+               */
+          '''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('reset HBLC comment anchor missing')
+              text = text.replace(old, new, 1)
+
+          old = '''    stop_transfer();
+
+              qtest_end();
+          '''
+          new = '''    stop_transfer();
+
+              /*
+               * Make the byte count deliberately tiny.  A zero HBLC must still
+               * stream beyond 512 * HBCT bytes; the fifth sector distinguishes
+               * open-ended hardware behavior from the old wrapped-count model.
+               */
+              writel(SDHBCT, 4);
+              writel(SDHBLC, 0);
+              sdhost_command(3 * 512, SDCMD_READ_CMD | 18);
+              for (unsigned sector = 3; sector < TEST_SECTORS; sector++) {
+                  read_and_check_sector(sector);
+              }
+              stop_transfer();
+
+              qtest_end();
+          '''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('open-ended qtest insertion anchor missing')
+              text = text.replace(old, new, 1)
+          test.write_text(text)
+          PY
+
+          git diff --check
+          git status --short
+
+      - name: Add compact storage traces to the stock-firmware probe
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/vc4/raspi3-stock-bootcode-mmio.py')
+          text = path.read_text()
+          old = '    "usb_port_reset",\n)\n'
+          new = '''    "usb_port_reset",
+              "sdbus_command",
+              "sdcard_normal_command",
+              "sdcard_response",
+              "sdcard_req_addr",
+              "sdcard_read_block",
+          )
+          '''
+          if '    "sdcard_read_block",\n)\n' not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('stock trace event anchor missing')
+              path.write_text(text.replace(old, new, 1))
+          PY
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-mmio.py
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Check stock-firmware probes
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+
+      - name: Configure and build emulator and SDHOST qtest
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build \
+            qemu-system-aarch64 \
+            tests/qtest/bcm2835-sdhost-test
+
+      - name: Exercise open-ended transfers through QTest
+        run: |
+          QTEST_QEMU_BINARY="$PWD/build/qemu-system-aarch64" \
+            build/tests/qtest/bcm2835-sdhost-test
+
+      - name: Run the complete official start.elf transfer
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-sdhost-open-ended-transfer
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 100 \
+            --trace-samples 320 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm \
+            --qemu-debug-filter 0x60008000..0x60008100 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          test -s "$out/qemu-mmio.log"
+          test -s "$out/probe.log"
+
+      - name: Assert the complete firmware load and capture the next frontier
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-sdhost-open-ended-transfer')
+          trace = (out / 'qemu-mmio.log').read_text(
+              encoding='utf-8', errors='replace'
+          ).splitlines()
+          probe = (out / 'probe.log').read_text(
+              encoding='utf-8', errors='replace'
+          ).splitlines()
+
+          if any(line.startswith('VC4_LOW_PC_WRITE ') for line in probe):
+              raise SystemExit('unexpected low-memory PC write')
+
+          start_cmd = next((
+              i for i, line in enumerate(trace)
+              if line.startswith('sdbus_command') and
+                 'CMD18 arg 0x00311400' in line
+          ), None)
+          if start_cmd is None:
+              raise SystemExit('the start.elf transfer was not requested')
+
+          final_block = next((
+              i for i, line in enumerate(trace[start_cmd:], start_cmd)
+              if line.startswith('sdcard_read_block') and
+                 'addr 0x5f3000 ' in line
+          ), None)
+          if final_block is None:
+              raise SystemExit('the final start.elf sector was not read')
+
+          stop_index = next((
+              i for i, line in enumerate(trace[final_block + 1:],
+                                          final_block + 1)
+              if line.startswith('sdbus_command') and ' CMD12 ' in line
+          ), None)
+          if stop_index is None:
+              raise SystemExit('the open-ended start.elf transfer was not stopped')
+
+          next_read_cmd = next((
+              i for i, line in enumerate(trace[final_block + 1:],
+                                          final_block + 1)
+              if line.startswith('sdbus_command') and ' CMD18 ' in line
+          ), None)
+          if next_read_cmd is not None and stop_index > next_read_cmd:
+              raise SystemExit('a new read was issued before CMD12 completed')
+
+          fixup_block = next((
+              i for i, line in enumerate(trace[stop_index + 1:],
+                                          stop_index + 1)
+              if line.startswith('sdcard_read_block') and
+                 'addr 0x5f3200 ' in line
+          ), None)
+          if fixup_block is None:
+              raise SystemExit('fixup.dat was not read after the complete start.elf')
+
+          illegal = [
+              line for line in trace
+              if line.startswith('sdcard_normal_command') and
+                 'ILLEGAL_COMMAND' in line
+          ]
+          if illegal:
+              raise SystemExit('SD command stream became illegal: ' + illegal[0])
+
+          start_blocks = [
+              line for line in trace[start_cmd:stop_index]
+              if line.startswith('sdcard_read_block')
+          ]
+          if len(start_blocks) < 5903:
+              raise SystemExit(
+                  f'incomplete start.elf stream: {len(start_blocks)} sectors'
+              )
+
+          barrier = next((
+              line for line in reversed(probe)
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ), None)
+          if barrier is None:
+              raise SystemExit('missing stock boot barrier record')
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          if not match:
+              raise SystemExit(f'barrier has no PC: {barrier}')
+          barrier_pc = int(match.group(1), 16)
+          if barrier_pc in (0x60008068, 0x0ecb61e2, 0x1ecb3a8a,
+                            0x7880, 0x7882):
+              raise SystemExit(
+                  f'official firmware did not cross the repaired frontier: '
+                  f'pc=0x{barrier_pc:08x}'
+              )
+
+          progress = None
+          for line in probe:
+              if line.startswith('STOCK_BOOTCODE_PROGRESS '):
+                  progress = json.loads(line.split(' ', 1)[1])
+          if progress is None:
+              raise SystemExit('missing stock progress record')
+
+          commands = [
+              line for line in trace if line.startswith('sdbus_command')
+          ]
+          read_blocks = [
+              line for line in trace if line.startswith('sdcard_read_block')
+          ]
+          diagnostics = [
+              line for line in trace
+              if ('Bad offset' in line or 'unimplemented' in line)
+          ]
+
+          summary = {
+              'schema_version': 1,
+              'barrier_pc': f'0x{barrier_pc:08x}',
+              'barrier': barrier,
+              'command_count': len(commands),
+              'read_block_count': len(read_blocks),
+              'start_elf_sector_count': len(start_blocks),
+              'start_elf_first_sector': start_blocks[0],
+              'start_elf_last_sector': start_blocks[-1],
+              'cmd12_after_start_elf': trace[stop_index],
+              'fixup_first_sector': trace[fixup_block],
+              'last_commands': commands[-80:],
+              'diagnostics': diagnostics[-80:],
+              'progress': progress,
+          }
+          (out / 'summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit validated open-ended transfer semantics
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            hw/sd/bcm2835_sdhost.c \
+            tests/qtest/bcm2835-sdhost-test.c
+          git rm .github/workflows/vc4-sdhost-open-ended-transfer.yml
+          git commit -m 'hw/sd: model BCM2835 SDHOST open-ended transfers'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload open-ended transfer validation frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-sdhost-open-ended-transfer-${{ github.run_attempt }}
+          path: /tmp/vc4-sdhost-open-ended-transfer
+          if-no-files-found: warn
+          retention-days: 14
