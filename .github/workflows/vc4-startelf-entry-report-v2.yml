@@ -1,0 +1,103 @@
+name: VC4 start.elf entry report v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-entry-probe
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-entry-report:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download most recent successful entry-probe artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow vc4-startelf-entry-probe.yml \
+            --branch "$GITHUB_REF_NAME" \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_ENV"
+          rm -rf /tmp/entry-probe
+          mkdir -p /tmp/entry-probe
+          gh run download "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'vc4-startelf-entry-probe-*' \
+            --dir /tmp/entry-probe
+          summary=$(find /tmp/entry-probe -name summary.json -type f | head -n1)
+          test -n "$summary"
+          cp "$summary" /tmp/entry-placement-source.json
+
+      - name: Commit compact entry-placement classification
+        run: |
+          set -euo pipefail
+          mkdir -p docs/devel/vc4
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          source = json.loads(Path('/tmp/entry-placement-source.json').read_text())
+          matches = source.get('matching_alias_bases') or []
+          segment = source.get('entry_segment') or {}
+          barrier = source.get('barrier') or ''
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          barrier_pc = '0x' + match.group(1).lower() if match else 'unknown'
+          dumps = [
+              {
+                  'base': item.get('base'),
+                  'bytes': item.get('bytes'),
+                  'entry_sample': item.get('entry_sample'),
+                  'matches_entry': item.get('matches_entry'),
+                  'nonzero_bytes': item.get('nonzero_bytes'),
+              }
+              for item in source.get('dumps', [])
+          ]
+          result = {
+              'schema_version': 1,
+              'probe_run_id': int(os.environ['run_id']),
+              'entry': source.get('entry'),
+              'entry_segment': segment,
+              'matching_alias_bases': matches,
+              'barrier_pc': barrier_pc,
+              'dumps': dumps,
+          }
+          Path('docs/devel/vc4/startelf-entry-placement.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n'
+          )
+          match_text = ','.join(matches) if matches else 'none'
+          message = (
+              'ci/vc4: report start.elf entry '
+              f"entry={result['entry']} "
+              f"paddr={segment.get('paddr', 'unknown')} "
+              f"matches={match_text} barrier={barrier_pc} [skip ci]"
+          )
+          Path('/tmp/entry-report-message').write_text(message)
+          print(json.dumps(result, indent=2, sort_keys=True))
+          print(message)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/startelf-entry-placement.json
+          git commit -m "$(cat /tmp/entry-report-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
