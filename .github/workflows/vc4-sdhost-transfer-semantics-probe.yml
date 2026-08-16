@@ -1,0 +1,322 @@
+name: VC4 SDHOST transfer semantics probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-sdhost-transfer-semantics-probe
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe-sdhost-semantics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Add temporary transfer-semantics switch and storage traces
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def ensure(path: str, old: str, new: str, label: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          helper = r'''
+          /*
+           * Temporary stock-firmware experiment.  A zero in the 9-bit HBLC
+           * register may encode either one block, 512 blocks, or an open-ended
+           * CMD18 transfer.  Keep this switch out of the committed device model;
+           * the workflow compares the candidates using one emulator build.
+           */
+          static void bcm2835_sdhost_experiment_reload(BCM2835SDHostState *s)
+          {
+              const char *mode = g_getenv("VC4_SDHOST_EXPERIMENT");
+              uint64_t bytes_per_block;
+              uint64_t blocks;
+              uint64_t total;
+
+              if (!mode || !strcmp(mode, "baseline") ||
+                  !(s->cmd & (SDCMD_READ_CMD | SDCMD_WRITE_CMD))) {
+                  return;
+              }
+
+              bytes_per_block = strstr(mode, "reload-512-") ? 512 : s->hbct;
+              if (!bytes_per_block) {
+                  bytes_per_block = 512;
+              }
+
+              if (s->hblc) {
+                  blocks = s->hblc;
+              } else if (strstr(mode, "-zero1")) {
+                  blocks = 1;
+              } else if (strstr(mode, "-zero512")) {
+                  blocks = 512;
+              } else if (strstr(mode, "-open")) {
+                  s->datacnt = UINT32_MAX & ~3u;
+                  trace_bcm2835_sdhost_transfer_reload(
+                      mode, s->cmd & SDCMD_CMD_MASK, s->hbct, s->hblc,
+                      s->datacnt);
+                  return;
+              } else {
+                  return;
+              }
+
+              total = bytes_per_block * blocks;
+              s->datacnt = MIN(total, UINT32_MAX);
+              trace_bcm2835_sdhost_transfer_reload(
+                  mode, s->cmd & SDCMD_CMD_MASK, s->hbct, s->hblc,
+                  s->datacnt);
+          }
+
+          '''
+          ensure(
+              'hw/sd/bcm2835_sdhost.c',
+              'static void bcm2835_sdhost_send_command(BCM2835SDHostState *s)\n',
+              helper +
+              'static void bcm2835_sdhost_send_command(BCM2835SDHostState *s)\n',
+              'experiment helper')
+          ensure(
+              'hw/sd/bcm2835_sdhost.c',
+              '    /* We never really delay commands, so if this was a '
+              "'busywait' command\n",
+              '    bcm2835_sdhost_experiment_reload(s);\n'
+              '    /* We never really delay commands, so if this was a '
+              "'busywait' command\n",
+              'command-time transfer reload')
+
+          ensure(
+              'hw/sd/trace-events',
+              'bcm2835_sdhost_update_irq(uint32_t irq) "IRQ bits 0x%x"\n',
+              'bcm2835_sdhost_update_irq(uint32_t irq) "IRQ bits 0x%x"\n'
+              'bcm2835_sdhost_transfer_reload(const char *mode, uint32_t command, uint32_t hbct, uint32_t hblc, uint32_t datacnt) "mode %s CMD%02u hbct 0x%x hblc 0x%x datacnt 0x%x"\n',
+              'transfer reload trace event')
+
+          storage_events = '''    "bcm2835_sdhost_write",
+              "bcm2835_sdhost_transfer_reload",
+              "sdbus_command",
+              "sdcard_normal_command",
+              "sdcard_app_command",
+              "sdcard_response",
+              "sdcard_set_blocklen",
+              "sdcard_set_block_count",
+              "sdcard_req_addr",
+              "sdcard_read_block",
+              "sdcard_read_data",
+          '''
+          ensure(
+              'scripts/vc4/raspi3-stock-bootcode-mmio.py',
+              '    "usb_port_reset",\n)\n',
+              '    "usb_port_reset",\n' + storage_events + ')\n',
+              'stock storage trace list')
+          PY
+
+          git diff --check
+          git status --short
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Check stock-firmware probes
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+
+      - name: Configure and build experimental emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run the transfer-semantics candidates
+        run: |
+          set -o pipefail
+          root=/tmp/vc4-sdhost-transfer-semantics
+          rm -rf "$root"
+          mkdir -p "$root"
+
+          modes='baseline reload-reset-zero1 reload-reset-zero512 reload-512-zero1 reload-512-zero512 reload-512-open'
+          for mode in $modes; do
+            echo "===== ${mode} ====="
+            out="$root/$mode"
+            mkdir -p "$out"
+            VC4_SDHOST_EXPERIMENT="$mode" \
+              python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+                build/qemu-system-aarch64 \
+                /tmp/bootcode.bin \
+                --start-elf /tmp/start.elf \
+                --fixup-dat /tmp/fixup.dat \
+                --seconds 15 \
+                --trace-samples 80 \
+                --trace-interval 0.05 \
+                --out-dir "$out" 2>&1 | tee "$out/probe.log"
+            test -s "$out/qemu-mmio.log"
+          done
+
+      - name: Summarize and rank the candidates
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          root = Path('/tmp/vc4-sdhost-transfer-semantics')
+          modes = [
+              'baseline',
+              'reload-reset-zero1',
+              'reload-reset-zero512',
+              'reload-512-zero1',
+              'reload-512-zero512',
+              'reload-512-open',
+          ]
+
+          def progress_record(lines: list[str]):
+              for line in reversed(lines):
+                  if line.startswith('STOCK_BOOTCODE_PROGRESS '):
+                      return json.loads(line.split(' ', 1)[1])
+              return None
+
+          def four_short(progress) -> bool:
+              if not progress:
+                  return False
+              returns = [
+                  item.get('return_pc')
+                  for item in progress.get('delay_generations', [])
+              ]
+              groups = []
+              group = []
+              for value in returns:
+                  if value == 0x5b0:
+                      if group:
+                          groups.append(group)
+                          group = []
+                  else:
+                      group.append(value)
+              if group:
+                  groups.append(group)
+              return any(
+                  len(candidate) >= 8 and
+                  candidate[:8] == [0x596, 0x5a2] * 4
+                  for candidate in groups
+              )
+
+          results = []
+          for mode in modes:
+              out = root / mode
+              trace_lines = (out / 'qemu-mmio.log').read_text(
+                  encoding='utf-8', errors='replace'
+              ).splitlines()
+              probe_lines = (out / 'probe.log').read_text(
+                  encoding='utf-8', errors='replace'
+              ).splitlines()
+              progress = progress_record(probe_lines)
+              commands = [
+                  line for line in trace_lines
+                  if line.startswith('sdbus_command')
+              ]
+              reloads = [
+                  line for line in trace_lines
+                  if line.startswith('bcm2835_sdhost_transfer_reload')
+              ]
+              read_blocks = [
+                  line for line in trace_lines
+                  if line.startswith('sdcard_read_block')
+              ]
+              read_data = [
+                  line for line in trace_lines
+                  if line.startswith('sdcard_read_data')
+              ]
+              barrier = next((
+                  line for line in reversed(probe_lines)
+                  if line.startswith('STOCK_BOOTCODE_BARRIER ')
+              ), None)
+              low_pc = [
+                  line for line in probe_lines
+                  if line.startswith('VC4_LOW_PC_WRITE ')
+              ]
+              blink = four_short(progress)
+              score = (
+                  (100000 if read_blocks else 0) +
+                  (10000 if read_data else 0) +
+                  min(len(commands), 9999) -
+                  (50000 if blink else 0) -
+                  (1000000 if low_pc else 0)
+              )
+              results.append({
+                  'mode': mode,
+                  'score': score,
+                  'sdbus_command_count': len(commands),
+                  'last_commands': commands[-20:],
+                  'reload_count': len(reloads),
+                  'reloads': reloads[-20:],
+                  'read_block_count': len(read_blocks),
+                  'first_read_blocks': read_blocks[:20],
+                  'read_data_count': len(read_data),
+                  'first_read_data': read_data[:20],
+                  'four_short_startelf_error': blink,
+                  'low_pc_write_count': len(low_pc),
+                  'barrier': barrier,
+                  'progress': progress,
+              })
+
+          ranked = sorted(results, key=lambda item: item['score'], reverse=True)
+          document = {
+              'schema_version': 1,
+              'ranked_modes': [item['mode'] for item in ranked],
+              'results': results,
+          }
+          (root / 'summary.json').write_text(
+              json.dumps(document, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(document, indent=2, sort_keys=True))
+          PY
+
+          test -s /tmp/vc4-sdhost-transfer-semantics/summary.json
+
+      - name: Upload SDHOST semantics frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-sdhost-transfer-semantics-${{ github.run_attempt }}
+          path: /tmp/vc4-sdhost-transfer-semantics
+          if-no-files-found: warn
+          retention-days: 14
