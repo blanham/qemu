@@ -1,0 +1,325 @@
+name: VC4 direct start.elf entry report
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-entry-direct-report
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  report-entry-placement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Add an auxiliary QMP endpoint to the stock probe
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/raspi3-stock-bootcode-mmio.py')
+          text = path.read_text()
+          if 'import os\n' not in text:
+              text = text.replace('import importlib.util\n',
+                                  'import importlib.util\nimport os\n', 1)
+          old = '''        if self._qemu_debug_filter:
+              traced_command.extend(["-dfilter", self._qemu_debug_filter])
+              return self._module.Popen(traced_command, *args, **kwargs)
+          '''
+          new = '''        if self._qemu_debug_filter:
+              traced_command.extend(["-dfilter", self._qemu_debug_filter])
+              extra_qmp = os.environ.get("VC4_EXTRA_QMP")
+              if extra_qmp:
+                  traced_command.extend([
+                      "-qmp", f"unix:{extra_qmp},server=on,wait=off",
+                  ])
+              return self._module.Popen(traced_command, *args, **kwargs)
+          '''
+          if new not in text:
+              if text.count(old) != 1:
+                  raise SystemExit('SubprocessProxy Popen anchor missing')
+              path.write_text(text.replace(old, new, 1))
+          PY
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-mmio.py
+
+      - name: Install direct entry-inspection sidecar
+        run: |
+          cat > /tmp/vc4-direct-entry-report.py <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import argparse
+          import json
+          from pathlib import Path
+          import re
+          import socket
+          import struct
+          import time
+
+          def receive(stream):
+              while True:
+                  line = stream.readline()
+                  if not line:
+                      raise RuntimeError('QMP connection closed')
+                  message = json.loads(line)
+                  if 'event' not in message:
+                      return message
+
+          def execute(stream, sock, command, arguments=None):
+              request = {'execute': command}
+              if arguments is not None:
+                  request['arguments'] = arguments
+              sock.sendall((json.dumps(request) + '\n').encode())
+              response = receive(stream)
+              if 'error' in response:
+                  raise RuntimeError(f'QMP {command} failed: {response}')
+              return response.get('return')
+
+          def hmp(stream, sock, command):
+              return execute(
+                  stream, sock, 'human-monitor-command',
+                  {'command-line': command},
+              )
+
+          def entry_layout(image):
+              if image[:6] != b'\x7fELF\x01\x01':
+                  raise RuntimeError('expected ELF32 little-endian image')
+              entry = struct.unpack_from('<I', image, 24)[0]
+              phoff = struct.unpack_from('<I', image, 28)[0]
+              phentsize = struct.unpack_from('<H', image, 42)[0]
+              phnum = struct.unpack_from('<H', image, 44)[0]
+              segments = []
+              entry_segment = None
+              for index in range(phnum):
+                  off = phoff + index * phentsize
+                  values = struct.unpack_from('<IIIIIIII', image, off)
+                  keys = ('type', 'offset', 'vaddr', 'paddr', 'filesz',
+                          'memsz', 'flags', 'align')
+                  segment = dict(zip(keys, values))
+                  segment['index'] = index
+                  segments.append(segment)
+                  if (segment['type'] == 1 and
+                          segment['vaddr'] <= entry <
+                          segment['vaddr'] + segment['memsz']):
+                      entry_segment = segment
+              if entry_segment is None:
+                  raise RuntimeError('entry is outside PT_LOAD segments')
+              file_offset = (
+                  entry_segment['offset'] + entry - entry_segment['vaddr']
+              )
+              return entry, entry_segment, segments, file_offset
+
+          def parse_examine(output):
+              values = []
+              for token in re.findall(r'0x([0-9a-fA-F]{2})(?![0-9a-fA-F])',
+                                      output):
+                  values.append(int(token, 16))
+              return bytes(values)
+
+          def main():
+              parser = argparse.ArgumentParser()
+              parser.add_argument('socket', type=Path)
+              parser.add_argument('start_elf', type=Path)
+              parser.add_argument('output', type=Path)
+              parser.add_argument('--delay', type=float, default=55.0)
+              args = parser.parse_args()
+
+              deadline = time.monotonic() + 120
+              sock = socket.socket(socket.AF_UNIX)
+              while True:
+                  try:
+                      sock.connect(str(args.socket))
+                      break
+                  except (FileNotFoundError, ConnectionRefusedError):
+                      if time.monotonic() >= deadline:
+                          raise RuntimeError('timed out waiting for QMP socket')
+                      time.sleep(0.1)
+              stream = sock.makefile('r', encoding='utf-8')
+              greeting = receive(stream)
+              execute(stream, sock, 'qmp_capabilities')
+              time.sleep(args.delay)
+              execute(stream, sock, 'stop')
+              cpus = execute(stream, sock, 'query-cpus-fast')
+              hmp(stream, sock, 'cpu 4')
+              registers = hmp(stream, sock, 'info registers')
+
+              image = args.start_elf.read_bytes()
+              entry, segment, segments, file_offset = entry_layout(image)
+              expected = image[file_offset:file_offset + 64]
+              offset_in_segment = entry - segment['vaddr']
+              candidate_addresses = [
+                  entry,
+                  segment['paddr'] + offset_in_segment,
+                  entry & 0x3fffffff,
+                  (entry & 0x3fffffff) | 0x40000000,
+                  (entry & 0x3fffffff) | 0x80000000,
+                  (entry & 0x3fffffff) | 0xc0000000,
+              ]
+              candidate_addresses = list(dict.fromkeys(candidate_addresses))
+              observations = []
+              for address in candidate_addresses:
+                  output = hmp(stream, sock, f'x/64bx 0x{address:08x}')
+                  sample = parse_examine(output)[:64]
+                  observations.append({
+                      'address': f'0x{address:08x}',
+                      'monitor_output': output,
+                      'sample': sample.hex(),
+                      'matches_expected': sample == expected,
+                      'nonzero_bytes': sum(byte != 0 for byte in sample),
+                  })
+
+              execute(stream, sock, 'cont')
+              report = {
+                  'schema_version': 1,
+                  'greeting': greeting,
+                  'cpus': cpus,
+                  'registers': registers,
+                  'entry': f'0x{entry:08x}',
+                  'entry_file_offset': f'0x{file_offset:08x}',
+                  'entry_bytes': expected.hex(),
+                  'entry_segment': {
+                      key: (f'0x{value:08x}' if key != 'index' else value)
+                      for key, value in segment.items()
+                  },
+                  'segments': segments,
+                  'observations': observations,
+                  'matching_addresses': [
+                      item['address'] for item in observations
+                      if item['matches_expected']
+                  ],
+              }
+              args.output.write_text(
+                  json.dumps(report, indent=2, sort_keys=True) + '\n'
+              )
+              print(json.dumps(report, indent=2, sort_keys=True))
+
+          if __name__ == '__main__':
+              main()
+          PY
+          chmod +x /tmp/vc4-direct-entry-report.py
+          python3 -m py_compile /tmp/vc4-direct-entry-report.py
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Inspect the live VPU entry address space
+        env:
+          VC4_EXTRA_QMP: /tmp/vc4-direct-entry-qmp
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-startelf-entry-direct-report
+          rm -rf "$out" /tmp/vc4-direct-entry-qmp
+          mkdir -p "$out"
+
+          /tmp/vc4-direct-entry-report.py \
+            /tmp/vc4-direct-entry-qmp /tmp/start.elf \
+            "$out/entry-report.json" --delay 55 \
+            >"$out/sidecar.log" 2>&1 &
+          sidecar_pid=$!
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 80 \
+            --trace-samples 300 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --qemu-debug-filter 0xcec00000..0xcec04000 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+          wait "$sidecar_pid"
+          test -s "$out/entry-report.json"
+          test -s "$out/probe.log"
+
+      - name: Commit the direct classification
+        run: |
+          set -euo pipefail
+          mkdir -p docs/devel/vc4
+          cp /tmp/vc4-startelf-entry-direct-report/entry-report.json \
+            docs/devel/vc4/startelf-entry-direct-report.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          report = json.loads(Path(
+              'docs/devel/vc4/startelf-entry-direct-report.json'
+          ).read_text())
+          probe = Path(
+              '/tmp/vc4-startelf-entry-direct-report/probe.log'
+          ).read_text(errors='replace').splitlines()
+          barrier = next((
+              line for line in reversed(probe)
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ), '')
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          barrier_pc = '0x' + match.group(1).lower() if match else 'unknown'
+          report['barrier'] = barrier
+          report['barrier_pc'] = barrier_pc
+          Path('docs/devel/vc4/startelf-entry-direct-report.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          matches = report.get('matching_addresses') or []
+          match_text = ','.join(matches) if matches else 'none'
+          segment = report['entry_segment']
+          message = (
+              'ci/vc4: classify start.elf entry '
+              f"entry={report['entry']} "
+              f"paddr={segment['paddr']} "
+              f"matches={match_text} "
+              f"barrier={barrier_pc} [skip ci]"
+          )
+          Path('/tmp/direct-entry-message').write_text(message)
+          print(message)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/startelf-entry-direct-report.json
+          git rm .github/workflows/vc4-startelf-entry-direct-report.yml
+          git commit -m "$(cat /tmp/direct-entry-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload direct entry evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-entry-direct-report-${{ github.run_attempt }}
+          path: /tmp/vc4-startelf-entry-direct-report
+          if-no-files-found: warn
+          retention-days: 14
