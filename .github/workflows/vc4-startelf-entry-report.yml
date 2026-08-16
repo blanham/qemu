@@ -1,0 +1,99 @@
+name: VC4 start.elf entry report
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-entry-probe
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-entry-report:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the most recent completed entry-probe artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            run_id=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/vc4-startelf-entry-probe.yml/runs?branch=${GITHUB_REF_NAME}&status=completed&per_page=10" \
+              --jq '.workflow_runs[] | select(.conclusion == "success") | .id' \
+              | head -n1 || true)
+            if test -n "$run_id"; then
+              artifact_id=$(gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+                --jq '.artifacts[] | select(.name | startswith("vc4-startelf-entry-probe-")) | .id' \
+                | head -n1 || true)
+              if test -n "$artifact_id"; then
+                echo "run_id=$run_id" >> "$GITHUB_ENV"
+                echo "artifact_id=$artifact_id" >> "$GITHUB_ENV"
+                break
+              fi
+            fi
+            sleep 10
+          done
+          test -n "${run_id:-}"
+          test -n "${artifact_id:-}"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            > /tmp/entry-probe.zip
+          rm -rf /tmp/entry-probe
+          mkdir -p /tmp/entry-probe
+          unzip -q /tmp/entry-probe.zip -d /tmp/entry-probe
+          test -s /tmp/entry-probe/summary.json
+
+      - name: Materialize a compact result and commit classification
+        run: |
+          mkdir -p docs/devel/vc4
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import re
+
+          source = json.loads(Path('/tmp/entry-probe/summary.json').read_text())
+          matches = source.get('matching_alias_bases') or []
+          segment = source.get('entry_segment') or {}
+          barrier = source.get('barrier') or ''
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          barrier_pc = '0x' + match.group(1).lower() if match else 'unknown'
+          result = {
+              'schema_version': 1,
+              'probe_run_id': int(__import__('os').environ['run_id']),
+              'probe_artifact_id': int(__import__('os').environ['artifact_id']),
+              'entry': source.get('entry'),
+              'entry_segment': segment,
+              'matching_alias_bases': matches,
+              'barrier_pc': barrier_pc,
+              'dumps': source.get('dumps', []),
+          }
+          Path('docs/devel/vc4/startelf-entry-placement.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n'
+          )
+          match_text = ','.join(matches) if matches else 'none'
+          message = (
+              'ci/vc4: report start.elf entry '
+              f"entry={result['entry']} "
+              f"paddr={segment.get('paddr', 'unknown')} "
+              f"matches={match_text} barrier={barrier_pc} [skip ci]"
+          )
+          Path('/tmp/entry-report-message').write_text(message)
+          print(json.dumps(result, indent=2, sort_keys=True))
+          print(message)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/startelf-entry-placement.json
+          git commit -m "$(cat /tmp/entry-report-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
