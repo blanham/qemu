@@ -73,16 +73,16 @@ jobs:
           rm -rf "$out"
           mkdir -p "$out"
 
-          # A fixed icount scale advances the BCM2835 system timer with guest
-          # work instead of waiting several host minutes for this 2 s delay.
+          # Preserve the known-good live TCG scheduling path.  On the hosted
+          # runner the firmware's two-second hardware delay takes a little over
+          # three host minutes, so leave enough margin to expose the next
+          # unchanged-firmware barrier after it returns.
           python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
             build/qemu-system-aarch64 \
             /tmp/bootcode.bin \
             --start-elf /tmp/start.elf \
             --fixup-dat /tmp/fixup.dat \
-            --seconds 20 \
-            --deterministic \
-            --icount-shift 10 \
+            --seconds 300 \
             --out-dir "$out" 2>&1 | tee "$out/probe.log"
 
           python3 scripts/vc4/analyze-stock-mmio-frontier.py \
