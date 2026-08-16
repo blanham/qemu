@@ -57,7 +57,7 @@ jobs:
                   break
               if line.startswith('          '):
                   body.append(line[10:])
-              elif line:
+              elif line.strip():
                   raise SystemExit(
                       f'unexpected indentation in {step_name!r}: {line!r}'
                   )
@@ -70,11 +70,15 @@ jobs:
 
       - name: Repair SWI source and wire the heterogeneous INTC
         run: |
+          set -o pipefail
+          mkdir -p /tmp/vc4-swi-exception
           python3 /tmp/extract-run-step.py \
             .github/workflows/vc4-swi-exception-v2.yml \
             'Repair SWI source and wire the heterogeneous INTC' \
             > /tmp/vc4-swi-repair.sh
-          bash /tmp/vc4-swi-repair.sh
+          cp /tmp/vc4-swi-repair.sh /tmp/vc4-swi-exception/repair-script.sh
+          bash -x /tmp/vc4-swi-repair.sh 2>&1 | \
+            tee /tmp/vc4-swi-exception/repair.log
 
       - name: Preserve focused-test memory and exception diagnostics
         run: |
@@ -160,7 +164,7 @@ jobs:
         run: |
           set -o pipefail
           out=/tmp/vc4-swi-exception
-          rm -rf "$out"
+          rm -rf "$out/unit" "$out/unit.log" "$out/unit-summary.json"
           mkdir -p "$out/unit"
           build/qemu-system-vc4 -M help | grep -F raspi3b-vc4
           python3 scripts/vc4/check-swi-exception.py \
