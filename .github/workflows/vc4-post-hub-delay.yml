@@ -1,0 +1,105 @@
+name: VC4 post-hub stock-firmware frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-post-hub-delay
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stock-firmware-post-hub-frontier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Check the post-hub probes
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/analyze-stock-mmio-frontier.py \
+            scripts/vc4/assert-stock-usb-root-hub.py \
+            scripts/vc4/assert-stock-boot-progress.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+
+          cat >/tmp/progress.log <<'EOF'
+          STOCK_BOOTCODE_PROGRESS {"delay_generation_count":2,"delay_reentered":true,"former_delay_frontier_crossed":true,"left_former_delay_pc":false,"pc_transitions":[1348],"reason":"delay-helper-returned-and-was-reentered","timer_forward_step_count":11}
+          STOCK_BOOTCODE_BARRIER kind=stalled-state pc=0x00000600
+          EOF
+          python3 scripts/vc4/assert-stock-boot-progress.py \
+            /tmp/progress.log --json /tmp/progress.json >/dev/null
+          grep -q '"former_delay_frontier_crossed": true' /tmp/progress.json
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build heterogeneous system emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run official firmware beyond the onboard-hub delay
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-post-hub-delay
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 180 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 scripts/vc4/analyze-stock-mmio-frontier.py \
+            "$out/qemu-mmio.log" \
+            --json "$out/mmio-frontier.json" \
+            | tee "$out/mmio-frontier.txt"
+
+          python3 scripts/vc4/assert-stock-usb-root-hub.py \
+            "$out/mmio-frontier.json" \
+            --probe-log "$out/probe.log" \
+            | tee "$out/usb-root-hub-summary.json"
+
+          python3 scripts/vc4/assert-stock-boot-progress.py \
+            "$out/probe.log" \
+            --json "$out/boot-progress-summary.json"
+
+      - name: Upload post-hub frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-post-hub-delay-${{ github.run_attempt }}
+          path: /tmp/vc4-post-hub-delay
+          if-no-files-found: warn
+          retention-days: 14
