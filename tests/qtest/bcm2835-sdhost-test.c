@@ -37,7 +37,7 @@
 #define SDEDM_FSM_DATAMODE  0x0001u
 
 #define TEST_IMAGE_SIZE (64 * 1024 * 1024)
-#define TEST_SECTORS 4
+#define TEST_SECTORS 8
 #define WORDS_PER_SECTOR (512 / sizeof(uint32_t))
 
 static uint32_t expected_word(unsigned sector, unsigned word)
@@ -144,7 +144,7 @@ static void test_transfer_lifecycle(void)
 
     /*
      * Stock bootcode inherits the reset HBCT/HBLC values from the
-     * boot ROM.  Zero in the 9-bit block counter denotes 512 blocks.
+     * boot ROM.  HBLC zero keeps CMD18 open until an explicit CMD12.
      */
     g_assert_cmphex(readl(SDHBCT), ==, 0x400);
     g_assert_cmphex(readl(SDHBLC), ==, 0);
@@ -173,6 +173,19 @@ static void test_transfer_lifecycle(void)
                     ==, SDEDM_FSM_DATAMODE);
     writel(SDHSTS, SDHSTS_DATA_FLAG);
     g_assert_cmphex(readl(SDHSTS) & SDHSTS_DATA_FLAG, ==, 0);
+    stop_transfer();
+
+    /*
+     * Make the byte count deliberately tiny.  A zero HBLC must still
+     * stream beyond 512 * HBCT bytes; the fifth sector distinguishes
+     * open-ended hardware behavior from the old wrapped-count model.
+     */
+    writel(SDHBCT, 4);
+    writel(SDHBLC, 0);
+    sdhost_command(3 * 512, SDCMD_READ_CMD | 18);
+    for (unsigned sector = 3; sector < TEST_SECTORS; sector++) {
+        read_and_check_sector(sector);
+    }
     stop_transfer();
 
     qtest_end();
