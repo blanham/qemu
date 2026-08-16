@@ -1,0 +1,371 @@
+name: VC4 start.elf memory-origin trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-startelf-next-stage
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  trace-memory-origin:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Add temporary address-space and VPU fetch tracing
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          memory = Path('system/memory.c')
+          text = memory.read_text()
+          if '#include "qemu/log.h"\n' not in text:
+              text = text.replace('#include "qemu/osdep.h"\n',
+                                  '#include "qemu/osdep.h"\n'
+                                  '#include "qemu/log.h"\n', 1)
+          tracer = r'''
+          static void vc4_trace_entry_memory_write(hwaddr address,
+                                                   const void *buffer,
+                                                   hwaddr length)
+          {
+              static uint8_t seen_pages[16][1024];
+              static unsigned trace_count;
+              const uint8_t *bytes = buffer;
+              uint32_t address32 = address;
+              uint32_t low28 = address32 & 0x0fffffff;
+              unsigned alias = address32 >> 28;
+              unsigned page;
+              bool overlaps_entry;
+
+              if (address > UINT32_MAX || low28 < 0x0ec00000 ||
+                  low28 >= 0x0f000000 || length == 0) {
+                  return;
+              }
+
+              page = (low28 - 0x0ec00000) >> 12;
+              overlaps_entry = low28 < 0x0ec00300 &&
+                               low28 + length > 0x0ec00200;
+              if (!overlaps_entry && seen_pages[alias][page]) {
+                  return;
+              }
+              seen_pages[alias][page] = 1;
+              if (trace_count++ >= 20000) {
+                  return;
+              }
+
+              qemu_log("VC4_ENTRY_MEMORY_WRITE addr=0x%08x len=0x%" HWADDR_PRIx
+                       " data=%02x%02x%02x%02x\n",
+                       address32, length,
+                       length > 0 ? bytes[0] : 0,
+                       length > 1 ? bytes[1] : 0,
+                       length > 2 ? bytes[2] : 0,
+                       length > 3 ? bytes[3] : 0);
+          }
+
+          '''
+          if 'vc4_trace_entry_memory_write' not in text:
+              pattern = re.compile(
+                  r'(MemTxResult\s+address_space_write\s*\('
+                  r'AddressSpace\s*\*as\s*,\s*hwaddr\s+addr\s*,'
+                  r'\s*MemTxAttrs\s+attrs\s*,\s*const\s+void\s*\*buf\s*,'
+                  r'\s*hwaddr\s+len\s*\)\s*\{)',
+                  re.S,
+              )
+              match = pattern.search(text)
+              if not match:
+                  raise SystemExit('address_space_write definition not found')
+              replacement = (
+                  tracer + match.group(1) + '\n'
+                  '    vc4_trace_entry_memory_write(addr, buf, len);'
+              )
+              text = text[:match.start()] + replacement + text[match.end():]
+              memory.write_text(text)
+
+          helper = Path('target/vc4/helper.h')
+          text = helper.read_text()
+          declaration = 'DEF_HELPER_3(vc4_trace_entry_fetch, void, env, i32, i32)\n'
+          if 'DEF_HELPER_3(vc4_trace_entry_fetch' not in text:
+              helper.write_text(text.rstrip() + '\n' + declaration)
+
+          op = Path('target/vc4/op_helper.c')
+          text = op.read_text()
+          if '#include "qemu/log.h"\n' not in text:
+              text = text.replace('#include "qemu/osdep.h"\n',
+                                  '#include "qemu/osdep.h"\n'
+                                  '#include "qemu/log.h"\n', 1)
+          implementation = r'''
+          void HELPER(vc4_trace_entry_fetch)(CPUVC4State *env, uint32_t pc,
+                                             uint32_t opcode)
+          {
+              static unsigned count;
+              uint32_t low28 = pc & 0x0fffffff;
+
+              if (low28 < 0x0ec00000 || low28 >= 0x0f000000 ||
+                  count++ >= 4096) {
+                  return;
+              }
+              qemu_log("VC4_ENTRY_RUNTIME_FETCH pc=0x%08x opcode=0x%04x "
+                       "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
+                       "sp=0x%08x lr=0x%08x sr=0x%08x\n",
+                       pc, opcode, env->gpr[0], env->gpr[1],
+                       env->gpr[2], env->gpr[3],
+                       env->gpr[VC4_REG_SP], env->gpr[VC4_REG_LR], env->sr);
+          }
+
+          '''
+          if 'void HELPER(vc4_trace_entry_fetch)' not in text:
+              op.write_text(text.rstrip() + '\n\n' + implementation)
+
+          translate = Path('target/vc4/translate.c')
+          text = translate.read_text()
+          anchor = '    i1 = vc4_lduw(ctx, ctx->pc);\n'
+          insert = (
+              '    i1 = vc4_lduw(ctx, ctx->pc);\n'
+              '    gen_helper_vc4_trace_entry_fetch(\n'
+              '        tcg_env, tcg_constant_i32(ctx->pc),\n'
+              '        tcg_constant_i32(i1));\n'
+          )
+          if insert not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit('VC4 instruction-fetch anchor missing')
+              translate.write_text(text.replace(anchor, insert, 1))
+          PY
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Parse expected entry data
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import struct
+
+          image = Path('/tmp/start.elf').read_bytes()
+          entry = struct.unpack_from('<I', image, 24)[0]
+          phoff = struct.unpack_from('<I', image, 28)[0]
+          phentsize = struct.unpack_from('<H', image, 42)[0]
+          phnum = struct.unpack_from('<H', image, 44)[0]
+          selected = None
+          for index in range(phnum):
+              values = struct.unpack_from(
+                  '<IIIIIIII', image, phoff + index * phentsize
+              )
+              p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align = values
+              if p_type == 1 and p_vaddr <= entry < p_vaddr + p_memsz:
+                  selected = {
+                      'index': index,
+                      'offset': p_offset,
+                      'vaddr': p_vaddr,
+                      'paddr': p_paddr,
+                      'filesz': p_filesz,
+                      'memsz': p_memsz,
+                      'flags': p_flags,
+                      'align': p_align,
+                  }
+                  break
+          if selected is None:
+              raise SystemExit('entry is outside PT_LOAD segments')
+          file_offset = selected['offset'] + entry - selected['vaddr']
+          report = {
+              'entry': entry,
+              'segment': selected,
+              'file_offset': file_offset,
+              'expected_prefix': image[file_offset:file_offset + 16].hex(),
+              'expected_opcode': int.from_bytes(
+                  image[file_offset:file_offset + 2], 'little'
+              ),
+          }
+          Path('/tmp/vc4-memory-origin-expected.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Configure and build diagnostic emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run complete official firmware path
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-startelf-memory-origin
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 100 \
+            --trace-samples 380 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --qemu-debug-filter 0x0ec00000..0xf0000000 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          test -s "$out/qemu-mmio.log"
+          test -s "$out/probe.log"
+          cp /tmp/vc4-memory-origin-expected.json "$out/expected.json"
+
+      - name: Commit memory-origin classification
+        run: |
+          set -euo pipefail
+          mkdir -p docs/devel/vc4
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-startelf-memory-origin')
+          expected = json.loads(out.joinpath('expected.json').read_text())
+          trace = out.joinpath('qemu-mmio.log').read_text(
+              errors='replace'
+          ).splitlines()
+          probe = out.joinpath('probe.log').read_text(
+              errors='replace'
+          ).splitlines()
+
+          writes = [
+              line for line in trace
+              if line.startswith('VC4_ENTRY_MEMORY_WRITE ')
+          ]
+          fetches = [
+              line for line in trace
+              if line.startswith('VC4_ENTRY_RUNTIME_FETCH ')
+          ]
+          barrier = next((
+              line for line in reversed(probe)
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ), '')
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          barrier_pc = '0x' + match.group(1).lower() if match else None
+
+          entry = expected['entry']
+          entry_fetch = next((
+              line for line in fetches
+              if f'pc=0x{entry:08x}' in line
+          ), None)
+          actual_opcode = None
+          if entry_fetch:
+              match = re.search(r'opcode=0x([0-9a-fA-F]{4})', entry_fetch)
+              if match:
+                  actual_opcode = int(match.group(1), 16)
+
+          entry_writes = []
+          for line in writes:
+              match = re.search(
+                  r'addr=0x([0-9a-fA-F]+) len=0x([0-9a-fA-F]+) '
+                  r'data=([0-9a-fA-F]+)', line
+              )
+              if not match:
+                  continue
+              address = int(match.group(1), 16)
+              length = int(match.group(2), 16)
+              low = address & 0x0fffffff
+              if low <= 0x0ec00200 < low + length:
+                  entry_writes.append(line)
+
+          if actual_opcode == expected['expected_opcode']:
+              classification = 'entry-bytes-visible-to-vpu'
+          elif entry_writes:
+              classification = 'entry-written-but-not-visible'
+          elif writes:
+              classification = 'nearby-memory-written-entry-skipped'
+          else:
+              classification = 'no-entry-range-address-space-writes'
+
+          report = {
+              'schema_version': 1,
+              'classification': classification,
+              'entry': f'0x{entry:08x}',
+              'segment': expected['segment'],
+              'file_offset': expected['file_offset'],
+              'expected_prefix': expected['expected_prefix'],
+              'expected_opcode': f"0x{expected['expected_opcode']:04x}",
+              'actual_opcode': (
+                  f'0x{actual_opcode:04x}' if actual_opcode is not None
+                  else None
+              ),
+              'entry_fetch': entry_fetch,
+              'barrier_pc': barrier_pc,
+              'barrier': barrier,
+              'write_count': len(writes),
+              'entry_write_count': len(entry_writes),
+              'fetch_count': len(fetches),
+              'entry_writes': entry_writes[-200:],
+              'first_writes': writes[:200],
+              'last_writes': writes[-400:],
+              'runtime_fetches': fetches[-1000:],
+              'diagnostics': [
+                  line for line in trace
+                  if ('illegal' in line.lower() or
+                      'unimplemented' in line.lower() or
+                      'guest error' in line.lower())
+              ][-500:],
+          }
+          Path('docs/devel/vc4/startelf-memory-origin.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          actual = report['actual_opcode'] or 'none'
+          message = (
+              'ci/vc4: report start.elf memory origin '
+              f"class={classification} expected={report['expected_opcode']} "
+              f"actual={actual} writes={len(writes)} "
+              f"entry_writes={len(entry_writes)} fetches={len(fetches)} "
+              f"barrier={barrier_pc} [skip ci]"
+          )
+          Path('/tmp/vc4-memory-origin-message').write_text(message)
+          print(message)
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/devel/vc4/startelf-memory-origin.json
+          git rm .github/workflows/vc4-startelf-memory-origin.yml
+          git commit -m "$(cat /tmp/vc4-memory-origin-message)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload memory-origin evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-startelf-memory-origin-${{ github.run_attempt }}
+          path: /tmp/vc4-startelf-memory-origin
+          if-no-files-found: warn
+          retention-days: 14
