@@ -158,14 +158,21 @@ static void test_transfer_lifecycle(void)
     read_and_check_sector(1);
     stop_transfer();
 
-    /* A finite one-block transfer clears DATA_FLAG when drained. */
+    /*
+     * DATA_FLAG is sticky status, not a live fifo-not-empty level.
+     * It survives the final FIFO pop, is W1C, and CMD12 also clears
+     * it while returning the controller to data mode.
+     */
     writel(SDHBCT, 512);
     writel(SDHBLC, 1);
     sdhost_command(1024, SDCMD_READ_CMD | 18);
     read_and_check_sector(2);
-    g_assert_cmphex(readl(SDHSTS) & SDHSTS_DATA_FLAG, ==, 0);
+    g_assert_cmphex(readl(SDHSTS) & SDHSTS_DATA_FLAG,
+                    ==, SDHSTS_DATA_FLAG);
     g_assert_cmphex(readl(SDEDM) & SDEDM_FSM_MASK,
                     ==, SDEDM_FSM_DATAMODE);
+    writel(SDHSTS, SDHSTS_DATA_FLAG);
+    g_assert_cmphex(readl(SDHSTS) & SDHSTS_DATA_FLAG, ==, 0);
     stop_transfer();
 
     qtest_end();
