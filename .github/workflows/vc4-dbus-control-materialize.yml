@@ -208,7 +208,7 @@ jobs:
 
       - name: Run BCM2835 firmware-control qtests
         run: |
-          meson test -C build --print-errorlogs \
+          build/pyvenv/bin/meson test -C build --print-errorlogs \
             qtest-aarch64/bcm2835-dbus-test \
             qtest-aarch64/bcm2835-powermgt-test
 
