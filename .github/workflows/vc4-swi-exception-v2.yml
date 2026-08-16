@@ -1,0 +1,224 @@
+name: VC4 software-interrupt entry v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-exception-v2
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-vc4-swi:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Apply the reviewed SWI implementation and wire the heterogeneous VPU
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/vc4-swi-exception.yml')
+          lines = workflow.read_text().splitlines()
+          step = '      - name: Implement architectural VC4 software interrupts'
+          try:
+              index = lines.index(step)
+          except ValueError as error:
+              raise SystemExit(f'missing source implementation step: {error}')
+
+          while index < len(lines) and lines[index] != '        run: |':
+              index += 1
+          if index == len(lines):
+              raise SystemExit('implementation step has no run body')
+          index += 1
+
+          body = []
+          while index < len(lines) and not lines[index].startswith('      - name:'):
+              line = lines[index]
+              if line.startswith('          '):
+                  line = line[10:]
+              elif line:
+                  raise SystemExit(f'unexpected implementation indentation: {line!r}')
+              body.append(line)
+              index += 1
+
+          Path('/tmp/apply-vc4-swi.sh').write_text('\n'.join(body) + '\n')
+          PY
+          bash -euxo pipefail /tmp/apply-vc4-swi.sh
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, label: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'hw/arm/vc4_raspi3_hetero.c',
+              '#include "target/arm/cpu.h"\n',
+              '#include "target/arm/cpu.h"\n'
+              '#define VC4_SECONDARY_FRONTEND 1\n'
+              '#include "target/vc4/cpu.h"\n'
+              '#undef VC4_SECONDARY_FRONTEND\n',
+              'secondary VC4 CPU definition')
+
+          replace_once(
+              'hw/arm/vc4_raspi3_hetero.c',
+              '    cpu_address_space_init(s->vpu_cpu, 0, "vc4-vpu",\n'
+              '                           &s->vpu_address_space);\n'
+              '    s->vpu_cpu->start_powered_off = false;\n',
+              '    cpu_address_space_init(s->vpu_cpu, 0, "vc4-vpu",\n'
+              '                           &s->vpu_address_space);\n'
+              '    VC4_CPU(s->vpu_cpu)->intc = &s->vpu_intc[0];\n'
+              '    sysbus_connect_irq(SYS_BUS_DEVICE(&s->vpu_intc[0]), 0,\n'
+              '                       qdev_get_gpio_in(DEVICE(s->vpu_cpu), 0));\n'
+              '    s->vpu_cpu->start_powered_off = false;\n',
+              'heterogeneous VPU interrupt-controller wiring')
+          PY
+
+          python3 -m py_compile scripts/vc4/check-swi-exception.py
+          git diff --check
+          git status --short
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Check VC4 probes
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+
+      - name: Configure and build both VC4 frontends
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+          build/qemu-system-vc4 -M help | grep -F raspi3b-vc4
+          build/qemu-system-aarch64 -M help | grep -F raspi3b-vc4-hetero
+
+      - name: Exercise immediate and register-form SWI entry
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-swi-exception
+          rm -rf "$out"
+          mkdir -p "$out"
+          python3 scripts/vc4/check-swi-exception.py \
+            build/qemu-system-vc4 \
+            --json "$out/unit-summary.json" 2>&1 | tee "$out/unit.log"
+
+      - name: Run official firmware beyond swi 0
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-swi-exception
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 120 \
+            --trace-samples 420 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,int,guest_errors \
+            --qemu-debug-filter 0x1eddba80..0x1eddbc80 \
+            --out-dir "$out/official" 2>&1 | tee "$out/official/probe.log"
+
+          test -s "$out/official/probe.log"
+
+      - name: Assert the software-interrupt frontier is crossed
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/vc4-swi-exception.yml')
+          lines = workflow.read_text().splitlines()
+          step = '      - name: Assert the software-interrupt frontier is crossed'
+          try:
+              index = lines.index(step)
+          except ValueError as error:
+              raise SystemExit(f'missing source assertion step: {error}')
+
+          while index < len(lines) and lines[index] != '        run: |':
+              index += 1
+          if index == len(lines):
+              raise SystemExit('assertion step has no run body')
+          index += 1
+
+          body = []
+          while index < len(lines) and not lines[index].startswith('      - name:'):
+              line = lines[index]
+              if line.startswith('          '):
+                  line = line[10:]
+              elif line:
+                  raise SystemExit(f'unexpected assertion indentation: {line!r}')
+              body.append(line)
+              index += 1
+
+          Path('/tmp/assert-vc4-swi.sh').write_text('\n'.join(body) + '\n')
+          PY
+          bash -euxo pipefail /tmp/assert-vc4-swi.sh
+
+      - name: Commit validated VC4 software-interrupt support
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            hw/arm/vc4_raspi3_hetero.c \
+            scripts/vc4/check-swi-exception.py \
+            target/vc4/cpu.c \
+            target/vc4/cpu.h \
+            target/vc4/helper.h \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c
+          git rm \
+            .github/workflows/vc4-swi-exception.yml \
+            .github/workflows/vc4-swi-exception-v2.yml
+          git commit -m 'target/vc4: implement software-interrupt entry'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload VC4 software-interrupt frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-swi-exception-v2-${{ github.run_attempt }}
+          path: /tmp/vc4-swi-exception
+          if-no-files-found: warn
+          retention-days: 14
