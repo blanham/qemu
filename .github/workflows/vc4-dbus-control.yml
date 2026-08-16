@@ -1,0 +1,442 @@
+name: VC4 DBUS control model
+
+on:
+  push:
+    branches:
+      - agent/vc4-dbus-control-integrated
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-dbus-control:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize the DBUS model and qtest
+        run: |
+          cat > include/hw/misc/bcm2835_dbus.h <<'EOF'
+          /*
+           * BCM2835 DBUS firmware control register
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+          #ifndef HW_MISC_BCM2835_DBUS_H
+          #define HW_MISC_BCM2835_DBUS_H
+
+          #include "hw/core/sysbus.h"
+          #include "qom/object.h"
+
+          #define TYPE_BCM2835_DBUS "bcm2835-dbus"
+          OBJECT_DECLARE_SIMPLE_TYPE(BCM2835DbusState, BCM2835_DBUS)
+
+          #define BCM2835_DBUS_WINDOW_SIZE 0x8000
+
+          struct BCM2835DbusState {
+              SysBusDevice parent_obj;
+
+              MemoryRegion iomem;
+              uint32_t control;
+          };
+
+          #endif /* HW_MISC_BCM2835_DBUS_H */
+          EOF
+
+          cat > hw/misc/bcm2835_dbus.c <<'EOF'
+          /*
+           * BCM2835 DBUS firmware control register
+           *
+           * The VideoCore firmware writes the password-protected register at
+           * offset 0x100 while bringing the USB block online.  Model the observed
+           * interface as a latched low 24-bit control value.
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "hw/misc/bcm2835_dbus.h"
+          #include "migration/vmstate.h"
+          #include "qemu/log.h"
+
+          #define DBUS_CONTROL           0x100
+          #define DBUS_PASSWORD_MASK     0xff000000u
+          #define DBUS_PASSWORD          0x5a000000u
+          #define DBUS_CONTROL_MASK      0x00ffffffu
+
+          static uint64_t bcm2835_dbus_read(void *opaque, hwaddr addr,
+                                            unsigned size)
+          {
+              BCM2835DbusState *s = BCM2835_DBUS(opaque);
+
+              switch (addr) {
+              case DBUS_CONTROL:
+                  return s->control;
+              default:
+                  qemu_log_mask(LOG_UNIMP,
+                                TYPE_BCM2835_DBUS
+                                ": unimplemented read at 0x%04" HWADDR_PRIx
+                                "\n", addr);
+                  return 0;
+              }
+          }
+
+          static void bcm2835_dbus_write(void *opaque, hwaddr addr,
+                                         uint64_t value, unsigned size)
+          {
+              BCM2835DbusState *s = BCM2835_DBUS(opaque);
+              uint32_t v = (uint32_t)value;
+
+              switch (addr) {
+              case DBUS_CONTROL:
+                  if ((v & DBUS_PASSWORD_MASK) != DBUS_PASSWORD) {
+                      qemu_log_mask(LOG_GUEST_ERROR,
+                                    TYPE_BCM2835_DBUS
+                                    ": rejected control write without password"
+                                    " (value 0x%08x)\n", v);
+                      return;
+                  }
+                  s->control = v & DBUS_CONTROL_MASK;
+                  break;
+              default:
+                  qemu_log_mask(LOG_UNIMP,
+                                TYPE_BCM2835_DBUS
+                                ": unimplemented write at 0x%04" HWADDR_PRIx
+                                " (value 0x%08x)\n", addr, v);
+                  break;
+              }
+          }
+
+          static const MemoryRegionOps bcm2835_dbus_ops = {
+              .read = bcm2835_dbus_read,
+              .write = bcm2835_dbus_write,
+              .impl.min_access_size = 4,
+              .impl.max_access_size = 4,
+              .valid.min_access_size = 4,
+              .valid.max_access_size = 4,
+              .endianness = DEVICE_LITTLE_ENDIAN,
+          };
+
+          static void bcm2835_dbus_reset(DeviceState *dev)
+          {
+              BCM2835DbusState *s = BCM2835_DBUS(dev);
+
+              s->control = 0;
+          }
+
+          static void bcm2835_dbus_realize(DeviceState *dev, Error **errp)
+          {
+              BCM2835DbusState *s = BCM2835_DBUS(dev);
+
+              memory_region_init_io(&s->iomem, OBJECT(s), &bcm2835_dbus_ops, s,
+                                    TYPE_BCM2835_DBUS,
+                                    BCM2835_DBUS_WINDOW_SIZE);
+              sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+          }
+
+          static const VMStateDescription bcm2835_dbus_vmstate = {
+              .name = TYPE_BCM2835_DBUS,
+              .version_id = 1,
+              .minimum_version_id = 1,
+              .fields = (const VMStateField[]) {
+                  VMSTATE_UINT32(control, BCM2835DbusState),
+                  VMSTATE_END_OF_LIST()
+              }
+          };
+
+          static void bcm2835_dbus_class_init(ObjectClass *klass,
+                                              const void *data)
+          {
+              DeviceClass *dc = DEVICE_CLASS(klass);
+
+              dc->realize = bcm2835_dbus_realize;
+              device_class_set_legacy_reset(dc, bcm2835_dbus_reset);
+              dc->vmsd = &bcm2835_dbus_vmstate;
+          }
+
+          static const TypeInfo bcm2835_dbus_info = {
+              .name = TYPE_BCM2835_DBUS,
+              .parent = TYPE_SYS_BUS_DEVICE,
+              .instance_size = sizeof(BCM2835DbusState),
+              .class_init = bcm2835_dbus_class_init,
+          };
+
+          static void bcm2835_dbus_register_types(void)
+          {
+              type_register_static(&bcm2835_dbus_info);
+          }
+
+          type_init(bcm2835_dbus_register_types)
+          EOF
+
+          cat > tests/qtest/bcm2835-dbus-test.c <<'EOF'
+          /*
+           * QTest testcase for the BCM2835 DBUS control register
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "libqtest-single.h"
+
+          #define DBUS_CONTROL  0x3f900100u
+          #define DBUS_PASSWORD 0x5a000000u
+
+          static void assert_control(uint32_t expected)
+          {
+              g_assert_cmphex(readl(DBUS_CONTROL), ==, expected);
+          }
+
+          static void test_control_latch(void)
+          {
+              assert_control(0);
+
+              writel(DBUS_CONTROL, 0x00000002);
+              assert_control(0);
+
+              writel(DBUS_CONTROL, 0xa5000002);
+              assert_control(0);
+
+              writel(DBUS_CONTROL, DBUS_PASSWORD | 0x00123456);
+              assert_control(0x00123456);
+
+              writel(DBUS_CONTROL, 0x00000007);
+              assert_control(0x00123456);
+
+              writel(DBUS_CONTROL, DBUS_PASSWORD | 0x00ffffff);
+              assert_control(0x00ffffff);
+
+              writel(DBUS_CONTROL, DBUS_PASSWORD);
+              assert_control(0);
+          }
+
+          int main(int argc, char **argv)
+          {
+              int ret;
+
+              g_test_init(&argc, &argv, NULL);
+              g_test_add_func("/bcm2835/dbus/control-latch",
+                              test_control_latch);
+
+              qtest_start("-M raspi3b");
+              ret = g_test_run();
+              qtest_end();
+              return ret;
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def ensure(path: str, old: str, new: str, label: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              file.write_text(text.replace(old, new, 1))
+
+          ensure(
+              'include/hw/arm/bcm2835_peripherals.h',
+              '#include "hw/misc/bcm2835_cprman.h"\n'
+              '#include "hw/misc/bcm2835_powermgt.h"\n',
+              '#include "hw/misc/bcm2835_cprman.h"\n'
+              '#include "hw/misc/bcm2835_dbus.h"\n'
+              '#include "hw/misc/bcm2835_powermgt.h"\n',
+              'DBUS header include')
+          ensure(
+              'include/hw/arm/bcm2835_peripherals.h',
+              '    UnimplementedDeviceState dbus;\n',
+              '    BCM2835DbusState dbus;\n',
+              'DBUS state type')
+
+          ensure(
+              'hw/arm/bcm2835_peripherals.c',
+              '    /* Mphi */\n'
+              '    object_initialize_child(obj, "mphi", &s->mphi, '
+              'TYPE_BCM2835_MPHI);\n\n'
+              '    /* DWC2 */\n',
+              '    /* Mphi */\n'
+              '    object_initialize_child(obj, "mphi", &s->mphi, '
+              'TYPE_BCM2835_MPHI);\n\n'
+              '    /* DBUS firmware control */\n'
+              '    object_initialize_child(obj, "dbus", &s->dbus, '
+              'TYPE_BCM2835_DBUS);\n\n'
+              '    /* DWC2 */\n',
+              'DBUS child initialization')
+          ensure(
+              'hw/arm/bcm2835_peripherals.c',
+              '    /* DWC2 */\n'
+              '    if (!sysbus_realize(SYS_BUS_DEVICE(&s->dwc2), errp)) {\n',
+              '    /* DBUS firmware control */\n'
+              '    if (!sysbus_realize(SYS_BUS_DEVICE(&s->dbus), errp)) {\n'
+              '        return;\n'
+              '    }\n'
+              '    memory_region_add_subregion(\n'
+              '        &s->peri_mr, DBUS_OFFSET,\n'
+              '        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->dbus), 0));\n\n'
+              '    /* DWC2 */\n'
+              '    if (!sysbus_realize(SYS_BUS_DEVICE(&s->dwc2), errp)) {\n',
+              'DBUS realization')
+
+          peripherals = Path('hw/arm/bcm2835_peripherals.c')
+          text = peripherals.read_text()
+          placeholder = (
+              '    create_unimp(s, &s->dbus, "bcm2835-dbus", '
+              'DBUS_OFFSET, 0x8000);\n'
+          )
+          if placeholder in text:
+              peripherals.write_text(text.replace(placeholder, '', 1))
+          elif 'TYPE_BCM2835_DBUS' not in text:
+              raise SystemExit('DBUS placeholder removal: model is absent')
+
+          ensure(
+              'hw/misc/meson.build',
+              "  'bcm2835_cprman.c',\n  'bcm2835_powermgt.c',\n",
+              "  'bcm2835_cprman.c',\n  'bcm2835_dbus.c',\n"
+              "  'bcm2835_powermgt.c',\n",
+              'DBUS build integration')
+          ensure(
+              'tests/qtest/meson.build',
+              "  (config_all_devices.has_key('CONFIG_RASPI') ? "
+              "['bcm2835-dma-test', 'bcm2835-i2c-test'] : []) +  \\\n",
+              "  (config_all_devices.has_key('CONFIG_RASPI') ? "
+              "['bcm2835-dbus-test', 'bcm2835-dma-test', "
+              "'bcm2835-i2c-test'] : []) +  \\\n",
+              'DBUS qtest registration')
+          PY
+
+          git diff --check
+          git status --short
+
+      - name: Check stock-firmware probes
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/analyze-stock-mmio-frontier.py \
+            scripts/vc4/assert-stock-usb-root-hub.py \
+            scripts/vc4/summarize-stock-usb-post-reset.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build DBUS-enabled emulator and qtest
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build \
+            qemu-system-aarch64 \
+            tests/qtest/bcm2835-dbus-test
+
+      - name: Exercise DBUS register semantics through QTest
+        run: |
+          QTEST_QEMU_BINARY="$PWD/build/qemu-system-aarch64" \
+            build/tests/qtest/bcm2835-dbus-test
+
+      - name: Trace official firmware with DBUS and onboard hub models
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-dbus-control
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 75 \
+            --trace-samples 200 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm \
+            --qemu-debug-filter 0x520..0x620 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          if grep -q 'bcm2835-dbus:' "$out/qemu-mmio.log"; then
+            echo 'DBUS model did not consume the official firmware access' >&2
+            exit 1
+          fi
+
+          python3 scripts/vc4/analyze-stock-mmio-frontier.py \
+            "$out/qemu-mmio.log" \
+            --json "$out/mmio-frontier.json" \
+            | tee "$out/mmio-frontier.txt"
+
+          python3 scripts/vc4/assert-stock-usb-root-hub.py \
+            "$out/mmio-frontier.json" \
+            --probe-log "$out/probe.log" \
+            | tee "$out/usb-root-hub-summary.json"
+
+          python3 scripts/vc4/summarize-stock-usb-post-reset.py \
+            "$out/probe.log" \
+            "$out/mmio-frontier.json" \
+            --require-delay-crossed \
+            | tee "$out/post-reset-summary.json"
+
+          test -s "$out/mmio-frontier.json"
+          test -s "$out/post-reset-summary.json"
+
+      - name: Commit validated DBUS implementation
+        run: |
+          if test -n "$(git status --porcelain -- \
+              hw/arm/bcm2835_peripherals.c \
+              hw/misc/bcm2835_dbus.c \
+              hw/misc/meson.build \
+              include/hw/arm/bcm2835_peripherals.h \
+              include/hw/misc/bcm2835_dbus.h \
+              tests/qtest/bcm2835-dbus-test.c \
+              tests/qtest/meson.build)"; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add \
+              hw/arm/bcm2835_peripherals.c \
+              hw/misc/bcm2835_dbus.c \
+              hw/misc/meson.build \
+              include/hw/arm/bcm2835_peripherals.h \
+              include/hw/misc/bcm2835_dbus.h \
+              tests/qtest/bcm2835-dbus-test.c \
+              tests/qtest/meson.build
+            git commit -m 'hw/arm: model BCM2835 DBUS control register'
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          else
+            echo 'DBUS implementation already matches the validated model.'
+          fi
+
+      - name: Upload DBUS validation frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-dbus-control-${{ github.run_attempt }}
+          path: /tmp/vc4-dbus-control
+          if-no-files-found: warn
+          retention-days: 14
