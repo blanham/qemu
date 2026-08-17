@@ -210,7 +210,9 @@ def make_image(register_form: bool) -> tuple[bytes, int, int, int, int]:
 
 
 def parse_register(output: str, name: str) -> int:
-    match = re.search(rf"\b{name}=([0-9a-fA-F]{{8}})\b", output)
+    match = re.search(
+        rf"\b{re.escape(name)}\s*=\s*([0-9a-fA-F]{{8}})\b", output
+    )
     if not match:
         raise RuntimeError(f"{name} missing from registers:\n{output}")
     return int(match.group(1), 16)
