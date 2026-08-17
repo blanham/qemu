@@ -1,0 +1,184 @@
+name: VC4 SWI production-path validation
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-exception
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-production-path:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize the original SWI implementation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          lines = Path('.github/workflows/vc4-swi-exception.yml').read_text().splitlines()
+          candidates = []
+          i = 0
+          while i < len(lines):
+              m = re.match(r'^(\s*)run:\s*\|[-+]?\s*$', lines[i])
+              if not m:
+                  i += 1
+                  continue
+              indent = len(m.group(1))
+              body = []
+              i += 1
+              while i < len(lines):
+                  line = lines[i]
+                  stripped = line.lstrip(' ')
+                  lead = len(line) - len(stripped)
+                  if stripped and lead <= indent:
+                      break
+                  body.append('' if not stripped else line[indent + 2:])
+                  i += 1
+              script = '\n'.join(body) + '\n'
+              if ('VC4_EXCP_SWI' in script or 'vc4_swi' in script) and \
+                 ('target/vc4' in script or 'cpu.h' in script):
+                  candidates.append(script)
+          if len(candidates) != 1:
+              raise SystemExit(f'expected one materializer, found {len(candidates)}')
+          Path('/tmp/materialize-swi.sh').write_text(
+              '#!/usr/bin/env bash\nset -euo pipefail\n' + candidates[0]
+          )
+          PY
+          chmod +x /tmp/materialize-swi.sh
+          /tmp/materialize-swi.sh
+          git diff --check
+
+      - name: Download pinned official firmware
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = 7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = 0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = 1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build production emulator
+        run: |
+          mkdir -p /tmp/vc4-swi-production
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          set -o pipefail
+          ninja -C build qemu-system-aarch64 2>&1 \
+            | tee /tmp/vc4-swi-production/build.log
+
+      - name: Prove official firmware returns through the SWI handler
+        run: |
+          set -euo pipefail
+          out=/tmp/vc4-swi-production
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 90 \
+            --trace-samples 300 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --qemu-debug-filter 0x1eddba80..0x1eddbd80 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          root = Path('/tmp/vc4-swi-production')
+          probe = (root / 'probe.log').read_text(errors='replace').splitlines()
+          diag = (root / 'qemu-mmio.log').read_text(errors='replace').splitlines()
+          lines = probe + diag
+
+          if any(line.startswith('VC4_LOW_PC_WRITE ') for line in probe):
+              raise SystemExit('low-memory PC regression')
+          bad = [line for line in lines
+                 if '0x1eddba9a' in line.lower() and
+                    ('illegal' in line.lower() or
+                     'unimplemented opcode 0x01c0' in line.lower())]
+          if bad:
+              raise SystemExit('SWI remains illegal: ' + bad[0])
+
+          barriers = [line for line in probe
+                      if line.startswith('STOCK_BOOTCODE_BARRIER ')]
+          if not barriers:
+              raise SystemExit('missing firmware barrier')
+          barrier = barriers[-1]
+          m = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          if not m:
+              raise SystemExit('barrier lacks PC: ' + barrier)
+          pc = int(m.group(1), 16)
+          if pc == 0x1eddba9a:
+              raise SystemExit('firmware did not leave SWI zero')
+
+          translated = [line for line in diag
+                        if '0x1eddba9a' in line.lower() or
+                           '0x1eddbabe' in line.lower()]
+          summary = {
+              'schema_version': 1,
+              'old_frontier': '0x1eddba9a',
+              'new_barrier_pc': f'0x{pc:08x}',
+              'barrier': barrier,
+              'frontier_trace': translated[-80:],
+          }
+          (root / 'summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit validated production implementation
+        run: |
+          set -euo pipefail
+          mapfile -t production < <(
+            git status --porcelain \
+              | sed -E 's/^.. //' \
+              | grep -E '^(target/vc4/|hw/vc4/|include/hw/vc4/)'
+          )
+          if ((${#production[@]} == 0)); then
+            echo 'No production changes to commit.'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- "${production[@]}"
+          git diff --cached --check
+          git commit -m 'target/vc4: implement software interrupt exceptions'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload production validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-swi-production-${{ github.run_attempt }}
+          path: /tmp/vc4-swi-production
+          if-no-files-found: warn
+          retention-days: 14
