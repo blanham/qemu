@@ -1,0 +1,148 @@
+name: VC4 stock-firmware AArch64 payload handoff
+
+on:
+  push:
+    branches:
+      - agent/vc4-arm-payload-stage-repair
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stock-firmware-arm-payload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build and payload dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download the pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build the freestanding kernel8.img witness
+        run: |
+          cat >/tmp/vc4-arm-payload.S <<'EOF'
+          .section .text
+          .global _start
+          .type _start, %function
+          _start:
+              mov x4, x0
+              mov x5, sp
+              mrs x6, mpidr_el1
+              ldr x0, =0x0000000000001000
+              ldr x1, =0x5643345f41524d21
+              str x1, [x0]
+              str x4, [x0, #8]
+              str x5, [x0, #16]
+              str x6, [x0, #24]
+              dsb sy
+          1:
+              wfe
+              b 1b
+              .ltorg
+          .size _start, . - _start
+          EOF
+
+          aarch64-linux-gnu-as \
+            -o /tmp/vc4-arm-payload.o /tmp/vc4-arm-payload.S
+          aarch64-linux-gnu-ld \
+            -nostdlib --entry=_start -Ttext=0x80000 \
+            -o /tmp/vc4-arm-payload.elf /tmp/vc4-arm-payload.o
+          aarch64-linux-gnu-objcopy \
+            -O binary /tmp/vc4-arm-payload.elf /tmp/kernel8.img
+          aarch64-linux-gnu-objdump -d /tmp/vc4-arm-payload.elf \
+            | tee /tmp/vc4-arm-payload.dis
+          test -s /tmp/kernel8.img
+
+      - name: Check the stock-firmware image and payload probe
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-arm-payload.py
+          python3 scripts/vc4/stock_bootcode_progress.py
+          git diff --check
+
+      - name: Configure and build the heterogeneous emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Boot kernel8.img through unchanged stock firmware
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-stock-arm-payload
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp /tmp/vc4-arm-payload.dis "$out/payload.dis"
+          cp /tmp/kernel8.img "$out/kernel8.img"
+
+          set +e
+          python3 scripts/vc4/raspi3-stock-arm-payload.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            /tmp/start.elf \
+            /tmp/fixup.dat \
+            /tmp/kernel8.img \
+            --seconds 420 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" >"$out/probe.status"
+
+      - name: Upload the complete handoff frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-arm-payload-${{ github.run_attempt }}
+          path: /tmp/vc4-stock-arm-payload
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require genuine firmware-to-ARM execution
+        run: |
+          test "$(cat /tmp/vc4-stock-arm-payload/probe.status)" = 0
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          result = json.loads(
+              Path('/tmp/vc4-stock-arm-payload/result.json').read_text()
+          )
+          if result.get('signature_seen') is not True:
+              raise SystemExit('stock firmware did not enter kernel8.img')
+          if result.get('observed_signature') != '0x5643345f41524d21':
+              raise SystemExit('payload signature differs')
+          cpus = result.get('cpu_snapshot', {}).get('cpus', [])
+          if sum('cortex-a53' in str(cpu.get('qom_type', '')).lower()
+                 for cpu in cpus) != 4:
+              raise SystemExit('the expected four Cortex-A53 CPUs were absent')
+          if sum('vc4' in str(cpu.get('qom_type', '')).lower()
+                 for cpu in cpus) != 1:
+              raise SystemExit('the expected VideoCore IV CPU was absent')
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
