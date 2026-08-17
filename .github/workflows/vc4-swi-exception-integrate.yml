@@ -1,0 +1,59 @@
+name: Integrate validated VC4 SWI exception support
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-exception
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: >-
+      github.actor == 'github-actions[bot]' &&
+      startsWith(github.event.head_commit.message,
+      'target/vc4: implement software interrupt exceptions')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify and merge without rewriting history
+        env:
+          INTEGRATION_BRANCH: agent/vc4-pc-write-origin-refresh
+        run: |
+          set -euo pipefail
+          git fetch origin \
+            "$INTEGRATION_BRANCH" \
+            "$GITHUB_REF_NAME"
+
+          feature_head=$(git rev-parse "origin/$GITHUB_REF_NAME")
+          integration_head=$(git rev-parse "origin/$INTEGRATION_BRANCH")
+
+          if ! git merge-base --is-ancestor "$integration_head" "$feature_head"; then
+            echo 'Integration branch advanced outside this feature history.' >&2
+            echo "integration=$integration_head" >&2
+            echo "feature=$feature_head" >&2
+            exit 1
+          fi
+
+          test -n "$(git show --format= --name-only "$feature_head" \
+            | grep -E '^(target/vc4|hw/vc4|tests/|scripts/vc4)')"
+          git show --format=%s -s "$feature_head" \
+            | grep -Fx 'target/vc4: implement software interrupt exceptions'
+
+          git config user.name 'Bryce Lanham'
+          git config user.email 'blanham@gmail.com'
+          git switch --detach "$integration_head"
+          git merge --no-ff --no-edit "$feature_head" \
+            -m 'Merge VC4 software interrupt exception support'
+
+          # Ordinary compare-and-swap push: fail rather than overwrite any
+          # concurrent continuation work.
+          git push origin \
+            "HEAD:refs/heads/$INTEGRATION_BRANCH" \
+            --force-with-lease="refs/heads/$INTEGRATION_BRANCH:$integration_head"
