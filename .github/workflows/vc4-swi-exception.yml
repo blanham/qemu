@@ -30,53 +30,10 @@ jobs:
       - name: Apply architectural SWI and interrupt wiring changes
         run: |
           python3 scripts/vc4/apply-swi-exception.py
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('scripts/vc4/check-swi-exception.py')
-          text = path.read_text()
-
-          text = text.replace(
-              '        stack_path = tmp / "stack.bin"\n',
-              '',
-              1,
-          )
-          old = '''            qmp.execute("stop")
-            qmp.hmp(
-                f"memsave 0x{EXCEPTION_STACK_TOP - 8:x} 8 {stack_path}",
-                cpu_index=cpu_index,
-            )
-'''
-          new = '''            qmp.execute("stop")
-            frame = qmp.hmp(
-                f"x /2wx 0x{EXCEPTION_STACK_TOP - 8:x}",
-                cpu_index=cpu_index,
-            )
-'''
-          if old not in text:
-              raise SystemExit('focused SWI frame-read anchor missing')
-          text = text.replace(old, new, 1)
-
-          old = '''        if not stack_path.is_file():
-            raise RuntimeError("memsave did not create the stack image")
-        saved_sr, saved_pc = struct.unpack("<II", stack_path.read_bytes())
-'''
-          new = '''        frame_words = re.findall(
-            r"\\b0x([0-9a-fA-F]{8})\\b", frame
-        )
-        if len(frame_words) < 2:
-            raise RuntimeError(
-                "could not read the SWI frame through the VPU address space: "
-                + frame
-            )
-        saved_sr, saved_pc = (int(word, 16) for word in frame_words[:2])
-'''
-          if old not in text:
-              raise SystemExit('focused SWI frame parser anchor missing')
-          path.write_text(text.replace(old, new, 1))
-          PY
+          python3 scripts/vc4/materialize-swi-frame-read.py
           python3 -m py_compile \
             scripts/vc4/apply-swi-exception.py \
+            scripts/vc4/materialize-swi-frame-read.py \
             scripts/vc4/check-swi-exception.py
           git diff --check
           git status --short
@@ -234,6 +191,7 @@ jobs:
             target/vc4/translate.c
           git rm \
             scripts/vc4/apply-swi-exception.py \
+            scripts/vc4/materialize-swi-frame-read.py \
             .github/workflows/vc4-swi-exception.yml
           git commit -m 'target/vc4: implement software-interrupt entry'
           git push origin "HEAD:${GITHUB_REF_NAME}"
