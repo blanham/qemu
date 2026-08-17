@@ -9,6 +9,11 @@ machine's ``-kernel`` path is retained only to satisfy its firmware source
 requirement; QMP redirects the stopped VPU to the boot-cache harness before it
 is allowed to execute.  The image programs IC0_VADDR, enters immediate and
 register-form SWIs, and checks the architectural exception frame through QMP.
+
+The test deliberately uses branch-to-self sentinels rather than BKPT/SLEEP as
+its completion signal.  Board interrupt activity may wake a halted VPU while
+the monitor samples it; a stable architectural loop makes the SWI and RTI
+checks independent of that unrelated scheduler behaviour.
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ VECTOR_BASE = 0x00008000
 EXCEPTION_STACK_TOP = 0x0001F000
 IC0_VADDR = 0x7E002030
 VC4_SR_S = 1 << 29
+IMMEDIATE_MAGIC = 0x51A10020
+REGISTER_MAGIC = 0x51A10021
 
 
 class QMP:
@@ -143,6 +150,12 @@ def store_word(source: int, base: int) -> bytes:
     return struct.pack("<H", 0x0900 | (base << 4) | source)
 
 
+def branch_register(register: int) -> bytes:
+    if not 0 <= register < 32:
+        raise ValueError(register)
+    return struct.pack("<H", 0x0040 | register)
+
+
 def common_prefix() -> bytes:
     return b"".join((
         mov32(0, IC0_VADDR),
@@ -152,7 +165,17 @@ def common_prefix() -> bytes:
     ))
 
 
-def make_image(register_form: bool) -> tuple[bytes, int, int, int]:
+def loop_sentinel(address: int, magic: int) -> bytes:
+    """Set r3 to *magic* and branch forever at address + 12."""
+    loop = address + 12
+    return b"".join((
+        mov32(3, magic),
+        mov32(4, loop),
+        branch_register(4),
+    ))
+
+
+def make_image(register_form: bool) -> tuple[bytes, int, int, int, int]:
     image = bytearray(VECTOR_BASE - IMAGE_BASE + 0x1000)
     code = bytearray(common_prefix())
 
@@ -160,22 +183,30 @@ def make_image(register_form: bool) -> tuple[bytes, int, int, int]:
         code.extend(mov32(2, 1))
         code.extend(struct.pack("<H", 0x0022))  # swi r2
         vector = 33
+        return_pc = IMAGE_BASE + len(code)
+        sentinel = loop_sentinel(return_pc, REGISTER_MAGIC)
+        code.extend(sentinel)
+        final_pc = return_pc + 12
+        magic = REGISTER_MAGIC
         image[HANDLER - IMAGE_BASE:HANDLER - IMAGE_BASE + 2] = \
             struct.pack("<H", 0x000A)  # rti
     else:
         code.extend(struct.pack("<H", 0x01C0))  # swi 0
         vector = 32
-        image[HANDLER - IMAGE_BASE:HANDLER - IMAGE_BASE + 2] = \
-            struct.pack("<H", 0x0000)  # halt
+        return_pc = IMAGE_BASE + len(code)
+        # A return from the immediate case is a test failure, but leave a
+        # deterministic loop behind it rather than falling through zero RAM.
+        code.extend(loop_sentinel(return_pc, 0xBAD00020))
+        handler = loop_sentinel(HANDLER, IMMEDIATE_MAGIC)
+        image[HANDLER - IMAGE_BASE:HANDLER - IMAGE_BASE + len(handler)] = handler
+        final_pc = HANDLER + 12
+        magic = IMMEDIATE_MAGIC
 
-    return_pc = IMAGE_BASE + len(code)
-    code.extend(struct.pack("<H", 0x0000))  # halt after RTI
     image[:len(code)] = code
     struct.pack_into("<I", image,
                      VECTOR_BASE - IMAGE_BASE + vector * 4,
                      HANDLER | 1)
-    final_pc = return_pc + 2 if register_form else HANDLER + 2
-    return bytes(image), vector, return_pc, final_pc
+    return bytes(image), vector, return_pc, final_pc, magic
 
 
 def parse_register(output: str, name: str) -> int:
@@ -197,7 +228,7 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
 
 
 def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
-    image, vector, return_pc, final_pc = make_image(register_form)
+    image, vector, return_pc, final_pc, magic = make_image(register_form)
     name = "register" if register_form else "immediate"
 
     with tempfile.TemporaryDirectory(prefix=f"vc4-swi-{name}-") as tmp_s:
@@ -264,14 +295,16 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
                         f"QEMU exited with status {process.returncode}:\n{stderr}"
                     )
                 registers = qmp.hmp("info registers", cpu_index=cpu_index)
-                if parse_register(registers, "pc") == final_pc:
+                if (parse_register(registers, "r3") == magic and
+                        parse_register(registers, "pc") == final_pc):
                     break
                 time.sleep(0.005)
             else:
                 log = log_path.read_text(encoding="utf-8", errors="replace")
                 raise RuntimeError(
-                    f"CPU did not halt at 0x{final_pc:08x}:\n{registers}\n"
-                    f"QEMU log:\n{log}"
+                    f"CPU did not reach {name} sentinel "
+                    f"pc=0x{final_pc:08x} magic=0x{magic:08x}:\n"
+                    f"{registers}\nQEMU log:\n{log}"
                 )
 
             qmp.execute("stop")
@@ -303,8 +336,12 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
         sr = parse_register(registers, "sr")
         sp = parse_register(registers, "r25")
         exception_sp = parse_register(registers, "r28")
-        if pc != final_pc:
-            raise RuntimeError(f"{name} final PC 0x{pc:08x}")
+        observed_magic = parse_register(registers, "r3")
+        if pc != final_pc or observed_magic != magic:
+            raise RuntimeError(
+                f"{name} sentinel pc=0x{pc:08x} "
+                f"magic=0x{observed_magic:08x}"
+            )
         if exception_sp != EXCEPTION_STACK_TOP:
             raise RuntimeError(
                 f"{name} r28 0x{exception_sp:08x}, expected "
@@ -330,6 +367,7 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
             "vector": vector,
             "return_pc": f"0x{return_pc:08x}",
             "final_pc": f"0x{pc:08x}",
+            "magic": f"0x{observed_magic:08x}",
             "saved_sr": f"0x{saved_sr:08x}",
             "saved_pc": f"0x{saved_pc:08x}",
             "sr": f"0x{sr:08x}",
