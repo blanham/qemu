@@ -1,0 +1,140 @@
+name: Reconcile prior VC4 ARM-release work
+
+on:
+  push:
+    branches:
+      - agent/vc4-pc-write-origin-refresh
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  reconcile-arm-release-history:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Compare all surviving ARM-release candidates
+        run: |
+          set -euo pipefail
+          candidates=(
+            agent/vc4-arm-release
+            agent/vc4-arm-release-v2
+            agent/vc4-raspi3-arm-start
+            agent/vc4-raspi3-hetero-power
+          )
+          for branch in "${candidates[@]}"; do
+            git fetch origin "$branch"
+          done
+
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import urllib.parse
+          import urllib.request
+
+          candidates = [
+              'agent/vc4-arm-release',
+              'agent/vc4-arm-release-v2',
+              'agent/vc4-raspi3-arm-start',
+              'agent/vc4-raspi3-hetero-power',
+          ]
+          base = 'HEAD'
+
+          def git(*args, check=True):
+              result = subprocess.run(
+                  ['git', *args], text=True, stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT, check=check)
+              return result.stdout
+
+          report = {
+              'schema_version': 1,
+              'integration_sha': git('rev-parse', base).strip(),
+              'candidates': {},
+          }
+          token = os.environ['GH_TOKEN']
+          repo = os.environ['GITHUB_REPOSITORY']
+
+          for branch in candidates:
+              remote = 'origin/' + branch
+              merge_base = git('merge-base', base, remote).strip()
+              commits = [
+                  line for line in git(
+                      'log', '--format=%H%x09%s', f'{base}..{remote}'
+                  ).splitlines() if line
+              ]
+              files = [
+                  line for line in git(
+                      'diff', '--name-only', f'{base}...{remote}'
+                  ).splitlines() if line
+              ]
+              code_files = [
+                  path for path in files
+                  if not path.startswith('.github/workflows/')
+              ]
+              merge_tree = git(
+                  'merge-tree', git('merge-base', base, remote).strip(),
+                  base, remote, check=False)
+              conflicts = [
+                  line for line in merge_tree.splitlines()
+                  if line.startswith('<<<<<<<') or
+                     'changed in both' in line.lower()
+              ]
+
+              url = (
+                  f'https://api.github.com/repos/{repo}/actions/runs?branch=' +
+                  urllib.parse.quote(branch, safe='') + '&per_page=20')
+              request = urllib.request.Request(url, headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f'Bearer {token}',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              })
+              with urllib.request.urlopen(request) as response:
+                  runs = json.load(response).get('workflow_runs', [])
+
+              report['candidates'][branch] = {
+                  'head_sha': git('rev-parse', remote).strip(),
+                  'merge_base': merge_base,
+                  'unique_commits': commits,
+                  'changed_files': files,
+                  'code_files': code_files,
+                  'merge_conflict_indicators': conflicts,
+                  'latest_workflow_runs': [
+                      {
+                          'id': run['id'],
+                          'name': run['name'],
+                          'status': run['status'],
+                          'conclusion': run.get('conclusion'),
+                          'head_sha': run['head_sha'],
+                      }
+                      for run in runs[:20]
+                  ],
+              }
+
+          Path('VC4_ARM_RELEASE_RECONCILIATION.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish the reconciliation report on an isolated branch
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          git checkout -B agent/vc4-arm-release-reconcile
+          git add VC4_ARM_RELEASE_RECONCILIATION.json
+          git commit -m 'ci/vc4: reconcile surviving ARM-release histories [skip ci]'
+          git push origin HEAD:agent/vc4-arm-release-reconcile
