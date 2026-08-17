@@ -1,0 +1,301 @@
+name: Stage VC4 firmware-to-ARM payload boot
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-exception-v2
+
+permissions:
+  contents: write
+
+jobs:
+  stage-arm-payload:
+    if: >-
+      github.actor == 'github-actions[bot]' &&
+      contains(github.event.head_commit.message,
+               'target/vc4: implement architectural software exceptions')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for SWI support to reach the integration branch
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            git fetch origin agent/vc4-pc-write-origin-refresh
+            if git merge-base --is-ancestor \
+                 "$GITHUB_SHA" \
+                 origin/agent/vc4-pc-write-origin-refresh; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Create the firmware-to-ARM milestone branch
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin agent/vc4-pc-write-origin-refresh
+          git checkout -B agent/vc4-arm-payload-boot \
+            origin/agent/vc4-pc-write-origin-refresh
+          mkdir -p .github/workflows
+          cat > .github/workflows/vc4-arm-payload-boot.yml <<'EOF'
+          name: VC4 stock firmware boots an AArch64 payload
+
+          on:
+            push:
+              branches:
+                - agent/vc4-arm-payload-boot
+            workflow_dispatch:
+
+          permissions:
+            contents: read
+
+          jobs:
+            firmware-arm-handoff:
+              runs-on: ubuntu-24.04
+              timeout-minutes: 45
+              env:
+                RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+              steps:
+                - uses: actions/checkout@v5
+
+                - name: Install build, FAT, and cross-binutils dependencies
+                  run: |
+                    sudo apt-get update
+                    sudo apt-get install -y \
+                      binutils-aarch64-linux-gnu curl dosfstools mtools \
+                      ninja-build pkg-config python3 python3-venv \
+                      libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+                - name: Download pinned official firmware files
+                  run: |
+                    for file in bootcode.bin start.elf fixup.dat \
+                                bcm2710-rpi-3-b-plus.dtb; do
+                      curl --fail --location --retry 4 \
+                        --output "/tmp/${file}" \
+                        "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+                    done
+                    test "$(git hash-object /tmp/bootcode.bin)" = \
+                      7642d2d89e4235e7d68875ff70688bdde6e71b5a
+                    test "$(git hash-object /tmp/start.elf)" = \
+                      0cefcf3a756740760f9903f35cc3843117853712
+                    test "$(git hash-object /tmp/fixup.dat)" = \
+                      1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+                - name: Build a freestanding ARM64 handoff payload
+                  run: |
+                    cat > /tmp/kernel8.S <<'ASM'
+                    .section .text.boot, "ax"
+                    .global _start
+                    .balign 2048
+                    _start:
+                        ldr x1, =0x0000000000001000
+                        ldr x2, =0x5643345f41524d21
+                        str x2, [x1]
+                        mrs x3, mpidr_el1
+                        str x3, [x1, #8]
+                        mov x4, sp
+                        str x4, [x1, #16]
+                        mov x5, x0
+                        str x5, [x1, #24]
+                    1:
+                        wfe
+                        b 1b
+                    ASM
+                    cat > /tmp/kernel8.ld <<'LD'
+                    ENTRY(_start)
+                    SECTIONS
+                    {
+                        . = 0x80000;
+                        .text : { *(.text.boot) *(.text*) }
+                        .rodata : { *(.rodata*) }
+                        .data : { *(.data*) }
+                        .bss : { *(.bss*) *(COMMON) }
+                    }
+                    LD
+                    aarch64-linux-gnu-as -o /tmp/kernel8.o /tmp/kernel8.S
+                    aarch64-linux-gnu-ld -T /tmp/kernel8.ld \
+                      -o /tmp/kernel8.elf /tmp/kernel8.o
+                    aarch64-linux-gnu-objcopy -O binary \
+                      /tmp/kernel8.elf /tmp/kernel8.img
+                    test -s /tmp/kernel8.img
+                    aarch64-linux-gnu-objdump -d /tmp/kernel8.elf \
+                      > /tmp/kernel8.dis
+
+                - name: Construct a bootable FAT volume
+                  run: |
+                    truncate -s 256M /tmp/raspi-arm-payload.img
+                    mkfs.vfat -F 32 -n VC4BOOT /tmp/raspi-arm-payload.img
+                    cat > /tmp/config.txt <<'CFG'
+                    arm_64bit=1
+                    kernel=kernel8.img
+                    kernel_address=0x80000
+                    enable_uart=1
+                    disable_splash=1
+                    boot_delay=0
+                    CFG
+                    for file in bootcode.bin start.elf fixup.dat \
+                                bcm2710-rpi-3-b-plus.dtb config.txt \
+                                kernel8.img; do
+                      mcopy -i /tmp/raspi-arm-payload.img \
+                        "/tmp/${file}" ::"${file}"
+                    done
+                    mdir -i /tmp/raspi-arm-payload.img :: \
+                      > /tmp/fat-directory.txt
+
+                - name: Configure and build heterogeneous QEMU
+                  run: |
+                    ./configure \
+                      --target-list=aarch64-softmmu \
+                      --disable-docs \
+                      --disable-werror
+                    ninja -C build qemu-system-aarch64
+                    build/qemu-system-aarch64 -M raspi3b,help \
+                      > /tmp/raspi3-machine-help.txt
+                    build/qemu-system-aarch64 -help \
+                      > /tmp/qemu-help.txt
+
+                - name: Run stock firmware and poll for the ARM payload signature
+                  run: |
+                    cat > /tmp/run-arm-payload.py <<'PY'
+                    from __future__ import annotations
+
+                    import json
+                    from pathlib import Path
+                    import re
+                    import socket
+                    import subprocess
+                    import sys
+                    import time
+
+                    qemu = Path('build/qemu-system-aarch64')
+                    machine_help = Path('/tmp/raspi3-machine-help.txt').read_text(
+                        encoding='utf-8', errors='replace')
+                    general_help = Path('/tmp/qemu-help.txt').read_text(
+                        encoding='utf-8', errors='replace')
+
+                    if 'vc4-bootcode' in machine_help:
+                        machine = 'raspi3b,vc4-bootcode=/tmp/bootcode.bin'
+                        boot_arg = []
+                    elif '-vc4-bootcode' in general_help:
+                        machine = 'raspi3b'
+                        boot_arg = ['-vc4-bootcode', '/tmp/bootcode.bin']
+                    else:
+                        raise SystemExit(
+                            'the heterogeneous Raspberry Pi machine exposes '
+                            'no VC4 bootcode option')
+
+                    qmp_path = '/tmp/vc4-arm-payload.qmp'
+                    log_path = Path('/tmp/vc4-arm-payload.log')
+                    cmd = [
+                        str(qemu), '-M', machine,
+                        '-drive',
+                        'file=/tmp/raspi-arm-payload.img,format=raw,if=sd',
+                        '-display', 'none', '-serial', 'none',
+                        '-monitor', 'none',
+                        '-qmp', f'unix:{qmp_path},server=on,wait=off',
+                        '-d', 'in_asm,int,unimp,guest_errors',
+                        '-D', str(log_path),
+                    ] + boot_arg
+                    proc = subprocess.Popen(cmd)
+
+                    def receive(sock):
+                        data = b''
+                        while b'\n' not in data:
+                            chunk = sock.recv(65536)
+                            if not chunk:
+                                raise EOFError('QMP closed')
+                            data += chunk
+                        line, _, rest = data.partition(b'\n')
+                        return json.loads(line), rest
+
+                    deadline = time.monotonic() + 240
+                    try:
+                        while not Path(qmp_path).exists():
+                            if proc.poll() is not None:
+                                raise SystemExit(
+                                    f'QEMU exited early with {proc.returncode}')
+                            if time.monotonic() >= deadline:
+                                raise SystemExit('QMP socket did not appear')
+                            time.sleep(0.1)
+
+                        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                        sock.connect(qmp_path)
+                        file = sock.makefile('rwb', buffering=0)
+                        json.loads(file.readline())
+                        file.write(b'{"execute":"qmp_capabilities"}\n')
+                        json.loads(file.readline())
+
+                        samples = []
+                        signature_seen = False
+                        while time.monotonic() < deadline:
+                            file.write(json.dumps({
+                                'execute': 'human-monitor-command',
+                                'arguments': {
+                                    'command-line': 'xp /4gx 0x1000'
+                                },
+                            }).encode() + b'\n')
+                            reply = json.loads(file.readline())
+                            text = reply.get('return', '')
+                            samples.append(text)
+                            compact = re.sub(r'[^0-9a-fA-F]', '', text).lower()
+                            # 0x5643345f41524d21 is written little-endian.
+                            if ('5643345f41524d21' in compact or
+                                '214d52415f344356' in compact):
+                                signature_seen = True
+                                break
+                            if proc.poll() is not None:
+                                break
+                            time.sleep(1)
+
+                        file.write(json.dumps({
+                            'execute': 'query-cpus-fast'
+                        }).encode() + b'\n')
+                        cpus = json.loads(file.readline()).get('return', [])
+                        Path('/tmp/arm-payload-qmp.json').write_text(
+                            json.dumps({
+                                'signature_seen': signature_seen,
+                                'memory_samples': samples[-40:],
+                                'cpus': cpus,
+                                'command': cmd,
+                            }, indent=2, sort_keys=True) + '\n')
+                        if not signature_seen:
+                            raise SystemExit(
+                                'stock firmware did not enter kernel8.img')
+                    finally:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                    PY
+                    python3 /tmp/run-arm-payload.py
+
+                - name: Upload ARM handoff evidence
+                  if: always()
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: vc4-arm-payload-boot-${{ github.run_attempt }}
+                    path: |
+                      /tmp/arm-payload-qmp.json
+                      /tmp/vc4-arm-payload.log
+                      /tmp/kernel8.dis
+                      /tmp/fat-directory.txt
+                      /tmp/raspi3-machine-help.txt
+                      /tmp/qemu-help.txt
+                    if-no-files-found: warn
+                    retention-days: 14
+          EOF
+
+          git add .github/workflows/vc4-arm-payload-boot.yml
+          git commit -m 'ci/vc4: prove stock-firmware ARM payload handoff'
+          git push origin HEAD:agent/vc4-arm-payload-boot
