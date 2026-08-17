@@ -2,10 +2,11 @@
 """Exercise both VideoCore IV software-interrupt encodings.
 
 The focused image runs on the real heterogeneous Raspberry Pi 3 machine so it
-also verifies that the VPU CPU is wired to IC0.  The image is loaded at the
-machine's 64 MiB VideoCore carve-out (0x3c000000), programs IC0_VADDR, enters
-an immediate and register-form SWI, and checks the architectural exception
-frame through QMP.
+also verifies that the VPU CPU is wired to IC0.  A generic loader places the
+image in the VPU-private 128 KiB boot cache and selects that CPU's address
+space, avoiding the 0x3c000000 carve-out/peripheral decode collision.  The
+image programs IC0_VADDR, enters immediate and register-form SWIs, and checks
+the architectural exception frame through QMP.
 """
 
 from __future__ import annotations
@@ -21,10 +22,10 @@ import tempfile
 import time
 from typing import Any
 
-IMAGE_BASE = 0x3C000000
-VECTOR_BASE = IMAGE_BASE + 0x1000
-HANDLER = IMAGE_BASE + 0x0200
-EXCEPTION_STACK_TOP = IMAGE_BASE + 0x2000
+IMAGE_BASE = 0x00004000
+HANDLER = 0x00006000
+VECTOR_BASE = 0x00008000
+EXCEPTION_STACK_TOP = 0x0001F000
 IC0_VADDR = 0x7E002030
 VC4_SR_S = 1 << 29
 
@@ -150,7 +151,7 @@ def common_prefix() -> bytes:
 
 
 def make_image(register_form: bool) -> tuple[bytes, int, int, int]:
-    image = bytearray(0x3000)
+    image = bytearray(VECTOR_BASE - IMAGE_BASE + 0x1000)
     code = bytearray(common_prefix())
 
     if register_form:
@@ -213,6 +214,9 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
             "-smp", "5",
             "-accel", "tcg,thread=single,one-insn-per-tb=on",
             "-kernel", str(image_path),
+            "-device",
+            (f"loader,file={image_path},addr=0x{IMAGE_BASE:x},"
+             "cpu-num=4,force-raw=on"),
             "-S",
             "-display", "none",
             "-serial", "none",
@@ -232,6 +236,8 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
         try:
             qmp = QMP(qmp_path, process, stderr_path)
             cpu_index = find_vc4_cpu(qmp.execute("query-cpus-fast"))
+            if cpu_index != 4:
+                raise RuntimeError(f"VC4 CPU index is {cpu_index}, expected 4")
             qmp.execute("cont")
             deadline = time.monotonic() + 8.0
             while time.monotonic() < deadline:
@@ -255,7 +261,8 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
 
             qmp.execute("stop")
             qmp.hmp(
-                f"pmemsave 0x{EXCEPTION_STACK_TOP - 8:x} 8 {stack_path}"
+                f"memsave 0x{EXCEPTION_STACK_TOP - 8:x} 8 {stack_path}",
+                cpu_index=cpu_index,
             )
         finally:
             if qmp is not None:
@@ -263,7 +270,7 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
             stop_process(process)
 
         if not stack_path.is_file():
-            raise RuntimeError("pmemsave did not create the stack image")
+            raise RuntimeError("memsave did not create the stack image")
         saved_sr, saved_pc = struct.unpack("<II", stack_path.read_bytes())
         log = log_path.read_text(encoding="utf-8", errors="replace")
         stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
