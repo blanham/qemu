@@ -742,6 +742,29 @@ static void vc4_gen_illegal(DisasContext *ctx, uint16_t opcode)
 
 static bool vc4_decode_scalar16(DisasContext *ctx, uint16_t insn)
 {
+    if ((insn & 0xffe0) == 0x0020) {
+        TCGv_i32 return_pc = tcg_temp_new_i32();
+
+        tcg_gen_addi_i32(return_pc, cpu_pc, 2);
+        gen_helper_vc4_swi(tcg_env,
+                            cpu_gpr[insn & 0x1f],
+                            return_pc);
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return true;
+    }
+
+    if ((insn & 0xffc0) == 0x01c0) {
+        TCGv_i32 return_pc = tcg_temp_new_i32();
+
+        tcg_gen_addi_i32(return_pc, cpu_pc, 2);
+        gen_helper_vc4_swi(
+            tcg_env, tcg_constant_i32(insn & 0x1f),
+            return_pc);
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return true;
+    }
+
+
     unsigned op, rd, rs, format;
     int32_t offset;
 

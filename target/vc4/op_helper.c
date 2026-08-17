@@ -356,12 +356,15 @@ void helper_vc4_rti(CPUArchState *envp)
     CPUVC4State *env = vc4_helper_env(envp);
     VC4CPU *cpu = vc4_env_archcpu(env);
     uint32_t sp = env->gpr[VC4_REG_SP];
+    bool complete_irq = false;
 
     env->sr = cpu_ldl_le_data(envp, sp);
     env->pc = cpu_ldl_le_data(envp, sp + 4);
     env->gpr[VC4_REG_SP] = sp + 8;
 
     if (env->exception_depth) {
+        complete_irq = (env->exception_irq_stack & 1) != 0;
+        env->exception_irq_stack >>= 1;
         env->exception_depth--;
         if (env->exception_depth == 0) {
             env->gpr[28] = env->gpr[VC4_REG_SP];
@@ -369,7 +372,7 @@ void helper_vc4_rti(CPUArchState *envp)
         }
     }
 
-    if (cpu->intc) {
+    if (complete_irq && cpu->intc) {
         bcm2835_vc4_intc_complete(cpu->intc);
     }
 }
@@ -679,6 +682,20 @@ static bool vc4_execute_float_slow(CPUVC4State *env, uint32_t pc,
     }
 
     return false;
+}
+
+
+G_NORETURN void helper_vc4_swi(CPUArchState *envp,
+                               uint32_t selector,
+                               uint32_t return_pc)
+{
+    CPUVC4State *env = vc4_helper_env(envp);
+    CPUState *cs = env_cpu(envp);
+
+    env->swi_vector = UINT32_C(0x20) + (selector & 0x1f);
+    env->pc = return_pc;
+    cs->exception_index = VC4_EXCP_SWI;
+    cpu_loop_exit(cs);
 }
 
 G_NORETURN void helper_vc4_raise_illegal(CPUArchState *envp, uint32_t pc,

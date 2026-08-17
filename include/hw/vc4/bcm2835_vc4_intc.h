@@ -41,4 +41,6 @@ bool bcm2835_vc4_intc_acknowledge(BCM2835VC4IntcState *s,
                                   uint32_t *vector_base);
 void bcm2835_vc4_intc_complete(BCM2835VC4IntcState *s);
 
+uint32_t bcm2835_vc4_intc_vector_base(BCM2835VC4IntcState *s);
+
 #endif

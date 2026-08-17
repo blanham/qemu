@@ -301,3 +301,7 @@ static void vc4_intc_register_types(void)
 }
 
 type_init(vc4_intc_register_types)
+uint32_t bcm2835_vc4_intc_vector_base(BCM2835VC4IntcState *s)
+{
+    return s->vaddr;
+}

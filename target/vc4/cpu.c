@@ -222,19 +222,15 @@ static void vc4_irq_push(CPUState *cs, CPUVC4State *env, uint32_t value)
     cpu_stl_le_data(vc4_tcg_env(cs), sp, value);
 }
 
-static bool vc4_cpu_enter_irq(VC4CPU *cpu)
+static void vc4_cpu_enter_exception(VC4CPU *cpu,
+                                   uint32_t vector,
+                                   uint32_t vector_base,
+                                   bool external_irq)
 {
     CPUState *cs = CPU(cpu);
     CPUVC4State *env = vc4_cpu_env(cs);
-    uint32_t vector;
-    uint32_t vector_base;
     uint32_t vector_entry;
     uint32_t saved_sr = env->sr;
-
-    if (!cpu->intc ||
-        !bcm2835_vc4_intc_acknowledge(cpu->intc, &vector, &vector_base)) {
-        return false;
-    }
 
     if (env->exception_depth == 0) {
         env->normal_sp = env->gpr[VC4_REG_SP];
@@ -243,17 +239,32 @@ static bool vc4_cpu_enter_irq(VC4CPU *cpu)
 
     vc4_irq_push(cs, env, env->pc);
     vc4_irq_push(cs, env, saved_sr);
+    env->exception_irq_stack =
+        (env->exception_irq_stack << 1) | external_irq;
     env->exception_depth++;
 
     vector_entry = cpu_ldl_le_data(vc4_tcg_env(cs),
                                    vector_base + vector * 4);
-
     env->sr = saved_sr & ~(VC4_SR_U | VC4_SR_I | VC4_SR_S);
     if (vector_entry & 1) {
         env->sr |= VC4_SR_S;
     }
     env->pc = vector_entry & ~1u;
     cs->halted = 0;
+}
+
+static bool vc4_cpu_enter_irq(VC4CPU *cpu)
+{
+    uint32_t vector;
+    uint32_t vector_base;
+
+    if (!cpu->intc ||
+        !bcm2835_vc4_intc_acknowledge(cpu->intc, &vector,
+                                      &vector_base)) {
+        return false;
+    }
+
+    vc4_cpu_enter_exception(cpu, vector, vector_base, true);
     return true;
 }
 
@@ -268,6 +279,20 @@ static void vc4_cpu_do_interrupt(CPUState *cs)
                           "VideoCore IV: spurious external interrupt\n");
         }
         break;
+    case VC4_EXCP_SWI: {
+    VC4CPU *cpu = VC4_CPU(cs);
+
+    if (!cpu->intc) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "VideoCore IV: SWI without interrupt controller\n");
+        cs->halted = 1;
+        break;
+    }
+    vc4_cpu_enter_exception(
+        cpu, env->swi_vector,
+        bcm2835_vc4_intc_vector_base(cpu->intc), false);
+    break;
+}
     case VC4_EXCP_ILLEGAL:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "VideoCore IV: illegal instruction at 0x%08x\n",

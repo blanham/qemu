@@ -42,6 +42,7 @@ typedef struct BCM2835VC4IntcState BCM2835VC4IntcState;
 enum {
     VC4_EXCP_ILLEGAL = 1,
     VC4_EXCP_IRQ,
+    VC4_EXCP_SWI,
 };
 
 #ifdef VC4_SECONDARY_FRONTEND
@@ -59,6 +60,8 @@ typedef struct CPUArchState {
      * updated exception stack pointer back to r28 on the outermost RTI.
      */
     uint32_t normal_sp;
+    uint32_t exception_irq_stack;
+    uint32_t swi_vector;
     uint8_t exception_depth;
 
     /* Fields up to this point are cleared by a CPU reset. */
