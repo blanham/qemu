@@ -38,6 +38,7 @@ typedef struct BCM2835VC4IntcState BCM2835VC4IntcState;
 #define VC4_SR_U       (1u << 31)
 
 #define VC4_CPUID_VALUE 0x04000104u
+#define VC4_MAX_EXCEPTION_DEPTH 32
 
 enum {
     VC4_EXCP_ILLEGAL = 1,
@@ -59,6 +60,7 @@ typedef struct CPUArchState {
      * updated exception stack pointer back to r28 on the outermost RTI.
      */
     uint32_t normal_sp;
+    uint32_t external_irq_frames;
     uint8_t exception_depth;
 
     /* Fields up to this point are cleared by a CPU reset. */
@@ -134,6 +136,9 @@ static inline void vc4_env_set_reg(CPUVC4State *env, unsigned reg,
         env->pc = value;
     }
 }
+
+bool vc4_cpu_enter_swi(VC4CPU *cpu, uint32_t number,
+                       uint32_t return_pc);
 
 void vc4_translate_init(void);
 void vc4_translate_code(CPUState *cs, TranslationBlock *tb,

@@ -791,6 +791,20 @@ static bool vc4_decode_scalar16(DisasContext *ctx, uint16_t insn)
         break;
     }
 
+    if ((insn & 0xffe0) == 0x0020) {
+        gen_helper_vc4_swi(tcg_env,
+                            vc4_get_reg(ctx, insn & 0x1f),
+                            tcg_constant_i32(ctx->base.pc_next));
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return true;
+    }
+    if ((insn & 0xffc0) == 0x01c0) {
+        gen_helper_vc4_swi(tcg_env,
+                            tcg_constant_i32(insn & 0x3f),
+                            tcg_constant_i32(ctx->base.pc_next));
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return true;
+    }
     if ((insn & 0xffe0) == 0x0040) {
         tcg_gen_mov_i32(cpu_pc, vc4_get_reg(ctx, insn & 0x1f));
         ctx->base.is_jmp = DISAS_JUMP;

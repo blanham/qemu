@@ -351,17 +351,41 @@ void helper_vc4_push_pop(CPUArchState *envp, uint32_t push, uint32_t lrpc,
     }
 }
 
+G_NORETURN void helper_vc4_swi(CPUArchState *envp,
+                                   uint32_t number,
+                                   uint32_t return_pc)
+{
+    CPUVC4State *env = vc4_helper_env(envp);
+    CPUState *cs = env_cpu(envp);
+    VC4CPU *cpu = vc4_env_archcpu(env);
+
+    if (!vc4_cpu_enter_swi(cpu, number, return_pc)) {
+        env->pc = return_pc - 2;
+        cs->exception_index = VC4_EXCP_ILLEGAL;
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "VideoCore IV: could not enter SWI %u at "
+                      "0x%08x\n", number & 31, env->pc);
+    }
+    cpu_loop_exit(cs);
+}
+
 void helper_vc4_rti(CPUArchState *envp)
 {
     CPUVC4State *env = vc4_helper_env(envp);
     VC4CPU *cpu = vc4_env_archcpu(env);
     uint32_t sp = env->gpr[VC4_REG_SP];
+    bool external = false;
 
     env->sr = cpu_ldl_le_data(envp, sp);
     env->pc = cpu_ldl_le_data(envp, sp + 4);
     env->gpr[VC4_REG_SP] = sp + 8;
 
     if (env->exception_depth) {
+        uint32_t frame_bit = UINT32_C(1) <<
+                             (env->exception_depth - 1);
+
+        external = (env->external_irq_frames & frame_bit) != 0;
+        env->external_irq_frames &= ~frame_bit;
         env->exception_depth--;
         if (env->exception_depth == 0) {
             env->gpr[28] = env->gpr[VC4_REG_SP];
@@ -369,9 +393,13 @@ void helper_vc4_rti(CPUArchState *envp)
         }
     }
 
-    if (cpu->intc) {
+    if (external && cpu->intc) {
         bcm2835_vc4_intc_complete(cpu->intc);
     }
+
+    qemu_log_mask(CPU_LOG_INT,
+                  "VideoCore IV: RTI pc=0x%08x sr=0x%08x depth=%u\n",
+                  env->pc, env->sr, env->exception_depth);
 }
 
 /*

@@ -310,8 +310,8 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
                 )
 
             qmp.execute("stop")
-            qmp.hmp(
-                f"memsave 0x{EXCEPTION_STACK_TOP - 8:x} 8 {stack_path}",
+            frame = qmp.hmp(
+                f"x /2wx 0x{EXCEPTION_STACK_TOP - 8:x}",
                 cpu_index=cpu_index,
             )
         finally:
@@ -319,9 +319,15 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
                 qmp.close()
             stop_process(process)
 
-        if not stack_path.is_file():
-            raise RuntimeError("memsave did not create the stack image")
-        saved_sr, saved_pc = struct.unpack("<II", stack_path.read_bytes())
+        frame_words = re.findall(
+            r"\b0x([0-9a-fA-F]{8})\b", frame
+        )
+        if len(frame_words) < 2:
+            raise RuntimeError(
+                "could not read the SWI frame through the VPU address space: "
+                + frame
+            )
+        saved_sr, saved_pc = (int(word, 16) for word in frame_words[:2])
         log = log_path.read_text(encoding="utf-8", errors="replace")
         stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
 

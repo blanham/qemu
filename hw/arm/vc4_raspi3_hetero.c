@@ -31,6 +31,9 @@
 #include "system/memory.h"
 #include "target/arm/arm-powerctl.h"
 #include "target/arm/cpu.h"
+#define VC4_SECONDARY_FRONTEND 1
+#include "target/vc4/cpu-qom.h"
+#undef VC4_SECONDARY_FRONTEND
 
 #define TYPE_VC4_RASPI3_HETERO_MACHINE \
     MACHINE_TYPE_NAME("raspi3b-vc4-hetero")
@@ -263,6 +266,9 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     if (!qdev_realize(DEVICE(s->vpu_cpu), NULL, &error_fatal)) {
         g_assert_not_reached();
     }
+    vc4_cpu_set_intc(s->vpu_cpu, &s->vpu_intc[0]);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->vpu_intc[0]), 0,
+                       qdev_get_gpio_in(DEVICE(s->vpu_cpu), 0));
     s->arm_power_irq = qemu_allocate_irq(vc4_raspi3_arm_power_on, s, 0);
     qdev_connect_gpio_out_named(
         DEVICE(&ps->powermgt), BCM2835_POWERMGT_ARM_POWER_ON, 0,
