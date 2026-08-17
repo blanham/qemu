@@ -1,0 +1,180 @@
+name: Capture VC4 post-SWI firmware frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-exception
+
+permissions:
+  contents: write
+
+jobs:
+  capture-frontier:
+    if: >-
+      github.actor == 'github-actions[bot]' &&
+      startsWith(github.event.head_commit.message,
+      'target/vc4: implement software interrupt exceptions')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FRONTIER_BRANCH: agent/vc4-post-swi-frontier
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = 7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = 0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = 1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build heterogeneous emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run official firmware and collect the next frontier
+        run: |
+          set -euo pipefail
+          out=/tmp/vc4-post-swi-frontier
+          rm -rf "$out"
+          mkdir -p "$out"
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 180 \
+            --trace-samples 500 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          out = Path('/tmp/vc4-post-swi-frontier')
+          probe = (out / 'probe.log').read_text(errors='replace').splitlines()
+          qemu = (out / 'qemu-mmio.log').read_text(errors='replace').splitlines()
+
+          barriers = [line for line in probe
+                      if line.startswith('STOCK_BOOTCODE_BARRIER ')]
+          barrier = barriers[-1] if barriers else 'STOCK_BOOTCODE_BARRIER missing'
+          m = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          pc = int(m.group(1), 16) if m else None
+
+          illegal = [line for line in qemu
+                     if 'unimplemented opcode' in line.lower() or
+                        'illegal instruction' in line.lower()]
+          unimp = [line for line in qemu
+                   if 'unimplemented' in line.lower() or
+                      'unimp' in line.lower()]
+          state = [line for line in probe
+                   if line.startswith('STOCK_BOOTCODE_') or
+                      line.startswith('VC4_')]
+
+          summary = {
+              'schema_version': 1,
+              'source_commit': 'GITHUB_SHA_PLACEHOLDER',
+              'barrier_pc': None if pc is None else f'0x{pc:08x}',
+              'barrier': barrier,
+              'illegal_records': illegal[-100:],
+              'unimplemented_records': unimp[-200:],
+              'state_records': state[-200:],
+          }
+          summary['source_commit'] = Path('/tmp/source-sha').read_text().strip()
+          (out / 'frontier.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+
+          lines = [
+              '# VC4 post-SWI official-firmware frontier',
+              '',
+              f"Source commit: `{summary['source_commit']}`",
+              f"Barrier PC: `{summary['barrier_pc']}`",
+              '',
+              '```text',
+              barrier,
+              '```',
+              '',
+              '## Illegal or unimplemented instruction records',
+              '',
+              '```text',
+              *(illegal[-100:] or ['none']),
+              '```',
+              '',
+              '## Other unimplemented-device records',
+              '',
+              '```text',
+              *(unimp[-200:] or ['none']),
+              '```',
+              '',
+              '## Final probe records',
+              '',
+              '```text',
+              *(state[-200:] or ['none']),
+              '```',
+              '',
+          ]
+          (out / 'VC4_POST_SWI_FRONTIER.md').write_text('\n'.join(lines))
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+        env:
+          GITHUB_SHA_FOR_REPORT: ${{ github.sha }}
+
+      - name: Publish the frontier report branch
+        run: |
+          set -euo pipefail
+          echo "$GITHUB_SHA" >/tmp/source-sha
+          # Regenerate now that the source SHA is available to the parser.
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('/tmp/vc4-post-swi-frontier/frontier.json')
+          if path.exists():
+              text = path.read_text().replace(
+                  'GITHUB_SHA_PLACEHOLDER', Path('/tmp/source-sha').read_text().strip()
+              )
+              path.write_text(text)
+          PY
+          git switch -C "$FRONTIER_BRANCH"
+          mkdir -p docs/devel
+          cp /tmp/vc4-post-swi-frontier/VC4_POST_SWI_FRONTIER.md \
+            docs/devel/VC4_POST_SWI_FRONTIER.md
+          cp /tmp/vc4-post-swi-frontier/frontier.json \
+            docs/devel/vc4-post-swi-frontier.json
+          git add docs/devel/VC4_POST_SWI_FRONTIER.md \
+                  docs/devel/vc4-post-swi-frontier.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'ci/vc4: record post-SWI firmware frontier [skip ci]'
+          git push origin "HEAD:refs/heads/$FRONTIER_BRANCH"
+
+      - name: Upload full post-SWI frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-post-swi-frontier-${{ github.run_attempt }}
+          path: /tmp/vc4-post-swi-frontier
+          if-no-files-found: warn
+          retention-days: 14
