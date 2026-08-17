@@ -70,12 +70,14 @@ jobs:
 
       - name: Exercise immediate and register-form SWI entry
         run: |
+          set -o pipefail
           out=/tmp/vc4-swi-exception
           rm -rf "$out"
           mkdir -p "$out"
           python3 scripts/vc4/check-swi-exception.py \
             build/qemu-system-aarch64 \
-            --json "$out/unit-summary.json"
+            --json "$out/unit-summary.json" \
+            2>&1 | tee "$out/unit.log"
 
       - name: Run official firmware beyond swi 0
         run: |
