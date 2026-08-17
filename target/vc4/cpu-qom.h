@@ -9,6 +9,8 @@
 
 #include "hw/core/cpu.h"
 
+typedef struct BCM2835VC4IntcState BCM2835VC4IntcState;
+
 #define TYPE_VC4_CPU "vc4-cpu"
 
 #define VC4_CPU_TYPE_SUFFIX "-" TYPE_VC4_CPU
@@ -22,5 +24,7 @@ OBJECT_DECLARE_TYPE(VC4CPU, VC4CPUClass, VC4_CPU)
 #else
 OBJECT_DECLARE_CPU_TYPE(VC4CPU, VC4CPUClass, VC4_CPU)
 #endif
+
+void vc4_cpu_set_intc(CPUState *cs, BCM2835VC4IntcState *intc);
 
 #endif /* VC4_CPU_QOM_H */

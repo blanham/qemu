@@ -27,6 +27,11 @@ static inline CPUArchState *vc4_tcg_env(CPUState *cs)
     return (CPUArchState *)(void *)vc4_cpu_env(cs);
 }
 
+void vc4_cpu_set_intc(CPUState *cs, BCM2835VC4IntcState *intc)
+{
+    VC4_CPU(cs)->intc = intc;
+}
+
 static void vc4_cpu_set_pc(CPUState *cs, vaddr value)
 {
     vc4_cpu_env(cs)->pc = value;
@@ -222,17 +227,21 @@ static void vc4_irq_push(CPUState *cs, CPUVC4State *env, uint32_t value)
     cpu_stl_le_data(vc4_tcg_env(cs), sp, value);
 }
 
-static bool vc4_cpu_enter_irq(VC4CPU *cpu)
+static bool vc4_cpu_enter_vector(VC4CPU *cpu, uint32_t vector,
+                                  uint32_t vector_base,
+                                  uint32_t return_pc,
+                                  bool external)
 {
     CPUState *cs = CPU(cpu);
     CPUVC4State *env = vc4_cpu_env(cs);
-    uint32_t vector;
-    uint32_t vector_base;
     uint32_t vector_entry;
     uint32_t saved_sr = env->sr;
+    uint32_t frame_bit;
 
-    if (!cpu->intc ||
-        !bcm2835_vc4_intc_acknowledge(cpu->intc, &vector, &vector_base)) {
+    if (env->exception_depth >= VC4_MAX_EXCEPTION_DEPTH) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "VideoCore IV: exception nesting overflow at "
+                      "0x%08x\n", return_pc);
         return false;
     }
 
@@ -241,8 +250,16 @@ static bool vc4_cpu_enter_irq(VC4CPU *cpu)
         env->gpr[VC4_REG_SP] = env->gpr[28];
     }
 
-    vc4_irq_push(cs, env, env->pc);
+    /* RTI consumes SR at SP and PC at SP + 4. */
+    vc4_irq_push(cs, env, return_pc);
     vc4_irq_push(cs, env, saved_sr);
+
+    frame_bit = UINT32_C(1) << env->exception_depth;
+    if (external) {
+        env->external_irq_frames |= frame_bit;
+    } else {
+        env->external_irq_frames &= ~frame_bit;
+    }
     env->exception_depth++;
 
     vector_entry = cpu_ldl_le_data(vc4_tcg_env(cs),
@@ -254,7 +271,43 @@ static bool vc4_cpu_enter_irq(VC4CPU *cpu)
     }
     env->pc = vector_entry & ~1u;
     cs->halted = 0;
+
+    qemu_log_mask(CPU_LOG_INT,
+                  "VideoCore IV: %s vector=%u entry=0x%08x "
+                  "return=0x%08x depth=%u\n",
+                  external ? "IRQ" : "SWI", vector, vector_entry,
+                  return_pc, env->exception_depth);
     return true;
+}
+
+static bool vc4_cpu_enter_irq(VC4CPU *cpu)
+{
+    CPUState *cs = CPU(cpu);
+    CPUVC4State *env = vc4_cpu_env(cs);
+    uint32_t vector;
+    uint32_t vector_base;
+
+    if (!cpu->intc ||
+        !bcm2835_vc4_intc_acknowledge(cpu->intc, &vector, &vector_base)) {
+        return false;
+    }
+
+    if (!vc4_cpu_enter_vector(cpu, vector, vector_base, env->pc, true)) {
+        bcm2835_vc4_intc_complete(cpu->intc);
+        return false;
+    }
+    return true;
+}
+
+bool vc4_cpu_enter_swi(VC4CPU *cpu, uint32_t number,
+                       uint32_t return_pc)
+{
+    if (!cpu->intc) {
+        return false;
+    }
+
+    return vc4_cpu_enter_vector(cpu, 32 + (number & 31),
+                                cpu->intc->vaddr, return_pc, false);
 }
 
 static void vc4_cpu_do_interrupt(CPUState *cs)
