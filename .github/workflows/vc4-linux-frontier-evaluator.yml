@@ -1,0 +1,430 @@
+name: VC4 Linux-frontier ARM release evaluator
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-frontier-evaluator
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  evaluate-and-integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      INTEGRATION_BRANCH: agent/vc4-pc-write-origin-refresh
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = 7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = 0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = 1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Wait for architectural SWI support on integration
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/vc4-linux-frontier/results
+          for attempt in $(seq 1 120); do
+            git fetch --prune origin "$INTEGRATION_BRANCH"
+            integration=$(git rev-parse "origin/$INTEGRATION_BRANCH")
+            if git grep -q 'VC4_EXCP_SWI\|vc4_swi' "$integration" -- \
+                target/vc4 hw/vc4 include/hw/vc4 2>/dev/null; then
+              echo "$integration" >/tmp/vc4-linux-frontier/integration-head
+              break
+            fi
+            if test "$attempt" = 120; then
+              echo 'SWI support was not integrated within twenty minutes.' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          cat /tmp/vc4-linux-frontier/integration-head
+
+      - name: Install candidate evaluator
+        run: |
+          cat >/tmp/evaluate-vc4-candidate.py <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import argparse
+          import json
+          from pathlib import Path
+          import re
+
+
+          def walk(value):
+              if isinstance(value, dict):
+                  yield value
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      yield from walk(child)
+
+
+          parser = argparse.ArgumentParser()
+          parser.add_argument('probe')
+          parser.add_argument('qemu')
+          parser.add_argument('--baseline')
+          parser.add_argument('--candidate', required=True)
+          parser.add_argument('--output', required=True)
+          args = parser.parse_args()
+
+          probe = Path(args.probe).read_text(errors='replace').splitlines()
+          qemu = Path(args.qemu).read_text(errors='replace').splitlines()
+          all_lines = probe + qemu
+
+          low_pc = [line for line in probe
+                    if line.startswith('VC4_LOW_PC_WRITE ')]
+          swi_regression = [
+              line for line in all_lines
+              if '0x1eddba9a' in line.lower() and
+                 ('illegal' in line.lower() or
+                  'unimplemented opcode 0x01c0' in line.lower())
+          ]
+          barriers = [line for line in probe
+                      if line.startswith('STOCK_BOOTCODE_BARRIER ')]
+          barrier = barriers[-1] if barriers else None
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier or '')
+          barrier_pc = int(match.group(1), 16) if match else None
+
+          arm_live = False
+          arm_records = []
+          decoded_json = []
+          for line in probe:
+              brace = line.find('{')
+              if brace < 0:
+                  continue
+              try:
+                  value = json.loads(line[brace:])
+              except json.JSONDecodeError:
+                  continue
+              decoded_json.append(value)
+              for item in walk(value):
+                  index = item.get('cpu_index',
+                                   item.get('cpu-index', item.get('index')))
+                  if isinstance(index, str) and index.isdigit():
+                      index = int(index)
+                  if index != 0:
+                      continue
+                  halted = item.get('halted')
+                  running = item.get('running')
+                  pc = item.get('pc')
+                  if isinstance(pc, str):
+                      try:
+                          pc = int(pc, 0)
+                      except ValueError:
+                          pc = None
+                  arm_records.append(item)
+                  if (halted is False or running is True or
+                      (isinstance(pc, int) and pc != 0)):
+                      arm_live = True
+
+          if not arm_live:
+              arm_patterns = (
+                  r'(?i)(cpu(?:-index)?[=: ]+0|CPU0).*'
+                  r'(halted[=: ]+false|running[=: ]+true|'
+                  r'pc[=: ]+0x[1-9a-f][0-9a-f]*)'
+              )
+              matching = [line for line in probe
+                          if re.search(arm_patterns, line)]
+              if matching:
+                  arm_live = True
+                  arm_records.extend({'text': line} for line in matching)
+
+          illegal = [line for line in qemu
+                     if 'unimplemented opcode' in line.lower() or
+                        'illegal instruction' in line.lower()]
+          unimplemented = [line for line in qemu
+                           if 'unimplemented' in line.lower() or
+                              'unimp' in line.lower()]
+
+          baseline_pc = None
+          baseline_arm = False
+          if args.baseline:
+              base = json.loads(Path(args.baseline).read_text())
+              raw = base.get('barrier_pc') or base.get('candidate_barrier_pc')
+              if isinstance(raw, str):
+                  baseline_pc = int(raw, 0)
+              baseline_arm = bool(base.get('arm_cpu0_live'))
+
+          frontier_changed = (
+              baseline_pc is not None and barrier_pc is not None and
+              baseline_pc != barrier_pc
+          )
+          valid = not low_pc and not swi_regression and barrier is not None
+          score = -1000000
+          if valid:
+              score = 0
+              if arm_live:
+                  score += 100000
+              if frontier_changed:
+                  score += 10000
+              if not illegal:
+                  score += 1000
+              score -= min(len(illegal), 100) * 10
+              score -= min(len(unimplemented), 1000)
+              if barrier_pc is not None:
+                  score += 1
+
+          summary = {
+              'schema_version': 1,
+              'candidate': args.candidate,
+              'valid': valid,
+              'score': score,
+              'arm_cpu0_live': arm_live,
+              'baseline_arm_cpu0_live': baseline_arm,
+              'barrier_pc': None if barrier_pc is None else f'0x{barrier_pc:08x}',
+              'baseline_barrier_pc': (
+                  None if baseline_pc is None else f'0x{baseline_pc:08x}'
+              ),
+              'frontier_changed': frontier_changed,
+              'barrier': barrier,
+              'low_pc_records': low_pc,
+              'swi_regression_records': swi_regression,
+              'arm_records': arm_records[-100:],
+              'illegal_records': illegal[-100:],
+              'unimplemented_records': unimplemented[-250:],
+          }
+          Path(args.output).write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          raise SystemExit(0 if valid else 2)
+          PY
+          chmod +x /tmp/evaluate-vc4-candidate.py
+
+      - name: Establish the current baseline
+        run: |
+          set -euo pipefail
+          root=/tmp/vc4-linux-frontier/baseline
+          integration=$(cat /tmp/vc4-linux-frontier/integration-head)
+          git worktree add --detach "$root" "$integration"
+          cd "$root"
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+          mkdir -p run
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 150 \
+            --trace-samples 500 \
+            --trace-interval 0.05 \
+            --qemu-debug unimp,guest_errors \
+            --out-dir run 2>&1 | tee run/probe.log
+          /tmp/evaluate-vc4-candidate.py \
+            run/probe.log run/qemu-mmio.log \
+            --candidate baseline \
+            --output /tmp/vc4-linux-frontier/baseline.json
+
+      - name: Evaluate preserved ARM-release feature histories
+        run: |
+          set -euo pipefail
+          integration=$(cat /tmp/vc4-linux-frontier/integration-head)
+          candidates=(
+            agent/vc4-arm-release-v2
+            agent/vc4-arm-release
+            agent/vc4-raspi3-arm-start
+            agent/vc4-raspi3-hetero-power
+            agent/vc4-image-grafx-power-v3
+          )
+          printf '%s\n' "${candidates[@]}" \
+            >/tmp/vc4-linux-frontier/candidates.txt
+
+          for candidate in "${candidates[@]}"; do
+            safe=${candidate//\//-}
+            result=/tmp/vc4-linux-frontier/results/$safe
+            mkdir -p "$result"
+            if ! git fetch origin "$candidate"; then
+              echo fetch-failed >"$result/status"
+              continue
+            fi
+            candidate_head=$(git rev-parse "origin/$candidate")
+            merge_base=$(git merge-base "$integration" "$candidate_head")
+            git diff --name-only "$merge_base..$candidate_head" \
+              >"$result/candidate-files.txt"
+            if ! grep -Eq '^(hw/|target/|include/hw/|tests/)' \
+                "$result/candidate-files.txt"; then
+              echo no-production-diff >"$result/status"
+              continue
+            fi
+
+            work=/tmp/vc4-linux-frontier/work-$safe
+            git worktree add --detach "$work" "$integration"
+            if ! git -C "$work" merge --no-ff --no-edit "$candidate_head" \
+                >"$result/merge.log" 2>&1; then
+              git -C "$work" status --short >>"$result/merge.log" || true
+              git -C "$work" merge --abort || true
+              echo merge-conflict >"$result/status"
+              git worktree remove --force "$work"
+              continue
+            fi
+            git -C "$work" rev-parse HEAD >"$result/merge-commit.txt"
+            git -C "$work" rev-parse HEAD^{tree} >"$result/merge-tree.txt"
+            if ! git -C "$work" diff --check HEAD^ HEAD \
+                >"$result/diff-check.log" 2>&1; then
+              echo whitespace-failure >"$result/status"
+              git worktree remove --force "$work"
+              continue
+            fi
+
+            cd "$work"
+            if ! ./configure \
+                --target-list=aarch64-softmmu \
+                --disable-docs \
+                --disable-werror >"$result/configure.log" 2>&1; then
+              echo configure-failure >"$result/status"
+              cd "$GITHUB_WORKSPACE"
+              git worktree remove --force "$work"
+              continue
+            fi
+            if ! ninja -C build qemu-system-aarch64 \
+                >"$result/build.log" 2>&1; then
+              echo build-failure >"$result/status"
+              cd "$GITHUB_WORKSPACE"
+              git worktree remove --force "$work"
+              continue
+            fi
+
+            mkdir -p "$result/run"
+            set +e
+            set -o pipefail
+            python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+              build/qemu-system-aarch64 \
+              /tmp/bootcode.bin \
+              --start-elf /tmp/start.elf \
+              --fixup-dat /tmp/fixup.dat \
+              --seconds 210 \
+              --trace-samples 650 \
+              --trace-interval 0.05 \
+              --qemu-debug unimp,guest_errors \
+              --out-dir "$result/run" 2>&1 \
+              | tee "$result/run/probe.log"
+            probe_status=${PIPESTATUS[0]}
+            set -e
+            if test "$probe_status" -ne 0; then
+              echo probe-failure >"$result/status"
+              cd "$GITHUB_WORKSPACE"
+              git worktree remove --force "$work"
+              continue
+            fi
+
+            set +e
+            /tmp/evaluate-vc4-candidate.py \
+              "$result/run/probe.log" "$result/run/qemu-mmio.log" \
+              --baseline /tmp/vc4-linux-frontier/baseline.json \
+              --candidate "$candidate" \
+              --output "$result/summary.json" \
+              >"$result/evaluation.log" 2>&1
+            eval_status=$?
+            set -e
+            if test "$eval_status" -eq 0; then
+              echo valid >"$result/status"
+            else
+              echo invalid >"$result/status"
+            fi
+            cd "$GITHUB_WORKSPACE"
+            git worktree remove --force "$work"
+          done
+
+      - name: Select the best advancing candidate
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path('/tmp/vc4-linux-frontier/results')
+          entries = []
+          for path in root.glob('*/summary.json'):
+              data = json.loads(path.read_text())
+              data['_directory'] = str(path.parent)
+              entries.append(data)
+          valid = [item for item in entries if item.get('valid')]
+          if not valid:
+              raise SystemExit('no valid ARM-release candidate')
+          valid.sort(
+              key=lambda item: (
+                  bool(item.get('arm_cpu0_live')),
+                  bool(item.get('frontier_changed')),
+                  int(item.get('score', -1000000)),
+              ),
+              reverse=True,
+          )
+          best = valid[0]
+          baseline = json.loads(
+              Path('/tmp/vc4-linux-frontier/baseline.json').read_text()
+          )
+          if (not best.get('arm_cpu0_live') and
+              not best.get('frontier_changed')):
+              raise SystemExit('best candidate does not advance the baseline')
+          Path('/tmp/vc4-linux-frontier/selected.json').write_text(
+              json.dumps(best, indent=2, sort_keys=True) + '\n'
+          )
+          Path('/tmp/vc4-linux-frontier/selected-branch').write_text(
+              best['candidate'] + '\n'
+          )
+          Path('/tmp/vc4-linux-frontier/selected-tree').write_text(
+              (Path(best['_directory']) / 'merge-tree.txt').read_text()
+          )
+          print(json.dumps(best, indent=2, sort_keys=True))
+          PY
+
+      - name: Reproduce and publish the selected merge
+        run: |
+          set -euo pipefail
+          integration=$(cat /tmp/vc4-linux-frontier/integration-head)
+          candidate=$(cat /tmp/vc4-linux-frontier/selected-branch)
+          expected_tree=$(cat /tmp/vc4-linux-frontier/selected-tree)
+          git fetch origin "$INTEGRATION_BRANCH" "$candidate"
+          current=$(git rev-parse "origin/$INTEGRATION_BRANCH")
+          test "$current" = "$integration"
+
+          git switch --detach "$integration"
+          git config user.name 'Bryce Lanham'
+          git config user.email 'blanham@gmail.com'
+          git merge --no-ff "origin/$candidate" \
+            -m "Merge validated VC4 ARM release support"
+          actual_tree=$(git rev-parse HEAD^{tree})
+          test "$actual_tree" = "$expected_tree"
+          git diff --check HEAD^ HEAD
+
+          git push origin \
+            "HEAD:refs/heads/$INTEGRATION_BRANCH" \
+            --force-with-lease="refs/heads/$INTEGRATION_BRANCH:$integration"
+          git rev-parse HEAD >/tmp/vc4-linux-frontier/integration-commit.txt
+
+      - name: Upload candidate comparison and ARM evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-frontier-evaluation-${{ github.run_attempt }}
+          path: /tmp/vc4-linux-frontier
+          if-no-files-found: warn
+          retention-days: 14
