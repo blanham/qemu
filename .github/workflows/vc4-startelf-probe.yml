@@ -38,7 +38,8 @@ jobs:
         run: |
           python3 -m py_compile \
             scripts/vc4/raspi3-firmware-volume.py \
-            scripts/vc4/raspi3-startelf-probe.py
+            scripts/vc4/raspi3-startelf-probe.py \
+            scripts/vc4/raspi3-startelf-arm-trace.py
           python3 scripts/vc4/raspi3-firmware-volume.py selftest
 
       - name: Download pinned Raspberry Pi firmware stages
@@ -135,6 +136,19 @@ jobs:
             --log /tmp/vc4-firmware/startelf-qemu.log \
             2>&1 | tee /tmp/vc4-firmware/startelf-probe.log
 
+      - name: Capture VPU, ARM and power-domain state at the handoff frontier
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          timeout 150s python3 scripts/vc4/raspi3-startelf-arm-trace.py \
+            build/qemu-system-aarch64 \
+            /tmp/vc4-firmware/pi3-startelf.img \
+            --seconds 120 \
+            --output /tmp/vc4-firmware/arm-release.json \
+            --qemu-log /tmp/vc4-firmware/arm-trace-qemu.log \
+            2>&1 | tee /tmp/vc4-firmware/arm-trace.log
+
       - name: Upload start.elf frontier trace
         if: always()
         uses: actions/upload-artifact@v4
@@ -146,6 +160,9 @@ jobs:
             /tmp/vc4-firmware/kernel8.img
             /tmp/vc4-firmware/startelf-probe.log
             /tmp/vc4-firmware/startelf-qemu.log
+            /tmp/vc4-firmware/arm-release.json
+            /tmp/vc4-firmware/arm-trace.log
+            /tmp/vc4-firmware/arm-trace-qemu.log
           if-no-files-found: warn
 
       - name: Require first kernel execution
