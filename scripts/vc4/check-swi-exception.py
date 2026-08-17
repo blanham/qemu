@@ -5,8 +5,10 @@ The focused image runs on the real heterogeneous Raspberry Pi 3 machine so it
 also verifies that the VPU CPU is wired to IC0.  A generic loader places the
 image in the VPU-private 128 KiB boot cache and selects that CPU's address
 space, avoiding the 0x3c000000 carve-out/peripheral decode collision.  The
-image programs IC0_VADDR, enters immediate and register-form SWIs, and checks
-the architectural exception frame through QMP.
+machine's ``-kernel`` path is retained only to satisfy its firmware source
+requirement; QMP redirects the stopped VPU to the boot-cache harness before it
+is allowed to execute.  The image programs IC0_VADDR, enters immediate and
+register-form SWIs, and checks the architectural exception frame through QMP.
 """
 
 from __future__ import annotations
@@ -238,6 +240,19 @@ def run_case(qemu: Path, register_form: bool) -> dict[str, Any]:
             cpu_index = find_vc4_cpu(qmp.execute("query-cpus-fast"))
             if cpu_index != 4:
                 raise RuntimeError(f"VC4 CPU index is {cpu_index}, expected 4")
+
+            # The machine-level -kernel path establishes the required firmware
+            # source and initially selects the VCRAM address.  The focused raw
+            # image was separately loaded into the VPU-private cache, so point
+            # only the stopped VPU at that entry before allowing execution.
+            qmp.hmp(f"set $pc = 0x{IMAGE_BASE:x}", cpu_index=cpu_index)
+            registers = qmp.hmp("info registers", cpu_index=cpu_index)
+            if parse_register(registers, "pc") != IMAGE_BASE:
+                raise RuntimeError(
+                    "failed to redirect VPU to the boot-cache harness:\n"
+                    + registers
+                )
+
             qmp.execute("cont")
             deadline = time.monotonic() + 8.0
             while time.monotonic() < deadline:
