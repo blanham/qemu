@@ -1,0 +1,206 @@
+name: VC4 post-SWI official-firmware frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-post-swi-frontier
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  post-swi-frontier:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      INTEGRATION_BRANCH: agent/vc4-pc-write-origin-refresh
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Wait for validated SWI support on the integration branch
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            git fetch --force origin \
+              "${INTEGRATION_BRANCH}:refs/remotes/origin/${INTEGRATION_BRANCH}"
+            tip=$(git rev-parse "refs/remotes/origin/${INTEGRATION_BRANCH}")
+            if git show "$tip:target/vc4/op_helper.c" | \
+                grep -q 'vc4_enter_swi'; then
+              echo "INTEGRATION_SHA=$tip" >> "$GITHUB_ENV"
+              git checkout --detach "$tip"
+              exit 0
+            fi
+            echo "attempt $attempt: SWI support not merged yet; tip=$tip"
+            sleep 30
+          done
+          echo "validated SWI support did not reach ${INTEGRATION_BRANCH}" >&2
+          exit 1
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build the integrated heterogeneous emulator
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Run official firmware beyond the SWI frontier
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-post-swi-frontier
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 180 \
+            --trace-samples 720 \
+            --trace-interval 0.05 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          test -s "$out/qemu-mmio.log"
+          test -s "$out/probe.log"
+
+      - name: Analyze and preserve the next Linux-facing frontier
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-post-swi-frontier')
+          trace = (out / 'qemu-mmio.log').read_text(
+              encoding='utf-8', errors='replace'
+          ).splitlines()
+          probe = (out / 'probe.log').read_text(
+              encoding='utf-8', errors='replace'
+          ).splitlines()
+
+          barriers = [
+              line for line in probe
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ]
+          if not barriers:
+              raise SystemExit('missing stock boot barrier record')
+          barrier = barriers[-1]
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          barrier_pc = int(match.group(1), 16) if match else None
+          if barrier_pc in (0, 0x14, 0x1eddba9a):
+              raise SystemExit(
+                  f'firmware did not cross the SWI frontier: {barrier}'
+              )
+
+          unimplemented = []
+          pattern = re.compile(
+              r'VideoCore IV: unimplemented opcode '
+              r'0x([0-9a-fA-F]{4}) at 0x([0-9a-fA-F]{8})'
+          )
+          for line in trace + probe:
+              found = pattern.search(line)
+              if found:
+                  item = {
+                      'opcode': f'0x{int(found.group(1), 16):04x}',
+                      'pc': f'0x{int(found.group(2), 16):08x}',
+                  }
+                  if item not in unimplemented:
+                      unimplemented.append(item)
+
+          progress = None
+          for line in probe:
+              if line.startswith('STOCK_BOOTCODE_PROGRESS '):
+                  progress = json.loads(line.split(' ', 1)[1])
+
+          swi_entries = [
+              line for line in trace if line.startswith('vc4_swi_entry')
+          ]
+          rtis = [line for line in trace if line.startswith('vc4_rti')]
+          low_pc = [
+              line for line in probe if line.startswith('VC4_LOW_PC_WRITE ')
+          ]
+          if low_pc:
+              raise SystemExit('unexpected low-memory PC write: ' + low_pc[0])
+
+          report = {
+              'schema_version': 1,
+              'integration_sha': os.environ['INTEGRATION_SHA'],
+              'firmware_commit': os.environ['RPI_FIRMWARE_COMMIT'],
+              'former_swi_frontier': '0x1eddba9a',
+              'barrier_pc': (
+                  f'0x{barrier_pc:08x}' if barrier_pc is not None else None
+              ),
+              'barrier': barrier,
+              'swi_entry_count': len(swi_entries),
+              'rti_count': len(rtis),
+              'last_swi_entry': swi_entries[-1] if swi_entries else None,
+              'last_rti': rtis[-1] if rtis else None,
+              'unimplemented_opcodes': unimplemented,
+              'progress': progress,
+          }
+          report_path = out / 'VC4_POST_SWI_FRONTIER.json'
+          report_path.write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish the machine-readable frontier report
+        run: |
+          set -euo pipefail
+          report=/tmp/vc4-post-swi-frontier/VC4_POST_SWI_FRONTIER.json
+          test -s "$report"
+          git checkout agent/vc4-post-swi-frontier
+          cp "$report" VC4_POST_SWI_FRONTIER.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add VC4_POST_SWI_FRONTIER.json
+          if ! git diff --cached --quiet; then
+            pc=$(python3 -c \
+              'import json; print(json.load(open("VC4_POST_SWI_FRONTIER.json"))["barrier_pc"])')
+            git commit -m "ci/vc4: record post-SWI frontier ${pc} [skip ci]"
+            git push origin HEAD:agent/vc4-post-swi-frontier
+          fi
+
+      - name: Upload complete post-SWI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-post-swi-frontier-${{ github.run_attempt }}
+          path: /tmp/vc4-post-swi-frontier
+          if-no-files-found: warn
+          retention-days: 14
