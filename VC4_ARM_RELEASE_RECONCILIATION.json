@@ -1,0 +1,260 @@
+{
+  "candidates": {
+    "agent/vc4-arm-release": {
+      "changed_files": [],
+      "code_files": [],
+      "head_sha": "e6b97e45ca723b18b25e8228bacace8cd0798a61",
+      "latest_workflow_runs": [
+        {
+          "conclusion": "failure",
+          "head_sha": "e6b97e45ca723b18b25e8228bacace8cd0798a61",
+          "id": 31466973250,
+          "name": "VC4-controlled Cortex-A53 release",
+          "status": "completed"
+        }
+      ],
+      "merge_base": "e6b97e45ca723b18b25e8228bacace8cd0798a61",
+      "merge_conflict_indicators": [],
+      "unique_commits": []
+    },
+    "agent/vc4-arm-release-v2": {
+      "changed_files": [
+        ".github/workflows/vc4-arm-release-orchestrator.yml"
+      ],
+      "code_files": [],
+      "head_sha": "a191873290edcd847200c629d19b4a88ae70cc33",
+      "latest_workflow_runs": [
+        {
+          "conclusion": "failure",
+          "head_sha": "a191873290edcd847200c629d19b4a88ae70cc33",
+          "id": 31991073290,
+          "name": "VC4 current-integration ARM release orchestrator",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "a191873290edcd847200c629d19b4a88ae70cc33",
+          "id": 31991073259,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "head_sha": "51771e11b47d50bae6d17f6b801dada1d9d6072f",
+          "id": 31561151191,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "a6ef6afe6ed4e6d5638b7be36e0c8d7eb5f08635",
+          "id": 31561130935,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "11ace370c9d87d9e0ed283a36dc3c7001443c146",
+          "id": 31560918714,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "8e176078b60092f80577c48a81f845ddc9b3410c",
+          "id": 31560743304,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "7e2b516bf311d311513acd79fc96e41db3d06390",
+          "id": 31560702188,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "ade381400f9bd0fd3461d063137a6220f9f2a101",
+          "id": 31559944633,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "707f3633619d3e7ee97b6105aae50e69081b1401",
+          "id": 31559908123,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "cb768b68fe326f6a59b794bf07222f9547677a32",
+          "id": 31559086755,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "1b7f59e3a649e406dff3bbbbe9f82cbabb057b59",
+          "id": 31558012818,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "266065d08f26d066733efad81180f053a7d804a5",
+          "id": 31557035337,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "79d293026c34f50e1a46202f8c5979b3a54e2620",
+          "id": 31555371142,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "856f1cbb9736890ec9c870b9671da1b43d371ba5",
+          "id": 31555326064,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "55934a0a03744f5545d865c22c8fc8e025031140",
+          "id": 31554364886,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "b24dcf6bc119be3b3f98e12fef9f4ab6df32e4fc",
+          "id": 31554339285,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "a8789adfce1c31b60e600da224485705b708f848",
+          "id": 31488061032,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "ce24df1fd115c7327643d6f04e0a536933aef742",
+          "id": 31487997815,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "a61f5dfba2987eaf723045a9526d678b4a097492",
+          "id": 31486863430,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "51926ef3be96a1affcd854f36a22d087de9fb880",
+          "id": 31485743429,
+          "name": "VC4-controlled Cortex-A53 release v2",
+          "status": "completed"
+        }
+      ],
+      "merge_base": "09c54e0210070ac0e0e81d162fb58837d05bae8a",
+      "merge_conflict_indicators": [],
+      "unique_commits": [
+        "a191873290edcd847200c629d19b4a88ae70cc33\tci/vc4: validate the ARM release lane against current integration"
+      ]
+    },
+    "agent/vc4-raspi3-arm-start": {
+      "changed_files": [
+        ".github/workflows/vc4-raspi3-arm-start.yml",
+        "scripts/vc4/raspi3-arm-start-bootstrap.py",
+        "scripts/vc4/raspi3-arm-start-smoke.py"
+      ],
+      "code_files": [
+        "scripts/vc4/raspi3-arm-start-bootstrap.py",
+        "scripts/vc4/raspi3-arm-start-smoke.py"
+      ],
+      "head_sha": "3dbd6233e70f81d2f778f8f7664a79003482e543",
+      "latest_workflow_runs": [
+        {
+          "conclusion": "failure",
+          "head_sha": "3dbd6233e70f81d2f778f8f7664a79003482e543",
+          "id": 31572732189,
+          "name": "Raspberry Pi 3 VC4-controlled ARM start",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "3c2831d18c7860a9aecac60669cf6d813660dc4a",
+          "id": 31572550620,
+          "name": "Raspberry Pi 3 VC4-controlled ARM start",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "fe762a654bb5cb235e524cf708a3fdee4b84374a",
+          "id": 31571508424,
+          "name": "Raspberry Pi 3 VC4-controlled ARM start",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "22188b93f05ff2b1ee3c683423de4d0264f2d18c",
+          "id": 31570484739,
+          "name": "Raspberry Pi 3 VC4-controlled ARM start",
+          "status": "completed"
+        }
+      ],
+      "merge_base": "09c54e0210070ac0e0e81d162fb58837d05bae8a",
+      "merge_conflict_indicators": [],
+      "unique_commits": [
+        "3dbd6233e70f81d2f778f8f7664a79003482e543\tci: harden BCM2837 ARM bridge cold-state fixup",
+        "3c2831d18c7860a9aecac60669cf6d813660dc4a\tci: initialize BCM2837 ARM bridge cold state",
+        "fe762a654bb5cb235e524cf708a3fdee4b84374a\tbuild: place raspi3b-vc4 in concrete ARM source set",
+        "22188b93f05ff2b1ee3c683423de4d0264f2d18c\tci: build and execute BCM2837 VC4 ARM-start tranche",
+        "4cd7636bd9cf4ec416a9c1707e1bb3aa154712f8\ttest: add Raspberry Pi 3 VC4 ARM-start regression",
+        "f59aa8c292134bb5601b95d29b96eb1360dbe7c8\tci: seed BCM2837 VC4 ARM-start materializer"
+      ]
+    },
+    "agent/vc4-raspi3-hetero-power": {
+      "changed_files": [],
+      "code_files": [],
+      "head_sha": "76963bc0a6cfdd4eec90534bb59a524a366baacb",
+      "latest_workflow_runs": [
+        {
+          "conclusion": "success",
+          "head_sha": "76963bc0a6cfdd4eec90534bb59a524a366baacb",
+          "id": 31565143404,
+          "name": "VC4-first BCM2837 PM_PROC release",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "aada4bdb4eb5189326085fdb1ef48528b0648ca1",
+          "id": 31564925956,
+          "name": "Repo Lockdown",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "head_sha": "aada4bdb4eb5189326085fdb1ef48528b0648ca1",
+          "id": 31564737522,
+          "name": "VC4-first BCM2837 PM_PROC release",
+          "status": "completed"
+        }
+      ],
+      "merge_base": "76963bc0a6cfdd4eec90534bb59a524a366baacb",
+      "merge_conflict_indicators": [],
+      "unique_commits": []
+    }
+  },
+  "integration_sha": "d7957d72bbf7cfcd87a5dfd47ddb6c2687dff508",
+  "schema_version": 1
+}
