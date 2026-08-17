@@ -24,8 +24,11 @@ jobs:
 
       - name: Stage only after architectural SWI support is present
         run: |
-          grep -q 'VC4_EXCP_SWI' target/vc4/cpu.h
-          grep -q 'case VC4_EXCP_SWI:' target/vc4/cpu.c
+          grep -q 'vc4_cpu_enter_swi' target/vc4/cpu.h
+          grep -q 'helper_vc4_swi' target/vc4/op_helper.c
+          grep -q 'gen_helper_vc4_swi' target/vc4/translate.c
+          grep -q '0x01c0' target/vc4/translate.c
+          grep -q '0x0020' target/vc4/translate.c
 
       - name: Create or update the ARM-payload milestone branch
         run: |
@@ -33,7 +36,15 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email \
             41898282+github-actions[bot]@users.noreply.github.com
-          git checkout -B agent/vc4-arm-payload-boot
+          if git ls-remote --exit-code --heads origin \
+              agent/vc4-arm-payload-boot >/dev/null 2>&1; then
+            git fetch origin agent/vc4-arm-payload-boot
+            git checkout -B agent/vc4-arm-payload-boot \
+              origin/agent/vc4-arm-payload-boot
+            git merge --no-edit "${GITHUB_SHA}"
+          else
+            git checkout -B agent/vc4-arm-payload-boot "${GITHUB_SHA}"
+          fi
           if test ! -f VC4_ARM_PAYLOAD_TRIGGER.md; then
             cat > VC4_ARM_PAYLOAD_TRIGGER.md <<'EOF'
           # VC4 firmware-to-ARM handoff milestone
