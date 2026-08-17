@@ -17,13 +17,18 @@
 #define TYPE_BCM2835_POWERMGT "bcm2835-powermgt"
 OBJECT_DECLARE_SIMPLE_TYPE(BCM2835PowerMgtState, BCM2835_POWERMGT)
 
+#define BCM2835_POWERMGT_ARM_POWER_ON "arm-power-on"
+
 struct BCM2835PowerMgtState {
     SysBusDevice busdev;
     MemoryRegion iomem;
+    qemu_irq arm_power_on;
 
     uint32_t rstc;
     uint32_t rsts;
     uint32_t wdog;
+    uint32_t proc;
+    bool arm_powered;
 };
 
 #endif
