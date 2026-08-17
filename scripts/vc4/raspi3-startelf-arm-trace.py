@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import socket
 import subprocess
 import tempfile
@@ -20,9 +21,23 @@ ADDRESSES = {
     "kernel_marker": 0x10000000,
     "system_timer_clo": 0x3F003004,
     "arm_control0": 0x3F00B000,
+    "arm_payload": 0x3F00B42C,
     "arm_control1": 0x3F00B440,
     "arm_status": 0x3F00B444,
+    "pm_image": 0x3F100108,
     "pm_proc": 0x3F100110,
+}
+
+VPU_REG_RE = {
+    "pc": re.compile(r"\bpc=([0-9a-fA-F]{1,8})\b"),
+    "sp": re.compile(r"\br25=([0-9a-fA-F]{1,8})\b"),
+    "lr": re.compile(r"\br26=([0-9a-fA-F]{1,8})\b"),
+    "exception_sp": re.compile(r"\br28=([0-9a-fA-F]{1,8})\b"),
+    "r0": re.compile(r"\br0\s*=([0-9a-fA-F]{1,8})\b"),
+    "r1": re.compile(r"\br1\s*=([0-9a-fA-F]{1,8})\b"),
+    "r2": re.compile(r"\br2\s*=([0-9a-fA-F]{1,8})\b"),
+    "r3": re.compile(r"\br3\s*=([0-9a-fA-F]{1,8})\b"),
+    "r24": re.compile(r"\br24=([0-9a-fA-F]{1,8})\b"),
 }
 
 
@@ -53,6 +68,13 @@ class QMP:
         if "error" in response:
             raise RuntimeError(f"QMP {name}: {response['error']}")
         return response.get("return")
+
+    def hmp(self, command: str, cpu_index: int | None = None) -> str:
+        args: dict[str, Any] = {"command-line": command}
+        if cpu_index is not None:
+            args["cpu-index"] = cpu_index
+        result = self.execute("human-monitor-command", args)
+        return "" if result is None else str(result)
 
     def close(self) -> None:
         self.file.close()
@@ -95,12 +117,49 @@ def connect(path: Path, deadline: float) -> socket.socket:
 
 def registers(qmp: QMP, cpu_index: int) -> str:
     try:
-        return qmp.execute(
-            "human-monitor-command",
-            {"command-line": "info registers", "cpu-index": cpu_index},
-        )
+        return qmp.hmp("info registers", cpu_index)
     except RuntimeError as exc:
         return str(exc)
+
+
+def parse_vpu_registers(text: str) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for name, pattern in VPU_REG_RE.items():
+        match = pattern.search(text)
+        if match:
+            result[name] = int(match.group(1), 16)
+    return result
+
+
+def memory_dump(qmp: QMP, address: int, fmt: str, cpu_index: int) -> str:
+    try:
+        return qmp.hmp(f"x /{fmt} 0x{address:x}", cpu_index)
+    except RuntimeError as exc:
+        return str(exc)
+
+
+def vpu_memory_snapshot(qmp: QMP, parsed: dict[str, int]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    pc = parsed.get("pc")
+    if pc is not None:
+        result["pc_bytes"] = memory_dump(qmp, max(0, pc - 32), "96bx", 4)
+        result["pc_halfwords"] = memory_dump(qmp, max(0, pc - 32), "48hx", 4)
+    lr = parsed.get("lr")
+    if lr is not None:
+        result["lr_halfwords"] = memory_dump(qmp, max(0, lr - 32), "48hx", 4)
+    sp = parsed.get("sp")
+    if sp is not None:
+        result["stack_words"] = memory_dump(qmp, sp, "32wx", 4)
+    exception_sp = parsed.get("exception_sp")
+    if exception_sp is not None:
+        result["exception_stack_words"] = memory_dump(
+            qmp, exception_sp, "24wx", 4
+        )
+    for name in ("r0", "r1", "r2", "r3", "r24"):
+        value = parsed.get(name)
+        if value is not None:
+            result[f"{name}_words"] = memory_dump(qmp, value, "16wx", 4)
+    return result
 
 
 def vpu_debug(
@@ -141,6 +200,24 @@ def vpu_debug(
     return result
 
 
+def wait_for_frontier(
+    qmp: QMP,
+    qtest: QTest,
+    seconds: float,
+) -> tuple[str, float]:
+    start = time.monotonic()
+    deadline = start + seconds
+    while time.monotonic() < deadline:
+        cpus = qmp.execute("query-cpus-fast")
+        debug = vpu_debug(qmp, cpus)
+        if debug.get("vc4-debug-halted") is True:
+            return "vpu-halted", time.monotonic() - start
+        if qtest.readl(ADDRESSES["kernel_marker"]):
+            return "kernel-marker", time.monotonic() - start
+        time.sleep(0.05)
+    return "timeout", time.monotonic() - start
+
+
 def run(
     qemu: Path,
     image: Path,
@@ -165,6 +242,8 @@ def run(
             "-S",
             "-drive",
             f"file={image},if=sd,format=raw",
+            "-d",
+            "unimp,guest_errors",
             "-display",
             "none",
             "-serial",
@@ -194,21 +273,29 @@ def run(
                 qmp.execute("qmp_capabilities")
                 qtest = QTest(qtest_path, deadline)
                 qmp.execute("cont")
-                time.sleep(seconds)
+                stop_reason, elapsed = wait_for_frontier(qmp, qtest, seconds)
+                qmp.execute("stop")
 
                 cpus = qmp.execute("query-cpus-fast")
+                arm0_regs = registers(qmp, 0)
+                vpu_regs = registers(qmp, 4)
+                parsed_vpu = parse_vpu_registers(vpu_regs)
                 live = {
+                    "stop_reason": stop_reason,
+                    "elapsed_seconds": elapsed,
                     "query_status": qmp.execute("query-status"),
                     "cpus": cpus,
-                    "arm0_registers": registers(qmp, 0),
-                    "vpu_registers": registers(qmp, 4),
+                    "cpu_summary": qmp.hmp("info cpus"),
+                    "arm0_registers": arm0_regs,
+                    "vpu_registers": vpu_regs,
+                    "vpu_parsed_registers": parsed_vpu,
+                    "vpu_memory": vpu_memory_snapshot(qmp, parsed_vpu),
                     "vpu_debug": vpu_debug(qmp, cpus),
                     "memory": {
                         name: qtest.readl(address)
                         for name, address in ADDRESSES.items()
                     },
                 }
-                qmp.execute("stop")
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(
                     json.dumps(live, indent=2, sort_keys=True) + "\n"
