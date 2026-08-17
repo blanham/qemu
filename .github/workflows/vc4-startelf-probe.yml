@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/vc4-stock-bootcode
+      - agent/vc4-arm-payload-stage-repair
   workflow_dispatch:
 
 permissions:
