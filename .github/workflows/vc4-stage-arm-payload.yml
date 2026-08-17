@@ -1,0 +1,48 @@
+name: Stage VC4 firmware-to-ARM milestone from integration
+
+on:
+  push:
+    branches:
+      - agent/vc4-pc-write-origin-refresh
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  stage-arm-payload:
+    if: >-
+      github.actor != 'github-actions[bot]' ||
+      contains(github.event.head_commit.message,
+               'architectural software exceptions')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Stage only after architectural SWI support is present
+        run: |
+          grep -q 'VC4_EXCP_SWI' target/vc4/cpu.h
+          grep -q 'case VC4_EXCP_SWI:' target/vc4/cpu.c
+
+      - name: Create or update the ARM-payload milestone branch
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          git checkout -B agent/vc4-arm-payload-boot
+          if test ! -f VC4_ARM_PAYLOAD_TRIGGER.md; then
+            cat > VC4_ARM_PAYLOAD_TRIGGER.md <<'EOF'
+          # VC4 firmware-to-ARM handoff milestone
+
+          This branch proves that unchanged Raspberry Pi boot firmware can
+          load and enter a freestanding AArch64 `kernel8.img` from the
+          emulated SD/FAT boot volume before advancing to a Linux kernel.
+          EOF
+            git add VC4_ARM_PAYLOAD_TRIGGER.md
+            git commit -m 'ci/vc4: stage firmware-to-ARM payload handoff'
+          fi
+          git push origin HEAD:agent/vc4-arm-payload-boot
