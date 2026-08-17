@@ -1,0 +1,234 @@
+name: Stage detailed VC4 next-frontier tracing
+
+on:
+  push:
+    branches:
+      - agent/vc4-post-swi-frontier
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  stage-next-frontier:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate the recorded post-SWI frontier
+        run: |
+          test -s VC4_POST_SWI_FRONTIER.json
+          python3 -m json.tool VC4_POST_SWI_FRONTIER.json >/dev/null
+          python3 - <<'PY'
+          import json
+          data = json.load(open('VC4_POST_SWI_FRONTIER.json'))
+          if not data.get('crossed_swi_frontier'):
+              raise SystemExit('the former SWI frontier was not crossed')
+          print(json.dumps(data, indent=2, sort_keys=True))
+          PY
+
+      - name: Create the detailed frontier branch and workflow
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin agent/vc4-pc-write-origin-refresh
+          git checkout -B agent/vc4-next-frontier \
+            origin/agent/vc4-pc-write-origin-refresh
+
+          cp "$GITHUB_WORKSPACE/VC4_POST_SWI_FRONTIER.json" \
+            VC4_NEXT_FRONTIER_INPUT.json
+          mkdir -p .github/workflows
+          cat > .github/workflows/vc4-next-frontier.yml <<'EOF'
+          name: VC4 detailed official-firmware frontier
+
+          on:
+            push:
+              branches:
+                - agent/vc4-next-frontier
+            workflow_dispatch:
+
+          permissions:
+            contents: write
+
+          jobs:
+            trace-next-frontier:
+              if: github.actor != 'github-actions[bot]'
+              runs-on: ubuntu-24.04
+              timeout-minutes: 40
+              env:
+                RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+              steps:
+                - uses: actions/checkout@v5
+
+                - name: Install build and debug dependencies
+                  run: |
+                    sudo apt-get update
+                    sudo apt-get install -y \
+                      curl gdb ninja-build pkg-config python3 python3-venv \
+                      libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+                - name: Download pinned official firmware trio
+                  run: |
+                    for file in bootcode.bin start.elf fixup.dat; do
+                      curl --fail --location --retry 4 \
+                        --output "/tmp/${file}" \
+                        "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+                    done
+                    test "$(git hash-object /tmp/bootcode.bin)" = \
+                      7642d2d89e4235e7d68875ff70688bdde6e71b5a
+                    test "$(git hash-object /tmp/start.elf)" = \
+                      0cefcf3a756740760f9903f35cc3843117853712
+                    test "$(git hash-object /tmp/fixup.dat)" = \
+                      1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+                - name: Configure and build heterogeneous system emulator
+                  run: |
+                    ./configure \
+                      --target-list=aarch64-softmmu \
+                      --disable-docs \
+                      --disable-werror
+                    ninja -C build qemu-system-aarch64
+
+                - name: Capture a long unchanged-firmware execution
+                  run: |
+                    set -o pipefail
+                    out=/tmp/vc4-next-frontier
+                    rm -rf "$out"
+                    mkdir -p "$out"
+                    python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+                      build/qemu-system-aarch64 \
+                      /tmp/bootcode.bin \
+                      --start-elf /tmp/start.elf \
+                      --fixup-dat /tmp/fixup.dat \
+                      --seconds 150 \
+                      --trace-samples 700 \
+                      --trace-interval 0.05 \
+                      --qemu-debug in_asm,int,unimp,guest_errors,cpu_reset \
+                      --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+                - name: Derive instruction and MMIO provenance
+                  run: |
+                    python3 - <<'PY'
+                    from pathlib import Path
+                    import json
+                    import re
+
+                    out = Path('/tmp/vc4-next-frontier')
+                    probe = (out / 'probe.log').read_text(
+                        encoding='utf-8', errors='replace')
+                    logs = probe
+                    text_files = []
+                    for path in sorted(out.iterdir()):
+                        if not path.is_file():
+                            continue
+                        try:
+                            text = path.read_text(
+                                encoding='utf-8', errors='replace')
+                        except Exception:
+                            continue
+                        logs += '\n' + text
+                        text_files.append(path.name)
+
+                    barriers = [
+                        line for line in probe.splitlines()
+                        if line.startswith('STOCK_BOOTCODE_BARRIER ')
+                    ]
+                    if not barriers:
+                        raise SystemExit('missing stock-firmware barrier')
+                    barrier = barriers[-1]
+                    pc_match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+                    if not pc_match:
+                        raise SystemExit(f'barrier has no PC: {barrier}')
+                    pc = int(pc_match.group(1), 16)
+
+                    illegal = []
+                    for op, addr in re.findall(
+                        r'unimplemented opcode 0x([0-9a-fA-F]+) '
+                        r'at 0x([0-9a-fA-F]+)', logs):
+                        illegal.append({
+                            'opcode': f'0x{int(op, 16):04x}',
+                            'pc': f'0x{int(addr, 16):08x}',
+                        })
+                    illegal_instruction = [
+                        line for line in logs.splitlines()
+                        if 'VideoCore IV: illegal instruction at' in line
+                    ]
+                    mmio = [
+                        line for line in logs.splitlines()
+                        if any(token in line.lower() for token in (
+                            'unimplemented read', 'unimplemented write',
+                            'bad offset', 'guest-error',
+                            'unhandled mmio', 'invalid register'))
+                    ]
+
+                    # Preserve translated blocks nearest the final PC.  QEMU's
+                    # in_asm log uses hexadecimal guest addresses on the first
+                    # line of each block, so retain a generous context window.
+                    asm_lines = logs.splitlines()
+                    nearby = []
+                    needle = f'0x{pc:08x}'
+                    for index, line in enumerate(asm_lines):
+                        if needle in line.lower():
+                            lo = max(0, index - 40)
+                            hi = min(len(asm_lines), index + 80)
+                            nearby.extend(asm_lines[lo:hi])
+                    nearby = list(dict.fromkeys(nearby))[-400:]
+
+                    summary = {
+                        'schema_version': 1,
+                        'barrier_pc': f'0x{pc:08x}',
+                        'barrier': barrier,
+                        'illegal_opcodes': illegal[-64:],
+                        'illegal_instruction_lines': illegal_instruction[-64:],
+                        'mmio_diagnostics': mmio[-400:],
+                        'nearby_translation_log': nearby,
+                        'captured_text_files': text_files,
+                    }
+                    Path('VC4_NEXT_FRONTIER.json').write_text(
+                        json.dumps(summary, indent=2, sort_keys=True) + '\n')
+                    (out / 'next-frontier.json').write_text(
+                        json.dumps(summary, indent=2, sort_keys=True) + '\n')
+                    print(json.dumps(summary, indent=2, sort_keys=True))
+                    PY
+
+                - name: Commit the detailed frontier record
+                  run: |
+                    git config user.name github-actions[bot]
+                    git config user.email \
+                      41898282+github-actions[bot]@users.noreply.github.com
+                    git add VC4_NEXT_FRONTIER.json
+                    pc="$(python3 -c \
+                      'import json; print(json.load(open("VC4_NEXT_FRONTIER.json"))["barrier_pc"])')"
+                    op="$(python3 - <<'PY'
+                    import json
+                    data = json.load(open('VC4_NEXT_FRONTIER.json'))
+                    ops = data.get('illegal_opcodes') or []
+                    print(ops[-1]['opcode'] if ops else 'no-illegal-opcode')
+                    PY
+                    )"
+                    git commit -m \
+                      "ci/vc4: detailed frontier ${pc} ${op} [skip ci]"
+                    git push origin "HEAD:${GITHUB_REF_NAME}"
+
+                - name: Upload all detailed frontier evidence
+                  if: always()
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: vc4-next-frontier-${{ github.run_attempt }}
+                    path: /tmp/vc4-next-frontier
+                    if-no-files-found: warn
+                    retention-days: 14
+          EOF
+
+          git add \
+            VC4_NEXT_FRONTIER_INPUT.json \
+            .github/workflows/vc4-next-frontier.yml
+          git commit -m 'ci/vc4: trace the next official-firmware frontier'
+          git push origin HEAD:agent/vc4-next-frontier
