@@ -24,7 +24,12 @@ CPUState *arm_get_cpu_by_id(uint64_t id)
     CPUState *cpu;
 
     CPU_FOREACH(cpu) {
-        ARMCPU *armcpu = ARM_CPU(cpu);
+        ARMCPU *armcpu;
+
+        if (!object_dynamic_cast(OBJECT(cpu), TYPE_ARM_CPU)) {
+            continue;
+        }
+        armcpu = ARM_CPU(cpu);
 
         if (arm_cpu_mp_affinity(armcpu) == id) {
             return cpu;

@@ -44,7 +44,11 @@ enum {
     VC4_EXCP_IRQ,
 };
 
+#ifdef VC4_SECONDARY_FRONTEND
+typedef struct CPUVC4State {
+#else
 typedef struct CPUArchState {
+#endif
     uint32_t gpr[VC4_NUM_GPRS];
     uint32_t sr;
     uint32_t pc;
@@ -61,12 +65,21 @@ typedef struct CPUArchState {
     struct {} end_reset_fields;
 } CPUVC4State;
 
+#ifndef VC4_SECONDARY_FRONTEND
 struct ArchCPU {
     CPUState parent_obj;
     CPUVC4State env;
 
     BCM2835VC4IntcState *intc;
 };
+#else
+struct VC4CPU {
+    CPUState parent_obj;
+    CPUVC4State env;
+
+    BCM2835VC4IntcState *intc;
+};
+#endif
 
 struct VC4CPUClass {
     CPUClass parent_class;
@@ -75,7 +88,29 @@ struct VC4CPUClass {
     ResettablePhases parent_phases;
 };
 
+#ifndef VC4_SECONDARY_FRONTEND
 #define CPU_RESOLVING_TYPE TYPE_VC4_CPU
+#endif
+
+static inline CPUVC4State *vc4_cpu_env(CPUState *cs)
+{
+    return (CPUVC4State *)(cs + 1);
+}
+
+static inline const CPUVC4State *vc4_cpu_env_const(const CPUState *cs)
+{
+    return (const CPUVC4State *)(cs + 1);
+}
+
+static inline CPUState *vc4_env_cpu(CPUVC4State *env)
+{
+    return (CPUState *)((char *)env - sizeof(CPUState));
+}
+
+static inline VC4CPU *vc4_env_archcpu(CPUVC4State *env)
+{
+    return VC4_CPU(vc4_env_cpu(env));
+}
 
 static inline uint32_t vc4_env_get_reg(const CPUVC4State *env, unsigned reg)
 {

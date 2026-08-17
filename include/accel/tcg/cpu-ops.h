@@ -285,6 +285,17 @@ struct TCGCPUOps {
 };
 
 /**
+ * tcg_exec_initialize_frontend:
+ * @tcg_ops: frontend operations to initialize
+ *
+ * Register one guest frontend's TCG globals.  A heterogeneous machine must
+ * call this for every frontend it will instantiate before realizing its first
+ * CPU, because qemu_init_vcpu() copies the initial TCG context into the
+ * execution thread.
+ */
+void tcg_exec_initialize_frontend(const TCGCPUOps *tcg_ops);
+
+/**
  * cpu_check_watchpoint:
  * @cpu: cpu context
  * @addr: guest virtual address

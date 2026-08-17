@@ -1,0 +1,142 @@
+name: VC4-controlled Cortex-A53 release v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-arm-release-v2
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-execute:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize linked AArch64 and VC4 frontends
+        run: |
+          cat scripts/vc4/secondary-bootstrap.py.part00 \
+              scripts/vc4/secondary-bootstrap.py.part01 \
+              scripts/vc4/secondary-bootstrap.py.part02 \
+              scripts/vc4/secondary-bootstrap.py.part03 \
+              > scripts/vc4/secondary-bootstrap.py
+          echo 'a702ecf4349f26bea1bf53328e70fa3ae38131cfd8ed83686ee41575ac6861f2  scripts/vc4/secondary-bootstrap.py' | \
+            sha256sum --check --strict
+          python3 -m py_compile scripts/vc4/secondary-bootstrap.py
+          python3 scripts/vc4/secondary-bootstrap.py
+          rm scripts/vc4/secondary-bootstrap.py
+
+      - name: Materialize and harden ARM-release tranche
+        run: |
+          python3 scripts/vc4/arm-release-bootstrap.py
+          python3 scripts/vc4/arm-release-v2-fixup.py
+          python3 scripts/vc4/arm-release-power-fixup.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/vc4/arm-release-observe-fixup.py")
+          text = path.read_text(encoding="utf-8")
+          start_marker = (
+              "# Generic TCG historically assumes one guest ISA per executable"
+          )
+          end_marker = "\n\nsmoke = ROOT / \"scripts/vc4/arm-release-smoke.py\""
+          start = text.find(start_marker)
+          if start >= 0:
+              end = text.find(end_marker, start)
+              if end < 0:
+                  raise SystemExit("could not delimit duplicate TCG fixup")
+              text = text[:start] + text[end + 2:]
+              path.write_text(text, encoding="utf-8")
+          elif "tcg_exec = ROOT / \"accel/tcg/cpu-exec.c\"" in text:
+              raise SystemExit("unexpected residual TCG fixup")
+          PY
+          python3 scripts/vc4/arm-release-observe-fixup.py
+          python3 scripts/vc4/hetero-frontend-preinit-fixup.py
+          chmod +x scripts/vc4/arm-release-smoke.py
+          git diff --check
+
+      - name: Configure both guest targets
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build linked and native frontends
+        run: |
+          set +e
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            > /tmp/vc4-build.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '=== compiler and linker diagnostics ==='
+            grep -n -E 'FAILED:|error:|fatal error:|undefined reference|multiple definition' \
+              /tmp/vc4-build.log | tail -n 160 || true
+            echo '=== final 180 build lines ==='
+            tail -n 180 /tmp/vc4-build.log
+            exit "$rc"
+          fi
+          echo 'Heterogeneous AArch64/VC4 build completed successfully.'
+
+      - name: Diagnose and verify heterogeneous machine registration
+        run: |
+          echo '=== generated Meson entry ==='
+          grep -n -A3 -B3 'vc4_arm_release_smoke' hw/arm/meson.build || true
+          echo '=== generated type registration ==='
+          grep -n -E -A8 -B8 'TYPE_VC4_ARM_RELEASE|type_init|DEFINE_TYPES|vc4-arm-release-smoke' \
+            hw/arm/vc4_arm_release_smoke.c || true
+          echo '=== target/device configuration ==='
+          grep -R -n -E 'VC4_HETERO_SMOKE|VC4_SECONDARY|TARGET_AARCH64' \
+            build/configs build/*config-target.mak build/*config-devices.mak 2>/dev/null || true
+          echo '=== build graph references ==='
+          grep -R -n 'vc4_arm_release_smoke' build/build.ninja build/meson-info 2>/dev/null || true
+          echo '=== generated objects ==='
+          find build -type f \( -name '*vc4_arm_release*' -o -name '*vc4*release*' \) -print || true
+          echo '=== linked symbols ==='
+          nm -a build/qemu-system-aarch64 2>/dev/null | \
+            grep -E 'vc4_arm_release|vc4_release|arm_release_smoke' || true
+          echo '=== registered machines ==='
+          build/qemu-system-aarch64 -machine help | tee /tmp/aarch64-machines.txt
+          grep -q 'vc4-hetero-smoke' /tmp/aarch64-machines.txt
+          grep -q 'vc4-arm-release-smoke' /tmp/aarch64-machines.txt
+
+      - name: Execute linked-frontend collision regression
+        run: |
+          python3 scripts/vc4/hetero-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Execute VC4-to-ARM release regression
+        run: |
+          python3 scripts/vc4/arm-release-smoke.py \
+            build/qemu-system-aarch64
+
+      - name: Preserve the green heterogeneous implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No generated implementation changes to commit."
+            exit 0
+          fi
+          git commit -m "hw: materialize VC4-controlled heterogeneous ARM release"
+          git push origin HEAD:${GITHUB_REF_NAME}

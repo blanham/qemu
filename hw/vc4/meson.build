@@ -8,4 +8,7 @@ vc4_ss.add(when: 'CONFIG_VC4_RASPI3', if_true: files(
   '../arm/bcm2835_peripherals.c',
 ))
 
+system_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE',
+              if_true: files('bcm2835_vc4_intc.c'))
+
 hw_arch += {'vc4': vc4_ss}

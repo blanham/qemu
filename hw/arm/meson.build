@@ -1,5 +1,6 @@
 arm_common_ss = ss.source_set()
 arm_common_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))
+arm_common_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', if_true: files('vc4_hetero.c'))
 arm_common_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
 arm_common_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic_boards.c'))
 arm_common_ss.add(when: 'CONFIG_EMCRAFT_SF2', if_true: files('msf2-som.c'))
@@ -111,5 +112,9 @@ arm_common_ss.add(when: 'CONFIG_VERSATILE', if_true: files('versatilepb.c'))
 arm_common_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
 
 arm_common_ss.add(files('boot.c'))
+
+# Heterogeneous TCG regression: VC4 releases a powered-off Cortex-A53.
+arm_common_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE',
+                  if_true: files('vc4_arm_release_smoke.c'))
 
 hw_common_arch += {'arm': arm_common_ss}

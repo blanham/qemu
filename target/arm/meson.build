@@ -51,6 +51,13 @@ arm_user_ss.add(when: 'CONFIG_ARM_COMPATIBLE_SEMIHOSTING',
 arm_common_system_ss.add(files('cpu.c'))
 arm_common_system_ss.add(when: 'CONFIG_ARM_COMPATIBLE_SEMIHOSTING',
 		                 if_true: files('common-semi-target.c'))
+arm_ss.add(when: 'CONFIG_VC4_HETERO_SMOKE', if_true: files(
+  'vc4-secondary/cpu.c',
+  'vc4-secondary/gdbstub.c',
+  'vc4-secondary/op_helper.c',
+  'vc4-secondary/translate.c',
+))
+
 arm_common_system_ss.add(files(
   'arch_dump.c',
   'arm-powerctl.c',
