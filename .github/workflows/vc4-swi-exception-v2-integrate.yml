@@ -1,0 +1,39 @@
+name: Integrate validated VC4 SWI support
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-exception-v2
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: >-
+      github.actor == 'github-actions[bot]' &&
+      contains(github.event.head_commit.message,
+               'target/vc4: implement architectural software exceptions')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Merge the validated feature history into the VC4 integration branch
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+
+          git fetch origin \
+            agent/vc4-pc-write-origin-refresh \
+            agent/vc4-swi-exception-v2
+          git checkout -B agent/vc4-pc-write-origin-refresh \
+            origin/agent/vc4-pc-write-origin-refresh
+          git merge --no-ff \
+            origin/agent/vc4-swi-exception-v2 \
+            -m 'Merge VC4 architectural software exceptions'
+          git push origin \
+            HEAD:agent/vc4-pc-write-origin-refresh
