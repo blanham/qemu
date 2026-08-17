@@ -1,0 +1,426 @@
+name: VC4 first-class software-exception reconciliation
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-first-class-reconcile
+      - agent/vc4-pc-write-origin-refresh
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build and probe dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Reconcile validated first-class SWI entry with production safeguards
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import re
+
+
+          def replace_once(path: str, old: str, new: str,
+                           label: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f'{label}: expected one match, found {count}'
+                  )
+              file.write_text(text.replace(old, new, 1))
+
+
+          def regex_once(path: str, pattern: str, replacement: str,
+                         label: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              updated, count = re.subn(
+                  pattern, replacement, text, count=1,
+                  flags=re.MULTILINE | re.DOTALL,
+              )
+              if count != 1:
+                  raise SystemExit(
+                      f'{label}: expected one regex match, found {count}'
+                  )
+              file.write_text(updated)
+
+
+          cpu_h_path = Path('target/vc4/cpu.h')
+          cpu_h = cpu_h_path.read_text()
+          if 'VC4_EXCP_SWI' not in cpu_h:
+              replace_once(
+                  str(cpu_h_path),
+                  'enum {\n'
+                  '    VC4_EXCP_ILLEGAL = 1,\n'
+                  '    VC4_EXCP_IRQ,\n'
+                  '};\n',
+                  'enum {\n'
+                  '    VC4_EXCP_ILLEGAL = 1,\n'
+                  '    VC4_EXCP_IRQ,\n'
+                  '    VC4_EXCP_SWI,\n'
+                  '};\n',
+                  'software-exception index',
+              )
+              cpu_h = cpu_h_path.read_text()
+          if 'uint32_t swi_vector;' not in cpu_h:
+              replace_once(
+                  str(cpu_h_path),
+                  '    uint32_t normal_sp;\n'
+                  '    uint32_t external_irq_frames;\n'
+                  '    uint8_t exception_depth;\n',
+                  '    uint32_t normal_sp;\n'
+                  '    uint32_t external_irq_frames;\n'
+                  '    uint32_t swi_vector;\n'
+                  '    uint8_t exception_depth;\n',
+                  'pending software-exception vector',
+              )
+              cpu_h = cpu_h_path.read_text()
+          declaration = (
+              'bool vc4_cpu_enter_swi(VC4CPU *cpu, uint32_t number,\n'
+              '                       uint32_t return_pc);\n\n'
+          )
+          if declaration in cpu_h:
+              cpu_h_path.write_text(cpu_h.replace(declaration, '', 1))
+
+          intc_h_path = Path('include/hw/vc4/bcm2835_vc4_intc.h')
+          intc_h = intc_h_path.read_text()
+          if 'bcm2835_vc4_intc_vector_base' not in intc_h:
+              replace_once(
+                  str(intc_h_path),
+                  'void bcm2835_vc4_intc_complete(BCM2835VC4IntcState *s);\n'
+                  '\n#endif\n',
+                  'void bcm2835_vc4_intc_complete(BCM2835VC4IntcState *s);\n'
+                  'uint32_t bcm2835_vc4_intc_vector_base(\n'
+                  '    const BCM2835VC4IntcState *s);\n'
+                  '\n#endif\n',
+                  'interrupt-vector base accessor declaration',
+              )
+
+          intc_c_path = Path('hw/vc4/bcm2835_vc4_intc.c')
+          intc_c = intc_c_path.read_text()
+          if 'bcm2835_vc4_intc_vector_base' not in intc_c:
+              replace_once(
+                  str(intc_c_path),
+                  'type_init(vc4_intc_register_types)',
+                  'type_init(vc4_intc_register_types)\n\n'
+                  'uint32_t bcm2835_vc4_intc_vector_base(\n'
+                  '    const BCM2835VC4IntcState *s)\n'
+                  '{\n'
+                  '    return s->vaddr;\n'
+                  '}\n',
+                  'interrupt-vector base accessor implementation',
+              )
+
+          cpu_c_path = Path('target/vc4/cpu.c')
+          cpu_c = cpu_c_path.read_text()
+          if 'bool vc4_cpu_enter_swi' in cpu_c:
+              regex_once(
+                  str(cpu_c_path),
+                  r'\nbool vc4_cpu_enter_swi\(VC4CPU \*cpu, '
+                  r'uint32_t number,\n\s+uint32_t return_pc\)\n'
+                  r'\{.*?\n\}\n(?=\nstatic void vc4_cpu_do_interrupt)',
+                  '\n',
+                  'remove synchronous SWI shortcut',
+              )
+              cpu_c = cpu_c_path.read_text()
+          if 'case VC4_EXCP_SWI:' not in cpu_c:
+              swi_case = '''    case VC4_EXCP_SWI: {
+              VC4CPU *cpu = VC4_CPU(cs);
+
+              if (!cpu->intc) {
+                  qemu_log_mask(
+                      LOG_GUEST_ERROR,
+                      "VideoCore IV: SWI without interrupt controller\\n");
+                  cs->halted = 1;
+                  break;
+              }
+              if (!vc4_cpu_enter_vector(
+                      cpu, env->swi_vector,
+                      bcm2835_vc4_intc_vector_base(cpu->intc),
+                      env->pc, false)) {
+                  qemu_log_mask(
+                      LOG_GUEST_ERROR,
+                      "VideoCore IV: could not enter SWI vector %u at "
+                      "0x%08x\\n", env->swi_vector, env->pc);
+                  cs->halted = 1;
+              }
+              break;
+          }
+'''
+              replace_once(
+                  str(cpu_c_path),
+                  '    case VC4_EXCP_ILLEGAL:\n',
+                  swi_case + '    case VC4_EXCP_ILLEGAL:\n',
+                  'first-class SWI dispatch',
+              )
+
+          helper_path = Path('target/vc4/op_helper.c')
+          helper = helper_path.read_text()
+          if 'cs->exception_index = VC4_EXCP_SWI;' not in helper:
+              replacement = '''G_NORETURN void helper_vc4_swi(
+              CPUArchState *envp, uint32_t number, uint32_t return_pc)
+          {
+              CPUVC4State *env = vc4_helper_env(envp);
+              CPUState *cs = env_cpu(envp);
+
+              env->swi_vector = UINT32_C(0x20) + (number & 0x1f);
+              env->pc = return_pc;
+              cs->exception_index = VC4_EXCP_SWI;
+              cpu_loop_exit(cs);
+          }
+
+          void helper_vc4_rti'''
+              regex_once(
+                  str(helper_path),
+                  r'G_NORETURN void helper_vc4_swi\('
+                  r'CPUArchState \*envp,\n\s+uint32_t number,\n'
+                  r'\s+uint32_t return_pc\)\n\{.*?\n\}\n\n'
+                  r'void helper_vc4_rti',
+                  replacement,
+                  'first-class SWI helper',
+              )
+
+          check = Path('scripts/vc4/check-swi-architecture.py')
+          check.write_text('''#!/usr/bin/env python3
+          """Check the committed VC4 software-exception architecture."""
+
+          from pathlib import Path
+
+          cpu_h = Path("target/vc4/cpu.h").read_text()
+          cpu_c = Path("target/vc4/cpu.c").read_text()
+          helper_h = Path("target/vc4/helper.h").read_text()
+          helper_c = Path("target/vc4/op_helper.c").read_text()
+          translate_c = Path("target/vc4/translate.c").read_text()
+          intc_h = Path("include/hw/vc4/bcm2835_vc4_intc.h").read_text()
+          intc_c = Path("hw/vc4/bcm2835_vc4_intc.c").read_text()
+
+          required = {
+              "VC4_EXCP_SWI": cpu_h,
+              "VC4_MAX_EXCEPTION_DEPTH": cpu_h,
+              "external_irq_frames": cpu_h,
+              "swi_vector": cpu_h,
+              "case VC4_EXCP_SWI:": cpu_c,
+              "bcm2835_vc4_intc_vector_base(cpu->intc)": cpu_c,
+              "DEF_HELPER_3(vc4_swi": helper_h,
+              "cs->exception_index = VC4_EXCP_SWI;": helper_c,
+              "gen_helper_vc4_swi": translate_c,
+              "bcm2835_vc4_intc_vector_base": intc_h,
+              "return s->vaddr;": intc_c,
+          }
+          missing = [name for name, text in required.items()
+                     if name not in text]
+          if missing:
+              raise SystemExit("missing SWI architecture: " +
+                               ", ".join(missing))
+
+          forbidden = {
+              "public synchronous SWI entry":
+                  "bool vc4_cpu_enter_swi" in cpu_c,
+              "translator-side interrupt-controller access":
+                  "cpu->intc->vaddr" in cpu_c,
+          }
+          present = [name for name, found in forbidden.items() if found]
+          if present:
+              raise SystemExit("stale SWI architecture: " +
+                               ", ".join(present))
+
+          for opcode in range(0x01c0, 0x0200):
+              assert 0x20 <= 0x20 + (opcode & 0x1f) <= 0x3f
+          for opcode in range(0x0020, 0x0040):
+              assert 0 <= (opcode & 0x1f) <= 31
+
+          print("VC4 first-class SWI architecture checks passed")
+          ''')
+
+          doc = Path('docs/devel/vc4-software-exceptions.rst')
+          doc.write_text('''VideoCore IV software exceptions
+          =================================
+
+          The VC4 frontend treats both 16-bit SWI encodings as synchronous
+          CPU exceptions.  The translator records the selector and post-SWI
+          return address, raises ``VC4_EXCP_SWI``, and leaves vector entry to
+          the CPU exception dispatcher.
+
+          Software exceptions share the architectural exception-frame path
+          with external IRQs while retaining the production implementation's
+          nesting limit and per-frame IRQ provenance.  Consequently ``RTI``
+          completes the interrupt controller only for an external IRQ frame;
+          returning from SWI cannot accidentally acknowledge an unrelated
+          interrupt.
+
+          The programmed IC0 vector base is queried through a controller
+          accessor rather than by reaching into device state from the CPU.
+          Focused immediate/register-form tests and an unchanged official
+          firmware probe guard the exception frame, vector selection, scalar
+          entry bit, ``RTI`` restoration, and the old ``swi 0`` frontier.
+          ''')
+          PY
+
+          chmod +x scripts/vc4/check-swi-architecture.py
+          git diff --check
+          python3 scripts/vc4/check-swi-architecture.py
+          python3 -m py_compile \
+            scripts/vc4/check-swi-architecture.py \
+            scripts/vc4/check-swi-exception.py \
+            scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            scripts/vc4/stock_bootcode_progress.py
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build the heterogeneous emulator
+        run: |
+          mkdir -p /tmp/vc4-swi-first-class
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          set -o pipefail
+          ninja -C build qemu-system-aarch64 2>&1 \
+            | tee /tmp/vc4-swi-first-class/build.log
+
+      - name: Run focused immediate and register-form regressions
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          python3 scripts/vc4/check-swi-exception.py \
+            build/qemu-system-aarch64 \
+            --json /tmp/vc4-swi-first-class/unit-summary.json \
+            2>&1 | tee /tmp/vc4-swi-first-class/unit.log
+
+      - name: Run unchanged official firmware beyond swi zero
+        run: |
+          set -euo pipefail
+          out=/tmp/vc4-swi-first-class/official
+          mkdir -p "$out"
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 120 \
+            --trace-samples 420 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors,int \
+            --qemu-debug-filter 0x1eddba80..0x1eddbf80 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          root = Path('/tmp/vc4-swi-first-class/official')
+          probe = (root / 'probe.log').read_text(errors='replace').splitlines()
+          qemu_log_path = root / 'qemu-mmio.log'
+          qemu_log = qemu_log_path.read_text(
+              errors='replace').splitlines()
+          combined = probe + qemu_log
+
+          if any(line.startswith('VC4_LOW_PC_WRITE ') for line in probe):
+              raise SystemExit('low-memory PC regression')
+          if any('unimplemented opcode 0x01c0' in line.lower()
+                 for line in combined):
+              raise SystemExit('swi zero still reaches the illegal path')
+
+          entries = [line for line in qemu_log
+                     if 'VideoCore IV: SWI vector=32 ' in line]
+          returns = [line for line in qemu_log
+                     if 'VideoCore IV: RTI ' in line]
+          if not entries:
+              raise SystemExit('no official-firmware SWI vector-32 entry')
+          if not returns:
+              raise SystemExit('no official-firmware RTI observed')
+
+          barriers = [line for line in probe
+                      if line.startswith('STOCK_BOOTCODE_BARRIER ')]
+          if not barriers:
+              raise SystemExit('missing official-firmware barrier')
+          barrier = barriers[-1]
+          match = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          if not match:
+              raise SystemExit('barrier lacks a PC: ' + barrier)
+          barrier_pc = int(match.group(1), 16)
+          if barrier_pc == 0x1eddba9a:
+              raise SystemExit('official firmware remained at swi zero')
+
+          summary = {
+              'schema_version': 3,
+              'architecture': 'first-class-cpu-exception',
+              'old_frontier': '0x1eddba9a',
+              'new_barrier_pc': f'0x{barrier_pc:08x}',
+              'barrier': barrier,
+              'swi_entry_count': len(entries),
+              'rti_count': len(returns),
+              'last_swi_entries': entries[-50:],
+              'last_rti_records': returns[-50:],
+          }
+          (root / 'summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit the validated reconciliation on the feature branch
+        if: github.ref_name == 'agent/vc4-swi-first-class-reconcile'
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            docs/devel/vc4-software-exceptions.rst \
+            hw/vc4/bcm2835_vc4_intc.c \
+            include/hw/vc4/bcm2835_vc4_intc.h \
+            scripts/vc4/check-swi-architecture.py \
+            target/vc4/cpu.c \
+            target/vc4/cpu.h \
+            target/vc4/op_helper.c
+          if ! git diff --cached --quiet; then
+            git commit -m 'target/vc4: reconcile first-class software exceptions'
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Upload first-class SWI validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-swi-first-class-${{ github.run_attempt }}
+          path: /tmp/vc4-swi-first-class
+          if-no-files-found: warn
+          retention-days: 14
