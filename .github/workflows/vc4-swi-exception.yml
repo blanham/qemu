@@ -30,6 +30,51 @@ jobs:
       - name: Apply architectural SWI and interrupt wiring changes
         run: |
           python3 scripts/vc4/apply-swi-exception.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/check-swi-exception.py')
+          text = path.read_text()
+
+          text = text.replace(
+              '        stack_path = tmp / "stack.bin"\n',
+              '',
+              1,
+          )
+          old = '''            qmp.execute("stop")
+            qmp.hmp(
+                f"memsave 0x{EXCEPTION_STACK_TOP - 8:x} 8 {stack_path}",
+                cpu_index=cpu_index,
+            )
+'''
+          new = '''            qmp.execute("stop")
+            frame = qmp.hmp(
+                f"x /2wx 0x{EXCEPTION_STACK_TOP - 8:x}",
+                cpu_index=cpu_index,
+            )
+'''
+          if old not in text:
+              raise SystemExit('focused SWI frame-read anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''        if not stack_path.is_file():
+            raise RuntimeError("memsave did not create the stack image")
+        saved_sr, saved_pc = struct.unpack("<II", stack_path.read_bytes())
+'''
+          new = '''        frame_words = re.findall(
+            r"\\b0x([0-9a-fA-F]{8})\\b", frame
+        )
+        if len(frame_words) < 2:
+            raise RuntimeError(
+                "could not read the SWI frame through the VPU address space: "
+                + frame
+            )
+        saved_sr, saved_pc = (int(word, 16) for word in frame_words[:2])
+'''
+          if old not in text:
+              raise SystemExit('focused SWI frame parser anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
           python3 -m py_compile \
             scripts/vc4/apply-swi-exception.py \
             scripts/vc4/check-swi-exception.py
@@ -112,14 +157,21 @@ jobs:
           probe = (out / 'official/probe.log').read_text(
               encoding='utf-8', errors='replace'
           ).splitlines()
+          qemu_log_path = out / 'official/qemu-mmio.log'
+          qemu_log = (
+              qemu_log_path.read_text(encoding='utf-8', errors='replace')
+              .splitlines()
+              if qemu_log_path.is_file() else []
+          )
+          combined = probe + qemu_log
 
           if any(line.startswith('VC4_LOW_PC_WRITE ') for line in probe):
               raise SystemExit('unexpected low-memory PC write')
-          if any('unimplemented opcode 0x01c0' in line for line in probe):
+          if any('unimplemented opcode 0x01c0' in line for line in combined):
               raise SystemExit('swi 0 is still reaching the illegal-opcode path')
 
           swi = [
-              line for line in probe
+              line for line in combined
               if 'VideoCore IV: SWI vector=32 ' in line
           ]
           if not swi:
@@ -146,7 +198,7 @@ jobs:
               raise SystemExit('missing stock progress record')
 
           diagnostics = [
-              line for line in probe
+              line for line in combined
               if ('unimplemented opcode' in line or
                   'illegal instruction' in line or
                   'could not enter SWI' in line or
