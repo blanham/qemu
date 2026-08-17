@@ -1,0 +1,124 @@
+name: Promote validated VC4 stock ARM handoff
+
+on:
+  push:
+    branches:
+      - agent/vc4-arm-payload-stage-repair
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  promote:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FEATURE_BRANCH: agent/vc4-arm-payload-stage-repair
+      INTEGRATION_BRANCH: agent/vc4-pc-write-origin-refresh
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for the matching payload validation run
+        id: validation
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/actions/workflows/vc4-stock-arm-payload.yml/runs?branch=${FEATURE_BRANCH}&event=push&per_page=30"
+          run_id=
+          for attempt in $(seq 1 180); do
+            run_id=$(gh api "$api" \
+              --jq ".workflow_runs[] | select(.head_sha == \"${GITHUB_SHA}\") | .id" \
+              | head -n1 || true)
+            if test -n "$run_id"; then
+              break
+            fi
+            sleep 5
+          done
+          test -n "$run_id"
+          echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+
+          set +e
+          gh run watch "$run_id" --exit-status
+          watch_rc=$?
+          set -e
+          conclusion=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+            --jq .conclusion)
+          printf '%s\n' "$conclusion" >/tmp/payload-conclusion
+          printf '%s\n' "$watch_rc" >/tmp/payload-watch-status
+
+          rm -rf /tmp/payload-artifact
+          mkdir -p /tmp/payload-artifact
+          gh run download "$run_id" --dir /tmp/payload-artifact || true
+
+      - name: Record the tested handoff result on the feature branch
+        run: |
+          set -euo pipefail
+          result=$(find /tmp/payload-artifact -name result.json -print -quit || true)
+          python3 - "$result" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          result_path = Path(sys.argv[1]) if sys.argv[1] else None
+          payload = None
+          if result_path is not None and result_path.is_file():
+              payload = json.loads(result_path.read_text())
+
+          record = {
+              "schema_version": 1,
+              "tested_head_sha": os.environ["GITHUB_SHA"],
+              "validation_run_id": int(os.environ["VALIDATION_RUN_ID"]),
+              "validation_conclusion": Path('/tmp/payload-conclusion').read_text().strip(),
+              "payload": payload,
+          }
+          Path('VC4_ARM_PAYLOAD_STATUS.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+        env:
+          VALIDATION_RUN_ID: ${{ steps.validation.outputs.run_id }}
+
+      - name: Commit the status without retriggering CI
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          git checkout -B "$FEATURE_BRANCH" "origin/$FEATURE_BRANCH"
+          git add VC4_ARM_PAYLOAD_STATUS.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci/vc4: record stock ARM payload status [skip ci]'
+            git push origin "HEAD:$FEATURE_BRANCH"
+          fi
+
+      - name: Merge the feature history only after genuine ARM execution
+        run: |
+          set -euo pipefail
+          conclusion=$(cat /tmp/payload-conclusion)
+          test "$conclusion" = success
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          record = json.loads(Path('VC4_ARM_PAYLOAD_STATUS.json').read_text())
+          payload = record.get('payload') or {}
+          if payload.get('signature_seen') is not True:
+              raise SystemExit('payload signature was not observed')
+          if payload.get('observed_signature') != '0x5643345f41524d21':
+              raise SystemExit('payload signature value differs')
+          PY
+
+          git fetch origin "$FEATURE_BRANCH" "$INTEGRATION_BRANCH"
+          git checkout -B "$INTEGRATION_BRANCH" "origin/$INTEGRATION_BRANCH"
+          git merge --no-ff "origin/$FEATURE_BRANCH" \
+            -m 'Merge VC4 stock-firmware ARM payload milestone'
+          git push origin "HEAD:$INTEGRATION_BRANCH"
