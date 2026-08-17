@@ -1,0 +1,368 @@
+name: Reconcile and verify VC4 SWI support
+
+on:
+  push:
+    branches:
+      - agent/vc4-pc-write-origin-refresh
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile-swi:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Create the reconciliation feature branch
+        run: |
+          git checkout -B agent/vc4-swi-exception-reconciled
+
+      - name: Reconcile SWI implementation from architectural invariants
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          cpu_h = Path('target/vc4/cpu.h')
+          cpu_c = Path('target/vc4/cpu.c')
+          helper_c = Path('target/vc4/op_helper.c')
+          intc_h = Path('include/hw/vc4/bcm2835_vc4_intc.h')
+
+          def replace_once(path, old, new, label):
+              text = path.read_text()
+              if new in text:
+                  return
+              if text.count(old) != 1:
+                  raise SystemExit(
+                      f'{label}: expected one anchor, found {text.count(old)}')
+              path.write_text(text.replace(old, new, 1))
+
+          if 'VC4_EXCP_SWI' not in cpu_h.read_text():
+              replace_once(
+                  cpu_h,
+                  'enum {\n    VC4_EXCP_ILLEGAL = 1,\n    VC4_EXCP_IRQ,\n};\n',
+                  'enum {\n    VC4_EXCP_ILLEGAL = 1,\n    VC4_EXCP_IRQ,\n'
+                  '    VC4_EXCP_SWI,\n};\n',
+                  'exception index')
+          if 'exception_irq_stack' not in cpu_h.read_text():
+              replace_once(
+                  cpu_h,
+                  '    uint32_t normal_sp;\n    uint8_t exception_depth;\n',
+                  '    uint32_t normal_sp;\n'
+                  '    uint32_t exception_vector;\n'
+                  '    uint32_t exception_irq_stack;\n'
+                  '    uint8_t exception_depth;\n',
+                  'exception state')
+
+          sources = [
+              p for p in Path('hw').rglob('*.c')
+              if 'bcm2835_vc4_intc_acknowledge' in
+                 p.read_text(errors='replace')
+          ]
+          if len(sources) != 1:
+              raise SystemExit(f'VC4 interrupt controller source: {sources}')
+          intc_c = sources[0]
+          accessor = 'bcm2835_vc4_intc_get_vector_base'
+          text = intc_c.read_text()
+          if accessor not in text:
+              match = re.search(r'\*vector_base\s*=\s*([^;]+);', text)
+              if not match:
+                  raise SystemExit('vector-base expression not found')
+              function = (
+                  '\nuint32_t bcm2835_vc4_intc_get_vector_base('
+                  'BCM2835VC4IntcState *s)\n'
+                  '{\n'
+                  f'    return {match.group(1).strip()};\n'
+                  '}\n')
+              anchor = re.search(
+                  r'\nbool bcm2835_vc4_intc_acknowledge\s*\(', text)
+              if not anchor:
+                  raise SystemExit('acknowledge function not found')
+              intc_c.write_text(
+                  text[:anchor.start()] + function + text[anchor.start():])
+          if accessor not in intc_h.read_text():
+              text = intc_h.read_text()
+              pos = text.rfind('#endif')
+              if pos < 0:
+                  raise SystemExit('interrupt-controller header guard missing')
+              intc_h.write_text(
+                  text[:pos] +
+                  'uint32_t bcm2835_vc4_intc_get_vector_base('
+                  'BCM2835VC4IntcState *s);\n\n' + text[pos:])
+
+          text = helper_c.read_text()
+          if 'cs->exception_index = VC4_EXCP_SWI;' not in text:
+              anchor = '    uint32_t next_pc;\n\n'
+              if text.count(anchor) != 1:
+                  raise SystemExit('illegal helper anchor missing')
+              code = '''    if ((i1 & 0xffe0) == 0x0020) {
+                  env->exception_vector =
+                      0x20 + (vc4_env_get_reg(env, i1 & 0x1f) & 0x1f);
+                  env->pc = pc + 2;
+                  cs->exception_index = VC4_EXCP_SWI;
+                  cpu_loop_exit(cs);
+              }
+              if ((i1 & 0xffc0) == 0x01c0) {
+                  env->exception_vector = 0x20 + (i1 & 0x1f);
+                  env->pc = pc + 2;
+                  cs->exception_index = VC4_EXCP_SWI;
+                  cpu_loop_exit(cs);
+              }
+
+              '''
+              helper_c.write_text(text.replace(anchor, anchor + code, 1))
+
+          text = helper_c.read_text()
+          if 'bool complete_irq = false;' not in text:
+              replace_once(
+                  helper_c,
+                  '    uint32_t sp = env->gpr[VC4_REG_SP];\n\n'
+                  '    env->sr = cpu_ldl_le_data(envp, sp);\n',
+                  '    uint32_t sp = env->gpr[VC4_REG_SP];\n'
+                  '    bool complete_irq = false;\n\n'
+                  '    env->sr = cpu_ldl_le_data(envp, sp);\n',
+                  'RTI IRQ discriminator')
+          text = helper_c.read_text()
+          if 'env->exception_irq_stack >>= 1;' not in text:
+              old = '''    if (env->exception_depth) {
+                  env->exception_depth--;
+                  if (env->exception_depth == 0) {
+                      env->gpr[28] = env->gpr[VC4_REG_SP];
+                      env->gpr[VC4_REG_SP] = env->normal_sp;
+                  }
+              }
+
+              if (cpu->intc) {
+                  bcm2835_vc4_intc_complete(cpu->intc);
+              }
+          '''
+              new = '''    if (env->exception_depth) {
+                  complete_irq = (env->exception_irq_stack & 1) != 0;
+                  env->exception_irq_stack >>= 1;
+                  env->exception_depth--;
+                  if (env->exception_depth == 0) {
+                      env->gpr[28] = env->gpr[VC4_REG_SP];
+                      env->gpr[VC4_REG_SP] = env->normal_sp;
+                  }
+              }
+
+              if (complete_irq && cpu->intc) {
+                  bcm2835_vc4_intc_complete(cpu->intc);
+              }
+          '''
+              if text.count(old) != 1:
+                  raise SystemExit('RTI unwind anchor missing')
+              helper_c.write_text(text.replace(old, new, 1))
+
+          text = cpu_c.read_text()
+          if 'static bool vc4_cpu_enter_swi' not in text:
+              generic = '''static bool vc4_cpu_enter_exception(VC4CPU *cpu,
+                                                  uint32_t vector,
+                                                  uint32_t vector_base,
+                                                  bool external_irq)
+              {
+                  CPUState *cs = CPU(cpu);
+                  CPUVC4State *env = vc4_cpu_env(cs);
+                  uint32_t vector_entry;
+                  uint32_t saved_sr = env->sr;
+                  uint32_t return_pc = env->pc;
+
+                  if (env->exception_depth == 0) {
+                      env->normal_sp = env->gpr[VC4_REG_SP];
+                      env->gpr[VC4_REG_SP] = env->gpr[28];
+                  }
+                  vc4_irq_push(cs, env, return_pc);
+                  vc4_irq_push(cs, env, saved_sr);
+                  env->exception_irq_stack =
+                      (env->exception_irq_stack << 1) | external_irq;
+                  env->exception_depth++;
+
+                  vector_entry = cpu_ldl_le_data(
+                      vc4_tcg_env(cs), vector_base + vector * 4);
+                  qemu_log_mask(CPU_LOG_INT,
+                                "VideoCore IV: %s vector 0x%02x "
+                                "base 0x%08x entry 0x%08x "
+                                "return 0x%08x sp 0x%08x\\n",
+                                external_irq ? "IRQ" : "SWI", vector,
+                                vector_base, vector_entry, return_pc,
+                                env->gpr[VC4_REG_SP]);
+
+                  env->sr = saved_sr & ~(VC4_SR_U | VC4_SR_I | VC4_SR_S);
+                  if (vector_entry & 1) {
+                      env->sr |= VC4_SR_S;
+                  }
+                  env->pc = vector_entry & ~1u;
+                  cs->halted = 0;
+                  return true;
+              }
+
+              static bool vc4_cpu_enter_irq(VC4CPU *cpu)
+              {
+                  uint32_t vector;
+                  uint32_t vector_base;
+
+                  if (!cpu->intc ||
+                      !bcm2835_vc4_intc_acknowledge(
+                          cpu->intc, &vector, &vector_base)) {
+                      return false;
+                  }
+                  return vc4_cpu_enter_exception(
+                      cpu, vector, vector_base, true);
+              }
+
+              static bool vc4_cpu_enter_swi(VC4CPU *cpu)
+              {
+                  CPUVC4State *env = vc4_cpu_env(CPU(cpu));
+
+                  if (!cpu->intc) {
+                      return false;
+                  }
+                  return vc4_cpu_enter_exception(
+                      cpu, env->exception_vector,
+                      bcm2835_vc4_intc_get_vector_base(cpu->intc), false);
+              }
+              '''
+              match = re.search(
+                  r'static bool vc4_cpu_enter_irq\(VC4CPU \*cpu\)\n'
+                  r'\{.*?\n\}\n\n(?=static void vc4_cpu_do_interrupt)',
+                  text, re.S)
+              if not match:
+                  raise SystemExit('IRQ entry anchor missing')
+              cpu_c.write_text(
+                  text[:match.start()] + generic + '\n' + text[match.end():])
+
+          text = cpu_c.read_text()
+          if 'case VC4_EXCP_SWI:' not in text:
+              anchor = '    case VC4_EXCP_ILLEGAL:\n'
+              case = '''    case VC4_EXCP_SWI:
+                  if (!vc4_cpu_enter_swi(VC4_CPU(cs))) {
+                      qemu_log_mask(LOG_GUEST_ERROR,
+                                    "VideoCore IV: SWI without vector table "
+                                    "at 0x%08x\\n", env->pc);
+                      cs->halted = 1;
+                  }
+                  break;
+              '''
+              if text.count(anchor) != 1:
+                  raise SystemExit('do_interrupt anchor missing')
+              cpu_c.write_text(text.replace(anchor, case + anchor, 1))
+          PY
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+
+      - name: Configure and build
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Validate unchanged firmware beyond SWI
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-swi-reconcile
+          rm -rf "$out"
+          mkdir -p "$out"
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 80 \
+            --trace-samples 360 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,int,unimp,guest_errors \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+          out = Path('/tmp/vc4-swi-reconcile')
+          text = '\n'.join(
+              p.read_text(encoding='utf-8', errors='replace')
+              for p in out.iterdir() if p.is_file())
+          if 'unimplemented opcode 0x01c0 at 0x1eddba9a' in text:
+              raise SystemExit('SWI remains illegal')
+          if 'VideoCore IV: SWI vector 0x20' not in text:
+              raise SystemExit('SWI vector entry was not observed')
+          barriers = [line for line in text.splitlines()
+                      if line.startswith('STOCK_BOOTCODE_BARRIER ')]
+          if not barriers:
+              raise SystemExit('missing barrier')
+          match = re.search(r'pc=0x([0-9a-fA-F]+)', barriers[-1])
+          if not match:
+              raise SystemExit('barrier PC missing')
+          pc = int(match.group(1), 16)
+          if pc < 0x200 or pc == 0x1eddba9a:
+              raise SystemExit(f'invalid post-SWI barrier 0x{pc:08x}')
+          (out / 'summary.json').write_text(json.dumps({
+              'barrier_pc': f'0x{pc:08x}',
+              'barrier': barriers[-1],
+          }, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Publish and integrate only source changes
+        run: |
+          set -euo pipefail
+          source_paths=(
+            target/vc4/cpu.h
+            target/vc4/cpu.c
+            target/vc4/op_helper.c
+            include/hw/vc4/bcm2835_vc4_intc.h
+          )
+          intc_source="$(grep -R -l \
+            'bcm2835_vc4_intc_get_vector_base' hw --include='*.c' | head -1)"
+          source_paths+=("$intc_source")
+
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          if test -n "$(git status --porcelain -- "${source_paths[@]}")"; then
+            git add "${source_paths[@]}"
+            git commit -m \
+              'target/vc4: reconcile architectural software exceptions'
+            git push origin HEAD:agent/vc4-swi-exception-reconciled
+
+            feature_sha="$(git rev-parse HEAD)"
+            git fetch origin agent/vc4-pc-write-origin-refresh
+            git checkout -B agent/vc4-pc-write-origin-refresh \
+              origin/agent/vc4-pc-write-origin-refresh
+            git merge --no-ff "$feature_sha" \
+              -m 'Merge reconciled VC4 architectural software exceptions'
+            git push origin HEAD:agent/vc4-pc-write-origin-refresh
+          else
+            echo 'integration branch already contains validated SWI support'
+          fi
+
+      - name: Upload reconciliation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-swi-reconcile-${{ github.run_attempt }}
+          path: /tmp/vc4-swi-reconcile
+          if-no-files-found: warn
+          retention-days: 14
