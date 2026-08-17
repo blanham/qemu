@@ -1,0 +1,577 @@
+name: VC4 first-class SWI exception entry v4
+
+on:
+  push:
+    branches:
+      - agent/vc4-swi-exception-v4
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    env:
+      INTEGRATION_BRANCH: agent/vc4-pc-write-origin-refresh
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Implement architectural software exceptions
+        run: |
+          cat >/tmp/materialize-swi.py <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import re
+          import subprocess
+
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              if new in text:
+                  return text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              return text.replace(old, new, 1)
+
+
+          def function_span(text: str, name: str) -> tuple[int, int]:
+              match = re.search(rf'(?m)^static\s+[^\n]*\b{name}\s*\(', text)
+              if not match:
+                  raise SystemExit(f'function not found: {name}')
+              start = match.start()
+              brace = text.find('{', match.end())
+              if brace < 0:
+                  raise SystemExit(f'opening brace not found: {name}')
+              depth = 0
+              i = brace
+              in_string = False
+              quote = ''
+              escape = False
+              while i < len(text):
+                  ch = text[i]
+                  if in_string:
+                      if escape:
+                          escape = False
+                      elif ch == '\\':
+                          escape = True
+                      elif ch == quote:
+                          in_string = False
+                  elif ch in ('"', "'"):
+                      in_string = True
+                      quote = ch
+                  elif ch == '{':
+                      depth += 1
+                  elif ch == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return start, i + 1
+                  i += 1
+              raise SystemExit(f'closing brace not found: {name}')
+
+
+          cpu_h_path = Path('target/vc4/cpu.h')
+          cpu_h = cpu_h_path.read_text()
+          cpu_h = replace_once(
+              cpu_h,
+              '    VC4_EXCP_ILLEGAL = 1,\n    VC4_EXCP_IRQ,\n',
+              '    VC4_EXCP_ILLEGAL = 1,\n'
+              '    VC4_EXCP_IRQ,\n'
+              '    VC4_EXCP_SWI,\n',
+              'exception enum',
+          )
+          cpu_h = replace_once(
+              cpu_h,
+              '    uint32_t normal_sp;\n    uint8_t exception_depth;\n',
+              '    uint32_t normal_sp;\n'
+              '    uint32_t exception_irq_stack;\n'
+              '    uint32_t swi_vector;\n'
+              '    uint8_t exception_depth;\n',
+              'exception state',
+          )
+          cpu_h_path.write_text(cpu_h)
+
+          helper_h_path = Path('target/vc4/helper.h')
+          helper_h = helper_h_path.read_text()
+          helper_h = replace_once(
+              helper_h,
+              'DEF_HELPER_1(vc4_rti, void, env)\n',
+              'DEF_HELPER_1(vc4_rti, void, env)\n'
+              'DEF_HELPER_3(vc4_swi, noreturn, env, i32, i32)\n',
+              'SWI helper declaration',
+          )
+          helper_h_path.write_text(helper_h)
+
+          op_path = Path('target/vc4/op_helper.c')
+          op = op_path.read_text()
+          swi_helper = r'''
+          G_NORETURN void helper_vc4_swi(CPUArchState *envp,
+                                         uint32_t selector,
+                                         uint32_t return_pc)
+          {
+              CPUVC4State *env = vc4_helper_env(envp);
+              CPUState *cs = env_cpu(envp);
+
+              env->swi_vector = UINT32_C(0x20) + (selector & 0x1f);
+              env->pc = return_pc;
+              cs->exception_index = VC4_EXCP_SWI;
+              cpu_loop_exit(cs);
+          }
+
+          '''
+          if 'helper_vc4_swi(' not in op:
+              anchor = 'G_NORETURN void helper_vc4_raise_illegal('
+              if op.count(anchor) != 1:
+                  raise SystemExit('illegal helper anchor missing')
+              op = op.replace(anchor, swi_helper + anchor, 1)
+
+          old_rti_start = (
+              'void helper_vc4_rti(CPUArchState *envp)\n'
+              '{\n'
+              '    CPUVC4State *env = vc4_helper_env(envp);\n'
+              '    VC4CPU *cpu = vc4_env_archcpu(env);\n'
+              '    uint32_t sp = env->gpr[VC4_REG_SP];\n'
+          )
+          new_rti_start = old_rti_start + '    bool complete_irq = false;\n'
+          op = replace_once(op, old_rti_start, new_rti_start,
+                            'RTI completion state')
+          op = replace_once(
+              op,
+              '    if (env->exception_depth) {\n'
+              '        env->exception_depth--;\n',
+              '    if (env->exception_depth) {\n'
+              '        complete_irq = (env->exception_irq_stack & 1) != 0;\n'
+              '        env->exception_irq_stack >>= 1;\n'
+              '        env->exception_depth--;\n',
+              'RTI nesting state',
+          )
+          op = replace_once(
+              op,
+              '    if (cpu->intc) {\n'
+              '        bcm2835_vc4_intc_complete(cpu->intc);\n'
+              '    }\n'
+              '}\n\n'
+              '/*\n'
+              ' * The initial frontend keeps uncommon scalar floating-point',
+              '    if (complete_irq && cpu->intc) {\n'
+              '        bcm2835_vc4_intc_complete(cpu->intc);\n'
+              '    }\n'
+              '}\n\n'
+              '/*\n'
+              ' * The initial frontend keeps uncommon scalar floating-point',
+              'RTI interrupt completion',
+          )
+          op_path.write_text(op)
+
+          # Locate the interrupt controller implementation and expose the
+          # programmed vector-table base without duplicating register state.
+          intc_files = subprocess.check_output(
+              ['git', 'ls-files', '*bcm2835_vc4_intc.c'], text=True
+          ).splitlines()
+          if len(intc_files) != 1:
+              raise SystemExit(f'expected one VC4 INTC source, found {intc_files}')
+          intc_c_path = Path(intc_files[0])
+          intc_c = intc_c_path.read_text()
+          base_match = re.search(
+              r'\*vector_base\s*=\s*s->([A-Za-z_][A-Za-z0-9_]*)\s*;',
+              intc_c,
+          )
+          if not base_match:
+              raise SystemExit('unable to recover VC4 vector-base field')
+          base_field = base_match.group(1)
+          getter = (
+              '\nuint32_t bcm2835_vc4_intc_vector_base('
+              'BCM2835VC4IntcState *s)\n'
+              '{\n'
+              f'    return s->{base_field};\n'
+              '}\n'
+          )
+          if 'bcm2835_vc4_intc_vector_base(' not in intc_c:
+              intc_c_path.write_text(intc_c.rstrip() + getter)
+
+          intc_headers = subprocess.check_output(
+              ['git', 'ls-files', '*bcm2835_vc4_intc.h'], text=True
+          ).splitlines()
+          if len(intc_headers) != 1:
+              raise SystemExit(f'expected one VC4 INTC header, found {intc_headers}')
+          intc_h_path = Path(intc_headers[0])
+          intc_h = intc_h_path.read_text()
+          declaration = (
+              'uint32_t bcm2835_vc4_intc_vector_base('
+              'BCM2835VC4IntcState *s);\n'
+          )
+          if declaration not in intc_h:
+              marker = '#endif'
+              pos = intc_h.rfind(marker)
+              if pos < 0:
+                  raise SystemExit('VC4 INTC header guard end missing')
+              intc_h = intc_h[:pos] + declaration + '\n' + intc_h[pos:]
+              intc_h_path.write_text(intc_h)
+
+          cpu_c_path = Path('target/vc4/cpu.c')
+          cpu_c = cpu_c_path.read_text()
+          if 'vc4_cpu_enter_exception(' not in cpu_c:
+              start, end = function_span(cpu_c, 'vc4_cpu_enter_irq')
+              old_irq = cpu_c[start:end]
+              signature = re.search(
+                  r'static\s+bool\s+vc4_cpu_enter_irq\s*\([^)]*\)',
+                  old_irq,
+              )
+              if not signature:
+                  raise SystemExit('unable to parse IRQ entry signature')
+              replacement = r'''static void vc4_cpu_enter_exception(VC4CPU *cpu,
+                                             uint32_t vector,
+                                             uint32_t vector_base,
+                                             bool external_irq)
+          {
+              CPUState *cs = CPU(cpu);
+              CPUVC4State *env = vc4_cpu_env(cs);
+              uint32_t vector_entry;
+              uint32_t saved_sr = env->sr;
+
+              if (env->exception_depth == 0) {
+                  env->normal_sp = env->gpr[VC4_REG_SP];
+                  env->gpr[VC4_REG_SP] = env->gpr[28];
+              }
+
+              vc4_irq_push(cs, env, env->pc);
+              vc4_irq_push(cs, env, saved_sr);
+              env->exception_irq_stack =
+                  (env->exception_irq_stack << 1) | external_irq;
+              env->exception_depth++;
+
+              vector_entry = cpu_ldl_le_data(vc4_tcg_env(cs),
+                                             vector_base + vector * 4);
+              env->sr = saved_sr & ~(VC4_SR_U | VC4_SR_I | VC4_SR_S);
+              if (vector_entry & 1) {
+                  env->sr |= VC4_SR_S;
+              }
+              env->pc = vector_entry & ~1u;
+              cs->halted = 0;
+          }
+
+          static bool vc4_cpu_enter_irq(VC4CPU *cpu)
+          {
+              uint32_t vector;
+              uint32_t vector_base;
+
+              if (!cpu->intc ||
+                  !bcm2835_vc4_intc_acknowledge(cpu->intc, &vector,
+                                                &vector_base)) {
+                  return false;
+              }
+
+              vc4_cpu_enter_exception(cpu, vector, vector_base, true);
+              return true;
+          }'''
+              cpu_c = cpu_c[:start] + replacement + cpu_c[end:]
+
+          swi_case = r'''    case VC4_EXCP_SWI: {
+              VC4CPU *cpu = VC4_CPU(cs);
+
+              if (!cpu->intc) {
+                  qemu_log_mask(LOG_GUEST_ERROR,
+                                "VideoCore IV: SWI without interrupt controller\n");
+                  cs->halted = 1;
+                  break;
+              }
+              vc4_cpu_enter_exception(
+                  cpu, env->swi_vector,
+                  bcm2835_vc4_intc_vector_base(cpu->intc), false);
+              break;
+          }
+          '''
+          if 'case VC4_EXCP_SWI:' not in cpu_c:
+              anchor = '    case VC4_EXCP_ILLEGAL:\n'
+              if cpu_c.count(anchor) != 1:
+                  raise SystemExit('illegal exception case anchor missing')
+              cpu_c = cpu_c.replace(anchor, swi_case + anchor, 1)
+          cpu_c_path.write_text(cpu_c)
+
+          tr_path = Path('target/vc4/translate.c')
+          tr = tr_path.read_text()
+          if 'gen_helper_vc4_swi(' not in tr:
+              env_match = re.search(r'gen_helper_vc4_halt\((\w+)\)', tr)
+              env_name = env_match.group(1) if env_match else 'tcg_env'
+              pc_match = re.search(
+                  r'(\w+)\s*=\s*tcg_global_mem_new_i32\([^;]*?'
+                  r'offsetof\(CPUVC4State,\s*pc\)',
+                  tr,
+                  re.S,
+              )
+              if not pc_match:
+                  # The current frontend conventionally calls this global
+                  # cpu_pc; retain that established name if initialization is
+                  # split across helper macros.
+                  if not re.search(r'\bcpu_pc\b', tr):
+                      raise SystemExit('unable to identify translated PC global')
+                  pc_name = 'cpu_pc'
+              else:
+                  pc_name = pc_match.group(1)
+              gpr_name = 'cpu_gpr'
+              if not re.search(r'\bcpu_gpr\s*\[', tr):
+                  candidates = re.findall(
+                      r'(\w+)\s*\[[^\]]+\]\s*=\s*'
+                      r'tcg_global_mem_new_i32\([^;]*?gpr',
+                      tr,
+                      re.S,
+                  )
+                  if len(set(candidates)) != 1:
+                      raise SystemExit('unable to identify translated GPR array')
+                  gpr_name = candidates[0]
+
+              decoder = re.search(
+                  r'(?m)^static\s+(bool|void)\s+'
+                  r'(\w*scalar16\w*)\s*\(([^)]*)\)\s*\{',
+                  tr,
+              )
+              if not decoder:
+                  raise SystemExit('scalar16 decoder not found')
+              return_type, decoder_name, params = decoder.groups()
+              param_parts = [part.strip() for part in params.split(',')]
+              if len(param_parts) < 2:
+                  raise SystemExit('unexpected scalar16 decoder parameters')
+              ctx_name = re.search(r'(\w+)\s*$', param_parts[0]).group(1)
+              insn_name = re.search(r'(\w+)\s*$', param_parts[-1]).group(1)
+              return_stmt = 'return true;' if return_type == 'bool' else 'return;'
+              stop_lhs = f'{ctx_name}->base.is_jmp'
+
+              insert = f'''
+              if (({insn_name} & 0xffe0) == 0x0020) {{
+                  TCGv_i32 return_pc = tcg_temp_new_i32();
+
+                  tcg_gen_addi_i32(return_pc, {pc_name}, 2);
+                  gen_helper_vc4_swi({env_name},
+                                      {gpr_name}[{insn_name} & 0x1f],
+                                      return_pc);
+                  {stop_lhs} = DISAS_NORETURN;
+                  {return_stmt}
+              }}
+
+              if (({insn_name} & 0xffc0) == 0x01c0) {{
+                  TCGv_i32 return_pc = tcg_temp_new_i32();
+
+                  tcg_gen_addi_i32(return_pc, {pc_name}, 2);
+                  gen_helper_vc4_swi(
+                      {env_name}, tcg_constant_i32({insn_name} & 0x1f),
+                      return_pc);
+                  {stop_lhs} = DISAS_NORETURN;
+                  {return_stmt}
+              }}
+
+          '''
+              brace_end = decoder.end()
+              tr = tr[:brace_end] + insert + tr[brace_end:]
+          tr_path.write_text(tr)
+
+          check_path = Path('scripts/vc4/check-swi-exception.py')
+          check_path.write_text(r'''#!/usr/bin/env python3
+          from pathlib import Path
+
+          cpu_h = Path('target/vc4/cpu.h').read_text()
+          helper_h = Path('target/vc4/helper.h').read_text()
+          translate = Path('target/vc4/translate.c').read_text()
+          helper = Path('target/vc4/op_helper.c').read_text()
+          cpu = Path('target/vc4/cpu.c').read_text()
+
+          required = {
+              'VC4_EXCP_SWI': cpu_h,
+              'exception_irq_stack': cpu_h,
+              'DEF_HELPER_3(vc4_swi': helper_h,
+              'gen_helper_vc4_swi': translate,
+              'helper_vc4_swi': helper,
+              'case VC4_EXCP_SWI': cpu,
+              'bcm2835_vc4_intc_vector_base': cpu,
+          }
+          missing = [name for name, text in required.items() if name not in text]
+          if missing:
+              raise SystemExit('missing SWI implementation pieces: ' + ', '.join(missing))
+
+          for opcode in range(0x01c0, 0x0200):
+              selector = opcode & 0x1f
+              vector = 0x20 + selector
+              assert 0x20 <= vector <= 0x3f
+          for opcode in range(0x0020, 0x0040):
+              register = opcode & 0x1f
+              assert 0 <= register <= 31
+          print('VC4 SWI encoding and exception-state checks passed')
+          ''')
+          check_path.chmod(0o755)
+          PY
+
+          python3 /tmp/materialize-swi.py
+          python3 scripts/vc4/check-swi-exception.py
+          python3 -m py_compile scripts/vc4/check-swi-exception.py
+          git diff --check
+          git status --short
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = 7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = 0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = 1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build the production emulator
+        run: |
+          mkdir -p /tmp/vc4-swi-v4
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          set -o pipefail
+          ninja -C build qemu-system-aarch64 2>&1 \
+            | tee /tmp/vc4-swi-v4/build.log
+
+      - name: Run official firmware through architectural SWI entry and RTI
+        run: |
+          set -euo pipefail
+          out=/tmp/vc4-swi-v4
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 150 \
+            --trace-samples 500 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          root = Path('/tmp/vc4-swi-v4')
+          probe = (root / 'probe.log').read_text(errors='replace').splitlines()
+          qemu = (root / 'qemu-mmio.log').read_text(errors='replace').splitlines()
+          lines = probe + qemu
+          if any(line.startswith('VC4_LOW_PC_WRITE ') for line in probe):
+              raise SystemExit('low-memory PC regression')
+          bad = [line for line in lines
+                 if '0x1eddba9a' in line.lower() and
+                    ('illegal' in line.lower() or
+                     'unimplemented opcode 0x01c0' in line.lower())]
+          if bad:
+              raise SystemExit('SWI zero remains illegal: ' + bad[0])
+          barriers = [line for line in probe
+                      if line.startswith('STOCK_BOOTCODE_BARRIER ')]
+          if not barriers:
+              raise SystemExit('missing firmware barrier')
+          barrier = barriers[-1]
+          m = re.search(r'\bpc=0x([0-9a-fA-F]+)', barrier)
+          if not m:
+              raise SystemExit('barrier has no PC: ' + barrier)
+          pc = int(m.group(1), 16)
+          if pc == 0x1eddba9a:
+              raise SystemExit('firmware remains at SWI zero')
+          illegal = [line for line in qemu
+                     if 'unimplemented opcode' in line.lower() or
+                        'illegal instruction' in line.lower()]
+          unimp = [line for line in qemu
+                   if 'unimplemented' in line.lower() or 'unimp' in line.lower()]
+          state = [line for line in probe
+                   if line.startswith('STOCK_BOOTCODE_') or
+                      line.startswith('VC4_')]
+          summary = {
+              'schema_version': 1,
+              'implementation': 'first-class-exception',
+              'old_frontier': '0x1eddba9a',
+              'new_barrier_pc': f'0x{pc:08x}',
+              'barrier': barrier,
+              'next_illegal_records': illegal[-100:],
+              'next_unimplemented_records': unimp[-200:],
+              'final_state_records': state[-200:],
+          }
+          (root / 'frontier.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          report = [
+              '# VC4 post-SWI official-firmware frontier', '',
+              'Software interrupts now use first-class exception entry, a',
+              'programmed vector-table base, banked exception SP, nested IRQ',
+              'completion bookkeeping, and the existing architectural RTI.', '',
+              f"New barrier PC: `{summary['new_barrier_pc']}`", '',
+              '```text', barrier, '```', '',
+              '## Next illegal-instruction records', '', '```text',
+              *(illegal[-100:] or ['none']), '```', '',
+              '## Next unimplemented-device records', '', '```text',
+              *(unimp[-200:] or ['none']), '```', '',
+              '## Final state records', '', '```text',
+              *(state[-200:] or ['none']), '```', '',
+          ]
+          (root / 'VC4_POST_SWI_FRONTIER.md').write_text('\n'.join(report))
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit validated implementation and evidence
+        run: |
+          set -euo pipefail
+          mkdir -p docs/devel
+          cp /tmp/vc4-swi-v4/VC4_POST_SWI_FRONTIER.md \
+            docs/devel/VC4_POST_SWI_FRONTIER.md
+          cp /tmp/vc4-swi-v4/frontier.json \
+            docs/devel/vc4-post-swi-frontier.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            target/vc4/cpu.h \
+            target/vc4/cpu.c \
+            target/vc4/helper.h \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c \
+            hw/vc4/bcm2835_vc4_intc.c \
+            include/hw/vc4/bcm2835_vc4_intc.h \
+            scripts/vc4/check-swi-exception.py \
+            docs/devel/VC4_POST_SWI_FRONTIER.md \
+            docs/devel/vc4-post-swi-frontier.json
+          git diff --cached --check
+          git commit -m 'target/vc4: implement first-class software exceptions'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git rev-parse HEAD >/tmp/vc4-swi-v4/validated-commit.txt
+
+      - name: Merge into the current integration branch without rewriting it
+        run: |
+          set -euo pipefail
+          feature_head=$(git rev-parse HEAD)
+          git fetch origin "$INTEGRATION_BRANCH"
+          integration_head=$(git rev-parse "origin/$INTEGRATION_BRANCH")
+          git switch --detach "$integration_head"
+          git merge --no-ff "$feature_head" \
+            -m 'Merge VC4 first-class software exception support'
+          git diff --check HEAD^ HEAD
+          grep -Rqs 'VC4_EXCP_SWI\|vc4_swi' target/vc4
+          test -f docs/devel/vc4-post-swi-frontier.json
+          git push origin \
+            "HEAD:refs/heads/$INTEGRATION_BRANCH" \
+            --force-with-lease="refs/heads/$INTEGRATION_BRANCH:$integration_head"
+          git rev-parse HEAD >/tmp/vc4-swi-v4/integration-commit.txt
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-swi-exception-v4-${{ github.run_attempt }}
+          path: /tmp/vc4-swi-v4
+          if-no-files-found: warn
+          retention-days: 14
