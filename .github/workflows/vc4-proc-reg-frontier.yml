@@ -1,0 +1,163 @@
+name: VC4 processor-control register frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-proc-reg-frontier
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture-proc-reg-frontier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Instrument unimplemented processor-register transfers
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('target/vc4/op_helper.c')
+          text = path.read_text()
+          anchor = '''    uint16_t i1 = opcode;
+              uint32_t next_pc;
+
+              if ((i1 & 0xfe00) == 0xc800 || (i1 & 0xff80) == 0xca00) {
+          '''
+          replacement = '''    uint16_t i1 = opcode;
+              uint32_t next_pc;
+
+              if ((i1 & 0xffc0) == 0xcc00) {
+                  uint16_t i2 = cpu_lduw_le_data(envp, pc + 2);
+                  uint16_t prev2 = cpu_lduw_le_data(envp, pc - 2);
+                  uint16_t prev4 = cpu_lduw_le_data(envp, pc - 4);
+                  uint16_t next2 = cpu_lduw_le_data(envp, pc + 4);
+                  uint16_t next4 = cpu_lduw_le_data(envp, pc + 6);
+                  bool read_proc = (i1 & 0x20) != 0;
+                  unsigned data_reg = i1 & 0x1f;
+                  unsigned proc_reg = i2 & 0x1f;
+
+                  qemu_log_mask(LOG_UNIMP,
+                                "VC4_PROC_REG_FRONTIER pc=0x%08x i1=0x%04x "
+                                "i2=0x%04x direction=%s data-reg=r%u "
+                                "proc-reg=p%u prev4=0x%04x prev2=0x%04x "
+                                "next2=0x%04x next4=0x%04x "
+                                "r0=0x%08x r1=0x%08x r2=0x%08x "
+                                "r3=0x%08x r4=0x%08x r5=0x%08x "
+                                "sp=0x%08x lr=0x%08x sr=0x%08x\\n",
+                                pc, i1, i2,
+                                read_proc ? "p-to-r" : "r-to-p",
+                                data_reg, proc_reg, prev4, prev2,
+                                next2, next4,
+                                env->gpr[0], env->gpr[1], env->gpr[2],
+                                env->gpr[3], env->gpr[4], env->gpr[5],
+                                env->gpr[VC4_REG_SP],
+                                env->gpr[VC4_REG_LR], env->sr);
+              }
+
+              if ((i1 & 0xfe00) == 0xc800 || (i1 & 0xff80) == 0xca00) {
+          '''
+          if 'VC4_PROC_REG_FRONTIER' not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit(
+                      f'processor-register instrumentation anchor count: '
+                      f'{text.count(anchor)}'
+                  )
+              path.write_text(text.replace(anchor, replacement, 1))
+          PY
+          git diff --check
+
+      - name: Download pinned official firmware
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = 7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = 0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = 1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build heterogeneous emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Capture official-firmware processor-register transfer
+        run: |
+          set -euo pipefail
+          out=/tmp/vc4-proc-reg-frontier
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 100 \
+            --trace-samples 340 \
+            --trace-interval 0.05 \
+            --qemu-debug in_asm,unimp,guest_errors,int \
+            --qemu-debug-filter 0x1ee26540..0x1ee265a0 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          grep -m1 '^VC4_PROC_REG_FRONTIER ' "$out/qemu-mmio.log" \
+            | tee "$out/frontier.txt"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          out = Path('/tmp/vc4-proc-reg-frontier')
+          lines = (out / 'qemu-mmio.log').read_text(
+              errors='replace'
+          ).splitlines()
+          marker = next((line for line in lines
+                         if line.startswith('VC4_PROC_REG_FRONTIER ')), None)
+          if marker is None:
+              raise SystemExit('processor-register frontier was not reached')
+
+          fields = dict(re.findall(r'([a-z0-9-]+)=([^ ]+)', marker))
+          summary = {
+              'schema_version': 1,
+              'marker': marker,
+              'pc': fields.get('pc'),
+              'i1': fields.get('i1'),
+              'i2': fields.get('i2'),
+              'direction': fields.get('direction'),
+              'data_reg': fields.get('data-reg'),
+              'proc_reg': fields.get('proc-reg'),
+          }
+          (out / 'summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload processor-register frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-proc-reg-frontier-${{ github.run_attempt }}
+          path: /tmp/vc4-proc-reg-frontier
+          if-no-files-found: warn
+          retention-days: 14
