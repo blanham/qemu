@@ -1,0 +1,273 @@
+name: VC4 scalar system-control instructions
+
+on:
+  push:
+    branches:
+      - agent/vc4-system16-controls
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-system16-controls:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      INTEGRATION_BRANCH: agent/vc4-pc-write-origin-refresh
+      SOURCE_BRANCH: agent/vc4-system16-controls-source
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Check out the post-SWI integration tip
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            git fetch --force origin \
+              "${INTEGRATION_BRANCH}:refs/remotes/origin/${INTEGRATION_BRANCH}"
+            base=$(git rev-parse "refs/remotes/origin/${INTEGRATION_BRANCH}")
+            if git show "$base:target/vc4/op_helper.c" | \
+                grep -q 'vc4_enter_swi'; then
+              echo "INTEGRATION_BASE=$base" >> "$GITHUB_ENV"
+              git checkout -B vc4-system16-source "$base"
+              exit 0
+            fi
+            echo "attempt $attempt: waiting for SWI integration at $base"
+            sleep 30
+          done
+          exit 1
+
+      - name: Materialize architecturally defined scalar controls
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('target/vc4/op_helper.c')
+          text = path.read_text()
+          marker = 'G_NORETURN void helper_vc4_raise_illegal('
+          helper = r'''
+          static bool vc4_execute_system16_slow(CPUVC4State *env,
+                                                uint32_t pc, uint16_t opcode,
+                                                uint32_t *next_pc)
+          {
+              unsigned cb;
+              unsigned rd;
+
+              *next_pc = pc + 2;
+              switch (opcode) {
+              case 0x0003:                    /* USER */
+                  env->sr |= VC4_SR_U;
+                  return true;
+              case 0x0004:                    /* EI */
+                  env->sr |= VC4_SR_I;
+                  return true;
+              case 0x0005:                    /* DI */
+                  env->sr &= ~VC4_SR_I;
+                  return true;
+              case 0x0006:                    /* CBCLR */
+                  env->sr &= ~VC4_SR_CB_MASK;
+                  return true;
+              case 0x0007:                    /* CBADD1 */
+              case 0x0008:                    /* CBADD2 */
+              case 0x0009:                    /* CBADD3 */
+                  cb = ((env->sr & VC4_SR_CB_MASK) >> 4) +
+                       (opcode - 0x0006);
+                  env->sr = (env->sr & ~VC4_SR_CB_MASK) |
+                            ((cb & 3) << 4);
+                  return true;
+              default:
+                  break;
+              }
+
+              if ((opcode & 0xffe0) == 0x00e0) { /* VERSION rD */
+                  rd = opcode & 0x1f;
+                  if (rd == VC4_REG_PC) {
+                      *next_pc = VC4_CPUID_VALUE;
+                  } else {
+                      vc4_env_set_reg(env, rd, VC4_CPUID_VALUE);
+                  }
+                  return true;
+              }
+
+              return false;
+          }
+
+          '''
+          if 'static bool vc4_execute_system16_slow(' not in text:
+              pos = text.find(marker)
+              if pos < 0:
+                  raise SystemExit('illegal helper insertion point missing')
+              text = text[:pos] + helper + text[pos:]
+
+          start = text.find(marker)
+          brace = text.find('{', start)
+          depth = 0
+          end = None
+          for pos in range(brace, len(text)):
+              if text[pos] == '{':
+                  depth += 1
+              elif text[pos] == '}':
+                  depth -= 1
+                  if depth == 0:
+                      end = pos + 1
+                      break
+          if end is None:
+              raise SystemExit('unterminated illegal helper')
+          body = text[start:end]
+          call = (
+              '    if (vc4_execute_system16_slow(env, pc, i1, &next_pc)) {\n'
+              '        env->pc = next_pc;\n'
+              '        cpu_loop_exit(cs);\n'
+              '    }\n\n'
+          )
+          if call not in body:
+              anchor = '    uint32_t vector;\n\n'
+              if anchor not in body:
+                  anchor = '    uint32_t next_pc;\n\n'
+              if anchor not in body:
+                  raise SystemExit('illegal helper declaration anchor missing')
+              body = body.replace(anchor, anchor + call, 1)
+              text = text[:start] + body + text[end:]
+          path.write_text(text)
+
+          # Exhaustive host-side reference checks for CB arithmetic and masks.
+          for initial in range(4):
+              for add in range(1, 4):
+                  got = (initial + add) & 3
+                  assert got == ((initial + add) % 4)
+          for opcode in range(0x10000):
+              version = (opcode & 0xffe0) == 0x00e0
+              assert version == (0x00e0 <= opcode <= 0x00ff)
+          PY
+          git diff --check
+
+      - name: Download pinned official firmware trio
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build the heterogeneous emulator
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Exercise official firmware and preserve the next frontier
+        run: |
+          set -o pipefail
+          out=/tmp/vc4-system16-controls
+          rm -rf "$out"
+          mkdir -p "$out"
+          python3 scripts/vc4/raspi3-stock-bootcode-mmio.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            --start-elf /tmp/start.elf \
+            --fixup-dat /tmp/fixup.dat \
+            --seconds 180 \
+            --trace-samples 720 \
+            --trace-interval 0.05 \
+            --out-dir "$out" 2>&1 | tee "$out/probe.log"
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          out = Path('/tmp/vc4-system16-controls')
+          lines = []
+          for name in ('probe.log', 'qemu-mmio.log'):
+              path = out / name
+              if path.exists():
+                  lines += path.read_text(
+                      encoding='utf-8', errors='replace').splitlines()
+          if any(line.startswith('VC4_LOW_PC_WRITE ') for line in lines):
+              raise SystemExit('unexpected low-memory PC write')
+          forbidden = ('0x0003', '0x0004', '0x0005', '0x0006', '0x0007',
+                       '0x0008', '0x0009')
+          for line in lines:
+              if 'VideoCore IV: unimplemented opcode ' in line and \
+                      any(op in line for op in forbidden):
+                  raise SystemExit('system control remained illegal: ' + line)
+              if 'VideoCore IV: unimplemented opcode 0x00e' in line or \
+                      'VideoCore IV: unimplemented opcode 0x00f' in line:
+                  raise SystemExit('VERSION remained illegal: ' + line)
+          barriers = [
+              line for line in lines
+              if line.startswith('STOCK_BOOTCODE_BARRIER ')
+          ]
+          if not barriers:
+              raise SystemExit('missing stock barrier')
+          barrier = barriers[-1]
+          m = re.search(r'pc=0x([0-9a-fA-F]+)', barrier)
+          pc = int(m.group(1), 16) if m else None
+          if pc in (None, 0, 0x14, 0x1eddba9a):
+              raise SystemExit('regressed before post-SWI frontier: ' + barrier)
+          report = {'integration_base': '${{ env.INTEGRATION_BASE }}',
+                    'barrier_pc': f'0x{pc:08x}', 'barrier': barrier}
+          (out / 'summary.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(report, indent=2, sort_keys=True))
+          with open('/tmp/system16.env', 'w') as fh:
+              fh.write(f'NEXT_FRONTIER=0x{pc:08x}\n')
+          PY
+          cat /tmp/system16.env >> "$GITHUB_ENV"
+
+      - name: Commit and publish scalar-control support
+        id: source
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add target/vc4/op_helper.c
+          git diff --cached --check
+          git commit -m "target/vc4: implement scalar system controls (next ${NEXT_FRONTIER})"
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          git push origin "HEAD:${SOURCE_BRANCH}"
+
+      - name: Merge validated controls into the VC4 integration branch
+        run: |
+          set -euo pipefail
+          source_sha='${{ steps.source.outputs.sha }}'
+          git fetch --force origin \
+            "${INTEGRATION_BRANCH}:refs/remotes/origin/${INTEGRATION_BRANCH}"
+          current=$(git rev-parse "refs/remotes/origin/${INTEGRATION_BRANCH}")
+          if test "$current" != "$INTEGRATION_BASE"; then
+            echo "integration moved: expected $INTEGRATION_BASE, got $current" >&2
+            exit 1
+          fi
+          git checkout -B vc4-system16-integration "$current"
+          git merge --no-ff "$source_sha" \
+            -m 'Merge VC4 scalar system-control support'
+          git diff "$current..HEAD" --check
+          git push origin "HEAD:${INTEGRATION_BRANCH}"
+
+      - name: Upload system-control validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-system16-controls-${{ github.run_attempt }}
+          path: /tmp/vc4-system16-controls
+          if-no-files-found: warn
+          retention-days: 14
