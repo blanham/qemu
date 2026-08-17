@@ -1,0 +1,97 @@
+name: Record VC4 SWI reconciliation status
+
+on:
+  push:
+    branches:
+      - agent/vc4-pc-write-origin-refresh
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  record-status:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for the reconciliation run
+        run: |
+          set -euo pipefail
+          current_run="$GITHUB_RUN_ID"
+          selected=''
+          for attempt in $(seq 1 180); do
+            selected="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?branch=agent%2Fvc4-pc-write-origin-refresh&per_page=50" \
+              --jq '[.workflow_runs[] |
+                select(.name == "Reconcile and verify VC4 SWI support") |
+                select((.id|tostring) != "'"$current_run"'")][0] |
+                if . == null then "" else
+                  ((.id|tostring) + " " + .status + " " + (.conclusion // "")) end')"
+            if test -n "$selected"; then
+              read -r run_id status conclusion <<<"$selected"
+              if test "$status" = completed; then
+                break
+              fi
+            fi
+            sleep 10
+          done
+          test -n "$selected"
+          read -r run_id status conclusion <<<"$selected"
+          test "$status" = completed
+          printf '%s\n' "$run_id" > /tmp/swi-reconcile-run-id
+          printf '%s\n' "$conclusion" > /tmp/swi-reconcile-conclusion
+          mkdir -p /tmp/swi-reconcile-artifact
+          gh run download "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir /tmp/swi-reconcile-artifact || true
+
+      - name: Build the durable status record
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path('/tmp/swi-reconcile-artifact')
+          files = []
+          summary = None
+          for path in root.rglob('*') if root.exists() else []:
+              if not path.is_file():
+                  continue
+              files.append(str(path.relative_to(root)))
+              if path.name == 'summary.json':
+                  summary = json.load(path.open())
+
+          report = {
+              'schema_version': 1,
+              'workflow_run_id': int(
+                  Path('/tmp/swi-reconcile-run-id').read_text()),
+              'conclusion': Path(
+                  '/tmp/swi-reconcile-conclusion').read_text().strip(),
+              'summary': summary,
+              'artifact_files': sorted(files),
+          }
+          Path('VC4_SWI_RECONCILIATION_STATUS.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit status on a diagnostic branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email \
+            41898282+github-actions[bot]@users.noreply.github.com
+          git checkout -B agent/vc4-swi-reconciliation-status
+          git add VC4_SWI_RECONCILIATION_STATUS.json
+          conclusion="$(python3 -c \
+            'import json; print(json.load(open("VC4_SWI_RECONCILIATION_STATUS.json"))["conclusion"])')"
+          git commit -m \
+            "ci/vc4: SWI reconciliation ${conclusion} [skip ci]"
+          git push origin HEAD:agent/vc4-swi-reconciliation-status
