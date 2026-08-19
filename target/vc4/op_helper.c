@@ -6,6 +6,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
+#include "qemu/atomic.h"
 #include "qemu/log.h"
 #include "fpu/softfloat.h"
 #include "cpu.h"
@@ -21,6 +22,69 @@
 static inline CPUVC4State *vc4_helper_env(CPUArchState *envp)
 {
     return (CPUVC4State *)(void *)envp;
+}
+
+uint32_t helper_vc4_preg_read(CPUArchState *envp, uint32_t reg)
+{
+    CPUVC4State *env = vc4_helper_env(envp);
+
+    reg &= VC4_NUM_PREGS - 1;
+    if (reg >= VC4_PREG_MUTEX_BASE) {
+        uint32_t mask = UINT32_C(1) << (reg - VC4_PREG_MUTEX_BASE);
+        uint32_t previous;
+
+        /*
+         * p16-p31 are atomic test-and-set mutexes.  A read returns the
+         * previous state and leaves the mutex claimed.  Firmware spins
+         * while the returned value is nonzero.
+         */
+        previous = qatomic_fetch_or(&env->preg_mutexes, mask);
+        return (previous & mask) != 0;
+    }
+
+    switch (reg) {
+    case 12:                        /* PRCORTIM */
+    case 13:                        /* PRSLPTIM */
+        /* Closely coupled core/sleep timers are not modeled yet. */
+        return 0;
+    case 14:                        /* PROWCNT */
+    case 15:                        /* PRORCNT */
+        /* VPU memory accesses complete synchronously in the current model. */
+        return 0;
+    default:
+        /*
+         * p0/p1 and the current p10/p11 approximation are simple latches.
+         * Unassigned p2-p9 retain writes as real control registers do.
+         */
+        return env->preg[reg];
+    }
+}
+
+void helper_vc4_preg_write(CPUArchState *envp, uint32_t reg,
+                           uint32_t value)
+{
+    CPUVC4State *env = vc4_helper_env(envp);
+
+    reg &= VC4_NUM_PREGS - 1;
+    if (reg >= VC4_PREG_MUTEX_BASE) {
+        uint32_t mask = UINT32_C(1) << (reg - VC4_PREG_MUTEX_BASE);
+
+        /* The source value is ignored: any write releases the mutex. */
+        qatomic_fetch_and(&env->preg_mutexes, ~mask);
+        return;
+    }
+
+    switch (reg) {
+    case 12:                        /* PRCORTIM */
+    case 13:                        /* PRSLPTIM */
+    case 14:                        /* PROWCNT */
+    case 15:                        /* PRORCNT */
+        /* Result and outstanding-request counters are read-only. */
+        return;
+    default:
+        env->preg[reg] = value;
+        return;
+    }
 }
 
 static uint32_t vc4_bitreverse(uint32_t value)
