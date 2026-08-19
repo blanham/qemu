@@ -1,0 +1,318 @@
+name: VC4 processor-control stock-firmware frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-preg-mutex
+    paths:
+      - .github/workflows/vc4-preg-stock-frontier.yml
+      - scripts/vc4/preg-mutex-fixup.py
+      - scripts/vc4/raspi3-stock-arm-payload.py
+      - scripts/vc4/raspi3-stock-bootcode-probe.py
+      - scripts/vc4/stock_bootcode_progress.py
+      - target/vc4/cpu.h
+      - target/vc4/helper.h
+      - target/vc4/op_helper.c
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-preg-mutex-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stock-firmware-frontier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OUT_DIR: /tmp/vc4-preg-stock-frontier
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify the validated processor-control decoder
+        id: verify
+        run: |
+          set -o pipefail
+          python3 -m py_compile \
+            scripts/vc4/preg-mutex-fixup.py \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/stock_bootcode_progress.py
+          python3 scripts/vc4/preg-mutex-fixup.py
+          git diff --check
+          test -z "$(git status --short -- target/vc4/translate.c)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.loads(Path("VC4_PREG_MUTEX_STATUS.json").read_text())
+          if status.get("validated") is not True:
+              raise SystemExit("processor-control register smoke gate is not validated")
+          if status.get("outcomes", {}).get("smoke") != "success":
+              raise SystemExit("processor-control register smoke outcome is not success")
+          PY
+
+      - name: Install build and payload dependencies
+        id: dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Download the pinned official firmware trio
+        id: firmware
+        run: |
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build the freestanding kernel8.img witness
+        id: payload
+        run: |
+          cat >/tmp/vc4-arm-payload.S <<'EOF'
+          .section .text
+          .global _start
+          .type _start, %function
+          _start:
+              mov x4, x0
+              mov x5, sp
+              mrs x6, mpidr_el1
+              ldr x0, =0x0000000000001000
+              ldr x1, =0x5643345f41524d21
+              str x1, [x0]
+              str x4, [x0, #8]
+              str x5, [x0, #16]
+              str x6, [x0, #24]
+              dsb sy
+          1:
+              wfe
+              b 1b
+              .ltorg
+          .size _start, . - _start
+          EOF
+
+          aarch64-linux-gnu-as \
+            -o /tmp/vc4-arm-payload.o /tmp/vc4-arm-payload.S
+          aarch64-linux-gnu-ld \
+            -nostdlib --entry=_start -Ttext=0x80000 \
+            -o /tmp/vc4-arm-payload.elf /tmp/vc4-arm-payload.o
+          aarch64-linux-gnu-objcopy \
+            -O binary /tmp/vc4-arm-payload.elf /tmp/kernel8.img
+          aarch64-linux-gnu-objdump -d /tmp/vc4-arm-payload.elf \
+            | tee /tmp/vc4-arm-payload.dis
+          test -s /tmp/kernel8.img
+
+      - name: Validate the stock image helpers
+        id: helpers
+        run: |
+          python3 scripts/vc4/stock_bootcode_progress.py
+          git diff --check
+
+      - name: Configure and build the heterogeneous emulator
+        id: build
+        run: |
+          set -o pipefail
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror \
+            2>&1 | tee /tmp/vc4-preg-stock-configure.log
+          ninja -C build qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-preg-stock-build.log
+
+      - name: Boot kernel8.img through unchanged stock firmware
+        id: probe
+        run: |
+          set -o pipefail
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp /tmp/vc4-arm-payload.dis "$OUT_DIR/payload.dis"
+          cp /tmp/kernel8.img "$OUT_DIR/kernel8.img"
+
+          set +e
+          python3 scripts/vc4/raspi3-stock-arm-payload.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            /tmp/start.elf \
+            /tmp/fixup.dat \
+            /tmp/kernel8.img \
+            --seconds 240 \
+            --out-dir "$OUT_DIR" 2>&1 | tee "$OUT_DIR/probe.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" >"$OUT_DIR/probe.status"
+          echo "return_code=$rc" >>"$GITHUB_OUTPUT"
+
+      - name: Upload the complete stock-firmware frontier
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-preg-stock-frontier-${{ github.run_attempt }}
+          path: /tmp/vc4-preg-stock-frontier
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Record the next firmware frontier
+        if: always()
+        env:
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          FIRMWARE_OUTCOME: ${{ steps.firmware.outcome }}
+          PAYLOAD_OUTCOME: ${{ steps.payload.outcome }}
+          HELPERS_OUTCOME: ${{ steps.helpers.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PROBE_RETURN_CODE: ${{ steps.probe.outputs.return_code }}
+        run: |
+          python3 - <<'PY'
+          from collections import Counter
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          out = Path(os.environ["OUT_DIR"])
+
+          def read_text(path: Path) -> str:
+              if not path.is_file():
+                  return ""
+              return path.read_text(encoding="utf-8", errors="replace")
+
+          result_path = out / "result.json"
+          if result_path.is_file():
+              result = json.loads(result_path.read_text())
+          else:
+              result = {}
+
+          diagnostics = read_text(out / "qemu.stderr")
+          diagnostic_counts = Counter()
+          for line in diagnostics.splitlines():
+              lowered = line.lower()
+              if ("unimplemented" in lowered or
+                      "illegal instruction" in lowered or
+                      "guest error" in lowered):
+                  diagnostic_counts[line] += 1
+
+          cpu_frontier = []
+          for cpu in result.get("cpu_snapshot", {}).get("cpus", []):
+              registers = str(cpu.get("registers", ""))
+              pc_match = re.search(
+                  r"(?:^|\s)(?:PC|pc)=?\s*([0-9a-f]+)",
+                  registers,
+                  re.IGNORECASE,
+              )
+              cpu_frontier.append({
+                  "cpu_index": cpu.get("cpu_index"),
+                  "qom_type": cpu.get("qom_type"),
+                  "halted": cpu.get("halted"),
+                  "pc": (f"0x{pc_match.group(1)}" if pc_match else None),
+                  "registers": registers,
+              })
+
+          selected_result_keys = (
+              "schema_version",
+              "signature_address",
+              "expected_signature",
+              "signature_seen",
+              "observed_signature",
+              "elapsed_seconds",
+              "qemu_returncode",
+              "probe_error",
+              "kernel_word_before_boot",
+              "kernel_word_after_boot",
+              "payload_argument_x0",
+              "payload_initial_sp",
+              "payload_mpidr_el1",
+              "arm_control0",
+              "arm_control1",
+              "arm_status",
+              "arm_id",
+              "pm_proc",
+          )
+
+          status = {
+              "schema_version": 1,
+              "source_sha": os.environ["GITHUB_SHA"],
+              "ref_name": os.environ["GITHUB_REF_NAME"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "run_url": (
+                  f"{os.environ['GITHUB_SERVER_URL']}/"
+                  f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                  f"{os.environ['GITHUB_RUN_ID']}"
+              ),
+              "outcomes": {
+                  "verify": os.environ["VERIFY_OUTCOME"],
+                  "dependencies": os.environ["DEPENDENCIES_OUTCOME"],
+                  "firmware": os.environ["FIRMWARE_OUTCOME"],
+                  "payload": os.environ["PAYLOAD_OUTCOME"],
+                  "helpers": os.environ["HELPERS_OUTCOME"],
+                  "build": os.environ["BUILD_OUTCOME"],
+                  "probe": os.environ["PROBE_OUTCOME"],
+              },
+              "probe_return_code": os.environ.get("PROBE_RETURN_CODE", ""),
+              "result": {
+                  key: result.get(key)
+                  for key in selected_result_keys
+                  if key in result
+              },
+              "cpu_frontier": cpu_frontier,
+              "diagnostic_counts": [
+                  {"count": count, "line": line}
+                  for line, count in diagnostic_counts.most_common(80)
+              ],
+              "qemu_diagnostics_tail": diagnostics.splitlines()[-200:],
+              "probe_log_tail": read_text(out / "probe.log").splitlines()[-120:],
+              "configure_log_tail": read_text(
+                  Path("/tmp/vc4-preg-stock-configure.log")
+              ).splitlines()[-120:],
+              "build_log_tail": read_text(
+                  Path("/tmp/vc4-preg-stock-build.log")
+              ).splitlines()[-200:],
+          }
+          Path("VC4_PREG_MUTEX_STOCK_STATUS.json").write_text(
+              json.dumps(status, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          if python3 - <<'PY'
+          import json
+          from pathlib import Path
+          status = json.loads(Path("VC4_PREG_MUTEX_STOCK_STATUS.json").read_text())
+          raise SystemExit(0 if status.get("result", {}).get("signature_seen") else 1)
+          PY
+          then
+            message="ci/vc4: record stock ARM payload handoff [skip ci]"
+          else
+            message="ci/vc4: record stock firmware frontier [skip ci]"
+          fi
+
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add VC4_PREG_MUTEX_STOCK_STATUS.json
+          git commit -m "$message"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin HEAD:"$GITHUB_REF_NAME"
