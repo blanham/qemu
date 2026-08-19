@@ -1,0 +1,126 @@
+name: VC4 validate processor-control moves once
+
+on:
+  push:
+    branches:
+      - agent/vc4-preg-mutex
+    paths:
+      - .github/workflows/vc4-validate-preg-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/vc4-preg-mutex
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build meson pkg-config \
+            libglib2.0-dev libpixman-1-dev
+
+      - name: Ensure decoder, build, and exercise processor-control registers
+        id: validate
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('target/vc4/translate.c')
+          text = path.read_text()
+          if 'static void vc4_gen_preg_read' not in text:
+              anchor = '''static TCGv_i32 vc4_gen_cond_from_sr(TCGv_i32 sr, unsigned cond)\n'''
+              helpers = '''static void vc4_gen_preg_read(DisasContext *ctx, unsigned rd,\n                              unsigned preg)\n{\n    TCGv_i32 value = tcg_temp_new_i32();\n\n    if (rd == VC4_REG_PC) {\n        tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);\n    }\n    gen_helper_vc4_preg_read(value, tcg_env,\n                             tcg_constant_i32(preg));\n    vc4_set_reg(ctx, rd, value);\n}\n\nstatic void vc4_gen_preg_write(DisasContext *ctx, unsigned preg,\n                               unsigned ra)\n{\n    gen_helper_vc4_preg_write(tcg_env, tcg_constant_i32(preg),\n                              vc4_get_reg(ctx, ra));\n}\n\n'''
+              if anchor not in text:
+                  raise SystemExit('translator helper insertion anchor missing')
+              text = text.replace(anchor, helpers + anchor, 1)
+
+              anchor = '''    if ((i1 & 0xfc00) == 0xc000 && (i2 & 0x0060) == 0x0000) {\n'''
+              decoder = '''    if ((i1 & 0xffe0) == 0xcc20 && (i2 & 0xffe0) == 0) {\n        rd = i1 & 0x1f;\n        rb = i2 & 0x1f;\n        vc4_gen_preg_read(ctx, rd, rb);\n        return true;\n    }\n\n    if ((i1 & 0xffe0) == 0xcc00 && (i2 & 0xffe0) == 0) {\n        rd = i1 & 0x1f;\n        ra = i2 & 0x1f;\n        vc4_gen_preg_write(ctx, rd, ra);\n        return true;\n    }\n\n'''
+              if anchor not in text:
+                  raise SystemExit('translator decoder insertion anchor missing')
+              text = text.replace(anchor, decoder + anchor, 1)
+              path.write_text(text)
+          PY
+
+          git diff --check
+          rm -rf build-preg
+          mkdir build-preg
+
+          CONFIGURE_RC=0
+          BUILD_RC=0
+          SMOKE_RC=0
+          (
+            cd build-preg
+            ../configure --target-list=vc4-softmmu --disable-werror \
+              --disable-docs
+          ) >vc4-preg-configure.log 2>&1 || CONFIGURE_RC=$?
+
+          if [ "$CONFIGURE_RC" -eq 0 ]; then
+            ninja -C build-preg -j2 qemu-system-vc4 \
+              >vc4-preg-build.log 2>&1 || BUILD_RC=$?
+          else
+            BUILD_RC=125
+            : >vc4-preg-build.log
+          fi
+
+          if [ "$BUILD_RC" -eq 0 ]; then
+            python3 scripts/vc4/preg-mutex-smoke.py \
+              --qemu build-preg/qemu-system-vc4 --timeout 1.0 \
+              >vc4-preg-smoke.log 2>&1 || SMOKE_RC=$?
+          else
+            SMOKE_RC=125
+            : >vc4-preg-smoke.log
+          fi
+
+          export CONFIGURE_RC BUILD_RC SMOKE_RC
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def tail(path, limit=12000):
+              data = Path(path).read_text(errors='replace')
+              return data[-limit:]
+
+          status = {
+              'schema': 1,
+              'source_commit': os.environ.get('GITHUB_SHA'),
+              'configure_rc': int(os.environ['CONFIGURE_RC']),
+              'build_rc': int(os.environ['BUILD_RC']),
+              'smoke_rc': int(os.environ['SMOKE_RC']),
+              'passed': all(int(os.environ[name]) == 0 for name in
+                            ('CONFIGURE_RC', 'BUILD_RC', 'SMOKE_RC')),
+              'configure_log_tail': tail('vc4-preg-configure.log'),
+              'build_log_tail': tail('vc4-preg-build.log'),
+              'smoke_log_tail': tail('vc4-preg-smoke.log'),
+          }
+          Path('VC4_PREG_MUTEX_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+
+          rm -f scripts/vc4/preg-translator.patch
+          rm -f .github/workflows/vc4-apply-preg-translator.yml
+          rm -f .github/workflows/vc4-validate-preg-once.yml
+
+          git config user.name 'github-actions[bot]'
+          git config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'target/vc4: validate processor-control moves [skip ci]'
+          git pull --rebase origin agent/vc4-preg-mutex
+          git push origin HEAD:agent/vc4-preg-mutex
+
+          if [ "$CONFIGURE_RC" -ne 0 ] || [ "$BUILD_RC" -ne 0 ] || \
+             [ "$SMOKE_RC" -ne 0 ]; then
+            exit 1
+          fi
