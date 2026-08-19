@@ -1,0 +1,198 @@
+name: VC4 low-PC interrupt frontier
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/vc4-lowpc-irq-frontier
+    paths:
+      - .github/workflows/vc4-lowpc-irq-frontier.yml
+      - scripts/vc4/lowpc-irq-probe.py
+      - scripts/vc4/msync-smoke.py
+      - scripts/vc4/preg-mutex-smoke.py
+      - scripts/vc4/raspi3-stock-arm-payload.py
+      - hw/arm/bcm2835_peripherals.c
+      - hw/misc/bcm2835_msync.c
+      - hw/misc/meson.build
+      - include/hw/arm/bcm2835_peripherals.h
+      - include/hw/misc/bcm2835_msync.h
+      - include/hw/raspi/raspi_platform.h
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vc4-lowpc-irq-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+  OUT_DIR: /tmp/vc4-lowpc-irq-frontier
+  IMAGE_DIR: /tmp/vc4-lowpc-image
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the diagnostic branch
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Validate diagnostic scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/lowpc-irq-probe.py \
+            scripts/vc4/msync-smoke.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/raspi3-stock-arm-payload.py
+          git diff --check
+
+      - name: Configure and build both frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror \
+            2>&1 | tee /tmp/vc4-lowpc-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-lowpc-build.log
+          if grep -E 'bcm2835_msync\.c:.*warning:' \
+              /tmp/vc4-lowpc-build.log; then
+            echo 'BCM2835 multicore-sync warnings remain' >&2
+            exit 1
+          fi
+
+      - name: Re-run processor-control regression
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-lowpc-preg-smoke.log
+
+      - name: Re-run multicore-sync regression
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-lowpc-msync-smoke.log
+
+      - name: Fetch and authenticate pinned stock firmware
+        run: |
+          set -euo pipefail
+          base="https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot"
+          curl --fail --location --retry 4 \
+            "$base/bootcode.bin" -o /tmp/bootcode.bin
+          curl --fail --location --retry 4 \
+            "$base/start.elf" -o /tmp/start.elf
+          curl --fail --location --retry 4 \
+            "$base/fixup.dat" -o /tmp/fixup.dat
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          sha256sum /tmp/bootcode.bin /tmp/start.elf /tmp/fixup.dat \
+            | tee /tmp/vc4-lowpc-firmware-sha256.txt
+
+      - name: Build the freestanding AArch64 witness
+        run: |
+          set -euo pipefail
+          cat >/tmp/kernel8.S <<'EOF'
+          .section .text
+          .global _start
+          _start:
+              ldr x1, =0x5643345f41524d21
+              mov x2, #0x1000
+              str x1, [x2]
+          1:
+              wfe
+              b 1b
+          EOF
+          aarch64-linux-gnu-as -o /tmp/kernel8.o /tmp/kernel8.S
+          aarch64-linux-gnu-ld \
+            -Ttext=0x80000 \
+            -e _start \
+            -o /tmp/kernel8.elf \
+            /tmp/kernel8.o
+          aarch64-linux-gnu-objcopy \
+            -O binary /tmp/kernel8.elf /tmp/kernel8.img
+          aarch64-linux-gnu-objdump -d /tmp/kernel8.elf \
+            | tee /tmp/vc4-lowpc-kernel-disassembly.txt
+          test -s /tmp/kernel8.img
+
+      - name: Materialize the exact stock SD image
+        run: |
+          set -euo pipefail
+          rm -rf "$IMAGE_DIR"
+          mkdir -p "$IMAGE_DIR"
+          set +e
+          python3 scripts/vc4/raspi3-stock-arm-payload.py \
+            build/qemu-system-aarch64 \
+            /tmp/bootcode.bin \
+            /tmp/start.elf \
+            /tmp/fixup.dat \
+            /tmp/kernel8.img \
+            --seconds 2 \
+            --out-dir "$IMAGE_DIR" \
+            2>&1 | tee /tmp/vc4-lowpc-image-build.log
+          image_rc=${PIPESTATUS[0]}
+          set -e
+          echo "$image_rc" >/tmp/vc4-lowpc-image-build.rc
+          test -s "$IMAGE_DIR/stock-arm-payload.img"
+
+      - name: Capture the low-PC interrupt frontier
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR"
+          python3 scripts/vc4/lowpc-irq-probe.py \
+            --qemu build/qemu-system-aarch64 \
+            --image "$IMAGE_DIR/stock-arm-payload.img" \
+            --seconds 30 \
+            --interval 0.005 \
+            --stable-samples 256 \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee /tmp/vc4-lowpc-probe.log
+          cp /tmp/kernel8.img "$OUT_DIR/kernel8.img"
+          cp /tmp/kernel8.elf "$OUT_DIR/kernel8.elf"
+          cp /tmp/vc4-lowpc-firmware-sha256.txt "$OUT_DIR/"
+          cp /tmp/vc4-lowpc-kernel-disassembly.txt "$OUT_DIR/"
+          cp /tmp/vc4-lowpc-image-build.rc "$OUT_DIR/"
+
+      - name: Upload complete frontier evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-lowpc-irq-frontier-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-lowpc-irq-frontier
+            /tmp/vc4-lowpc-image/result.json
+            /tmp/vc4-lowpc-image/qemu.stderr
+            /tmp/vc4-lowpc-configure.log
+            /tmp/vc4-lowpc-build.log
+            /tmp/vc4-lowpc-preg-smoke.log
+            /tmp/vc4-lowpc-msync-smoke.log
+            /tmp/vc4-lowpc-image-build.log
+            /tmp/vc4-lowpc-probe.log
+          if-no-files-found: warn
+          retention-days: 14
