@@ -1,0 +1,154 @@
+name: VC4 summarize next stock-firmware frontier once
+
+on:
+  push:
+    branches:
+      - agent/vc4-preg-mutex
+    paths:
+      - .github/workflows/vc4-summarize-frontier-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/vc4-preg-mutex
+          fetch-depth: 0
+
+      - name: Wait for a fresh stock status and summarize it
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_status_commit=a571ff66bba806ca59c853e4bc56c7846d15c9bc
+          for attempt in $(seq 1 120); do
+            git fetch origin agent/vc4-preg-mutex
+            status_commit=$(git log -1 --format=%H \
+              origin/agent/vc4-preg-mutex -- VC4_ARM_PAYLOAD_STATUS.json || true)
+            if [ -n "$status_commit" ] && \
+               [ "$status_commit" != "$old_status_commit" ]; then
+              git reset --hard origin/agent/vc4-preg-mutex
+              break
+            fi
+            if [ "$attempt" -eq 120 ]; then
+              echo 'Timed out waiting for refreshed stock status.' >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from collections import Counter
+          import json
+          from pathlib import Path
+          import re
+
+          source = Path('VC4_ARM_PAYLOAD_STATUS.json')
+          data = json.loads(source.read_text())
+          strings: list[tuple[str, str]] = []
+          selected: list[tuple[str, object]] = []
+
+          def walk(value, path='root'):
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      child = f'{path}.{key}'
+                      lower = str(key).lower()
+                      if any(word in lower for word in (
+                          'frontier', 'classification', 'result', 'source',
+                          'commit', 'opcode', 'illegal', 'unimplemented',
+                          'arm_pc', 'vpu_pc', 'cpu_pc')):
+                          selected.append((child, item))
+                      walk(item, child)
+              elif isinstance(value, list):
+                  for index, item in enumerate(value):
+                      walk(item, f'{path}[{index}]')
+              elif isinstance(value, str):
+                  strings.append((path, value))
+
+          walk(data)
+          corpus = '\n'.join(value for _, value in strings)
+          opcode_hits = Counter(
+              (opcode.lower(), pc.lower())
+              for opcode, pc in re.findall(
+                  r'unimplemented opcode 0x([0-9a-f]+) at 0x([0-9a-f]+)',
+                  corpus, flags=re.IGNORECASE)
+          )
+          illegal_hits = Counter(
+              pc.lower() for pc in re.findall(
+                  r'illegal instruction at 0x([0-9a-f]+)', corpus,
+                  flags=re.IGNORECASE)
+          )
+          cpu_pcs = Counter(
+              pc.lower() for pc in re.findall(
+                  r'\bpc\s*[=:]\s*(?:0x)?([0-9a-f]{8,16})\b', corpus,
+                  flags=re.IGNORECASE)
+          )
+
+          old_pair = ('cc20', '1ee26572')
+          lines = [
+              '# VC4 stock-firmware frontier',
+              '',
+              f'- Status source: `{source}`',
+              f'- Previous p16 blocker occurrences: '
+              f'**{opcode_hits.get(old_pair, 0)}**',
+              '',
+              '## Unimplemented scalar opcodes',
+              '',
+          ]
+          if opcode_hits:
+              lines += [
+                  '| Count | Opcode | PC |',
+                  '|---:|---|---|',
+              ]
+              for (opcode, pc), count in opcode_hits.most_common(30):
+                  lines.append(f'| {count} | `0x{opcode}` | `0x{pc}` |')
+          else:
+              lines.append('No `unimplemented opcode` records were found.')
+
+          lines += ['', '## Illegal-instruction PCs', '']
+          if illegal_hits:
+              lines += ['| Count | PC |', '|---:|---|']
+              for pc, count in illegal_hits.most_common(30):
+                  lines.append(f'| {count} | `0x{pc}` |')
+          else:
+              lines.append('No illegal-instruction records were found.')
+
+          lines += ['', '## Most frequently recorded CPU PCs', '']
+          if cpu_pcs:
+              lines += ['| Count | PC |', '|---:|---|']
+              for pc, count in cpu_pcs.most_common(30):
+                  lines.append(f'| {count} | `0x{pc}` |')
+          else:
+              lines.append('No textual CPU-PC records were found.')
+
+          lines += ['', '## Selected structured status fields', '']
+          emitted = 0
+          for path, value in selected:
+              if emitted >= 80:
+                  break
+              rendered = json.dumps(value, sort_keys=True)
+              if len(rendered) > 2000:
+                  rendered = rendered[:2000] + '…'
+              lines.append(f'- `{path}`: `{rendered}`')
+              emitted += 1
+
+          Path('VC4_NEXT_FRONTIER.md').write_text('\n'.join(lines) + '\n')
+          PY
+
+      - name: Commit frontier report and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/vc4-summarize-frontier-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'ci/vc4: summarize next firmware frontier [skip ci]'
+          git pull --rebase origin agent/vc4-preg-mutex
+          git push origin HEAD:agent/vc4-preg-mutex
