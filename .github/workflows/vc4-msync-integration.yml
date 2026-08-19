@@ -1,0 +1,386 @@
+name: VC4 BCM2835 multicore-sync integration
+
+on:
+  push:
+    branches:
+      - agent/vc4-post-preg-arm-release
+    paths:
+      - .github/workflows/vc4-msync-integration.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-msync-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  integrate-build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out continuation branch
+        uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-post-preg-arm-release
+          fetch-depth: 0
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize multicore-sync device and wiring
+        run: |
+          set -euo pipefail
+          git fetch origin agent/vc4-preg-mutex
+          git show FETCH_HEAD:include/hw/misc/bcm2835_msync.h \
+            > include/hw/misc/bcm2835_msync.h
+          git show FETCH_HEAD:hw/misc/bcm2835_msync.c \
+            > hw/misc/bcm2835_msync.c
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('include/hw/arm/bcm2835_peripherals.h')
+          s = p.read_text()
+          include = '#include "hw/misc/bcm2835_msync.h"\n'
+          anchor = '#include "hw/misc/bcm2835_mphi.h"\n'
+          if include not in s:
+              if anchor not in s:
+                  raise SystemExit('missing mphi include anchor')
+              s = s.replace(anchor, anchor + include, 1)
+          field = '    BCM2835MSyncState msync;\n'
+          anchor = '    BCM2835SystemTimerState systmr;\n'
+          if field not in s:
+              if anchor not in s:
+                  raise SystemExit('missing system timer field anchor')
+              s = s.replace(anchor, field + anchor, 1)
+          p.write_text(s)
+
+          p = Path('hw/arm/bcm2835_peripherals.c')
+          s = p.read_text()
+          init = '''    /* Multicore synchronization */
+              object_initialize_child(obj, "msync", &s->msync,
+                                      TYPE_BCM2835_MSYNC);
+
+          '''
+          init = init.replace('              ', '    ')
+          anchor = (
+              '    /* Interrupt Controller */\n'
+              '    object_initialize_child(obj, "ic", &s->ic, '
+              'TYPE_BCM2835_IC);\n\n'
+          )
+          if init not in s:
+              if anchor not in s:
+                  raise SystemExit('missing interrupt-controller init anchor')
+              s = s.replace(anchor, init + anchor, 1)
+
+          realize = '''    /* Multicore synchronization */
+              if (!sysbus_realize(SYS_BUS_DEVICE(&s->msync), errp)) {
+                  return;
+              }
+              memory_region_add_subregion(
+                  &s->peri_mr, MSYNC_OFFSET,
+                  sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->msync), 0));
+              for (n = 0; n < BCM2835_MSYNC_IRQ_COUNT; n++) {
+                  sysbus_connect_irq(
+                      SYS_BUS_DEVICE(&s->msync), n,
+                      qdev_get_gpio_in_named(DEVICE(&s->ic),
+                                              BCM2835_IC_GPU_IRQ,
+                                              INTERRUPT_MULTICORESYNC0 + n));
+              }
+
+          '''
+          realize = realize.replace('              ', '    ')
+          anchor = (
+              '    memory_region_add_subregion(&s->peri_mr, '
+              'ARMCTRL_IC_OFFSET,\n'
+              '                sysbus_mmio_get_region('
+              'SYS_BUS_DEVICE(&s->ic), 0));\n'
+              '    sysbus_pass_irq(SYS_BUS_DEVICE(s), '
+              'SYS_BUS_DEVICE(&s->ic));\n\n'
+          )
+          if realize not in s:
+              if anchor not in s:
+                  raise SystemExit('missing interrupt-controller realize anchor')
+              s = s.replace(anchor, anchor + realize, 1)
+          p.write_text(s)
+
+          p = Path('hw/misc/meson.build')
+          s = p.read_text()
+          entry = "  'bcm2835_msync.c',\n"
+          anchor = "  'bcm2835_mphi.c',\n"
+          if entry not in s:
+              if anchor not in s:
+                  raise SystemExit('missing meson mphi anchor')
+              s = s.replace(anchor, anchor + entry, 1)
+          p.write_text(s)
+          PY
+
+          cat > scripts/vc4/msync-smoke.py <<'PY'
+          #!/usr/bin/env python3
+          """Exercise the BCM2835 multicore-sync MMIO block through qtest."""
+
+          from __future__ import annotations
+
+          import argparse
+          from pathlib import Path
+          import socket
+          import subprocess
+          import tempfile
+          import time
+
+          PERIPHERAL_BASE = 0x3F000000
+          MS_SEMA_3 = PERIPHERAL_BASE + 0x00C
+          MS_SEMA_4 = PERIPHERAL_BASE + 0x010
+          MS_STATUS = PERIPHERAL_BASE + 0x080
+          MS_IREQ_0 = PERIPHERAL_BASE + 0x084
+          MS_ICSET_0 = PERIPHERAL_BASE + 0x090
+          MS_ICCLR_0 = PERIPHERAL_BASE + 0x098
+          MS_MBOX_0 = PERIPHERAL_BASE + 0x0A0
+          MS_MBOX_7 = PERIPHERAL_BASE + 0x0BC
+          MS_VPUSEMA_0 = PERIPHERAL_BASE + 0x0C0
+          MS_VPU_STAT = PERIPHERAL_BASE + 0x0C8
+
+
+          class QTest:
+              def __init__(self, path: Path) -> None:
+                  self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                  self.sock.connect(str(path))
+                  self.file = self.sock.makefile("rwb", buffering=0)
+
+              def command(self, line: str) -> str:
+                  self.file.write(line.encode("ascii") + b"\n")
+                  reply = self.file.readline()
+                  if not reply:
+                      raise RuntimeError(
+                          f"qtest closed while handling {line!r}"
+                      )
+                  result = reply.decode(
+                      "ascii", errors="replace"
+                  ).strip()
+                  if not result.startswith("OK"):
+                      raise RuntimeError(
+                          f"qtest command {line!r} failed: {result}"
+                      )
+                  return result
+
+              def readl(self, address: int) -> int:
+                  fields = self.command(f"readl 0x{address:x}").split()
+                  if len(fields) != 2:
+                      raise RuntimeError(
+                          f"malformed qtest read reply: {fields!r}"
+                      )
+                  return int(fields[1], 0)
+
+              def writel(self, address: int, value: int) -> None:
+                  self.command(
+                      f"writel 0x{address:x} "
+                      f"0x{value & 0xffffffff:x}"
+                  )
+
+              def close(self) -> None:
+                  self.file.close()
+                  self.sock.close()
+
+
+          def wait_for_qtest(path: Path,
+                             proc: subprocess.Popen[bytes],
+                             timeout: float = 15.0) -> QTest:
+              deadline = time.monotonic() + timeout
+              last_error: OSError | None = None
+              while time.monotonic() < deadline:
+                  if proc.poll() is not None:
+                      raise RuntimeError(
+                          f"QEMU exited early with {proc.returncode}"
+                      )
+                  try:
+                      return QTest(path)
+                  except (FileNotFoundError,
+                          ConnectionRefusedError) as exc:
+                      last_error = exc
+                      time.sleep(0.02)
+              raise TimeoutError(
+                  f"qtest socket was not ready: {path}"
+              ) from last_error
+
+
+          def expect(actual: int, expected: int,
+                     description: str) -> None:
+              if actual != expected:
+                  raise AssertionError(
+                      f"{description}: got 0x{actual:08x}, "
+                      f"expected 0x{expected:08x}"
+                  )
+
+
+          def stop_process(proc: subprocess.Popen[bytes]) -> None:
+              if proc.poll() is not None:
+                  return
+              proc.terminate()
+              try:
+                  proc.wait(timeout=3)
+              except subprocess.TimeoutExpired:
+                  proc.kill()
+                  proc.wait(timeout=3)
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser()
+              parser.add_argument("--qemu", required=True, type=Path)
+              args = parser.parse_args()
+              if not args.qemu.is_file():
+                  parser.error(f"not a file: {args.qemu}")
+
+              with tempfile.TemporaryDirectory(
+                  prefix="vc4-msync-"
+              ) as tmp_s:
+                  tmp = Path(tmp_s)
+                  qtest_path = tmp / "qtest.sock"
+                  stderr_path = tmp / "qemu.stderr"
+                  command = [
+                      str(args.qemu.resolve()),
+                      "-M", "raspi3b-vc4-hetero",
+                      "-m", "1G",
+                      "-smp", "5",
+                      "-accel", "tcg,thread=single",
+                      "-display", "none",
+                      "-monitor", "none",
+                      "-serial", "none",
+                      "-S",
+                      "-qtest",
+                      f"unix:{qtest_path},server=on,wait=off",
+                  ]
+                  with stderr_path.open("wb") as stderr:
+                      proc = subprocess.Popen(
+                          command,
+                          stdout=subprocess.DEVNULL,
+                          stderr=stderr,
+                      )
+
+                  qtest: QTest | None = None
+                  try:
+                      qtest = wait_for_qtest(qtest_path, proc)
+
+                      expect(qtest.readl(MS_STATUS), 0,
+                             "reset semaphore status")
+                      expect(qtest.readl(MS_SEMA_3), 0,
+                             "first semaphore claim")
+                      expect(qtest.readl(MS_STATUS), 1 << 3,
+                             "claimed semaphore in status")
+                      expect(qtest.readl(MS_SEMA_3), 1,
+                             "repeated semaphore claim")
+                      qtest.writel(MS_SEMA_3, 0xDEADBEEF)
+                      expect(qtest.readl(MS_STATUS), 0,
+                             "semaphore release ignores write value")
+
+                      qtest.writel(MS_IREQ_0, 1 << 4)
+                      expect(qtest.readl(MS_IREQ_0), 1 << 4,
+                             "interrupt-request latch")
+                      expect(qtest.readl(MS_SEMA_4), 0,
+                             "interrupt-selected semaphore claim")
+                      qtest.writel(MS_SEMA_4, 0)
+
+                      qtest.writel(MS_ICSET_0, 1)
+                      expect(qtest.readl(MS_ICSET_0), 1,
+                             "inter-core request set")
+                      qtest.writel(MS_ICCLR_0, 1)
+                      expect(qtest.readl(MS_ICCLR_0), 0,
+                             "inter-core request clear")
+
+                      qtest.writel(MS_MBOX_0, 0x01234567)
+                      qtest.writel(MS_MBOX_7, 0x89ABCDEF)
+                      expect(qtest.readl(MS_MBOX_0), 0x01234567,
+                             "mailbox zero round trip")
+                      expect(qtest.readl(MS_MBOX_7), 0x89ABCDEF,
+                             "mailbox seven round trip")
+
+                      expect(qtest.readl(MS_VPUSEMA_0), 0,
+                             "first VPU semaphore claim")
+                      expect(qtest.readl(MS_VPUSEMA_0), 1,
+                             "repeated VPU semaphore claim")
+                      qtest.writel(MS_VPUSEMA_0, 0xFFFFFFFF)
+                      expect(qtest.readl(MS_VPUSEMA_0), 0,
+                             "VPU semaphore release")
+                      expect(qtest.readl(MS_VPU_STAT), 0,
+                             "single-VPU status")
+                  finally:
+                      if qtest is not None:
+                          qtest.close()
+                      stop_process(proc)
+
+                  stderr_text = stderr_path.read_text(
+                      encoding="utf-8", errors="replace"
+                  )
+                  unexpected = [
+                      line for line in stderr_text.splitlines()
+                      if "bcm2835-msync: unimplemented" in line
+                  ]
+                  if unexpected:
+                      raise AssertionError(
+                          "modeled accesses reached an unimplemented "
+                          "register:\n" + "\n".join(unexpected)
+                      )
+
+              print("BCM2835 multicore-sync smoke test passed")
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          PY
+          chmod +x scripts/vc4/msync-smoke.py
+          python3 -m py_compile scripts/vc4/msync-smoke.py
+          git diff --check
+
+      - name: Configure dual-target build
+        run: |
+          mkdir build-msync
+          cd build-msync
+          ../configure \
+            --target-list=vc4-softmmu,aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+
+      - name: Build VC4 and AArch64 system emulators
+        run: |
+          ninja -C build-msync qemu-system-vc4 qemu-system-aarch64
+
+      - name: Recheck processor-control mutexes
+        run: |
+          if test -f scripts/vc4/preg-mutex-smoke.py; then
+            python3 scripts/vc4/preg-mutex-smoke.py \
+              --qemu build-msync/qemu-system-vc4
+          fi
+
+      - name: Exercise multicore-sync MMIO
+        run: |
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build-msync/qemu-system-vc4
+
+      - name: Commit validated slice and remove temporary workflow
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm .github/workflows/vc4-msync-integration.yml
+          git add \
+            include/hw/misc/bcm2835_msync.h \
+            hw/misc/bcm2835_msync.c \
+            include/hw/arm/bcm2835_peripherals.h \
+            hw/arm/bcm2835_peripherals.c \
+            hw/misc/meson.build \
+            scripts/vc4/msync-smoke.py
+          git commit -m "hw/misc: model BCM2835 multicore synchronization"
+          git pull --rebase origin agent/vc4-post-preg-arm-release
+          git push origin HEAD:agent/vc4-post-preg-arm-release
