@@ -139,6 +139,24 @@ static void vc4_set_reg(DisasContext *ctx, unsigned reg, TCGv_i32 value)
     }
 }
 
+static void vc4_gen_preg_read(DisasContext *ctx, unsigned rd,
+                               unsigned preg)
+{
+    TCGv_i32 value = tcg_temp_new_i32();
+
+    gen_helper_vc4_preg_read(value, tcg_env,
+                             tcg_constant_i32(preg));
+    vc4_set_reg(ctx, rd, value);
+}
+
+static void vc4_gen_preg_write(DisasContext *ctx, unsigned preg,
+                                unsigned ra)
+{
+    gen_helper_vc4_preg_write(tcg_env,
+                              tcg_constant_i32(preg),
+                              vc4_get_reg(ctx, ra));
+}
+
 static void vc4_set_reg_imm(DisasContext *ctx, unsigned reg, uint32_t value)
 {
     if (reg < VC4_NUM_GPRS) {
@@ -920,6 +938,18 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
     unsigned cond, op, rd, ra, rb, format;
     uint32_t raw;
     int32_t offset;
+
+    if ((i1 & 0xffe0) == 0xcc00 && (i2 & 0xffe0) == 0) {
+        /* 1100 1100 000 d:5 ... a:5: mov pd, ra */
+        vc4_gen_preg_write(ctx, i1 & 0x1f, i2 & 0x1f);
+        return true;
+    }
+
+    if ((i1 & 0xffe0) == 0xcc20 && (i2 & 0xffe0) == 0) {
+        /* 1100 1100 001 d:5 ... a:5: mov rd, pa */
+        vc4_gen_preg_read(ctx, i1 & 0x1f, i2 & 0x1f);
+        return true;
+    }
 
     if ((i1 & 0xf080) == 0x9000) {
         cond = (i1 >> 8) & 0xf;
