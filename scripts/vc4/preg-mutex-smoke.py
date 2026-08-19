@@ -123,10 +123,10 @@ def main() -> int:
             "-M", "vc4-vpu",
             "-m", "1M",
             "-kernel", str(firmware),
+            "-accel", "tcg,one-insn-per-tb=on",
             "-display", "none",
             "-monitor", "none",
             "-serial", "none",
-            "-singlestep",
             "-d", "cpu",
             "-D", str(log_path),
         )
