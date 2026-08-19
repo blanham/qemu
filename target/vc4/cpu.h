@@ -22,6 +22,10 @@ typedef struct BCM2835VC4IntcState BCM2835VC4IntcState;
 
 #define VC4_NUM_REGS 32
 #define VC4_NUM_GPRS 30
+#define VC4_NUM_PREGS 32
+#define VC4_PREG_MUTEX_BASE 16
+#define VC4_NUM_PREG_MUTEXES \
+    (VC4_NUM_PREGS - VC4_PREG_MUTEX_BASE)
 
 #define VC4_REG_SP 25
 #define VC4_REG_LR 26
@@ -53,6 +57,15 @@ typedef struct CPUArchState {
     uint32_t gpr[VC4_NUM_GPRS];
     uint32_t sr;
     uint32_t pc;
+
+    /*
+     * p0-p15 are processor-local control registers.  p16-p31 are
+     * architecturally shared single-bit mutexes.  Current machines expose
+     * one VPU core, so retain the mutex bank in CPU state until the second
+     * VPU and a shared core complex are modeled.
+     */
+    uint32_t preg[VC4_PREG_MUTEX_BASE];
+    uint32_t preg_mutexes;
 
     /*
      * In exception mode architectural SP (r25) is banked onto r28.  The
