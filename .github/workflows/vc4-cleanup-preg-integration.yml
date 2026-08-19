@@ -1,0 +1,47 @@
+name: Clean temporary VC4 p-register integration workflows
+
+on:
+  push:
+    branches:
+      - agent/vc4-preg-mutex
+    paths:
+      - VC4_ARM_PAYLOAD_FRONTIER.json
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: ${{ github.actor == 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out current branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/vc4-preg-mutex
+          fetch-depth: 0
+
+      - name: Remove one-shot integration workflows
+        run: |
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-land-preg-decoder.yml \
+            .github/workflows/vc4-land-preg-decoder-final.yml \
+            .github/workflows/vc4-preg-mutex-status.yml \
+            .github/workflows/vc4-preg-dispatch-stock.yml \
+            .github/workflows/vc4-generate-stock-preg.yml \
+            .github/workflows/vc4-preg-authoritative.yml \
+            .github/workflows/vc4-stock-arm-payload-preg.yml \
+            .github/workflows/vc4-cleanup-preg-integration.yml
+
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci/vc4: remove completed p-register scaffolding [skip ci]"
+          git pull --rebase origin agent/vc4-preg-mutex
+          git push origin HEAD:agent/vc4-preg-mutex
