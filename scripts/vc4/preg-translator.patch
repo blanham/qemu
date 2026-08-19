@@ -1,0 +1,51 @@
+diff --git a/target/vc4/translate.c b/target/vc4/translate.c
+--- a/target/vc4/translate.c
++++ b/target/vc4/translate.c
+@@ -148,6 +148,28 @@ static void vc4_set_reg_imm(DisasContext *ctx, unsigned reg, uint32_t value)
+     }
+ }
+ 
++static void vc4_gen_preg_read(DisasContext *ctx, unsigned rd,
++                              unsigned preg)
++{
++    TCGv_i32 value = tcg_temp_new_i32();
++
++    if (rd == VC4_REG_PC) {
++        tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
++    }
++    gen_helper_vc4_preg_read(value, tcg_env,
++                             tcg_constant_i32(preg));
++    vc4_set_reg(ctx, rd, value);
++}
++
++static void vc4_gen_preg_write(DisasContext *ctx, unsigned preg,
++                               unsigned ra)
++{
++    gen_helper_vc4_preg_write(tcg_env, tcg_constant_i32(preg),
++                              vc4_get_reg(ctx, ra));
++}
++
+ static TCGv_i32 vc4_gen_cond_from_sr(TCGv_i32 sr, unsigned cond)
+ {
+     TCGv_i32 v = tcg_temp_new_i32();
+@@ -972,6 +994,24 @@ static bool vc4_decode_scalar32(DisasContext *ctx, uint16_t i1, uint16_t i2)
+                 (int32_t)vc4_float_imm6_to_bits(i2 & 0x3f)));
+     }
+ 
++    if ((i1 & 0xffe0) == 0xcc20 && (i2 & 0xffe0) == 0) {
++        rd = i1 & 0x1f;
++        rb = i2 & 0x1f;
++        vc4_gen_preg_read(ctx, rd, rb);
++        return true;
++    }
++
++    if ((i1 & 0xffe0) == 0xcc00 && (i2 & 0xffe0) == 0) {
++        rd = i1 & 0x1f;
++        ra = i2 & 0x1f;
++        vc4_gen_preg_write(ctx, rd, ra);
++        return true;
++    }
++
+     if ((i1 & 0xfc00) == 0xc000 && (i2 & 0x0060) == 0x0000) {
+         op = (i1 >> 5) & 0x1f;
+         rd = i1 & 0x1f;
