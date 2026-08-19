@@ -1,0 +1,235 @@
+name: Dispatch post-msync VC4 frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-post-preg-arm-release
+    paths:
+      - VC4_FRONTIER_CLASSIFICATION.json
+      - .github/workflows/vc4-dispatch-post-msync-frontier.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-post-msync-dispatch-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-post-preg-arm-release
+          fetch-depth: 0
+
+      - name: Read classification
+        id: classification
+        run: |
+          set -euo pipefail
+          test -f VC4_FRONTIER_CLASSIFICATION.json
+          value=$(python3 - <<'PY'
+          import json
+          print(json.load(open('VC4_FRONTIER_CLASSIFICATION.json'))[
+              'classification'
+          ])
+          PY
+          )
+          case "$value" in
+            arm-payload-reached|scalar-opcode|mmio|silent-halt|probe-failed)
+              ;;
+            *)
+              echo "unknown classification: $value" >&2
+              exit 1
+              ;;
+          esac
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies for promotion
+        if: steps.classification.outputs.value == 'arm-payload-reached'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Prepare clean merge into ARM-payload stage
+        if: steps.classification.outputs.value == 'arm-payload-reached'
+        run: |
+          set -euo pipefail
+          post_sha=$(git rev-parse HEAD)
+          git fetch origin agent/vc4-arm-payload-stage-repair
+          git checkout -B agent/vc4-arm-payload-stage-repair \
+            origin/agent/vc4-arm-payload-stage-repair
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git merge --no-ff --no-commit "$post_sha"
+          git rm -f \
+            .github/workflows/vc4-dispatch-post-msync-frontier.yml \
+            .vc4-frontier/arm-payload-reached \
+            2>/dev/null || true
+          git commit -m \
+            "Merge post-preg ARM release and multicore-sync support"
+
+      - name: Rebuild and retest merged stage
+        if: steps.classification.outputs.value == 'arm-payload-reached'
+        run: |
+          set -euo pipefail
+          mkdir build-promote
+          cd build-promote
+          ../configure \
+            --target-list=vc4-softmmu,aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja qemu-system-vc4 qemu-system-aarch64
+          cd ..
+          if test -f scripts/vc4/preg-mutex-smoke.py; then
+            python3 scripts/vc4/preg-mutex-smoke.py \
+              --qemu build-promote/qemu-system-vc4
+          fi
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build-promote/qemu-system-vc4
+          git diff --check HEAD^ HEAD
+
+      - name: Publish promoted stage
+        if: steps.classification.outputs.value == 'arm-payload-reached'
+        run: |
+          git push origin \
+            HEAD:agent/vc4-arm-payload-stage-repair
+
+      - name: Prepare evidence-first continuation branch
+        if: steps.classification.outputs.value != 'arm-payload-reached'
+        env:
+          CLASSIFICATION: ${{ steps.classification.outputs.value }}
+        run: |
+          set -euo pipefail
+          case "$CLASSIFICATION" in
+            scalar-opcode)
+              next_branch=agent/vc4-post-msync-scalar-frontier
+              ;;
+            mmio)
+              next_branch=agent/vc4-post-msync-mmio-frontier
+              ;;
+            silent-halt)
+              next_branch=agent/vc4-post-msync-silent-halt
+              ;;
+            probe-failed)
+              next_branch=agent/vc4-post-msync-probe-repair
+              ;;
+          esac
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          classification = json.loads(
+              Path('VC4_FRONTIER_CLASSIFICATION.json').read_text()
+          )
+          frontier = json.loads(
+              Path('VC4_POST_MSYNC_FRONTIER.json').read_text()
+          )
+          kind = classification['classification']
+          top_opcode = classification.get('top_opcode')
+          top_mmio = classification.get('top_mmio')
+          lines = [
+              '# VC4 next frontier after multicore-sync support',
+              '',
+              f"Classification: **`{kind}`**",
+              f"Top scalar opcode: `{top_opcode}`",
+              f"Top MMIO access: `{top_mmio}`",
+              f"Source run: `{classification.get('source_run')}`",
+              '',
+              '## Relevant trace evidence',
+          ]
+          opcode = None if top_opcode is None else str(
+              top_opcode.get('opcode', '')
+          ).lower()
+          address = None if top_mmio is None else str(
+              top_mmio.get('address', '')
+          ).lower()
+          evidence = []
+          for item in frontier.get('interesting_lines', []):
+              text = str(item.get('text', ''))
+              lower = text.lower()
+              if ((opcode and opcode in lower)
+                      or (address and address in lower)
+                      or (kind == 'silent-halt' and any(
+                          term in lower for term in (
+                              'halted', 'signature', 'payload', 'arm_status'
+                          )
+                      ))
+                      or kind == 'probe-failed'):
+                  evidence.append(item)
+          if evidence:
+              for item in evidence[:300]:
+                  lines.append(
+                      f"- `{item.get('path')}:{item.get('line')}`: "
+                      f"{item.get('text')}"
+                  )
+          else:
+              lines.append('- No narrowly matched trace lines; inspect the full report.')
+          lines.extend([
+              '',
+              '## Required next step',
+          ])
+          next_steps = {
+              'scalar-opcode': (
+                  'Decode the exact instruction form, add architectural '
+                  'semantics and focused execution coverage, then rerun '
+                  'the same stock-firmware frontier.'
+              ),
+              'mmio': (
+                  'Map the reported address to the BCM283x register block, '
+                  'implement only documented/observed semantics, add an '
+                  'MMIO smoke test, and rerun the frontier.'
+              ),
+              'silent-halt': (
+                  'Perform a controlled VPU scheduling/interrupt A/B test; '
+                  'do not add another instruction or MMIO stub without new '
+                  'trace evidence.'
+              ),
+              'probe-failed': (
+                  'Repair the frontier harness or build failure before '
+                  'drawing any architectural conclusion.'
+              ),
+          }
+          lines.append(next_steps[kind])
+          Path('VC4_NEXT_FRONTIER.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          PY
+
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git checkout -b "$next_branch"
+          git rm -f \
+            .github/workflows/vc4-dispatch-post-msync-frontier.yml \
+            .vc4-frontier/* \
+            2>/dev/null || true
+          git add VC4_NEXT_FRONTIER.md
+          git commit -m "vc4: record next post-msync frontier"
+          git push --force-with-lease origin HEAD:"$next_branch"
+          echo "$next_branch" > /tmp/vc4-next-branch
+
+      - name: Clean dispatcher from source branch after triage
+        if: steps.classification.outputs.value != 'arm-payload-reached'
+        run: |
+          set -euo pipefail
+          git fetch origin agent/vc4-post-preg-arm-release
+          git checkout -B cleanup-post-msync \
+            origin/agent/vc4-post-preg-arm-release
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -f \
+            .github/workflows/vc4-dispatch-post-msync-frontier.yml \
+            .vc4-frontier/* \
+            2>/dev/null || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "ci/vc4: clean post-msync dispatcher"
+          git push origin HEAD:agent/vc4-post-preg-arm-release
