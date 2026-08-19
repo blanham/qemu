@@ -31,6 +31,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install QEMU build dependencies
+        id: dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -43,35 +44,108 @@ jobs:
             zlib1g-dev
 
       - name: Materialize the scalar decoder
+        id: fixup
         run: |
-          python3 -m py_compile \
-            scripts/vc4/preg-mutex-fixup.py \
-            scripts/vc4/preg-mutex-smoke.py
-          python3 scripts/vc4/preg-mutex-fixup.py
-          git diff --check
-          git diff -- target/vc4/translate.c
+          set -o pipefail
+          {
+            python3 -m py_compile \
+              scripts/vc4/preg-mutex-fixup.py \
+              scripts/vc4/preg-mutex-smoke.py
+            python3 scripts/vc4/preg-mutex-fixup.py
+            git diff --check
+            git diff -- target/vc4/translate.c
+          } 2>&1 | tee /tmp/vc4-preg-fixup.log
 
       - name: Configure and build qemu-system-vc4
+        id: build
         run: |
+          set -o pipefail
           ./configure \
             --target-list=vc4-softmmu \
             --disable-docs \
-            --disable-werror
-          ninja -C build qemu-system-vc4
+            --disable-werror \
+            2>&1 | tee /tmp/vc4-preg-configure.log
+          ninja -C build qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-preg-build.log
 
       - name: Exercise processor-control registers and mutexes
+        id: smoke
         run: |
+          set -o pipefail
           python3 scripts/vc4/preg-mutex-smoke.py \
-            --qemu build/qemu-system-vc4
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-preg-smoke.log
 
-      - name: Commit the validated decoder
+      - name: Record result and publish validated decoder
+        if: always()
+        env:
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          FIXUP_OUTCOME: ${{ steps.fixup.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add target/vc4/translate.c
-          if git diff --cached --quiet; then
-            echo "Decoder was already materialized."
-            exit 0
+          if [ "$DEPENDENCIES_OUTCOME" = success ] && \
+             [ "$FIXUP_OUTCOME" = success ] && \
+             [ "$BUILD_OUTCOME" = success ] && \
+             [ "$SMOKE_OUTCOME" = success ]; then
+            validated=true
+          else
+            validated=false
           fi
-          git commit -m "target/vc4: decode processor-control register moves"
+          export VALIDATED="$validated"
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def tail(path: str, count: int = 200) -> list[str]:
+              candidate = Path(path)
+              if not candidate.is_file():
+                  return []
+              return candidate.read_text(
+                  encoding="utf-8", errors="replace"
+              ).splitlines()[-count:]
+
+          status = {
+              "schema_version": 1,
+              "validated": os.environ["VALIDATED"] == "true",
+              "source_sha": os.environ["GITHUB_SHA"],
+              "ref_name": os.environ["GITHUB_REF_NAME"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "run_url": (
+                  f"{os.environ['GITHUB_SERVER_URL']}/"
+                  f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                  f"{os.environ['GITHUB_RUN_ID']}"
+              ),
+              "outcomes": {
+                  "dependencies": os.environ["DEPENDENCIES_OUTCOME"],
+                  "fixup": os.environ["FIXUP_OUTCOME"],
+                  "build": os.environ["BUILD_OUTCOME"],
+                  "smoke": os.environ["SMOKE_OUTCOME"],
+              },
+              "logs": {
+                  "fixup_tail": tail("/tmp/vc4-preg-fixup.log"),
+                  "configure_tail": tail("/tmp/vc4-preg-configure.log"),
+                  "build_tail": tail("/tmp/vc4-preg-build.log"),
+                  "smoke_tail": tail("/tmp/vc4-preg-smoke.log"),
+              },
+          }
+          Path("VC4_PREG_MUTEX_STATUS.json").write_text(
+              json.dumps(status, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add VC4_PREG_MUTEX_STATUS.json
+          if [ "$validated" = true ]; then
+            git add target/vc4/translate.c
+            message="target/vc4: decode processor-control register moves"
+          else
+            message="ci/vc4: record processor-control decoder failure"
+          fi
+          git commit -m "$message"
           git push origin HEAD:${GITHUB_REF_NAME}
