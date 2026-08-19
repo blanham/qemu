@@ -10,11 +10,11 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/core/irq.h"
 #include "hw/misc/bcm2835_msync.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 
-#define MS_SEMA_FIRST          0x000
 #define MS_SEMA_LAST           0x07c
 #define MS_STATUS              0x080
 #define MS_IREQ_0              0x084
@@ -63,7 +63,7 @@ static uint64_t bcm2835_msync_read(void *opaque, hwaddr addr,
     unsigned index;
     uint32_t result;
 
-    if (addr >= MS_SEMA_FIRST && addr <= MS_SEMA_LAST) {
+    if (addr <= MS_SEMA_LAST) {
         index = addr >> 2;
         result = bcm2835_msync_claim(&s->semaphores, index);
         bcm2835_msync_update_irqs(s);
@@ -117,7 +117,7 @@ static void bcm2835_msync_write(void *opaque, hwaddr addr,
     uint32_t mask;
     unsigned index;
 
-    if (addr >= MS_SEMA_FIRST && addr <= MS_SEMA_LAST) {
+    if (addr <= MS_SEMA_LAST) {
         index = addr >> 2;
         s->semaphores &= ~(UINT32_C(1) << index);
         bcm2835_msync_update_irqs(s);
