@@ -1,0 +1,67 @@
+name: VC4 make processor-control mutex operations atomic once
+
+on:
+  push:
+    branches:
+      - agent/vc4-preg-mutex
+    paths:
+      - .github/workflows/vc4-atomic-preg-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/vc4-preg-mutex
+          fetch-depth: 0
+
+      - name: Use QEMU atomics for mutex claims and releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('target/vc4/op_helper.c')
+          text = path.read_text()
+          if '#include "qemu/atomic.h"' not in text:
+              text = text.replace(
+                  '#include "qemu/bitops.h"\n',
+                  '#include "qemu/bitops.h"\n#include "qemu/atomic.h"\n',
+                  1,
+              )
+
+          old = '''        uint32_t previous = (env->preg_mutexes & mask) != 0;\n\n        /*\n         * p16-p31 are atomic test-and-set mutexes.  A read returns the\n         * previous state and leaves the mutex claimed.  Firmware spins\n         * while the returned value is nonzero.\n         */\n        env->preg_mutexes |= mask;\n        return previous;\n'''
+          new = '''        uint32_t previous;\n\n        /*\n         * p16-p31 are atomic test-and-set mutexes.  A read returns the\n         * previous state and leaves the mutex claimed.  Firmware spins\n         * while the returned value is nonzero.\n         */\n        previous = qatomic_fetch_or(&env->preg_mutexes, mask);\n        return (previous & mask) != 0;\n'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'qatomic_fetch_or(&env->preg_mutexes, mask)' not in text:
+              raise SystemExit('mutex-claim replacement anchor missing')
+
+          old = '''        /* The source value is ignored: any write releases the mutex. */\n        env->preg_mutexes &= ~mask;\n        return;\n'''
+          new = '''        /* The source value is ignored: any write releases the mutex. */\n        qatomic_fetch_and(&env->preg_mutexes, ~mask);\n        return;\n'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'qatomic_fetch_and(&env->preg_mutexes, ~mask)' not in text:
+              raise SystemExit('mutex-release replacement anchor missing')
+
+          path.write_text(text)
+          PY
+          git diff --check
+
+      - name: Commit atomics and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/vc4-atomic-preg-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'target/vc4: make processor-control mutexes atomic [skip ci]'
+          git pull --rebase origin agent/vc4-preg-mutex
+          git push origin HEAD:agent/vc4-preg-mutex
