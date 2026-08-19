@@ -59,7 +59,13 @@ def update_peripherals() -> None:
         "multicore-sync child initialization",
     )
 
-    realize_anchor = "    /* CPRMAN clock manager */\n"
+    realize_anchor = (
+        "    /* Interrupt Controller */\n"
+        "    if (!sysbus_realize(SYS_BUS_DEVICE(&s->ic), errp)) {\n"
+        "        return;\n"
+        "    }\n\n"
+        "    /* CPRMAN clock manager */\n"
+    )
     realize_block = (
         "    /* Multicore synchronization */\n"
         "    if (!sysbus_realize(SYS_BUS_DEVICE(&s->msync), errp)) {\n"
