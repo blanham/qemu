@@ -1,0 +1,27 @@
+name: Continue VC4 stock firmware after p-register validation
+
+on:
+  push:
+    branches:
+      - agent/vc4-preg-mutex
+    paths:
+      - VC4_PREG_MUTEX_STATUS.json
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch-stock-payload:
+    if: ${{ github.actor == 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Dispatch stock ARM-payload probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run vc4-stock-arm-payload.yml \
+            --repo "${{ github.repository }}" \
+            --ref agent/vc4-preg-mutex
