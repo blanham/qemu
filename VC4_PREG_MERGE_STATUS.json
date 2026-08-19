@@ -1,0 +1,8 @@
+{
+  "base_branch": "agent/vc4-arm-payload-stage-repair",
+  "base_commit": null,
+  "merge_step": "skipped",
+  "merged": false,
+  "schema": 1,
+  "validation_gate": "failure"
+}
