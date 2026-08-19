@@ -1,0 +1,66 @@
+name: Prepare stock VC4 probe for p-register branch
+
+on:
+  push:
+    branches:
+      - agent/vc4-preg-mutex
+    paths:
+      - VC4_PREG_MUTEX_STATUS.json
+
+permissions:
+  contents: write
+
+jobs:
+  generate-branch-probe:
+    if: ${{ github.actor == 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out validated branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/vc4-preg-mutex
+          fetch-depth: 0
+
+      - name: Derive branch-local stock workflow
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('.github/workflows/vc4-stock-arm-payload.yml')
+          destination = Path(
+              '.github/workflows/vc4-stock-arm-payload-preg.yml'
+          )
+          text = source.read_text()
+          text = text.replace(
+              'agent/vc4-arm-payload-stage-repair',
+              'agent/vc4-preg-mutex',
+          )
+          text = text.replace(
+              'vc4-stock-arm-payload.yml',
+              'vc4-stock-arm-payload-preg.yml',
+          )
+          lines = text.splitlines()
+          if lines and lines[0].startswith('name:'):
+              lines[0] = 'name: VC4 stock ARM payload after p-register support'
+          destination.write_text('\n'.join(lines) + '\n')
+          PY
+
+          grep -q 'agent/vc4-preg-mutex' \
+            .github/workflows/vc4-stock-arm-payload-preg.yml
+          grep -q 'vc4-stock-arm-payload-preg.yml' \
+            .github/workflows/vc4-stock-arm-payload-preg.yml
+
+      - name: Commit generated workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/vc4-stock-arm-payload-preg.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "ci/vc4: probe stock firmware after p-register support"
+          git pull --rebase origin agent/vc4-preg-mutex
+          git push origin HEAD:agent/vc4-preg-mutex
