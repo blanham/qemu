@@ -1,0 +1,107 @@
+name: Land VC4 p-register decoder safely
+
+on:
+  push:
+    branches:
+      - agent/vc4-preg-mutex
+    paths:
+      - .github/workflows/vc4-land-preg-decoder-final.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-land-preg-decoder-final
+  cancel-in-progress: false
+
+jobs:
+  land-decoder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/vc4-preg-mutex
+          fetch-depth: 0
+
+      - name: Synchronize branch tip
+        run: |
+          git fetch origin agent/vc4-preg-mutex
+          git reset --hard origin/agent/vc4-preg-mutex
+
+      - name: Apply decoder idempotently
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("target/vc4/translate.c")
+          text = path.read_text()
+
+          if "static void vc4_gen_preg_read(" not in text:
+              anchor = "static TCGv_i32 vc4_gen_cond_from_sr(TCGv_i32 sr, unsigned cond)\n"
+              if text.count(anchor) != 1:
+                  raise SystemExit("unexpected preg-helper insertion context")
+              helpers = r'''static void vc4_gen_preg_read(DisasContext *ctx, unsigned rd,
+                                         unsigned preg)
+          {
+              TCGv_i32 result = tcg_temp_new_i32();
+
+              gen_helper_vc4_preg_read(result, tcg_env,
+                                        tcg_constant_i32(preg));
+              vc4_set_reg(ctx, rd, result);
+          }
+
+          static void vc4_gen_preg_write(DisasContext *ctx, unsigned preg,
+                                          unsigned ra)
+          {
+              gen_helper_vc4_preg_write(tcg_env, tcg_constant_i32(preg),
+                                         vc4_get_reg(ctx, ra));
+          }
+
+          '''
+              text = text.replace(anchor, helpers + anchor, 1)
+
+          if "(i1 & 0xffe0) == 0xcc20" not in text:
+              anchor = "    if ((i1 & 0xfc00) == 0xc000 && (i2 & 0x0060) == 0x0000) {\n"
+              if text.count(anchor) != 1:
+                  raise SystemExit("unexpected preg-decoder insertion context")
+              decoder = r'''    if ((i1 & 0xffe0) == 0xcc20 && (i2 & 0xffe0) == 0) {
+              rd = i1 & 0x1f;
+              rb = i2 & 0x1f;
+              vc4_gen_preg_read(ctx, rd, rb);
+              return true;
+          }
+
+          if ((i1 & 0xffe0) == 0xcc00 && (i2 & 0xffe0) == 0) {
+              rd = i1 & 0x1f;
+              ra = i2 & 0x1f;
+              vc4_gen_preg_write(ctx, rd, ra);
+              return true;
+          }
+
+          '''
+              text = text.replace(anchor, decoder + anchor, 1)
+
+          path.write_text(text)
+          PY
+
+          git diff --check
+          grep -q 'static void vc4_gen_preg_read' target/vc4/translate.c
+          grep -q '(i1 & 0xffe0) == 0xcc20' target/vc4/translate.c
+
+      - name: Commit and rebase before push
+        run: |
+          if git diff --quiet -- target/vc4/translate.c; then
+            echo "Decoder already present"
+            exit 0
+          fi
+
+          git config user.name "VC4 integration bot"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git add target/vc4/translate.c
+          git commit -m "target/vc4: decode processor-control register moves"
+          git pull --rebase origin agent/vc4-preg-mutex
+          git push origin HEAD:agent/vc4-preg-mutex
