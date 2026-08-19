@@ -415,8 +415,8 @@ void helper_vc4_push_pop(CPUArchState *envp, uint32_t push, uint32_t lrpc,
 }
 
 G_NORETURN void helper_vc4_swi(CPUArchState *envp,
-                               uint32_t number,
-                               uint32_t return_pc)
+                                   uint32_t number,
+                                   uint32_t return_pc)
 {
     CPUVC4State *env = vc4_helper_env(envp);
     CPUState *cs = env_cpu(envp);
@@ -511,28 +511,28 @@ static bool vc4_condition_passed(uint32_t sr, unsigned cond)
     bool result;
 
     switch (cond >> 1) {
-    case 0:
+    case 0:                         /* EQ */
         result = z;
         break;
-    case 1:
+    case 1:                         /* CS */
         result = c;
         break;
-    case 2:
+    case 2:                         /* NS */
         result = n;
         break;
-    case 3:
+    case 3:                         /* VS */
         result = v;
         break;
-    case 4:
+    case 4:                         /* HI: !C && !Z */
         result = !c && !z;
         break;
-    case 5:
+    case 5:                         /* GE: N == V */
         result = n == v;
         break;
-    case 6:
+    case 6:                         /* GT: N == V && !Z */
         result = n == v && !z;
         break;
-    case 7:
+    case 7:                         /* always / never */
         result = true;
         break;
     default:
@@ -568,6 +568,7 @@ static uint32_t vc4_float_minmax(uint32_t a_bits, uint32_t b_bits,
     relation = float32_compare_quiet(a, b, status);
     if (relation == float_relation_equal &&
         float32_is_zero(a) && float32_is_zero(b)) {
+        /* IEEE-compatible signed-zero selection. */
         return maximum ? (a_bits & b_bits) : (a_bits | b_bits);
     }
 
@@ -610,6 +611,7 @@ static uint32_t vc4_float_result(unsigned op, uint32_t a_bits,
         } else if (relation == float_relation_less) {
             *flags = VC4_SR_N | VC4_SR_C;
         } else if (relation == float_relation_unordered) {
+            /* The recovered scalar model leaves NZCV clear for unordered. */
             *flags = 0;
         }
         return 0;
@@ -673,6 +675,7 @@ static int vc4_float_scale(int32_t shift)
 {
     int64_t scale = -(int64_t)shift;
 
+    /* More than this already overflows/underflows every float32 input. */
     return CLAMP(scale, -512, 512);
 }
 
