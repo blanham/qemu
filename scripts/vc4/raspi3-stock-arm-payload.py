@@ -5,6 +5,11 @@ This probe builds a normal FAT32 boot volume containing the pinned firmware
 trio plus CONFIG.TXT and a caller-supplied kernel8.img.  It deliberately does
 not use QEMU's -kernel shortcut: success requires bootcode.bin and start.elf to
 load and enter the payload through the emulated VideoCore/ARM boot path.
+
+The qtest server makes its client responsible for QEMU_CLOCK_VIRTUAL.  The
+probe therefore advances that clock in wall-time-sized increments while it
+polls guest memory.  Without this synchronization, firmware delay loops that
+read the BCM2835 system timer never complete even though the VPU is executing.
 """
 
 from __future__ import annotations
@@ -24,12 +29,14 @@ from typing import Any
 SIGNATURE_ADDR = 0x00001000
 SIGNATURE = 0x5643345F41524D21  # "VC4_ARM!"
 
+SYSTEM_TIMER_CLO = 0x3F003004
 ARM_CONTROL0 = 0x3F00B000
 ARM_CONTROL1 = 0x3F00B440
 ARM_STATUS = 0x3F00B444
 ARM_ID = 0x3F00B44C
 PM_PROC = 0x3F100110
 KERNEL_LOAD_ADDR = 0x00080000
+POLL_INTERVAL_SECONDS = 0.05
 
 
 def load_stock_probe() -> ModuleType:
@@ -132,6 +139,12 @@ def readq(qtest: LineSocket, address: int) -> int:
 
 def readl(qtest: LineSocket, address: int) -> int:
     return parse_qtest_value(qtest.send_line(f"readl 0x{address:x}"))
+
+
+def advance_virtual_clock(qtest: LineSocket, nanoseconds: int) -> int:
+    if nanoseconds <= 0:
+        raise ValueError("virtual-clock step must be positive")
+    return parse_qtest_value(qtest.send_line(f"clock_step {nanoseconds}"))
 
 
 def stop_process(proc: subprocess.Popen[bytes]) -> None:
@@ -253,7 +266,7 @@ def main() -> int:
         qmp: QMP | None = None
         qtest: LineSocket | None = None
         result: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "signature_address": f"0x{SIGNATURE_ADDR:08x}",
             "expected_signature": f"0x{SIGNATURE:016x}",
             "signature_seen": False,
@@ -268,26 +281,49 @@ def main() -> int:
             assert isinstance(qtest, LineSocket)
 
             initial_kernel_word = readq(qtest, KERNEL_LOAD_ADDR)
-            deadline = time.monotonic() + args.seconds
+            initial_system_timer = readl(qtest, SYSTEM_TIMER_CLO)
+            started = time.monotonic()
+            deadline = started + args.seconds
+            last_clock_wall = started
             signature = 0
+            qtest_virtual_clock_ns = 0
+            qtest_clock_step_ns = 0
+            qtest_clock_steps = 0
+
             while time.monotonic() < deadline:
+                now = time.monotonic()
+                step_ns = max(1, int((now - last_clock_wall) * 1_000_000_000))
+                qtest_virtual_clock_ns = advance_virtual_clock(qtest, step_ns)
+                qtest_clock_step_ns += step_ns
+                qtest_clock_steps += 1
+                last_clock_wall = now
+
                 signature = readq(qtest, SIGNATURE_ADDR)
                 if signature == SIGNATURE:
                     result["signature_seen"] = True
                     break
                 if proc.poll() is not None:
                     break
-                time.sleep(0.05)
+                time.sleep(POLL_INTERVAL_SECONDS)
 
             try:
                 qmp.execute("stop")
             except Exception:
                 pass
 
+            final_system_timer = readl(qtest, SYSTEM_TIMER_CLO)
             result.update({
                 "observed_signature": f"0x{signature:016x}",
-                "elapsed_seconds": args.seconds - max(0.0, deadline - time.monotonic()),
+                "elapsed_seconds": time.monotonic() - started,
                 "qemu_returncode": proc.poll(),
+                "qtest_clock_steps": qtest_clock_steps,
+                "qtest_clock_step_ns": qtest_clock_step_ns,
+                "qtest_virtual_clock_ns": qtest_virtual_clock_ns,
+                "system_timer_clo_before": f"0x{initial_system_timer:08x}",
+                "system_timer_clo_after": f"0x{final_system_timer:08x}",
+                "system_timer_delta_us": (
+                    final_system_timer - initial_system_timer
+                ) & 0xffffffff,
                 "kernel_word_before_boot": f"0x{initial_kernel_word:016x}",
                 "kernel_word_after_boot": f"0x{readq(qtest, KERNEL_LOAD_ADDR):016x}",
                 "payload_argument_x0": f"0x{readq(qtest, SIGNATURE_ADDR + 8):016x}",
