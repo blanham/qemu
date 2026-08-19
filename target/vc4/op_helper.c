@@ -23,6 +23,69 @@ static inline CPUVC4State *vc4_helper_env(CPUArchState *envp)
     return (CPUVC4State *)(void *)envp;
 }
 
+uint32_t helper_vc4_preg_read(CPUArchState *envp, uint32_t reg)
+{
+    CPUVC4State *env = vc4_helper_env(envp);
+
+    reg &= VC4_NUM_PREGS - 1;
+    if (reg >= VC4_PREG_MUTEX_BASE) {
+        uint32_t mask = UINT32_C(1) << (reg - VC4_PREG_MUTEX_BASE);
+        uint32_t previous = (env->preg_mutexes & mask) != 0;
+
+        /*
+         * p16-p31 are atomic test-and-set mutexes.  A read returns the
+         * previous state and leaves the mutex claimed.  Firmware spins
+         * while the returned value is nonzero.
+         */
+        env->preg_mutexes |= mask;
+        return previous;
+    }
+
+    switch (reg) {
+    case 12:                        /* PRCORTIM */
+    case 13:                        /* PRSLPTIM */
+        /* Closely coupled core/sleep timers are not modeled yet. */
+        return 0;
+    case 14:                        /* PROWCNT */
+    case 15:                        /* PRORCNT */
+        /* VPU memory accesses complete synchronously in the current model. */
+        return 0;
+    default:
+        /*
+         * p0/p1 and the current p10/p11 approximation are simple latches.
+         * Unassigned p2-p9 retain writes as real control registers do.
+         */
+        return env->preg[reg];
+    }
+}
+
+void helper_vc4_preg_write(CPUArchState *envp, uint32_t reg,
+                           uint32_t value)
+{
+    CPUVC4State *env = vc4_helper_env(envp);
+
+    reg &= VC4_NUM_PREGS - 1;
+    if (reg >= VC4_PREG_MUTEX_BASE) {
+        uint32_t mask = UINT32_C(1) << (reg - VC4_PREG_MUTEX_BASE);
+
+        /* The source value is ignored: any write releases the mutex. */
+        env->preg_mutexes &= ~mask;
+        return;
+    }
+
+    switch (reg) {
+    case 12:                        /* PRCORTIM */
+    case 13:                        /* PRSLPTIM */
+    case 14:                        /* PROWCNT */
+    case 15:                        /* PRORCNT */
+        /* Result and outstanding-request counters are read-only. */
+        return;
+    default:
+        env->preg[reg] = value;
+        return;
+    }
+}
+
 static uint32_t vc4_bitreverse(uint32_t value)
 {
     value = ((value & 0x55555555u) << 1) |
@@ -352,8 +415,8 @@ void helper_vc4_push_pop(CPUArchState *envp, uint32_t push, uint32_t lrpc,
 }
 
 G_NORETURN void helper_vc4_swi(CPUArchState *envp,
-                                   uint32_t number,
-                                   uint32_t return_pc)
+                               uint32_t number,
+                               uint32_t return_pc)
 {
     CPUVC4State *env = vc4_helper_env(envp);
     CPUState *cs = env_cpu(envp);
@@ -448,28 +511,28 @@ static bool vc4_condition_passed(uint32_t sr, unsigned cond)
     bool result;
 
     switch (cond >> 1) {
-    case 0:                         /* EQ */
+    case 0:
         result = z;
         break;
-    case 1:                         /* CS */
+    case 1:
         result = c;
         break;
-    case 2:                         /* NS */
+    case 2:
         result = n;
         break;
-    case 3:                         /* VS */
+    case 3:
         result = v;
         break;
-    case 4:                         /* HI: !C && !Z */
+    case 4:
         result = !c && !z;
         break;
-    case 5:                         /* GE: N == V */
+    case 5:
         result = n == v;
         break;
-    case 6:                         /* GT: N == V && !Z */
+    case 6:
         result = n == v && !z;
         break;
-    case 7:                         /* always / never */
+    case 7:
         result = true;
         break;
     default:
@@ -505,7 +568,6 @@ static uint32_t vc4_float_minmax(uint32_t a_bits, uint32_t b_bits,
     relation = float32_compare_quiet(a, b, status);
     if (relation == float_relation_equal &&
         float32_is_zero(a) && float32_is_zero(b)) {
-        /* IEEE-compatible signed-zero selection. */
         return maximum ? (a_bits & b_bits) : (a_bits | b_bits);
     }
 
@@ -548,7 +610,6 @@ static uint32_t vc4_float_result(unsigned op, uint32_t a_bits,
         } else if (relation == float_relation_less) {
             *flags = VC4_SR_N | VC4_SR_C;
         } else if (relation == float_relation_unordered) {
-            /* The recovered scalar model leaves NZCV clear for unordered. */
             *flags = 0;
         }
         return 0;
@@ -612,7 +673,6 @@ static int vc4_float_scale(int32_t shift)
 {
     int64_t scale = -(int64_t)shift;
 
-    /* More than this already overflows/underflows every float32 input. */
     return CLAMP(scale, -512, 512);
 }
 
