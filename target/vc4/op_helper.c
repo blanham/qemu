@@ -6,6 +6,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
+#include "qemu/atomic.h"
 #include "qemu/log.h"
 #include "fpu/softfloat.h"
 #include "cpu.h"
@@ -30,15 +31,15 @@ uint32_t helper_vc4_preg_read(CPUArchState *envp, uint32_t reg)
     reg &= VC4_NUM_PREGS - 1;
     if (reg >= VC4_PREG_MUTEX_BASE) {
         uint32_t mask = UINT32_C(1) << (reg - VC4_PREG_MUTEX_BASE);
-        uint32_t previous = (env->preg_mutexes & mask) != 0;
+        uint32_t previous;
 
         /*
          * p16-p31 are atomic test-and-set mutexes.  A read returns the
          * previous state and leaves the mutex claimed.  Firmware spins
          * while the returned value is nonzero.
          */
-        env->preg_mutexes |= mask;
-        return previous;
+        previous = qatomic_fetch_or(&env->preg_mutexes, mask);
+        return (previous & mask) != 0;
     }
 
     switch (reg) {
@@ -69,7 +70,7 @@ void helper_vc4_preg_write(CPUArchState *envp, uint32_t reg,
         uint32_t mask = UINT32_C(1) << (reg - VC4_PREG_MUTEX_BASE);
 
         /* The source value is ignored: any write releases the mutex. */
-        env->preg_mutexes &= ~mask;
+        qatomic_fetch_and(&env->preg_mutexes, ~mask);
         return;
     }
 
