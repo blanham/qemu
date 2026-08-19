@@ -1,0 +1,32 @@
+{
+  "build_log_tail": [],
+  "configure_log_tail": [],
+  "cpu_frontier": [],
+  "diagnostic_counts": [],
+  "msync_smoke_log": [],
+  "observed_vpu_pcs": [],
+  "old_vpusema_loop_cleared": false,
+  "old_vpusema_loop_pc": "0x1ec6134e",
+  "outcomes": {
+    "build": "skipped",
+    "dependencies": "success",
+    "firmware": "skipped",
+    "materialize": "failure",
+    "msync_smoke": "skipped",
+    "payload": "skipped",
+    "preg_smoke": "skipped",
+    "probe": "skipped"
+  },
+  "preg_smoke_log": [],
+  "probe_log_tail": [],
+  "probe_return_code": "",
+  "production_validated": false,
+  "qemu_diagnostics_tail": [],
+  "ref_name": "agent/vc4-post-preg-arm-release",
+  "result": {},
+  "run_attempt": "1",
+  "run_id": "32240497530",
+  "run_url": "https://github.com/blanham/qemu/actions/runs/32240497530",
+  "schema_version": 2,
+  "source_sha": "fa6ff43fc32f0f138e74141fd8a07bc857aae378"
+}
