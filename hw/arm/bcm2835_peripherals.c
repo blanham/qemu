@@ -89,6 +89,10 @@ static void raspi_peripherals_base_init(Object *obj)
     memory_region_init(&s->mbox_mr, obj, "bcm2835-mbox",
                        MBOX_CHAN_COUNT << MBOX_AS_CHAN_SHIFT);
 
+    /* Multicore synchronization */
+    object_initialize_child(obj, "msync", &s->msync,
+                            TYPE_BCM2835_MSYNC);
+
     /* Interrupt Controller */
     object_initialize_child(obj, "ic", &s->ic, TYPE_BCM2835_IC);
 
@@ -289,6 +293,21 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
                                  "bcm2835-gpu-ram-alias[*]", ram, 0, ram_size);
         memory_region_add_subregion_overlap(&s->gpu_bus_mr, (hwaddr)n << 30,
                                             &s->ram_alias[n], 0);
+    }
+
+    /* Multicore synchronization */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->msync), errp)) {
+        return;
+    }
+    memory_region_add_subregion(
+        &s->peri_mr, MSYNC_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->msync), 0));
+    for (n = 0; n < BCM2835_MSYNC_IRQ_COUNT; n++) {
+        sysbus_connect_irq(
+            SYS_BUS_DEVICE(&s->msync), n,
+            qdev_get_gpio_in_named(DEVICE(&s->ic),
+                                   BCM2835_IC_GPU_IRQ,
+                                   INTERRUPT_MULTICORESYNC0 + n));
     }
 
     /* Interrupt Controller */
