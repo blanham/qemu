@@ -1,0 +1,50 @@
+name: Repair VC4 heterogeneous direct-Linux control
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-repair-hetero-direct-linux.yml
+      - scripts/vc4/repair-hetero-direct-linux.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-hetero-direct-linux
+          fetch-depth: 0
+
+      - name: Repair and validate the materializer
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/repair-hetero-direct-linux.py
+          python3 -m py_compile \
+            scripts/vc4/hetero-direct-linux-integrate.py
+          grep -q 'VC4_RASPI3_LEGACY_MACHINE_ID 3138' \
+            scripts/vc4/hetero-direct-linux-integrate.py
+          ! grep -q 'MACH_TYPE_BCM2708' \
+            scripts/vc4/hetero-direct-linux-integrate.py
+          git diff --check
+
+      - name: Publish repair and remove one-shot scaffolding
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -- \
+            .github/workflows/vc4-repair-hetero-direct-linux.yml \
+            scripts/vc4/repair-hetero-direct-linux.py
+          git add -- scripts/vc4/hetero-direct-linux-integrate.py
+          git diff --cached --check
+          git commit -m "tests/vc4: repair direct-Linux legacy machine ID"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
