@@ -1,0 +1,316 @@
+name: VC4 direct Linux next frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-next.yml
+      - scripts/vc4/arm64-kernel-frontier-probe.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-next-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  advance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-official
+      OUT_DIR: /tmp/vc4-arm64-kernel-frontier
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Select promotion or deeper kernel tracing
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >>"$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          candidates = (
+              Path('tests/vc4/results/direct-linux-diagnostic/result.json'),
+              Path('tests/vc4/results/direct-linux/decision.json'),
+              Path('VC4_HETERO_DIRECT_LINUX_STATUS.json'),
+          )
+          data = {}
+          source = None
+          for path in candidates:
+              if path.is_file():
+                  data = json.loads(path.read_text(encoding='utf-8'))
+                  source = str(path)
+                  break
+          nested = data.get('result') or {}
+          passed = bool(data.get('passed')) or bool(nested.get('passed'))
+          classification = str(
+              data.get('classification')
+              or nested.get('classification')
+              or 'unknown'
+          )
+          print(f'passed={str(passed).lower()}')
+          print(f'need_probe={str(not passed).lower()}')
+          print(f'classification={classification}')
+          print(f'source={source or "missing"}')
+          PY
+
+      - name: Record a stable Linux framebuffer baseline
+        if: steps.classify.outputs.passed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >VC4_LINUX_FRAMEBUFFER_BASELINE.md <<EOF
+          # VC4 heterogeneous Linux framebuffer baseline
+
+          The independent direct-ARM control booted the pinned Raspberry Pi
+          AArch64 Linux kernel, entered the deterministic initramfs, opened and
+          painted the Linux framebuffer, and reproduced the expected red,
+          green, blue, and white quadrants through QMP screendump.
+
+          Source classification: \`${{ steps.classify.outputs.classification }}\`
+
+          This branch is the hardware/control baseline for returning to the
+          stock \`bootcode.bin -> start.elf -> kernel8.img\` path.  It does not
+          replace the stock-firmware gate.
+          EOF
+          git diff --check
+
+      - name: Install diagnostic dependencies
+        if: steps.classify.outputs.need_probe == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl file gcc-aarch64-linux-gnu gzip \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize and validate the diagnostic topology
+        if: steps.classify.outputs.need_probe == 'true'
+        id: materialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/arm64-kernel-frontier-probe.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          if test -f scripts/vc4/hetero-direct-linux-integrate.py; then
+            python3 scripts/vc4/hetero-direct-linux-integrate.py
+            python3 scripts/vc4/hetero-direct-linux-integrate.py
+          fi
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          git diff --check
+          git diff -- hw/arm/vc4_raspi3_hetero.c \
+            >/tmp/vc4-arm64-frontier-machine.diff
+
+      - name: Download pinned official Linux inputs
+        if: steps.classify.outputs.need_probe == 'true'
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR"
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* >"$OFFICIAL_DIR/SHA256SUMS"
+
+      - name: Build QEMU and preserve VC4 regressions
+        if: steps.classify.outputs.need_probe == 'true'
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-arm64-frontier-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-arm64-frontier-build.log
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-arm64-frontier-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-arm64-frontier-msync.log
+
+      - name: Build deterministic initramfs
+        if: steps.classify.outputs.need_probe == 'true'
+        id: fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-linux-initramfs.sh \
+            "$PWD/build/vc4-linux-initramfs" \
+            2>&1 | tee /tmp/vc4-arm64-frontier-initramfs.log
+          test -s build/vc4-linux-initramfs/initramfs.cpio
+
+      - name: Capture kernel memory and every CPU over time
+        if: steps.classify.outputs.need_probe == 'true'
+        id: probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR"
+          python3 scripts/vc4/arm64-kernel-frontier-probe.py \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            --initrd build/vc4-linux-initramfs/initramfs.cpio \
+            --seconds 90 \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee /tmp/vc4-arm64-frontier-probe.log
+
+      - name: Reduce the kernel frontier
+        if: always() && steps.classify.outputs.need_probe == 'true'
+        id: record
+        shell: bash
+        env:
+          MATERIALIZE_OUTCOME: ${{ steps.materialize.outcome }}
+          INPUTS_OUTCOME: ${{ steps.inputs.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          FIXTURE_OUTCOME: ${{ steps.fixture.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p tests/vc4/results/kernel-frontier
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path('/tmp/vc4-arm64-kernel-frontier/result.json')
+          result = (
+              json.loads(source.read_text(encoding='utf-8'))
+              if source.is_file() else {}
+          )
+          outcomes = {
+              key.lower().removesuffix('_outcome'): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'classification': result.get(
+                  'classification', 'frontier-infrastructure-failure'
+              ),
+              'outcomes': outcomes,
+              'result': result,
+          }
+          Path('tests/vc4/results/kernel-frontier/result.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          snapshots = result.get('snapshots', [])
+          final = snapshots[-1] if snapshots else {}
+          lines = [
+              '# VC4 direct Linux kernel frontier',
+              '',
+              f'- Classification: **`{status["classification"]}`**',
+              f'- Host Image header valid: '
+              f'`{result.get("host_kernel_header", {}).get("valid")}`',
+              f'- Final guest Image match: '
+              f'`{final.get("kernel_memory_matches")}`',
+              f'- Linux banner: `{result.get("linux_version_seen")}`',
+              f'- Init: `{result.get("init_seen")}`',
+              f'- Framebuffer marker: `{result.get("fb_marker_seen")}`',
+              '',
+              '## Final sampled PCs',
+              '',
+              '```json',
+              json.dumps(final.get('pcs', []), indent=2),
+              '```',
+              '',
+              '## Serial tail',
+              '',
+              '```text',
+              *result.get('serial_tail', [])[-400:],
+              '```',
+              '',
+          ]
+          Path('tests/vc4/results/kernel-frontier/RESULT.md').write_text(
+              '\n'.join(lines), encoding='utf-8'
+          )
+          print(json.dumps(status, indent=2))
+          PY
+          git diff --check
+
+      - name: Upload kernel-frontier diagnostics
+        if: always() && steps.classify.outputs.need_probe == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-arm64-kernel-frontier-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-arm64-kernel-frontier
+            /tmp/vc4-arm64-frontier-*.log
+            /tmp/vc4-arm64-frontier-machine.diff
+            /tmp/vc4-official/SHA256SUMS
+            tests/vc4/results/kernel-frontier
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the selected next state
+        if: always()
+        shell: bash
+        env:
+          PASSED: ${{ steps.classify.outputs.passed }}
+        run: |
+          set -euo pipefail
+          if [ "$PASSED" = true ]; then
+            cp VC4_LINUX_FRAMEBUFFER_BASELINE.md /tmp/vc4-baseline.md
+          else
+            cp -a tests/vc4/results/kernel-frontier /tmp/kernel-frontier
+          fi
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-direct-linux-next.yml
+          if [ "$PASSED" = true ]; then
+            cp /tmp/vc4-baseline.md VC4_LINUX_FRAMEBUFFER_BASELINE.md
+            git add VC4_LINUX_FRAMEBUFFER_BASELINE.md
+            message="docs/vc4: record the Linux framebuffer baseline [skip ci]"
+          else
+            rm -rf tests/vc4/results/kernel-frontier
+            mkdir -p tests/vc4/results
+            cp -a /tmp/kernel-frontier tests/vc4/results/kernel-frontier
+            git add tests/vc4/results/kernel-frontier
+            message="tests/vc4: record the direct Linux kernel frontier [skip ci]"
+          fi
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "$message"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
+          if [ "$PASSED" = true ]; then
+            if ! git ls-remote --exit-code --heads origin \
+                agent/vc4-linux-framebuffer-baseline >/dev/null 2>&1; then
+              git push origin HEAD:agent/vc4-linux-framebuffer-baseline
+            fi
+          fi
