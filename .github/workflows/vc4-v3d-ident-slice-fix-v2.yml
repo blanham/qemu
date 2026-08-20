@@ -1,0 +1,58 @@
+name: VC4 V3D identification anchor repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-v3d-bringup
+    paths:
+      - .github/workflows/vc4-v3d-ident-slice-fix-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Use a unique SoC child-initialization anchor
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/vc4-v3d-ident-slice.yml
+          test -f "$workflow"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/vc4-v3d-ident-slice.yml")
+          text = path.read_text(encoding="utf-8")
+          old = '''          if init not in text:
+              anchor = "    /* Multicore synchronization */\\n"
+              text = insert_once(text, anchor, init,
+                                 "V3D child initialization")
+'''
+          new = '''          if init not in text:
+              anchor = (
+                  "    /* Interrupt Controller */\\n"
+                  "    object_initialize_child(obj, \\\"ic\\\", &s->ic, "
+                  "TYPE_BCM2835_IC);\\n"
+              )
+              text = insert_once(text, anchor, init,
+                                 "V3D child initialization")
+'''
+          if old not in text:
+              raise SystemExit("old V3D child anchor was not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+          rm .github/workflows/vc4-v3d-ident-slice-fix-v2.yml
+          git add -A
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "ci/vc4: use unique V3D integration anchor"
+          git pull --rebase origin agent/vc4-v3d-bringup
+          git push origin HEAD:agent/vc4-v3d-bringup
