@@ -5,6 +5,13 @@ root_dir=$(cd "$(dirname "$0")/../.." && pwd)
 out_dir=${1:-"$root_dir/build/vc4-linux-initramfs"}
 cc=${AARCH64_CC:-aarch64-linux-gnu-gcc}
 
+# The archive is assembled from inside $out_dir/root.  Canonicalize a caller-
+# relative output path before changing directories so redirections continue to
+# name the intended build directory rather than a path below the staging root.
+if [[ "$out_dir" != /* ]]; then
+    out_dir="$PWD/$out_dir"
+fi
+
 rm -rf "$out_dir"
 mkdir -p "$out_dir/root/dev" "$out_dir/root/proc" "$out_dir/root/sys"
 
