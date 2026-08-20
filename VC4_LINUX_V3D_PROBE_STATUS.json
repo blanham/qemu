@@ -1,22 +1,22 @@
 {
   "best_variant": "base",
   "classification": "linux-vc4-probe-infrastructure-failed",
-  "generated_at": "2026-08-20T21:48:30.842590+00:00",
+  "generated_at": "2026-08-20T22:02:29.285581+00:00",
   "infrastructure_ok": false,
   "outcomes": {
     "artifacts": "success",
-    "build": "skipped",
+    "build": "success",
     "dependencies": "success",
-    "dtbs": "failure",
-    "fixture": "skipped",
+    "dtbs": "success",
+    "fixture": "failure",
     "probes": "skipped",
-    "regressions": "skipped"
+    "regressions": "success"
   },
   "passed": false,
   "run_attempt": "1",
-  "run_id": "32421126923",
+  "run_id": "32421916430",
   "schema_version": 1,
-  "source_sha": "61fa9bf28359c6229a25e04455229b1c8b2c61f7",
+  "source_sha": "e4acb5555a0b953d2c86fd6e65d2bb7c5abcad3c",
   "variants": {
     "base": {
       "bo_ok": null,

@@ -2,8 +2,8 @@
 
 Validation passed: **false**
 
-- Source commit: `61fa9bf28359c6229a25e04455229b1c8b2c61f7`
-- Workflow run: `32421126923`
+- Source commit: `e4acb5555a0b953d2c86fd6e65d2bb7c5abcad3c`
+- Workflow run: `32421916430`
 - Best device-tree variant: `base`
 - Classification: `linux-vc4-probe-infrastructure-failed`
 
