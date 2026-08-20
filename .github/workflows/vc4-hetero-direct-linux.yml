@@ -19,7 +19,7 @@ permissions:
 
 concurrency:
   group: vc4-hetero-direct-linux
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-probe:
@@ -181,9 +181,16 @@ jobs:
               p = Path(path)
               return json.loads(p.read_text()) if p.is_file() else None
 
+          outcomes = {
+              key.lower().removesuffix('_outcome'): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
           bare = load('/tmp/vc4-hetero-bare/result.json')
           linux = load('/tmp/vc4-hetero-linux/result.json')
-          if linux and linux.get('passed'):
+          if 'cancelled' in outcomes.values():
+              classification = 'hetero-direct-run-cancelled'
+          elif linux and linux.get('passed'):
               classification = 'hetero-linux-framebuffer'
           elif linux and linux.get('init_seen'):
               classification = 'hetero-linux-init-framebuffer-blocked'
@@ -191,12 +198,16 @@ jobs:
               classification = 'hetero-linux-early-boot'
           elif bare and bare.get('passed'):
               classification = 'hetero-bare-framebuffer-linux-entry-blocked'
-          elif os.environ.get('FIXTURES_OUTCOME') != 'success':
-              classification = 'hetero-direct-fixtures-failed'
-          elif os.environ.get('REGRESSIONS_OUTCOME') != 'success':
-              classification = 'hetero-direct-regressions-failed'
-          elif os.environ.get('BUILD_OUTCOME') != 'success':
+          elif outcomes.get('materialize') == 'failure':
+              classification = 'hetero-direct-materialize-failed'
+          elif outcomes.get('artifacts') == 'failure':
+              classification = 'hetero-direct-artifacts-failed'
+          elif outcomes.get('build') == 'failure':
               classification = 'hetero-direct-build-failed'
+          elif outcomes.get('regressions') == 'failure':
+              classification = 'hetero-direct-regressions-failed'
+          elif outcomes.get('fixtures') == 'failure':
+              classification = 'hetero-direct-fixtures-failed'
           else:
               classification = 'hetero-direct-control-failed'
 
@@ -206,11 +217,7 @@ jobs:
               'source_sha': os.environ['GITHUB_SHA'],
               'run_id': os.environ['GITHUB_RUN_ID'],
               'classification': classification,
-              'outcomes': {
-                  key.lower().removesuffix('_outcome'): value
-                  for key, value in os.environ.items()
-                  if key.endswith('_OUTCOME')
-              },
+              'outcomes': outcomes,
               'bare_return_code': os.environ.get('BARE_RC'),
               'linux_return_code': os.environ.get('LINUX_RC'),
               'bare': bare,
@@ -252,10 +259,27 @@ jobs:
       - name: Publish validated direct mode or retain the exact failure
         if: always()
         env:
+          MATERIALIZE_OUTCOME: ${{ steps.materialize.outcome }}
+          ARTIFACTS_OUTCOME: ${{ steps.artifacts.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          FIXTURES_OUTCOME: ${{ steps.fixtures.outcome }}
+          BARE_OUTCOME: ${{ steps.bare.outcome }}
+          LINUX_OUTCOME: ${{ steps.linux.outcome }}
           BARE_PASSED: ${{ steps.bare.outputs.passed }}
           LINUX_PASSED: ${{ steps.linux.outputs.passed }}
         run: |
           set -euo pipefail
+          for outcome in \
+            "$MATERIALIZE_OUTCOME" "$ARTIFACTS_OUTCOME" "$BUILD_OUTCOME" \
+            "$REGRESSIONS_OUTCOME" "$FIXTURES_OUTCOME" "$BARE_OUTCOME" \
+            "$LINUX_OUTCOME"; do
+            if [ "$outcome" = cancelled ]; then
+              echo "Run was superseded; not publishing stale frontier state"
+              exit 0
+            fi
+          done
+
           cp VC4_HETERO_DIRECT_LINUX_STATUS.json /tmp/status.json
           cp VC4_HETERO_DIRECT_LINUX_STATUS.md /tmp/status.md
           git config user.name "VC4 CI"
