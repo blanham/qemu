@@ -1,0 +1,197 @@
+name: VC4 stock-firmware virtual-clock recovery
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-framebuffer-bringup
+    paths:
+      - .github/workflows/vc4-stock-clock-recovery.yml
+      - scripts/vc4/raspi3-stock-arm-payload.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vc4-stock-clock-recovery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stock-handoff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OUT_DIR: /tmp/vc4-stock-clock-recovery
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Validate probe sources
+        run: |
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          git diff --check
+
+      - name: Configure and build both frontends
+        run: |
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+
+      - name: Run focused architectural regressions
+        run: |
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Download pinned Raspberry Pi firmware
+        run: |
+          mkdir -p /tmp/rpi-firmware
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 4 \
+              --output "/tmp/rpi-firmware/${file}" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/${file}"
+          done
+          test "$(git hash-object /tmp/rpi-firmware/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/rpi-firmware/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/rpi-firmware/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build AArch64 handoff witness
+        run: |
+          cat >/tmp/vc4-arm-payload.S <<'EOF'
+          .section .text
+          .global _start
+          .type _start, %function
+          _start:
+              mov x4, x0
+              mov x5, sp
+              mrs x6, mpidr_el1
+              ldr x0, =0x0000000000001000
+              ldr x1, =0x5643345f41524d21
+              str x1, [x0]
+              str x4, [x0, #8]
+              str x5, [x0, #16]
+              str x6, [x0, #24]
+              dsb sy
+          1:
+              wfe
+              b 1b
+              .ltorg
+          .size _start, . - _start
+          EOF
+          aarch64-linux-gnu-as \
+            -o /tmp/vc4-arm-payload.o /tmp/vc4-arm-payload.S
+          aarch64-linux-gnu-ld \
+            -nostdlib --entry=_start -Ttext=0x80000 \
+            -o /tmp/vc4-arm-payload.elf /tmp/vc4-arm-payload.o
+          aarch64-linux-gnu-objcopy \
+            -O binary /tmp/vc4-arm-payload.elf /tmp/kernel8.img
+          aarch64-linux-gnu-objdump -d /tmp/vc4-arm-payload.elf \
+            >/tmp/vc4-arm-payload.dis
+
+      - name: Run stock firmware with explicit virtual-clock stepping
+        id: probe
+        shell: bash
+        run: |
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cp /tmp/vc4-arm-payload.dis "$OUT_DIR/payload.dis"
+          set +e
+          python3 scripts/vc4/raspi3-stock-arm-payload.py \
+            build/qemu-system-aarch64 \
+            /tmp/rpi-firmware/bootcode.bin \
+            /tmp/rpi-firmware/start.elf \
+            /tmp/rpi-firmware/fixup.dat \
+            /tmp/kernel8.img \
+            --seconds 180 \
+            --clock-step-ns 10000000 \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee "$OUT_DIR/probe.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$rc" > "$OUT_DIR/probe.status"
+
+      - name: Summarize recovered frontier
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import re
+
+          out = Path(os.environ['OUT_DIR'])
+          result_path = out / 'result.json'
+          result = json.loads(result_path.read_text()) if result_path.is_file() else {}
+          vpu = None
+          for cpu in result.get('cpu_snapshot', {}).get('cpus', []):
+              if 'vc4' in str(cpu.get('qom_type', '')).lower():
+                  registers = str(cpu.get('registers', ''))
+                  match = re.search(r'pc=([0-9a-f]+)', registers, re.I)
+                  vpu = {
+                      'cpu_index': cpu.get('cpu_index'),
+                      'pc': None if match is None else f"0x{match.group(1)}",
+                      'registers': registers,
+                  }
+                  break
+          summary = {
+              'schema_version': 1,
+              'head_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'probe_return_code': '${{ steps.probe.outputs.return_code }}',
+              'signature_seen': result.get('signature_seen'),
+              'observed_signature': result.get('observed_signature'),
+              'qtest_clock_step_ns': result.get('qtest_clock_step_ns'),
+              'qtest_clock_steps': result.get('qtest_clock_steps'),
+              'qtest_clock_ns': result.get('qtest_clock_ns'),
+              'arm_control0': result.get('arm_control0'),
+              'arm_control1': result.get('arm_control1'),
+              'arm_status': result.get('arm_status'),
+              'pm_proc': result.get('pm_proc'),
+              'kernel_word_after_boot': result.get('kernel_word_after_boot'),
+              'vpu_frontier': vpu,
+              'probe_error': result.get('probe_error'),
+          }
+          (out / 'summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n'
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload complete diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-clock-recovery-${{ github.run_attempt }}
+          path: /tmp/vc4-stock-clock-recovery
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require real ARM handoff
+        run: |
+          test "${{ steps.probe.outputs.return_code }}" = 0
