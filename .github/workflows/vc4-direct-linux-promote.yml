@@ -1,0 +1,125 @@
+name: VC4 direct Linux conditional promotion
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-promote.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-promote-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  promote-or-record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify the evidence and select the next branch
+        id: decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >>"$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          baseline = Path('VC4_LINUX_FRAMEBUFFER_BASELINE.md').is_file()
+          diagnostic_path = Path(
+              'tests/vc4/results/direct-linux-diagnostic/result.json'
+          )
+          diagnostic = (
+              json.loads(diagnostic_path.read_text(encoding='utf-8'))
+              if diagnostic_path.is_file() else {}
+          )
+          nested = diagnostic.get('result') or {}
+          direct_pass = bool(diagnostic.get('passed')) or bool(
+              nested.get('passed')
+          )
+          promote = baseline and direct_pass
+
+          contract_path = Path(
+              'tests/vc4/results/arm64-contract/result.json'
+          )
+          contract = (
+              json.loads(contract_path.read_text(encoding='utf-8'))
+              if contract_path.is_file() else {}
+          )
+          contract_pass = bool(contract.get('passed'))
+
+          frontier_path = Path(
+              'tests/vc4/results/kernel-frontier/result.json'
+          )
+          frontier = (
+              json.loads(frontier_path.read_text(encoding='utf-8'))
+              if frontier_path.is_file() else {}
+          )
+          classification = (
+              diagnostic.get('classification')
+              or nested.get('classification')
+              or frontier.get('classification')
+              or 'unknown'
+          )
+          print(f'promote={str(promote).lower()}')
+          print(f'direct_pass={str(direct_pass).lower()}')
+          print(f'contract_pass={str(contract_pass).lower()}')
+          print(f'classification={classification}')
+          PY
+
+      - name: Record the evidence boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >VC4_DIRECT_LINUX_DECISION.md <<EOF
+          # VC4 direct Linux decision
+
+          - Direct Linux plus QMP framebuffer scanout: \`${{ steps.decision.outputs.direct_pass }}\`
+          - AArch64 Linux entry contract: \`${{ steps.decision.outputs.contract_pass }}\`
+          - Classification: \`${{ steps.decision.outputs.classification }}\`
+          - Eligible for the stock-firmware continuation branch: \`${{ steps.decision.outputs.promote }}\`
+
+          The direct control bypasses only the stock VideoCore firmware
+          handoff.  A passing result proves the ARM CPU, Linux image/DTB,
+          initramfs, property mailbox, framebuffer memory, and QEMU display
+          scanout work together.  It does not by itself prove the stock
+          \`bootcode.bin -> start.elf\` path.
+          EOF
+          git diff --check
+
+      - name: Publish the decision and remove this one-shot workflow
+        shell: bash
+        env:
+          PROMOTE: ${{ steps.decision.outputs.promote }}
+        run: |
+          set -euo pipefail
+          cp VC4_DIRECT_LINUX_DECISION.md /tmp/vc4-direct-decision.md
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          cp /tmp/vc4-direct-decision.md VC4_DIRECT_LINUX_DECISION.md
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-direct-linux-promote.yml
+          git add VC4_DIRECT_LINUX_DECISION.md
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "docs/vc4: record the direct Linux evidence boundary [skip ci]"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
+          if [ "$PROMOTE" = true ]; then
+            if git ls-remote --exit-code --heads origin \
+                agent/vc4-stock-linux-framebuffer >/dev/null 2>&1; then
+              echo "stock Linux continuation branch already exists"
+            else
+              git push origin HEAD:agent/vc4-stock-linux-framebuffer
+            fi
+          fi
