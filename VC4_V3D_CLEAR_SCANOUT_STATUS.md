@@ -2,8 +2,8 @@
 
 Validation passed: **false**
 
-- Dual AArch64/VC4 build: `False`
-- Processor-control, multicore-sync, and V3D MMIO regressions: `False`
+- Dual AArch64/VC4 build: `True`
+- Processor-control, multicore-sync, and V3D MMIO regressions: `True`
 - V3D central-tile clear visible in QMP scanout: `False`
 - Pinned Linux framebuffer regression: `False`
 
