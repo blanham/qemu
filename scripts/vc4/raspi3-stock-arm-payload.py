@@ -5,6 +5,12 @@ This probe builds a normal FAT32 boot volume containing the pinned firmware
 trio plus CONFIG.TXT and a caller-supplied kernel8.img.  It deliberately does
 not use QEMU's -kernel shortcut: success requires bootcode.bin and start.elf to
 load and enter the payload through the emulated VideoCore/ARM boot path.
+
+The qtest socket is retained for race-free physical-memory inspection.  QEMU's
+qtest protocol makes the client completely responsible for QEMU_CLOCK_VIRTUAL,
+so the probe advances virtual time explicitly while the firmware runs.  Without
+that step, ordinary firmware delay loops appear to hang even though the CPU and
+device implementations are correct.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ ARM_STATUS = 0x3F00B444
 ARM_ID = 0x3F00B44C
 PM_PROC = 0x3F100110
 KERNEL_LOAD_ADDR = 0x00080000
+DEFAULT_CLOCK_STEP_NS = 10_000_000
 
 
 def load_stock_probe() -> ModuleType:
@@ -134,6 +141,12 @@ def readl(qtest: LineSocket, address: int) -> int:
     return parse_qtest_value(qtest.send_line(f"readl 0x{address:x}"))
 
 
+def advance_clock(qtest: LineSocket, nanoseconds: int) -> int:
+    if nanoseconds <= 0:
+        raise ValueError("qtest clock step must be positive")
+    return parse_qtest_value(qtest.send_line(f"clock_step {nanoseconds}"))
+
+
 def stop_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         return
@@ -188,10 +201,21 @@ def main() -> int:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=360.0)
+    parser.add_argument(
+        "--clock-step-ns",
+        type=int,
+        default=DEFAULT_CLOCK_STEP_NS,
+        help=(
+            "virtual nanoseconds advanced before each signature poll; "
+            f"default: {DEFAULT_CLOCK_STEP_NS}"
+        ),
+    )
     args = parser.parse_args()
 
     if args.seconds <= 0:
         parser.error("--seconds must be positive")
+    if args.clock_step_ns <= 0:
+        parser.error("--clock-step-ns must be positive")
     for path in (args.qemu, args.bootcode, args.start_elf,
                  args.fixup_dat, args.kernel8):
         if not path.is_file():
@@ -253,13 +277,15 @@ def main() -> int:
         qmp: QMP | None = None
         qtest: LineSocket | None = None
         result: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "signature_address": f"0x{SIGNATURE_ADDR:08x}",
             "expected_signature": f"0x{SIGNATURE:016x}",
             "signature_seen": False,
             "image": str(image_path),
             "fat_layout": {name: list(chain) for name, chain in layouts.items()},
             "qemu_command": command,
+            "qtest_clock_step_ns": args.clock_step_ns,
+            "qtest_clock_steps": 0,
         }
         try:
             qmp = wait_for_connection(qmp_path, proc, "qmp", 15.0)
@@ -270,7 +296,10 @@ def main() -> int:
             initial_kernel_word = readq(qtest, KERNEL_LOAD_ADDR)
             deadline = time.monotonic() + args.seconds
             signature = 0
+            qtest_clock_ns = 0
             while time.monotonic() < deadline:
+                qtest_clock_ns = advance_clock(qtest, args.clock_step_ns)
+                result["qtest_clock_steps"] += 1
                 signature = readq(qtest, SIGNATURE_ADDR)
                 if signature == SIGNATURE:
                     result["signature_seen"] = True
@@ -288,6 +317,7 @@ def main() -> int:
                 "observed_signature": f"0x{signature:016x}",
                 "elapsed_seconds": args.seconds - max(0.0, deadline - time.monotonic()),
                 "qemu_returncode": proc.poll(),
+                "qtest_clock_ns": qtest_clock_ns,
                 "kernel_word_before_boot": f"0x{initial_kernel_word:016x}",
                 "kernel_word_after_boot": f"0x{readq(qtest, KERNEL_LOAD_ADDR):016x}",
                 "payload_argument_x0": f"0x{readq(qtest, SIGNATURE_ADDR + 8):016x}",
