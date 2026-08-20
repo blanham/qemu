@@ -1,0 +1,112 @@
+name: VC4 heterogeneous Linux frontier dispatcher
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-linux-dispatch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Classify and choose the continuation branch
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          status_path = Path('VC4_HETERO_DIRECT_LINUX_STATUS.json')
+          status = json.loads(status_path.read_text()) if status_path.is_file() else {}
+          classification = status.get('classification', 'missing-status')
+          bare = status.get('bare') or {}
+          linux = status.get('linux') or {}
+
+          bare_passed = bool(bare.get('passed'))
+          linux_version_seen = bool(linux.get('linux_version_seen'))
+          init_seen = bool(linux.get('init_seen'))
+          framebuffer_passed = bool(linux.get('passed'))
+
+          if framebuffer_passed or classification == 'hetero-linux-framebuffer':
+              outcome = 'linux-framebuffer'
+              branch = 'agent/vc4-linux-framebuffer-release'
+          elif init_seen:
+              outcome = 'linux-init-framebuffer-blocked'
+              branch = 'agent/vc4-linux-fbdev-repair'
+          elif linux_version_seen:
+              outcome = 'linux-early-boot'
+              branch = 'agent/vc4-linux-early-boot-repair'
+          elif bare_passed:
+              outcome = 'bare-framebuffer-linux-entry-blocked'
+              branch = 'agent/vc4-linux-entry-repair'
+          else:
+              outcomes = status.get('outcomes') or {}
+              if outcomes.get('fixtures') == 'failure':
+                  outcome = 'fixture-failed'
+                  branch = 'agent/vc4-linux-fixture-repair'
+              elif outcomes.get('build') == 'failure':
+                  outcome = 'build-failed'
+                  branch = 'agent/vc4-linux-build-repair'
+              else:
+                  outcome = 'direct-control-failed'
+                  branch = 'agent/vc4-linux-control-repair'
+
+          dispatch = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'classification': classification,
+              'outcome': outcome,
+              'branch': branch,
+              'bare_framebuffer_passed': bare_passed,
+              'linux_version_seen': linux_version_seen,
+              'init_seen': init_seen,
+              'linux_framebuffer_passed': framebuffer_passed,
+          }
+          Path('VC4_LINUX_DISPATCH.json').write_text(
+              json.dumps(dispatch, indent=2, sort_keys=True) + '\n'
+          )
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              print(f'branch={branch}', file=output)
+              print(f'outcome={outcome}', file=output)
+          print(json.dumps(dispatch, indent=2))
+          PY
+
+      - name: Publish the evidence-selected branch
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ steps.classify.outputs.branch }}
+        run: |
+          set -euo pipefail
+          test -n "$TARGET_BRANCH"
+          git push --force-with-lease \
+            origin HEAD:refs/heads/"$TARGET_BRANCH"
+
+      - name: Record dispatch and remove the one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/vc4-linux-dispatch.yml
+          git add VC4_LINUX_DISPATCH.json
+          git diff --cached --check
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m 'ci/vc4: record heterogeneous Linux frontier [skip ci]'
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
