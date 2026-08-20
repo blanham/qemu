@@ -1,0 +1,23 @@
+{
+  "base_sha": "09532289dd43be219df52add45c5c5475f8e155a",
+  "cases": [
+    {
+      "arm_control0": "0x00000000",
+      "arm_control1": "0x00000000",
+      "arm_status": "0x00000000",
+      "candidate": "baseline",
+      "kernel_word_after_boot": "0x0f030f030f03130f",
+      "observed_signature": "0x0000000000000000",
+      "pm_proc": "0x00000000",
+      "probe_error": null,
+      "qemu_returncode": null,
+      "signature_seen": false,
+      "vpu_pcs": [
+        "0x00000544"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "selected": null,
+  "selection_rule": "ARM witness signature only; VPU PC movement is diagnostic"
+}
