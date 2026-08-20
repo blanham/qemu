@@ -1,0 +1,31 @@
+{
+  "results": [
+    {
+      "branch": "agent/vc4-stock-bootcode-flow-current",
+      "build_rc": 0,
+      "configure_rc": 0,
+      "diff_check_rc": 0,
+      "log": "/tmp/vc4-stock-validation/candidate-0.log",
+      "msync_rc": 0,
+      "preg_rc": 0,
+      "py_compile_rc": 0,
+      "score": 2270,
+      "sha": "00e745d77b26cba710bede1eb4edd56e48f4afc3",
+      "validated": true
+    }
+  ],
+  "schema_version": 1,
+  "selected": {
+    "branch": "agent/vc4-stock-bootcode-flow-current",
+    "build_rc": 0,
+    "configure_rc": 0,
+    "diff_check_rc": 0,
+    "log": "/tmp/vc4-stock-validation/candidate-0.log",
+    "msync_rc": 0,
+    "preg_rc": 0,
+    "py_compile_rc": 0,
+    "score": 2270,
+    "sha": "00e745d77b26cba710bede1eb4edd56e48f4afc3",
+    "validated": true
+  }
+}

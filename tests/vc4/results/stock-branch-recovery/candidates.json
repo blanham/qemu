@@ -1,0 +1,420 @@
+{
+  "candidates": [
+    {
+      "branch": "agent/vc4-stock-bootcode-flow-current",
+      "evidence": [
+        {
+          "key": "linux.framebuffer_marker_seen",
+          "weight": 900
+        },
+        {
+          "key": "linux.init_seen",
+          "weight": 750
+        },
+        {
+          "key": "bare.signature_seen",
+          "weight": 450
+        },
+        {
+          "key": "outcomes.build",
+          "weight": 25
+        },
+        {
+          "key": "outcomes.regressions",
+          "weight": 25
+        },
+        {
+          "key": "outcomes.build",
+          "weight": 25
+        },
+        {
+          "key": "outcomes.regressions",
+          "weight": 25
+        },
+        {
+          "key": "outcomes.build",
+          "weight": 25
+        },
+        {
+          "key": "outcomes.regressions",
+          "weight": 25
+        }
+      ],
+      "score": 2270,
+      "sha": "00e745d77b26cba710bede1eb4edd56e48f4afc3",
+      "status_files": [
+        "VC4_ARM_PAYLOAD_STATUS.json",
+        "VC4_LINUX_FRAMEBUFFER_VALIDATION.json",
+        "VC4_POST_PREG_RECOVERY.json",
+        "VC4_STOCK_BOOT_FLOW_CURRENT.json",
+        "VC4_STOCK_VECTOR_STATE.json"
+      ],
+      "timestamp": 1787221865,
+      "timestamp_iso": "2026-08-20T10:31:05+00:00"
+    },
+    {
+      "branch": "agent/vc4-linux-framebuffer-integration",
+      "evidence": [
+        {
+          "key": "linux.framebuffer_marker_seen",
+          "weight": 900
+        },
+        {
+          "key": "linux.init_seen",
+          "weight": 750
+        },
+        {
+          "key": "bare.signature_seen",
+          "weight": 450
+        },
+        {
+          "key": "outcomes.build",
+          "weight": 25
+        },
+        {
+          "key": "outcomes.regressions",
+          "weight": 25
+        }
+      ],
+      "score": 2230,
+      "sha": "16050bc66ae34246348be40e342a25f473a3159c",
+      "status_files": [
+        "VC4_ARM_PAYLOAD_STATUS.json",
+        "VC4_LINUX_FRAMEBUFFER_VALIDATION.json",
+        "VC4_POST_PREG_RECOVERY.json"
+      ],
+      "timestamp": 1787219149,
+      "timestamp_iso": "2026-08-20T09:45:49+00:00"
+    },
+    {
+      "branch": "agent/vc4-linux-framebuffer-bringup",
+      "evidence": [],
+      "score": 80,
+      "sha": "c6d7fee142e4e81538d41f635eb72b360e4c8076",
+      "status_files": [
+        "VC4_ARM_PAYLOAD_STATUS.json",
+        "VC4_LINUX_FRAMEBUFFER_STATUS.json",
+        "VC4_POST_PREG_RECOVERY.json"
+      ],
+      "timestamp": 1787198084,
+      "timestamp_iso": "2026-08-20T03:54:44+00:00"
+    },
+    {
+      "branch": "agent/vc4-linux-bringup",
+      "evidence": [],
+      "score": 60,
+      "sha": "c6c6998974116200ab33cb758aaaf0c188d853db",
+      "status_files": [
+        "VC4_ARM_PAYLOAD_STATUS.json",
+        "VC4_LINUX_RUN.json",
+        "VC4_POST_PREG_RECOVERY.json"
+      ],
+      "timestamp": 1787189751,
+      "timestamp_iso": "2026-08-20T01:35:51+00:00"
+    },
+    {
+      "branch": "agent/vc4-linux-boot-frontier",
+      "evidence": [],
+      "score": 60,
+      "sha": "28cc4b4d4c1104b752ada8abcdd2f086d20c7724",
+      "status_files": [],
+      "timestamp": 1786878084,
+      "timestamp_iso": "2026-08-16T11:01:24+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-repair",
+      "evidence": [],
+      "score": 40,
+      "sha": "6c740a831de09bd2d33643438b05566af35e8373",
+      "status_files": [],
+      "timestamp": 1786868444,
+      "timestamp_iso": "2026-08-16T08:20:44+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-next-stage",
+      "evidence": [],
+      "score": 40,
+      "sha": "043aa526be755d05b89fe94e094d3da20bd766f3",
+      "status_files": [],
+      "timestamp": 1786868325,
+      "timestamp_iso": "2026-08-16T08:18:45+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-loader-diagnosis",
+      "evidence": [],
+      "score": 40,
+      "sha": "4d23de931cf35b115c14970efc1243b8d334c16b",
+      "status_files": [],
+      "timestamp": 1786868102,
+      "timestamp_iso": "2026-08-16T08:15:02+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-dma-trace",
+      "evidence": [],
+      "score": 40,
+      "sha": "8e69abf56f555f8e513f77cdcf2a7a0795ce9e23",
+      "status_files": [],
+      "timestamp": 1786867676,
+      "timestamp_iso": "2026-08-16T08:07:56+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-entry-direct-report",
+      "evidence": [],
+      "score": 40,
+      "sha": "44dc5788c6e153cd1c8cdbb63b1d26bed345d79f",
+      "status_files": [],
+      "timestamp": 1786867433,
+      "timestamp_iso": "2026-08-16T08:03:53+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-entry-probe",
+      "evidence": [],
+      "score": 40,
+      "sha": "1929d15d70a519be9077252907e97a22cdcd6132",
+      "status_files": [],
+      "timestamp": 1786866784,
+      "timestamp_iso": "2026-08-16T07:53:04+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-read-frontier",
+      "evidence": [],
+      "score": 40,
+      "sha": "a0a8a527e3fd5a886d44ec442f3760bb696fa54a",
+      "status_files": [],
+      "timestamp": 1786846922,
+      "timestamp_iso": "2026-08-16T02:22:02+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-volume",
+      "evidence": [],
+      "score": 40,
+      "sha": "a55113b3757caaf2a5fc207641cbaba7f5dbb41a",
+      "status_files": [],
+      "timestamp": 1786805472,
+      "timestamp_iso": "2026-08-15T14:51:12+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-reporter-cleanup",
+      "evidence": [],
+      "score": 40,
+      "sha": "52e0c601f37b4af7c6b42f2c9e73b0ef9006172a",
+      "status_files": [],
+      "timestamp": 1786793327,
+      "timestamp_iso": "2026-08-15T11:28:47+00:00"
+    },
+    {
+      "branch": "agent/vc4-startelf-hetero-probe",
+      "evidence": [],
+      "score": 40,
+      "sha": "a868d68e69623f8069dcc89926a7b46f9dbc2f20",
+      "status_files": [],
+      "timestamp": 1786793105,
+      "timestamp_iso": "2026-08-15T11:25:05+00:00"
+    },
+    {
+      "branch": "agent/vc4-stock-stage2-staging",
+      "evidence": [],
+      "score": 40,
+      "sha": "5a582196c7e755a0924f274beb1a97961d744449",
+      "status_files": [],
+      "timestamp": 1786588931,
+      "timestamp_iso": "2026-08-13T02:42:11+00:00"
+    },
+    {
+      "branch": "agent/vc4-stock-bootcode",
+      "evidence": [],
+      "score": 20,
+      "sha": "20ab01891ee25f6d0a60c9264c1450887b48692c",
+      "status_files": [],
+      "timestamp": 1786804601,
+      "timestamp_iso": "2026-08-15T14:36:41+00:00"
+    },
+    {
+      "branch": "agent/vc4-bootcode-retry-frontier",
+      "evidence": [],
+      "score": 20,
+      "sha": "ff9258871aa3614d3b28692177efe47aa497d50a",
+      "status_files": [],
+      "timestamp": 1786798874,
+      "timestamp_iso": "2026-08-15T13:01:14+00:00"
+    },
+    {
+      "branch": "agent/vc4-stock-bootcode-pm-image-v2",
+      "evidence": [],
+      "score": 20,
+      "sha": "bab9dbe6add023f54bc47a0e8cb11c7194dfa591",
+      "status_files": [],
+      "timestamp": 1786530199,
+      "timestamp_iso": "2026-08-12T10:23:19+00:00"
+    },
+    {
+      "branch": "agent/vc4-stock-bootcode-pm-image",
+      "evidence": [],
+      "score": 20,
+      "sha": "ca204a99936fd61f72dde96e372645dc433ab5fa",
+      "status_files": [],
+      "timestamp": 1786529665,
+      "timestamp_iso": "2026-08-12T10:14:25+00:00"
+    },
+    {
+      "branch": "agent/vc4-deterministic-time-linux",
+      "evidence": [],
+      "score": 0,
+      "sha": "fec078a0df01601f53e79ed0dd4dc4f14802b28d",
+      "status_files": [
+        "VC4_ARM_PAYLOAD_STATUS.json",
+        "VC4_LINUX_FRAMEBUFFER_STATUS.json",
+        "VC4_POST_PREG_RECOVERY.json"
+      ],
+      "timestamp": 1787199225,
+      "timestamp_iso": "2026-08-20T04:13:45+00:00"
+    },
+    {
+      "branch": "agent/vc4-sdhost-open-ended-hblc",
+      "evidence": [],
+      "score": 0,
+      "sha": "764fb2c3626d22c1f9aab5e8b93b48c3c247ea53",
+      "status_files": [],
+      "timestamp": 1786877061,
+      "timestamp_iso": "2026-08-16T10:44:21+00:00"
+    },
+    {
+      "branch": "agent/vc4-vpu-uncached-direct-alias",
+      "evidence": [],
+      "score": 0,
+      "sha": "eac2587c7e16d10107b55022525a4fdea9848d38",
+      "status_files": [],
+      "timestamp": 1786869067,
+      "timestamp_iso": "2026-08-16T08:31:07+00:00"
+    },
+    {
+      "branch": "agent/vc4-sdhost-open-ended-transfer",
+      "evidence": [],
+      "score": 0,
+      "sha": "02bc7b9718c87b57e85490f47e7c265bcc6cc2f3",
+      "status_files": [],
+      "timestamp": 1786864775,
+      "timestamp_iso": "2026-08-16T07:19:35+00:00"
+    },
+    {
+      "branch": "agent/vc4-sdhost-zero-unbounded",
+      "evidence": [],
+      "score": 0,
+      "sha": "98922efe0cd5ce85a3ba8bbe66a0bf3ca4c24f46",
+      "status_files": [],
+      "timestamp": 1786864077,
+      "timestamp_iso": "2026-08-16T07:07:57+00:00"
+    },
+    {
+      "branch": "agent/vc4-sdhost-sticky-data-flag",
+      "evidence": [],
+      "score": 0,
+      "sha": "99ef6ae6723e40d7260e9414f61f5129820b19a2",
+      "status_files": [],
+      "timestamp": 1786863945,
+      "timestamp_iso": "2026-08-16T07:05:45+00:00"
+    },
+    {
+      "branch": "agent/vc4-sdhost-open-transfer-probe",
+      "evidence": [],
+      "score": 0,
+      "sha": "02e7ae6f2de99ee47cd4cccf2f082fa95e83cb0d",
+      "status_files": [],
+      "timestamp": 1786861919,
+      "timestamp_iso": "2026-08-16T06:31:59+00:00"
+    },
+    {
+      "branch": "agent/vc4-l2-cache-control",
+      "evidence": [],
+      "score": 0,
+      "sha": "fddb0fb64c959d3f1c5c3ce2dc03fee04e9d412c",
+      "status_files": [],
+      "timestamp": 1786861689,
+      "timestamp_iso": "2026-08-16T06:28:09+00:00"
+    },
+    {
+      "branch": "agent/vc4-l1-cache-control",
+      "evidence": [],
+      "score": 0,
+      "sha": "edc014c5b2c12ec2861c5ab3249c928ece9ac0aa",
+      "status_files": [],
+      "timestamp": 1786851471,
+      "timestamp_iso": "2026-08-16T03:37:51+00:00"
+    },
+    {
+      "branch": "agent/vc4-sdhost-transfer-fix",
+      "evidence": [],
+      "score": 0,
+      "sha": "7b92d06d3e1a0ff27233e690fb538bfdd2eccd69",
+      "status_files": [],
+      "timestamp": 1786850752,
+      "timestamp_iso": "2026-08-16T03:25:52+00:00"
+    },
+    {
+      "branch": "agent/vc4-sdhost-stop-semantics-probe",
+      "evidence": [],
+      "score": 0,
+      "sha": "48f0707b5294fc207ba826cd3d273ace87460521",
+      "status_files": [],
+      "timestamp": 1786849035,
+      "timestamp_iso": "2026-08-16T02:57:15+00:00"
+    },
+    {
+      "branch": "agent/vc4-post-hub-delay",
+      "evidence": [],
+      "score": 0,
+      "sha": "15c168475533ddb9258cd7cfd3f87de4f1efe152",
+      "status_files": [],
+      "timestamp": 1786848194,
+      "timestamp_iso": "2026-08-16T02:43:14+00:00"
+    },
+    {
+      "branch": "agent/vc4-sdhost-transfer-semantics-probe",
+      "evidence": [],
+      "score": 0,
+      "sha": "1da12038151e1c48aaed4ff00663bba6d5b55137",
+      "status_files": [],
+      "timestamp": 1786847984,
+      "timestamp_iso": "2026-08-16T02:39:44+00:00"
+    },
+    {
+      "branch": "agent/vc4-usb-post-reset-trace",
+      "evidence": [],
+      "score": 0,
+      "sha": "876e39992fd41623a5554d8a752d9efd02b757b9",
+      "status_files": [],
+      "timestamp": 1786840857,
+      "timestamp_iso": "2026-08-16T00:40:57+00:00"
+    },
+    {
+      "branch": "agent/vc4-onboard-usb-hub",
+      "evidence": [],
+      "score": 0,
+      "sha": "786954ffc0718436045312febb3dced64ff9b738",
+      "status_files": [],
+      "timestamp": 1786839542,
+      "timestamp_iso": "2026-08-16T00:19:02+00:00"
+    },
+    {
+      "branch": "agent/vc4-pm-sparew",
+      "evidence": [],
+      "score": 0,
+      "sha": "6bd86ae056b96ad5ad822cd4afbc8af534965ed9",
+      "status_files": [],
+      "timestamp": 1786805989,
+      "timestamp_iso": "2026-08-15T14:59:49+00:00"
+    },
+    {
+      "branch": "agent/vc4-image-grafx-power-v3",
+      "evidence": [],
+      "score": 0,
+      "sha": "d4232a2be6155a05882a3d3772a81c2107db5e45",
+      "status_files": [],
+      "timestamp": 1786530816,
+      "timestamp_iso": "2026-08-12T10:33:36+00:00"
+    }
+  ],
+  "generated_at": "2026-08-20T11:09:43.821804+00:00",
+  "schema_version": 1,
+  "source_sha": "faef3ac001d89e7797f46bcacbc6b9e111ccf46d"
+}
