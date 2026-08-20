@@ -19,8 +19,8 @@
 
 /*
  * Keep the probe independent of libdrm so the initramfs remains a single
- * deterministic static binary.  This is the stable DRM UAPI layout for
- * DRM_IOCTL_VERSION.
+ * deterministic static binary.  These layouts and command numbers are the
+ * stable DRM/VC4 UAPI from include/uapi/drm/{drm,vc4_drm}.h.
  */
 struct vc4_drm_version {
     int version_major;
@@ -34,9 +34,56 @@ struct vc4_drm_version {
     char *desc;
 };
 
-#define VC4_DRM_IOCTL_BASE 'd'
-#define VC4_DRM_IOWR(nr, type) _IOWR(VC4_DRM_IOCTL_BASE, nr, type)
-#define VC4_DRM_IOCTL_VERSION VC4_DRM_IOWR(0x00, struct vc4_drm_version)
+struct vc4_drm_get_param {
+    uint32_t param;
+    uint32_t pad;
+    uint64_t value;
+};
+
+struct vc4_drm_create_bo {
+    uint32_t size;
+    uint32_t flags;
+    uint32_t handle;
+    uint32_t pad;
+};
+
+struct vc4_drm_mmap_bo {
+    uint32_t handle;
+    uint32_t flags;
+    uint64_t offset;
+};
+
+#define VC4_DRM_IOCTL_BASE       'd'
+#define VC4_DRM_COMMAND_BASE     0x40
+#define VC4_DRM_IOWR(nr, type)   _IOWR(VC4_DRM_IOCTL_BASE, nr, type)
+#define VC4_DRM_IOCTL_VERSION \
+    VC4_DRM_IOWR(0x00, struct vc4_drm_version)
+#define VC4_DRM_IOCTL_CREATE_BO \
+    VC4_DRM_IOWR(VC4_DRM_COMMAND_BASE + 0x03, struct vc4_drm_create_bo)
+#define VC4_DRM_IOCTL_MMAP_BO \
+    VC4_DRM_IOWR(VC4_DRM_COMMAND_BASE + 0x04, struct vc4_drm_mmap_bo)
+#define VC4_DRM_IOCTL_GET_PARAM \
+    VC4_DRM_IOWR(VC4_DRM_COMMAND_BASE + 0x07, struct vc4_drm_get_param)
+
+#define VC4_PARAM_V3D_IDENT0                 0
+#define VC4_PARAM_V3D_IDENT1                 1
+#define VC4_PARAM_V3D_IDENT2                 2
+#define VC4_PARAM_SUPPORTS_BRANCHES          3
+#define VC4_PARAM_SUPPORTS_ETC1              4
+#define VC4_PARAM_SUPPORTS_THREADED_FS       5
+#define VC4_PARAM_SUPPORTS_FIXED_RCL_ORDER   6
+#define VC4_PARAM_SUPPORTS_MADVISE           7
+#define VC4_PARAM_SUPPORTS_PERFMON           8
+
+#define VC4_EXPECTED_IDENT0 UINT64_C(0x02443356)
+#define VC4_PROBE_BO_SIZE   4096U
+
+_Static_assert(sizeof(struct vc4_drm_get_param) == 16,
+               "unexpected drm_vc4_get_param ABI");
+_Static_assert(sizeof(struct vc4_drm_create_bo) == 16,
+               "unexpected drm_vc4_create_bo ABI");
+_Static_assert(sizeof(struct vc4_drm_mmap_bo) == 16,
+               "unexpected drm_vc4_mmap_bo ABI");
 
 static int write_all(int fd, const char *text, size_t length)
 {
@@ -204,7 +251,7 @@ static int wait_open(const char *path, int flags, unsigned attempts)
     return -1;
 }
 
-static int query_drm_node(const char *label, const char *path)
+static int query_drm_node(const char *label, const char *path, int *fd_out)
 {
     struct vc4_drm_version version;
     char name[64];
@@ -213,7 +260,7 @@ static int query_drm_node(const char *label, const char *path)
     struct stat status;
     int fd;
 
-    fd = wait_open(path, O_RDWR, 600);
+    fd = wait_open(path, O_RDWR, 150);
     if (fd < 0) {
         report("VC4_LINUX_DRM_%s_MISSING path=%s errno=%d (%s)\n",
                label, path, errno, strerror(errno));
@@ -254,8 +301,138 @@ static int query_drm_node(const char *label, const char *path)
            label, major(status.st_rdev), minor(status.st_rdev), name,
            version.version_major, version.version_minor,
            version.version_patchlevel, date, description);
-    close(fd);
-    return strcmp(name, "vc4") == 0 ? 0 : 1;
+
+    if (strcmp(name, "vc4") != 0) {
+        close(fd);
+        return 1;
+    }
+    if (fd_out != NULL) {
+        *fd_out = fd;
+    } else {
+        close(fd);
+    }
+    return 0;
+}
+
+static int vc4_get_param(int fd, uint32_t param, const char *name,
+                         bool required, uint64_t *value_out)
+{
+    struct vc4_drm_get_param request = {
+        .param = param,
+    };
+
+    if (ioctl(fd, VC4_DRM_IOCTL_GET_PARAM, &request) < 0) {
+        report("VC4_LINUX_DRM_PARAM_FAILED name=%s id=%u required=%u errno=%d (%s)\n",
+               name, param, required, errno, strerror(errno));
+        return required ? -1 : 1;
+    }
+    report("VC4_LINUX_DRM_PARAM_OK name=%s id=%u value=0x%016llx\n",
+           name, param, (unsigned long long)request.value);
+    if (value_out != NULL) {
+        *value_out = request.value;
+    }
+    return 0;
+}
+
+static int probe_vc4_uapi(int fd)
+{
+    static const struct {
+        uint32_t id;
+        const char *name;
+        bool required;
+    } params[] = {
+        { VC4_PARAM_V3D_IDENT0, "V3D_IDENT0", true },
+        { VC4_PARAM_V3D_IDENT1, "V3D_IDENT1", true },
+        { VC4_PARAM_V3D_IDENT2, "V3D_IDENT2", true },
+        { VC4_PARAM_SUPPORTS_BRANCHES, "SUPPORTS_BRANCHES", false },
+        { VC4_PARAM_SUPPORTS_ETC1, "SUPPORTS_ETC1", false },
+        { VC4_PARAM_SUPPORTS_THREADED_FS, "SUPPORTS_THREADED_FS", false },
+        { VC4_PARAM_SUPPORTS_FIXED_RCL_ORDER,
+          "SUPPORTS_FIXED_RCL_ORDER", false },
+        { VC4_PARAM_SUPPORTS_MADVISE, "SUPPORTS_MADVISE", false },
+        { VC4_PARAM_SUPPORTS_PERFMON, "SUPPORTS_PERFMON", false },
+    };
+    struct vc4_drm_create_bo create = {
+        .size = VC4_PROBE_BO_SIZE,
+    };
+    struct vc4_drm_mmap_bo map_request;
+    volatile uint32_t *words;
+    uint64_t ident0 = 0;
+    void *mapping;
+
+    marker("VC4_LINUX_DRM_UAPI_START\n");
+    for (unsigned index = 0;
+         index < sizeof(params) / sizeof(params[0]); index++) {
+        uint64_t *output = params[index].id == VC4_PARAM_V3D_IDENT0 ?
+                           &ident0 : NULL;
+
+        if (vc4_get_param(fd, params[index].id, params[index].name,
+                          params[index].required, output) < 0) {
+            marker("VC4_LINUX_DRM_UAPI_FAILED stage=get-param\n");
+            return -1;
+        }
+    }
+    if (ident0 != VC4_EXPECTED_IDENT0) {
+        report("VC4_LINUX_DRM_IDENT_MISMATCH actual=0x%016llx expected=0x%016llx\n",
+               (unsigned long long)ident0,
+               (unsigned long long)VC4_EXPECTED_IDENT0);
+        marker("VC4_LINUX_DRM_UAPI_FAILED stage=identity\n");
+        return -1;
+    }
+    marker("VC4_LINUX_DRM_IDENT_OK\n");
+
+    if (ioctl(fd, VC4_DRM_IOCTL_CREATE_BO, &create) < 0 ||
+        create.handle == 0) {
+        report("VC4_LINUX_DRM_CREATE_BO_FAILED handle=%u errno=%d (%s)\n",
+               create.handle, errno, strerror(errno));
+        marker("VC4_LINUX_DRM_UAPI_FAILED stage=create-bo\n");
+        return -1;
+    }
+
+    memset(&map_request, 0, sizeof(map_request));
+    map_request.handle = create.handle;
+    if (ioctl(fd, VC4_DRM_IOCTL_MMAP_BO, &map_request) < 0 ||
+        map_request.offset == 0) {
+        report("VC4_LINUX_DRM_MMAP_BO_FAILED handle=%u offset=0x%016llx errno=%d (%s)\n",
+               create.handle, (unsigned long long)map_request.offset,
+               errno, strerror(errno));
+        marker("VC4_LINUX_DRM_UAPI_FAILED stage=mmap-bo\n");
+        return -1;
+    }
+
+    mapping = mmap(NULL, VC4_PROBE_BO_SIZE, PROT_READ | PROT_WRITE,
+                   MAP_SHARED, fd, (off_t)map_request.offset);
+    if (mapping == MAP_FAILED) {
+        report("VC4_LINUX_DRM_MMAP_FAILED handle=%u offset=0x%016llx errno=%d (%s)\n",
+               create.handle, (unsigned long long)map_request.offset,
+               errno, strerror(errno));
+        marker("VC4_LINUX_DRM_UAPI_FAILED stage=mmap\n");
+        return -1;
+    }
+
+    words = mapping;
+    words[0] = UINT32_C(0x56433442); /* VC4B */
+    words[VC4_PROBE_BO_SIZE / sizeof(*words) - 1] =
+        UINT32_C(0x4f4f4b21); /* distinct tail sentinel */
+    __sync_synchronize();
+    if (words[0] != UINT32_C(0x56433442) ||
+        words[VC4_PROBE_BO_SIZE / sizeof(*words) - 1] !=
+        UINT32_C(0x4f4f4b21)) {
+        report("VC4_LINUX_DRM_BO_VERIFY_FAILED first=0x%08x last=0x%08x\n",
+               words[0],
+               words[VC4_PROBE_BO_SIZE / sizeof(*words) - 1]);
+        (void)munmap(mapping, VC4_PROBE_BO_SIZE);
+        marker("VC4_LINUX_DRM_UAPI_FAILED stage=bo-verify\n");
+        return -1;
+    }
+
+    report("VC4_LINUX_DRM_BO_OK handle=%u offset=0x%016llx size=%u first=0x%08x last=0x%08x\n",
+           create.handle, (unsigned long long)map_request.offset,
+           VC4_PROBE_BO_SIZE, words[0],
+           words[VC4_PROBE_BO_SIZE / sizeof(*words) - 1]);
+    (void)munmap(mapping, VC4_PROBE_BO_SIZE);
+    marker("VC4_LINUX_DRM_UAPI_OK\n");
+    return 0;
 }
 
 static uint32_t channel_bits(uint8_t value, struct fb_bitfield field)
@@ -428,20 +605,29 @@ int main(void)
 {
     int card_result;
     int render_result;
+    int uapi_result = -1;
     int framebuffer_result;
+    int render_fd = -1;
 
     prepare_pseudo_filesystems();
     marker("VC4_LINUX_INIT_OK\n");
     marker("VC4_LINUX_DRM_PROBE_START\n");
 
     report_driver_topology();
-    card_result = query_drm_node("CARD0", "/dev/dri/card0");
-    render_result = query_drm_node("RENDER128", "/dev/dri/renderD128");
+    card_result = query_drm_node("CARD0", "/dev/dri/card0", NULL);
+    render_result = query_drm_node("RENDER128", "/dev/dri/renderD128",
+                                   &render_fd);
+    if (render_result == 0) {
+        uapi_result = probe_vc4_uapi(render_fd);
+    }
+    if (render_fd >= 0) {
+        close(render_fd);
+    }
     framebuffer_result = probe_framebuffer();
 
-    report("VC4_LINUX_DRM_PROBE_DONE card0=%d render128=%d framebuffer=%d\n",
-           card_result, render_result, framebuffer_result);
-    if (card_result == 0 && render_result == 0) {
+    report("VC4_LINUX_DRM_PROBE_DONE card0=%d render128=%d uapi=%d framebuffer=%d\n",
+           card_result, render_result, uapi_result, framebuffer_result);
+    if (card_result == 0 && render_result == 0 && uapi_result == 0) {
         marker("VC4_LINUX_V3D_DRIVER_OK\n");
     } else {
         marker("VC4_LINUX_V3D_DRIVER_MISSING\n");
