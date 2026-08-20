@@ -1,0 +1,361 @@
+name: VC4 V3D Linux bring-up bootstrap
+
+on:
+  push:
+    branches:
+      - agent/vc4-arm-payload-stage-repair
+    paths:
+      - .github/workflows/vc4-v3d-bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      V3D_LINUX_REF: rpi-6.12.y
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Require the Linux framebuffer milestone
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s VC4_LINUX_FRAMEBUFFER_MILESTONE.md
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          status = json.loads(
+              Path('VC4_HETERO_DIRECT_LINUX_STATUS.json').read_text()
+          )
+          bare = status.get('bare') or {}
+          linux = status.get('linux') or {}
+          checks = (
+              bare.get('passed'),
+              linux.get('linux_version_seen'),
+              linux.get('init_seen'),
+              linux.get('passed'),
+          )
+          if not all(checks):
+              raise SystemExit('Linux framebuffer milestone is incomplete')
+          PY
+
+      - name: Recover the authoritative V3D register vocabulary
+        shell: bash
+        run: |
+          set -euo pipefail
+          linux_commit=$(git ls-remote \
+            https://github.com/raspberrypi/linux.git \
+            "refs/heads/${V3D_LINUX_REF}" | awk '{print $1}')
+          test -n "$linux_commit"
+          mkdir -p /tmp/vc4-v3d
+          curl --fail --location --retry 5 \
+            --output /tmp/vc4-v3d/vc4_regs.h \
+            "https://raw.githubusercontent.com/raspberrypi/linux/${linux_commit}/drivers/gpu/drm/vc4/vc4_regs.h"
+          printf '%s\n' "$linux_commit" >/tmp/vc4-v3d/linux-commit
+          grep -q 'V3D_IDENT0' /tmp/vc4-v3d/vc4_regs.h
+          grep -q 'V3D_CT0CS' /tmp/vc4-v3d/vc4_regs.h
+          grep -q 'V3D_INTCTL' /tmp/vc4-v3d/vc4_regs.h
+
+      - name: Inventory existing QEMU coverage and generate the first witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+          import re
+          import subprocess
+
+          root = Path('.')
+          linux_commit = Path('/tmp/vc4-v3d/linux-commit').read_text().strip()
+          header = Path('/tmp/vc4-v3d/vc4_regs.h').read_text(
+              encoding='utf-8', errors='replace'
+          )
+
+          registers = {}
+          for match in re.finditer(
+              r'^#define\s+(V3D_[A-Z0-9_]+)\s+0x([0-9a-fA-F]+)',
+              header,
+              re.MULTILINE,
+          ):
+              registers[match.group(1)] = int(match.group(2), 16)
+
+          inventory_terms = re.compile(
+              r'(?i)\b(?:v3d|qpu|tile\s+bin|control\s+list|vc4\s+drm)\b'
+          )
+          source_hits = []
+          for base in ('hw', 'include', 'target', 'scripts', 'tests'):
+              path = root / base
+              if not path.is_dir():
+                  continue
+              for file in path.rglob('*'):
+                  if not file.is_file() or file.suffix in {
+                      '.png', '.jpg', '.bin', '.img', '.elf', '.o'
+                  }:
+                      continue
+                  try:
+                      text = file.read_text(
+                          encoding='utf-8', errors='replace'
+                      )
+                  except OSError:
+                      continue
+                  for lineno, line in enumerate(text.splitlines(), 1):
+                      if inventory_terms.search(line):
+                          source_hits.append({
+                              'path': str(file),
+                              'line': lineno,
+                              'text': line.strip()[:240],
+                          })
+
+          inventory = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'linux_repository': 'raspberrypi/linux',
+              'linux_ref': os.environ['V3D_LINUX_REF'],
+              'linux_commit': linux_commit,
+              'register_count': len(registers),
+              'registers': dict(sorted(registers.items())),
+              'existing_source_hits': source_hits,
+              'arm_physical_base': '0x3fc00000',
+              'vc_bus_base': '0x7ec00000',
+          }
+          Path('VC4_V3D_INVENTORY.json').write_text(
+              json.dumps(inventory, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+
+          cat >scripts/vc4/v3d-register-probe.py <<'PY'
+          #!/usr/bin/env python3
+          """Probe the VC4 V3D 2.x register aperture through qtest."""
+
+          from __future__ import annotations
+
+          import argparse
+          import json
+          from pathlib import Path
+          import socket
+          import subprocess
+          import tempfile
+          import time
+
+          V3D_BASE = 0x3FC00000
+          V3D_IDENT0 = 0x000
+          V3D_IDENT1 = 0x004
+          V3D_IDENT2 = 0x008
+          V3D_SCRATCH = 0x010
+          V3D_INTCTL = 0x030
+          V3D_INTENA = 0x034
+          V3D_INTDIS = 0x038
+          V3D_CT0CS = 0x100
+          V3D_CT1CS = 0x104
+          V3D_BFC = 0x134
+          V3D_RFC = 0x138
+
+
+          class QTest:
+              def __init__(self, sock: socket.socket) -> None:
+                  self.sock = sock
+                  self.file = sock.makefile('rwb', buffering=0)
+
+              def command(self, text: str) -> str:
+                  self.file.write((text + '\n').encode())
+                  response = self.file.readline().decode(errors='replace').strip()
+                  if not response.startswith('OK'):
+                      raise RuntimeError(f'{text!r}: {response!r}')
+                  return response
+
+              def readl(self, address: int) -> int:
+                  response = self.command(f'readl 0x{address:x}')
+                  return int(response.split()[1], 0)
+
+              def writel(self, address: int, value: int) -> None:
+                  self.command(f'writel 0x{address:x} 0x{value & 0xffffffff:x}')
+
+
+          def connect(path: Path, deadline: float) -> socket.socket:
+              while time.monotonic() < deadline:
+                  sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                  try:
+                      sock.connect(str(path))
+                      return sock
+                  except OSError:
+                      sock.close()
+                      time.sleep(0.02)
+              raise TimeoutError(f'qtest socket did not appear: {path}')
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser(description=__doc__)
+              parser.add_argument('--qemu', type=Path,
+                                  default=Path('build/qemu-system-aarch64'))
+              parser.add_argument('--machine',
+                                  default='raspi3b-vc4-hetero')
+              parser.add_argument('--base', type=lambda x: int(x, 0),
+                                  default=V3D_BASE)
+              parser.add_argument('--require-present', action='store_true')
+              parser.add_argument('--out', type=Path)
+              args = parser.parse_args()
+
+              qemu = args.qemu.resolve()
+              if not qemu.is_file():
+                  parser.error(f'QEMU binary does not exist: {qemu}')
+
+              with tempfile.TemporaryDirectory(prefix='vc4-v3d-qtest-') as td:
+                  td_path = Path(td)
+                  qtest_path = td_path / 'qtest.sock'
+                  stderr_path = td_path / 'qemu.stderr'
+                  command = [
+                      str(qemu),
+                      '-M', args.machine,
+                      '-accel', 'tcg',
+                      '-S',
+                      '-display', 'none',
+                      '-monitor', 'none',
+                      '-serial', 'none',
+                      '-qtest', f'unix:path={qtest_path},server=on,wait=off',
+                  ]
+                  with stderr_path.open('wb') as stderr:
+                      process = subprocess.Popen(
+                          command,
+                          stdout=subprocess.DEVNULL,
+                          stderr=stderr,
+                      )
+                  try:
+                      sock = connect(qtest_path, time.monotonic() + 5.0)
+                      with sock:
+                          qtest = QTest(sock)
+                          offsets = {
+                              'ident0': V3D_IDENT0,
+                              'ident1': V3D_IDENT1,
+                              'ident2': V3D_IDENT2,
+                              'scratch_before': V3D_SCRATCH,
+                              'intctl': V3D_INTCTL,
+                              'intena': V3D_INTENA,
+                              'ct0cs': V3D_CT0CS,
+                              'ct1cs': V3D_CT1CS,
+                              'bfc': V3D_BFC,
+                              'rfc': V3D_RFC,
+                          }
+                          result = {
+                              key: qtest.readl(args.base + offset)
+                              for key, offset in offsets.items()
+                          }
+                          scratch = 0x56433344
+                          qtest.writel(args.base + V3D_SCRATCH, scratch)
+                          result['scratch_after'] = qtest.readl(
+                              args.base + V3D_SCRATCH
+                          )
+                          qtest.writel(args.base + V3D_INTENA, 0xffffffff)
+                          result['intena_after_enable'] = qtest.readl(
+                              args.base + V3D_INTENA
+                          )
+                          qtest.writel(args.base + V3D_INTDIS, 0xffffffff)
+                          result['intena_after_disable'] = qtest.readl(
+                              args.base + V3D_INTENA
+                          )
+                  finally:
+                      process.terminate()
+                      try:
+                          process.wait(timeout=3)
+                      except subprocess.TimeoutExpired:
+                          process.kill()
+                          process.wait()
+
+                  result.update({
+                      'schema_version': 1,
+                      'machine': args.machine,
+                      'base': f'0x{args.base:08x}',
+                      'qemu_returncode': process.returncode,
+                      'qemu_stderr': stderr_path.read_text(
+                          encoding='utf-8', errors='replace'
+                      ).splitlines()[-120:],
+                  })
+                  present = any(result[key] for key in
+                                ('ident0', 'ident1', 'ident2'))
+                  result['present'] = present
+                  result['scratch_roundtrip'] = (
+                      result['scratch_after'] == scratch
+                  )
+
+                  encoded = json.dumps(result, indent=2, sort_keys=True) + '\n'
+                  if args.out:
+                      args.out.write_text(encoded)
+                  print(encoded, end='')
+                  if args.require_present and not (
+                      present and result['scratch_roundtrip']
+                  ):
+                      return 1
+              return 0
+
+
+          if __name__ == '__main__':
+              raise SystemExit(main())
+          PY
+          chmod +x scripts/vc4/v3d-register-probe.py
+
+          cat >VC4_V3D_BRINGUP.md <<'EOF'
+          # VC4 V3D accelerated-graphics bring-up
+
+          This branch begins after the heterogeneous Linux framebuffer milestone.
+          The direct-ARM machine option is the fast Linux development lane; the
+          stock firmware path remains a parallel release requirement.
+
+          ## Evidence ladder
+
+          1. **Register aperture:** identity registers are nonzero, scratch state
+             round-trips, interrupt masks obey set/clear semantics, and reset is
+             deterministic.
+          2. **Power and clocks:** firmware/property requests and Linux runtime PM
+             visibly change V3D power/clock state without a test-only bypass.
+          3. **Control-list engine:** a minimal binning/render control list reaches
+             completion, advances CT0/CT1 current addresses, and raises the proper
+             interrupts.
+          4. **Memory/MMU:** tile allocation, overflow, shader records, and render
+             targets use guest addresses with explicit bounds and fault reporting.
+          5. **Bare triangle:** a tiny freestanding witness renders a deterministic
+             triangle into memory; qtest independently checks the result.
+          6. **Linux DRM:** the pinned Linux kernel binds the VC4/V3D DRM drivers,
+             creates render/KMS nodes, and executes a minimal userspace submit.
+          7. **Mesa:** llvmpipe is rejected as proof.  `v3d`/`vc4` hardware paths
+             must render a captured test scene whose pixels match a reference.
+
+          The first probe intentionally reports an absent aperture until the QEMU
+          V3D model is wired.  Later gates use `--require-present`.
+          EOF
+
+          python3 -m py_compile scripts/vc4/v3d-register-probe.py
+          git diff --check
+
+      - name: Publish the V3D feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha=$(git rev-parse HEAD)
+          git checkout -b agent/vc4-v3d-linux-bringup
+          git rm .github/workflows/vc4-v3d-bootstrap.yml
+          git add \
+            VC4_V3D_BRINGUP.md \
+            VC4_V3D_INVENTORY.json \
+            scripts/vc4/v3d-register-probe.py
+          git diff --cached --check
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m 'tests/vc4: establish V3D accelerated-graphics frontier'
+          git push --force-with-lease \
+            origin HEAD:refs/heads/agent/vc4-v3d-linux-bringup
+
+          git checkout -B agent/vc4-arm-payload-stage-repair "$source_sha"
+          git rm .github/workflows/vc4-v3d-bootstrap.yml
+          git commit -m 'ci/vc4: retire V3D bootstrap [skip ci]'
+          git pull --rebase origin agent/vc4-arm-payload-stage-repair
+          git push origin HEAD:agent/vc4-arm-payload-stage-repair
