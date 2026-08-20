@@ -9,11 +9,15 @@ and framebuffer behavior from the still-unresolved stock-firmware handoff.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
 
 
 MACHINE = Path("hw/arm/vc4_raspi3_hetero.c")
 PROBE = Path("scripts/vc4/raspi3-linux-probe.py")
+SEV_HELPER = Path("target/arm/tcg/op_helper.c")
+BARE_START = Path("tests/vc4/arm-framebuffer-start.S")
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -23,6 +27,77 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     if count != 1:
         raise RuntimeError(f"{label}: expected one anchor, found {count}")
     return text.replace(old, new, 1)
+
+
+def stage_in_actions(*paths: Path) -> None:
+    """Carry generated architectural fixes into the validated CI commit."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    subprocess.run(
+        ["git", "add", "--", *(str(path) for path in paths)],
+        check=True,
+    )
+
+
+def update_sev_helper() -> None:
+    text = SEV_HELPER.read_text(encoding="utf-8")
+    old = '''void HELPER(sev)(CPUARMState *env)
+{
+    CPUState *cs = env_cpu(env);
+    CPU_FOREACH(cs) {
+        ARMCPU *target_cpu = ARM_CPU(cs);
+        target_cpu->env.event_register = true;
+        if (!qemu_cpu_is_self(cs)) {
+            qemu_cpu_kick(cs);
+        }
+    }
+}
+'''
+    new = '''void HELPER(sev)(CPUARMState *env)
+{
+    CPUState *cs = env_cpu(env);
+
+    CPU_FOREACH(cs) {
+        ARMCPU *target_cpu;
+
+        /*
+         * CPU_FOREACH spans every linked frontend.  ARM SEV targets the ARM
+         * shareability domain; a heterogeneous peer such as VideoCore has no
+         * ARM event register and must not be cast to ARMCPU.
+         */
+        if (!object_dynamic_cast(OBJECT(cs), TYPE_ARM_CPU)) {
+            continue;
+        }
+        target_cpu = ARM_CPU(cs);
+        target_cpu->env.event_register = true;
+        if (!qemu_cpu_is_self(cs)) {
+            qemu_cpu_kick(cs);
+        }
+    }
+}
+'''
+    text = replace_once(text, old, new, "heterogeneous ARM SEV filter")
+    if "a heterogeneous peer such as VideoCore" not in text:
+        raise RuntimeError("ARM SEV filter was not materialized")
+    SEV_HELPER.write_text(text, encoding="utf-8")
+
+
+def update_bare_sev_regression() -> None:
+    text = BARE_START.read_text(encoding="utf-8")
+    old = '''_start:
+    msr daifset, #0xf
+    ldr x0, =0x00800000
+'''
+    new = '''_start:
+    msr daifset, #0xf
+    /* ARM SEV must ignore the linked non-ARM VPU CPU. */
+    sev
+    ldr x0, =0x00800000
+'''
+    text = replace_once(text, old, new, "heterogeneous SEV regression")
+    if "ARM SEV must ignore the linked non-ARM VPU CPU" not in text:
+        raise RuntimeError("heterogeneous SEV regression was not materialized")
+    BARE_START.write_text(text, encoding="utf-8")
 
 
 def update_machine() -> None:
@@ -210,8 +285,11 @@ def update_probe() -> None:
 
 
 def main() -> int:
+    update_sev_helper()
+    update_bare_sev_regression()
     update_machine()
     update_probe()
+    stage_in_actions(SEV_HELPER, BARE_START)
     print("VC4 heterogeneous direct ARM boot integration materialized")
     return 0
 
