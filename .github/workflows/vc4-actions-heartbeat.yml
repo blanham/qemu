@@ -1,0 +1,31 @@
+name: VC4 Actions heartbeat
+
+on:
+  push:
+    branches:
+      - agent/vc4-v3d-bringup
+    paths:
+      - .github/workflows/vc4-actions-heartbeat.yml
+
+permissions:
+  contents: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Publish heartbeat
+        run: |
+          set -euo pipefail
+          printf '{\n  "source_sha": "%s",\n  "run_id": "%s"\n}\n' \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID" > VC4_ACTIONS_HEARTBEAT.json
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -- .github/workflows/vc4-actions-heartbeat.yml
+          git add -- VC4_ACTIONS_HEARTBEAT.json
+          git commit -m "ci/vc4: record Actions heartbeat [skip ci]"
+          git pull --rebase origin agent/vc4-v3d-bringup
+          git push origin HEAD:agent/vc4-v3d-bringup
