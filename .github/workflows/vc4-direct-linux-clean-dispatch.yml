@@ -1,0 +1,131 @@
+name: VC4 direct Linux clean dispatch
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-clean-dispatch.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-clean-dispatch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Enforce the final fixture repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          builder = Path('scripts/vc4/build-linux-initramfs.sh')
+          text = builder.read_text(encoding='utf-8')
+          marker = '# VC4_ABSOLUTE_ARGV1'
+          if marker not in text:
+              anchor = 'set -euo pipefail\n'
+              if anchor not in text:
+                  raise SystemExit('strict-shell anchor missing')
+              block = (
+                  anchor + '\n' + marker + '\n'
+                  + 'case "${1:-}" in\n'
+                  + '    /*) ;;\n'
+                  + '    "") set -- "$PWD/build/vc4-linux-initramfs" ;;\n'
+                  + '    *) set -- "$PWD/$1" ;;\n'
+                  + 'esac\n'
+              )
+              text = text.replace(anchor, block, 1)
+              builder.write_text(text, encoding='utf-8')
+
+          workflow = Path('.github/workflows/vc4-hetero-direct-linux.yml')
+          workflow_text = workflow.read_text(encoding='utf-8')
+          absolute = '$GITHUB_WORKSPACE/build/vc4-linux-initramfs'
+          if absolute not in workflow_text:
+              needle = '  build/vc4-linux-initramfs'
+              if needle not in workflow_text:
+                  raise SystemExit('workflow fixture argument missing')
+              workflow_text = workflow_text.replace(
+                  needle,
+                  '  "$GITHUB_WORKSPACE/build/vc4-linux-initramfs"',
+                  1,
+              )
+              workflow.write_text(workflow_text, encoding='utf-8')
+          PY
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          grep -q 'VC4_ABSOLUTE_ARGV1' scripts/vc4/build-linux-initramfs.sh
+          grep -q '\$GITHUB_WORKSPACE/build/vc4-linux-initramfs' \
+            .github/workflows/vc4-hetero-direct-linux.yml
+          git diff --check
+
+      - name: Publish the final tip without recovery scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-direct-linux-fixture-recovery.yml \
+            .github/workflows/vc4-direct-linux-fixture-recovery-v2.yml \
+            .github/workflows/vc4-direct-linux-fixture-recovery-v3.yml \
+            .github/workflows/vc4-direct-linux-clean-dispatch.yml
+          git add \
+            scripts/vc4/build-linux-initramfs.sh \
+            .github/workflows/vc4-hetero-direct-linux.yml
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          if ! git diff --cached --quiet; then
+            git commit -m "tests/vc4: finalize direct-Linux fixture recovery"
+            git pull --rebase origin agent/vc4-hetero-direct-linux
+            git push origin HEAD:agent/vc4-hetero-direct-linux
+          fi
+
+      - name: Dispatch the full direct Linux and framebuffer gate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = (
+              f"{os.environ['GITHUB_API_URL']}/repos/"
+              f"{os.environ['GITHUB_REPOSITORY']}/actions/workflows/"
+              "vc4-hetero-direct-linux.yml/dispatches"
+          )
+          payload = json.dumps({
+              'ref': 'agent/vc4-hetero-direct-linux'
+          }).encode()
+          request = urllib.request.Request(
+              url,
+              data=payload,
+              method='POST',
+              headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'Content-Type': 'application/json',
+              },
+          )
+          with urllib.request.urlopen(request) as response:
+              if response.status != 204:
+                  raise SystemExit(
+                      f'unexpected workflow-dispatch status {response.status}'
+                  )
+          print('full direct-Linux gate dispatched')
+          PY
