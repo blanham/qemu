@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 60
     env:
       TARGET_BRANCH: agent/vc4-linux-bringup
-      TARGET_SHA: 1cfb585dd60dc164392f889740f725f12fbe199b
+      TARGET_SHA: dd88d335ab6558af34833599de3ccd8cf3a978aa
       TARGET_WORKFLOW: vc4-linux-bringup.yml
 
     steps:
