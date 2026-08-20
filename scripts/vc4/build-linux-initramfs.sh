@@ -39,6 +39,7 @@ chmod 0755 "$out_dir/root/init"
     cd "$out_dir/root"
     find . -print0 | LC_ALL=C sort -z | \
         cpio --null --quiet -o --format=newc --owner=0:0 \
+mkdir -p -- "${1:-build/vc4-linux-initramfs}"
         > "$out_dir/initramfs.cpio"
 )
 gzip -n -9 -c "$out_dir/initramfs.cpio" \
