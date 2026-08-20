@@ -6,11 +6,10 @@ trio plus CONFIG.TXT and a caller-supplied kernel8.img.  It deliberately does
 not use QEMU's -kernel shortcut: success requires bootcode.bin and start.elf to
 load and enter the payload through the emulated VideoCore/ARM boot path.
 
-The qtest socket is retained for race-free physical-memory inspection.  QEMU's
-qtest protocol makes the client completely responsible for QEMU_CLOCK_VIRTUAL,
-so the probe advances virtual time explicitly while the firmware runs.  Without
-that step, ordinary firmware delay loops appear to hang even though the CPU and
-device implementations are correct.
+The qtest socket is retained for race-free physical-memory inspection.  Clock
+management commands are available only with QEMU's qtest accelerator.  This
+probe runs the heterogeneous machine under TCG, so it detects that boundary
+once and otherwise lets TCG advance QEMU_CLOCK_VIRTUAL normally.
 """
 
 from __future__ import annotations
@@ -141,10 +140,22 @@ def readl(qtest: LineSocket, address: int) -> int:
     return parse_qtest_value(qtest.send_line(f"readl 0x{address:x}"))
 
 
-def advance_clock(qtest: LineSocket, nanoseconds: int) -> int:
+def try_advance_clock(qtest: LineSocket,
+                      nanoseconds: int) -> int | None:
+    """Advance qtest time when the selected accelerator supports it.
+
+    A qtest control socket remains useful with TCG, but clock_step is then
+    intentionally absent.  Returning None selects the normal TCG clock path;
+    every other failure remains fatal rather than being hidden as a fallback.
+    """
     if nanoseconds <= 0:
         raise ValueError("qtest clock step must be positive")
-    return parse_qtest_value(qtest.send_line(f"clock_step {nanoseconds}"))
+    reply = qtest.send_line(f"clock_step {nanoseconds}")
+    if reply.startswith("OK "):
+        return parse_qtest_value(reply)
+    if reply.startswith("FAIL Unknown command"):
+        return None
+    raise RuntimeError(f"unexpected qtest clock reply: {reply!r}")
 
 
 def stop_process(proc: subprocess.Popen[bytes]) -> None:
@@ -206,7 +217,8 @@ def main() -> int:
         type=int,
         default=DEFAULT_CLOCK_STEP_NS,
         help=(
-            "virtual nanoseconds advanced before each signature poll; "
+            "virtual nanoseconds requested when qtest clock management is "
+            "available; TCG otherwise advances time normally; "
             f"default: {DEFAULT_CLOCK_STEP_NS}"
         ),
     )
@@ -277,7 +289,7 @@ def main() -> int:
         qmp: QMP | None = None
         qtest: LineSocket | None = None
         result: dict[str, Any] = {
-            "schema_version": 2,
+            "schema_version": 3,
             "signature_address": f"0x{SIGNATURE_ADDR:08x}",
             "expected_signature": f"0x{SIGNATURE:016x}",
             "signature_seen": False,
@@ -286,6 +298,8 @@ def main() -> int:
             "qemu_command": command,
             "qtest_clock_step_ns": args.clock_step_ns,
             "qtest_clock_steps": 0,
+            "qtest_clock_step_supported": None,
+            "clock_mode": "probing",
         }
         try:
             qmp = wait_for_connection(qmp_path, proc, "qmp", 15.0)
@@ -294,12 +308,23 @@ def main() -> int:
             assert isinstance(qtest, LineSocket)
 
             initial_kernel_word = readq(qtest, KERNEL_LOAD_ADDR)
-            deadline = time.monotonic() + args.seconds
+            started = time.monotonic()
+            deadline = started + args.seconds
             signature = 0
-            qtest_clock_ns = 0
+            qtest_clock_ns: int | None = None
+            clock_step_available = True
             while time.monotonic() < deadline:
-                qtest_clock_ns = advance_clock(qtest, args.clock_step_ns)
-                result["qtest_clock_steps"] += 1
+                if clock_step_available:
+                    stepped = try_advance_clock(qtest, args.clock_step_ns)
+                    if stepped is None:
+                        clock_step_available = False
+                        result["qtest_clock_step_supported"] = False
+                        result["clock_mode"] = "tcg-realtime"
+                    else:
+                        qtest_clock_ns = stepped
+                        result["qtest_clock_steps"] += 1
+                        result["qtest_clock_step_supported"] = True
+                        result["clock_mode"] = "qtest-controlled"
                 signature = readq(qtest, SIGNATURE_ADDR)
                 if signature == SIGNATURE:
                     result["signature_seen"] = True
@@ -315,7 +340,7 @@ def main() -> int:
 
             result.update({
                 "observed_signature": f"0x{signature:016x}",
-                "elapsed_seconds": args.seconds - max(0.0, deadline - time.monotonic()),
+                "elapsed_seconds": time.monotonic() - started,
                 "qemu_returncode": proc.poll(),
                 "qtest_clock_ns": qtest_clock_ns,
                 "kernel_word_before_boot": f"0x{initial_kernel_word:016x}",
