@@ -37,6 +37,7 @@ mkdir -p "$out_dir"
     -fno-stack-protector \
     -fno-unwind-tables \
     -fno-asynchronous-unwind-tables \
+    -include stdbool.h \
     -Wall \
     -Wextra \
     -Werror \
