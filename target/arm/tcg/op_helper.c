@@ -475,8 +475,19 @@ void HELPER(wfit)(CPUARMState *env, uint32_t rd)
 void HELPER(sev)(CPUARMState *env)
 {
     CPUState *cs = env_cpu(env);
+
     CPU_FOREACH(cs) {
-        ARMCPU *target_cpu = ARM_CPU(cs);
+        ARMCPU *target_cpu;
+
+        /*
+         * CPU_FOREACH spans every linked frontend.  ARM SEV targets the ARM
+         * shareability domain; a heterogeneous peer such as VideoCore has no
+         * ARM event register and must not be cast to ARMCPU.
+         */
+        if (!object_dynamic_cast(OBJECT(cs), TYPE_ARM_CPU)) {
+            continue;
+        }
+        target_cpu = ARM_CPU(cs);
         target_cpu->env.event_register = true;
         if (!qemu_cpu_is_self(cs)) {
             qemu_cpu_kick(cs);
