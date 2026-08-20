@@ -280,7 +280,7 @@ def main() -> int:
         b"hdmi_force_hotplug=1\n"
     )
     command_line = (
-        b"console=ttyAMA0,115200 console=tty1 "
+        b"console=tty1 console=ttyAMA0,115200 "
         b"earlycon=pl011,mmio32,0x3f201000 "
         b"rdinit=/init rw loglevel=8 ignore_loglevel nokaslr "
         b"fbcon=map:0 panic=-1\n"
