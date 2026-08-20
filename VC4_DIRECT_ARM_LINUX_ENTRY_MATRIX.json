@@ -1,0 +1,17 @@
+{
+  "classification": "direct-arm-entry-or-pl011-blocked",
+  "direct_arm_entry_seen": false,
+  "direct_qemu_return_code": "",
+  "direct_serial": [],
+  "framebuffer_marker_seen": false,
+  "generated_at": "2026-08-20T12:05:43.409541+00:00",
+  "init_seen": false,
+  "linux_jump_marker_seen": false,
+  "linux_jump_result": {},
+  "linux_probe_return_code": "",
+  "linux_version_seen": false,
+  "run_id": "32366980395",
+  "scanout_passed": false,
+  "schema_version": 1,
+  "source_sha": "0270a3cf3b553e7e93071083e6a78fd36f61d806"
+}
