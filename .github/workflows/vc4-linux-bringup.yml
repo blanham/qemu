@@ -1,0 +1,386 @@
+name: VC4 Linux and framebuffer bring-up
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-bringup
+    paths:
+      - .github/workflows/vc4-linux-bringup.yml
+      - scripts/vc4/build-arm-framebuffer-smoke.sh
+      - scripts/vc4/build-linux-initramfs.sh
+      - scripts/vc4/raspi3-linux-probe.py
+      - scripts/vc4/raspi3-stock-bootcode-probe.py
+      - scripts/vc4/preg-mutex-smoke.py
+      - scripts/vc4/msync-smoke.py
+      - tests/vc4/arm-framebuffer-start.S
+      - tests/vc4/arm-framebuffer-smoke.c
+      - tests/vc4/arm-framebuffer.ld
+      - tests/vc4/linux-init.c
+      - hw/arm/**
+      - hw/display/bcm2835_fb.c
+      - hw/misc/bcm2835_mbox.c
+      - hw/misc/bcm2835_property.c
+      - hw/misc/bcm2835_msync.c
+      - target/vc4/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vc4-linux-bringup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-official
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build, cross, and initramfs dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio \
+            curl \
+            file \
+            gcc-aarch64-linux-gnu \
+            git \
+            gzip \
+            libc6-dev-arm64-cross \
+            linux-libc-dev-arm64-cross \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Download the pinned official Pi 3 firmware, kernel, and DTB
+        run: |
+          set -euo pipefail
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR"
+          for file in \
+            bootcode.bin \
+            start.elf \
+            fixup.dat \
+            kernel8.img \
+            bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+
+          test "$(git hash-object "$OFFICIAL_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$OFFICIAL_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$OFFICIAL_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          test "$(stat -c %s "$OFFICIAL_DIR/kernel8.img")" = 10475940
+          test "$(stat -c %s "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = 34731
+          sha256sum "$OFFICIAL_DIR"/* > "$OFFICIAL_DIR/SHA256SUMS"
+          file "$OFFICIAL_DIR/kernel8.img" "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb"
+
+      - name: Validate probe sources
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/raspi3-linux-probe.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          bash -n \
+            scripts/vc4/build-arm-framebuffer-smoke.sh \
+            scripts/vc4/build-linux-initramfs.sh
+          git diff --check
+
+      - name: Configure and build both QEMU frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror \
+            2>&1 | tee /tmp/vc4-linux-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-linux-build.log
+
+      - name: Preserve architectural regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-preg-smoke.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-msync-smoke.log
+
+      - name: Build the deterministic framebuffer kernel and Linux initramfs
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-arm-framebuffer-smoke.sh \
+            build/vc4-arm-framebuffer
+          bash scripts/vc4/build-linux-initramfs.sh \
+            build/vc4-linux-initramfs
+          test -s build/vc4-arm-framebuffer/kernel8.img
+          test -s build/vc4-linux-initramfs/initramfs.cpio.gz
+          file \
+            build/vc4-arm-framebuffer/arm-framebuffer.elf \
+            build/vc4-linux-initramfs/root/init
+
+      - name: Prove the mailbox framebuffer with a tiny direct ARM kernel
+        id: bare_direct
+        run: |
+          set +e
+          rm -rf /tmp/vc4-bare-direct
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode bare-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel build/vc4-arm-framebuffer/kernel8.img \
+            --out-dir /tmp/vc4-bare-direct \
+            --seconds 90 \
+            --sample-interval 2
+          rc=$?
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          result = json.load(open('/tmp/vc4-bare-direct/result.json'))
+          print('passed=' + str(bool(result.get('passed'))).lower())
+          PY
+
+      - name: Boot the pinned official Linux kernel directly
+        id: linux_direct
+        run: |
+          set +e
+          rm -rf /tmp/vc4-linux-direct
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            --initrd build/vc4-linux-initramfs/initramfs.cpio.gz \
+            --out-dir /tmp/vc4-linux-direct \
+            --seconds 300 \
+            --sample-interval 5
+          rc=$?
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          result = json.load(open('/tmp/vc4-linux-direct/result.json'))
+          print('passed=' + str(bool(result.get('passed'))).lower())
+          print('init_seen=' + str(bool(result.get('init_seen'))).lower())
+          PY
+
+      - name: Reproduce the stock-firmware frontier with the tiny kernel
+        id: bare_stock_baseline
+        run: |
+          set +e
+          rm -rf /tmp/vc4-bare-stock-baseline
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode bare-stock \
+            --qemu build/qemu-system-aarch64 \
+            --kernel build/vc4-arm-framebuffer/kernel8.img \
+            --bootcode "$OFFICIAL_DIR/bootcode.bin" \
+            --start-elf "$OFFICIAL_DIR/start.elf" \
+            --fixup-dat "$OFFICIAL_DIR/fixup.dat" \
+            --out-dir /tmp/vc4-bare-stock-baseline \
+            --seconds 180 \
+            --sample-interval 5
+          rc=$?
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Test timer-accelerated stock firmware without changing the model
+        id: bare_stock_fast
+        run: |
+          set +e
+          rm -rf /tmp/vc4-bare-stock-fast
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode bare-stock \
+            --qemu build/qemu-system-aarch64 \
+            --kernel build/vc4-arm-framebuffer/kernel8.img \
+            --bootcode "$OFFICIAL_DIR/bootcode.bin" \
+            --start-elf "$OFFICIAL_DIR/start.elf" \
+            --fixup-dat "$OFFICIAL_DIR/fixup.dat" \
+            --out-dir /tmp/vc4-bare-stock-fast \
+            --seconds 360 \
+            --icount-shift 10 \
+            --sample-interval 5
+          rc=$?
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          result = json.load(open('/tmp/vc4-bare-stock-fast/result.json'))
+          print('passed=' + str(bool(result.get('passed'))).lower())
+          print('arm_reached=' + str(bool(result.get('bare_signature_seen'))).lower())
+          PY
+
+      - name: Boot official Linux through unchanged stock firmware
+        id: linux_stock
+        if: steps.bare_stock_fast.outputs.arm_reached == 'true'
+        run: |
+          set +e
+          rm -rf /tmp/vc4-linux-stock
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-stock \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            --initrd build/vc4-linux-initramfs/initramfs.cpio.gz \
+            --bootcode "$OFFICIAL_DIR/bootcode.bin" \
+            --start-elf "$OFFICIAL_DIR/start.elf" \
+            --fixup-dat "$OFFICIAL_DIR/fixup.dat" \
+            --out-dir /tmp/vc4-linux-stock \
+            --seconds 600 \
+            --icount-shift 10 \
+            --sample-interval 5
+          rc=$?
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Classify the Linux and framebuffer frontier
+        if: always()
+        env:
+          BARE_DIRECT_RC: ${{ steps.bare_direct.outputs.return_code }}
+          LINUX_DIRECT_RC: ${{ steps.linux_direct.outputs.return_code }}
+          BARE_STOCK_BASELINE_RC: ${{ steps.bare_stock_baseline.outputs.return_code }}
+          BARE_STOCK_FAST_RC: ${{ steps.bare_stock_fast.outputs.return_code }}
+          LINUX_STOCK_RC: ${{ steps.linux_stock.outputs.return_code }}
+        run: |
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          probes = {
+              'bare_direct': Path('/tmp/vc4-bare-direct/result.json'),
+              'linux_direct': Path('/tmp/vc4-linux-direct/result.json'),
+              'bare_stock_baseline': Path('/tmp/vc4-bare-stock-baseline/result.json'),
+              'bare_stock_fast': Path('/tmp/vc4-bare-stock-fast/result.json'),
+              'linux_stock': Path('/tmp/vc4-linux-stock/result.json'),
+          }
+          results = {}
+          for name, path in probes.items():
+              if path.is_file():
+                  results[name] = json.loads(path.read_text())
+
+          bare_direct = results.get('bare_direct', {})
+          linux_direct = results.get('linux_direct', {})
+          stock_fast = results.get('bare_stock_fast', {})
+          linux_stock = results.get('linux_stock', {})
+
+          if linux_stock.get('passed'):
+              classification = 'stock-linux-framebuffer'
+          elif linux_stock.get('init_seen'):
+              classification = 'stock-linux-init-no-scanout'
+          elif stock_fast.get('passed'):
+              classification = 'stock-bare-framebuffer-linux-next'
+          elif stock_fast.get('bare_signature_seen'):
+              classification = 'stock-arm-handoff-framebuffer-failed'
+          elif linux_direct.get('passed'):
+              classification = 'direct-linux-framebuffer-stock-handoff-blocked'
+          elif linux_direct.get('init_seen'):
+              classification = 'direct-linux-init-framebuffer-blocked'
+          elif linux_direct.get('linux_version_seen'):
+              classification = 'direct-linux-early-boot'
+          elif bare_direct.get('passed'):
+              classification = 'mailbox-framebuffer-good-linux-entry-blocked'
+          else:
+              classification = 'direct-control-failed'
+
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'firmware_commit': os.environ['RPI_FIRMWARE_COMMIT'],
+              'classification': classification,
+              'step_return_codes': {
+                  'bare_direct': os.environ.get('BARE_DIRECT_RC', ''),
+                  'linux_direct': os.environ.get('LINUX_DIRECT_RC', ''),
+                  'bare_stock_baseline': os.environ.get('BARE_STOCK_BASELINE_RC', ''),
+                  'bare_stock_fast': os.environ.get('BARE_STOCK_FAST_RC', ''),
+                  'linux_stock': os.environ.get('LINUX_STOCK_RC', ''),
+              },
+              'results': results,
+          }
+          Path('VC4_LINUX_BRINGUP_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+
+          lines = [
+              '# VC4 Linux and framebuffer bring-up',
+              '',
+              f"Classification: **`{classification}`**",
+              f"Source SHA: `{status['source_sha']}`",
+              f"Firmware pin: `{status['firmware_commit']}`",
+              '',
+              '## Gates',
+              '',
+          ]
+          for name in probes:
+              result = results.get(name)
+              if result is None:
+                  lines.append(f'- `{name}`: not run')
+                  continue
+              screenshot = result.get('screenshot') or {}
+              lines.append(
+                  f"- `{name}`: passed={result.get('passed')} "
+                  f"linux={result.get('linux_version_seen')} "
+                  f"init={result.get('init_seen')} "
+                  f"bare_signature={result.get('bare_signature_seen')} "
+                  f"fb_marker={result.get('framebuffer_marker_seen')} "
+                  f"scanout={screenshot.get('quadrants_match')}"
+              )
+          Path('VC4_LINUX_BRINGUP_STATUS.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps({
+              'classification': classification,
+              'available_results': sorted(results),
+          }, indent=2))
+          PY
+
+      - name: Upload Linux, serial, firmware, and scanout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-bringup-${{ github.run_attempt }}
+          path: |
+            VC4_LINUX_BRINGUP_STATUS.json
+            VC4_LINUX_BRINGUP_STATUS.md
+            /tmp/vc4-linux-configure.log
+            /tmp/vc4-linux-build.log
+            /tmp/vc4-preg-smoke.log
+            /tmp/vc4-msync-smoke.log
+            /tmp/vc4-official/SHA256SUMS
+            build/vc4-arm-framebuffer
+            build/vc4-linux-initramfs/SHA256SUMS
+            build/vc4-linux-initramfs/initramfs.cpio.gz
+            /tmp/vc4-bare-direct
+            /tmp/vc4-linux-direct
+            /tmp/vc4-bare-stock-baseline
+            /tmp/vc4-bare-stock-fast
+            /tmp/vc4-linux-stock
+            !/tmp/**/stock-linux.img
+          if-no-files-found: warn
+          retention-days: 14
