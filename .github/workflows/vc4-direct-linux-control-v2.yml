@@ -1,0 +1,273 @@
+name: VC4 clean-room direct Linux control
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-control-v2.yml
+      - scripts/vc4/raspi3-direct-linux-control.py
+      - scripts/vc4/build-linux-initramfs.sh
+      - scripts/vc4/hetero-direct-linux-integrate.py
+      - tests/vc4/linux-init.c
+      - tests/vc4/linux-runtime.S
+      - tests/vc4/linux-init.ld
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-control-v2
+  cancel-in-progress: true
+
+jobs:
+  build-and-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-official
+      OUT_DIR: /tmp/vc4-direct-linux-control
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize direct-ARM control and stabilize fixtures
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/hetero-direct-linux-integrate.py \
+            scripts/vc4/raspi3-direct-linux-control.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          python3 scripts/vc4/hetero-direct-linux-integrate.py
+          python3 scripts/vc4/hetero-direct-linux-integrate.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('scripts/vc4/build-linux-initramfs.sh')
+          text = path.read_text(encoding='utf-8')
+          marker = 'VC4_INITRAMFS_OUTPUT_CANONICALIZED'
+          if marker not in text:
+              lines = text.splitlines(keepends=True)
+              for index, line in enumerate(lines):
+                  match = re.match(
+                      r'^([A-Z][A-Z0-9_]*)[ \t]*=.*(?:\$\{?1|\$1)',
+                      line,
+                  )
+                  if match:
+                      variable = match.group(1)
+                      lines.insert(
+                          index + 1,
+                          f'# {marker}: later subshells may chdir.\n'
+                          f'{variable}=$(realpath -m -- "${variable}")\n',
+                      )
+                      path.write_text(''.join(lines), encoding='utf-8')
+                      break
+              else:
+                  raise SystemExit('could not locate initramfs output argument')
+          PY
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          git diff --check
+
+      - name: Download pinned Raspberry Pi kernel and DTB
+        run: |
+          set -euo pipefail
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR"
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* >"$OFFICIAL_DIR/SHA256SUMS"
+
+      - name: Configure and build both frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-direct-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-direct-build.log
+
+      - name: Preserve VC4 architectural regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-direct-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-direct-msync.log
+
+      - name: Build deterministic initramfs
+        run: |
+          set -euo pipefail
+          rm -rf build/vc4-linux-initramfs
+          bash scripts/vc4/build-linux-initramfs.sh \
+            "$PWD/build/vc4-linux-initramfs"
+          test -s build/vc4-linux-initramfs/initramfs.cpio
+          cpio -it <build/vc4-linux-initramfs/initramfs.cpio \
+            | grep -E -q '(^|/)init$'
+
+      - name: Run clean-room Linux and scanout control
+        id: probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          python3 scripts/vc4/raspi3-direct-linux-control.py \
+            build/qemu-system-aarch64 \
+            "$OFFICIAL_DIR/kernel8.img" \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            build/vc4-linux-initramfs/initramfs.cpio \
+            --seconds 180 \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee "$OUT_DIR/probe.log"
+          rc=${PIPESTATUS[0]}
+          echo "return_code=$rc" >>"$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Classify the direct Linux frontier
+        id: classify
+        if: always()
+        shell: bash
+        env:
+          PROBE_RC: ${{ steps.probe.outputs.return_code }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          result_path = Path(os.environ['OUT_DIR']) / 'result.json'
+          result = (
+              json.loads(result_path.read_text())
+              if result_path.is_file() else {}
+          )
+          if result.get('passed'):
+              classification = 'direct-linux-framebuffer-scanout'
+          elif result.get('init_seen'):
+              classification = 'direct-linux-init-framebuffer-blocked'
+          elif result.get('linux_version_seen'):
+              classification = 'direct-linux-kernel-init-blocked'
+          elif result:
+              classification = 'direct-linux-entry-or-console-blocked'
+          else:
+              classification = 'direct-linux-probe-infrastructure-failed'
+          status = {
+              'schema_version': 2,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'classification': classification,
+              'probe_return_code': os.environ.get('PROBE_RC', ''),
+              'result': result,
+          }
+          Path('VC4_DIRECT_LINUX_CONTROL_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_DIRECT_LINUX_CONTROL_STATUS.md').write_text(
+              '# VC4 clean-room direct Linux control\n\n'
+              f'Classification: **`{classification}`**\n\n'
+              f'Linux banner seen: `{bool(result.get("linux_version_seen"))}`\n\n'
+              f'Init reached: `{bool(result.get("init_seen"))}`\n\n'
+              f'Framebuffer marker: '
+              f'`{bool(result.get("framebuffer_marker_seen"))}`\n\n'
+              f'Four-quadrant scanout: '
+              f'`{bool(result.get("scanout_passed"))}`\n'
+          )
+          print(json.dumps({
+              'classification': classification,
+              'linux_version_seen': result.get('linux_version_seen'),
+              'init_seen': result.get('init_seen'),
+              'framebuffer_marker_seen': result.get(
+                  'framebuffer_marker_seen'
+              ),
+              'scanout_passed': result.get('scanout_passed'),
+          }, indent=2))
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'classification={classification}\n')
+              output.write(
+                  'passed=' + ('true' if result.get('passed') else 'false')
+                  + '\n'
+              )
+          PY
+
+      - name: Upload complete direct-control evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-direct-linux-control-${{ github.run_attempt }}
+          path: |
+            VC4_DIRECT_LINUX_CONTROL_STATUS.json
+            VC4_DIRECT_LINUX_CONTROL_STATUS.md
+            /tmp/vc4-direct-linux-control
+            /tmp/vc4-direct-configure.log
+            /tmp/vc4-direct-build.log
+            /tmp/vc4-direct-preg.log
+            /tmp/vc4-direct-msync.log
+            /tmp/vc4-official/SHA256SUMS
+            build/vc4-linux-initramfs/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish status and validated source changes
+        if: always()
+        shell: bash
+        env:
+          PASSED: ${{ steps.classify.outputs.passed }}
+          CLASSIFICATION: ${{ steps.classify.outputs.classification }}
+        run: |
+          set -euo pipefail
+          cp VC4_DIRECT_LINUX_CONTROL_STATUS.json /tmp/direct-status.json
+          cp VC4_DIRECT_LINUX_CONTROL_STATUS.md /tmp/direct-status.md
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add \
+            scripts/vc4/build-linux-initramfs.sh \
+            scripts/vc4/raspi3-direct-linux-control.py \
+            hw/arm/vc4_raspi3_hetero.c
+          if [ "$PASSED" = true ]; then
+            git rm .github/workflows/vc4-direct-linux-control-v2.yml
+            message='tests/vc4: validate Linux framebuffer scanout on hetero machine'
+          else
+            git reset --hard "$GITHUB_SHA"
+            cp /tmp/direct-status.json VC4_DIRECT_LINUX_CONTROL_STATUS.json
+            cp /tmp/direct-status.md VC4_DIRECT_LINUX_CONTROL_STATUS.md
+            git add \
+              VC4_DIRECT_LINUX_CONTROL_STATUS.json \
+              VC4_DIRECT_LINUX_CONTROL_STATUS.md
+            message="ci/vc4: record ${CLASSIFICATION} [skip ci]"
+          fi
+          git diff --cached --check
+          git commit -m "$message"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
+          if [ "$PASSED" = true ]; then
+            git push --force-with-lease \
+              origin HEAD:agent/vc4-linux-framebuffer-bringup
+          fi
