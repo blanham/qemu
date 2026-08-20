@@ -1,0 +1,10 @@
+{
+  "classification": "linux-probe-infrastructure",
+  "framebuffer_failure_counts": {},
+  "generated_at": "2026-08-20T11:56:36.141303+00:00",
+  "probe_return_code": "",
+  "result": {},
+  "run_id": "32366191579",
+  "schema_version": 1,
+  "source_sha": "06711477c7647fed9ec3b0799a2f8f6ecf5f4464"
+}
