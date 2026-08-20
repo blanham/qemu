@@ -1,0 +1,244 @@
+name: VC4 Linux reference control
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-reference-control
+    paths:
+      - .github/workflows/vc4-linux-reference.yml
+      - scripts/vc4/build-arm-framebuffer-smoke.sh
+      - scripts/vc4/build-linux-initramfs.sh
+      - scripts/vc4/raspi3-linux-probe.py
+      - tests/vc4/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-reference-control
+  cancel-in-progress: true
+
+jobs:
+  build-and-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-reference-official
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl file gcc-aarch64-linux-gnu gzip \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Validate probe sources
+        id: sources
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/vc4/raspi3-linux-probe.py
+          git diff --check
+          grep -q '\"-M\", \"raspi3b\"' scripts/vc4/raspi3-linux-probe.py
+          grep -q '\"-smp\", \"4\"' scripts/vc4/raspi3-linux-probe.py
+
+      - name: Download pinned official Linux artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR"
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* > "$OFFICIAL_DIR/SHA256SUMS"
+
+      - name: Configure and build the upstream Raspberry Pi frontend
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-reference-configure.log
+          ninja -C build qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-reference-build.log
+
+      - name: Build deterministic framebuffer and initramfs fixtures
+        id: fixtures
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-arm-framebuffer-smoke.sh \
+            build/vc4-arm-framebuffer
+          bash scripts/vc4/build-linux-initramfs.sh \
+            build/vc4-linux-initramfs
+
+      - name: Prove the upstream Raspberry Pi mailbox framebuffer
+        id: bare
+        run: |
+          set +e
+          rm -rf /tmp/vc4-reference-bare
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode bare-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel build/vc4-arm-framebuffer/kernel8.img \
+            --out-dir /tmp/vc4-reference-bare \
+            --seconds 120 --sample-interval 2
+          rc=$?
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          path = Path('/tmp/vc4-reference-bare/result.json')
+          result = json.loads(path.read_text()) if path.is_file() else {}
+          print('passed=' + str(bool(result.get('passed'))).lower())
+          PY
+
+      - name: Boot pinned Linux and paint its framebuffer
+        id: linux
+        if: steps.bare.outputs.passed == 'true'
+        run: |
+          set +e
+          rm -rf /tmp/vc4-reference-linux
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            --initrd build/vc4-linux-initramfs/initramfs.cpio.gz \
+            --out-dir /tmp/vc4-reference-linux \
+            --seconds 300 --sample-interval 5
+          rc=$?
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          path = Path('/tmp/vc4-reference-linux/result.json')
+          result = json.loads(path.read_text()) if path.is_file() else {}
+          print('passed=' + str(bool(result.get('passed'))).lower())
+          PY
+
+      - name: Record reference frontier
+        id: record
+        if: always()
+        env:
+          SOURCES_OUTCOME: ${{ steps.sources.outcome }}
+          ARTIFACTS_OUTCOME: ${{ steps.artifacts.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          FIXTURES_OUTCOME: ${{ steps.fixtures.outcome }}
+          BARE_OUTCOME: ${{ steps.bare.outcome }}
+          BARE_RC: ${{ steps.bare.outputs.return_code }}
+          LINUX_OUTCOME: ${{ steps.linux.outcome }}
+          LINUX_RC: ${{ steps.linux.outputs.return_code }}
+        run: |
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          def load(path):
+              candidate = Path(path)
+              return json.loads(candidate.read_text()) if candidate.is_file() else None
+
+          bare = load('/tmp/vc4-reference-bare/result.json')
+          linux = load('/tmp/vc4-reference-linux/result.json')
+
+          if linux and linux.get('passed'):
+              classification = 'reference-linux-framebuffer'
+          elif linux and linux.get('init_seen'):
+              classification = 'reference-linux-init-framebuffer-blocked'
+          elif linux and linux.get('linux_version_seen'):
+              classification = 'reference-linux-early-boot'
+          elif bare and bare.get('passed'):
+              classification = 'reference-bare-framebuffer-linux-entry-blocked'
+          elif os.environ.get('BUILD_OUTCOME') != 'success':
+              classification = 'reference-build-failed'
+          elif os.environ.get('FIXTURES_OUTCOME') != 'success':
+              classification = 'reference-fixtures-failed'
+          else:
+              classification = 'reference-bare-framebuffer-failed'
+
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'classification': classification,
+              'outcomes': {
+                  key.lower().removesuffix('_outcome'): value
+                  for key, value in os.environ.items()
+                  if key.endswith('_OUTCOME')
+              },
+              'bare_return_code': os.environ.get('BARE_RC'),
+              'linux_return_code': os.environ.get('LINUX_RC'),
+              'bare': bare,
+              'linux': linux,
+          }
+          Path('VC4_LINUX_REFERENCE_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_LINUX_REFERENCE_STATUS.md').write_text(
+              '# VC4 Linux reference control\n\n'
+              f'Classification: **`{classification}`**\n\n'
+              f'Bare framebuffer passed: `{bool(bare and bare.get("passed"))}`\n\n'
+              f'Linux version seen: `{bool(linux and linux.get("linux_version_seen"))}`\n\n'
+              f'Init seen: `{bool(linux and linux.get("init_seen"))}`\n\n'
+              f'Framebuffer scanout passed: `{bool(linux and linux.get("passed"))}`\n'
+          )
+          print(json.dumps({'classification': classification}, indent=2))
+          PY
+
+      - name: Upload reference evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-reference-${{ github.run_attempt }}
+          path: |
+            VC4_LINUX_REFERENCE_STATUS.json
+            VC4_LINUX_REFERENCE_STATUS.md
+            /tmp/vc4-reference-configure.log
+            /tmp/vc4-reference-build.log
+            /tmp/vc4-reference-official/SHA256SUMS
+            /tmp/vc4-reference-bare
+            /tmp/vc4-reference-linux
+            build/vc4-linux-initramfs/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the exact reference result
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            VC4_LINUX_REFERENCE_STATUS.json \
+            VC4_LINUX_REFERENCE_STATUS.md
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No reference frontier change to publish"
+            exit 0
+          fi
+          git commit -m "ci/vc4: record Linux reference frontier [skip ci]"
+          git pull --rebase origin agent/vc4-linux-reference-control
+          git push origin HEAD:agent/vc4-linux-reference-control
