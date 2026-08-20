@@ -1,0 +1,103 @@
+name: Fix VC4 deterministic-time classifier
+
+on:
+  push:
+    branches:
+      - agent/vc4-deterministic-time-linux
+    paths:
+      - .github/workflows/vc4-fix-deterministic-classifier.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  repair-and-dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-deterministic-time-linux
+          fetch-depth: 0
+
+      - name: Repair classifier and enable stale-run cancellation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/vc4-deterministic-time-linux.yml')
+          text = path.read_text()
+          old = """  cancel-in-progress: false
+"""
+          new = """  cancel-in-progress: true
+"""
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('concurrency cancellation anchor missing')
+
+          old = """          selected_text = (
+              (root / 'selected-shift.txt').read_text().strip()
+              if (root / 'selected-shift.txt' else '')
+          )
+"""
+          new = """          selected_path = root / 'selected-shift.txt'
+          selected_text = (
+              selected_path.read_text().strip()
+              if selected_path.is_file() else ''
+          )
+"""
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('selected-shift classifier anchor missing')
+          path.write_text(text)
+          PY
+          git diff --check
+
+      - name: Publish repaired workflow
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -- .github/workflows/vc4-fix-deterministic-classifier.yml
+          git add -- .github/workflows/vc4-deterministic-time-linux.yml
+          git diff --cached --check
+          git commit -m "ci/vc4: repair deterministic frontier classifier"
+          git pull --rebase origin agent/vc4-deterministic-time-linux
+          git push origin HEAD:agent/vc4-deterministic-time-linux
+
+      - name: Dispatch corrected matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['REPOSITORY']}/"
+              "actions/workflows/vc4-deterministic-time-linux.yml/dispatches",
+              data=json.dumps({
+                  'ref': 'agent/vc4-deterministic-time-linux',
+              }).encode('utf-8'),
+              headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
+                  'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'vc4-deterministic-classifier-repair',
+              },
+              method='POST',
+          )
+          with urllib.request.urlopen(request, timeout=60) as response:
+              if response.status != 204:
+                  raise SystemExit(f'unexpected dispatch status {response.status}')
+          PY
