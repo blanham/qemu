@@ -30,6 +30,12 @@ chmod 0755 "$out_dir/root/init"
 gzip -n -9 -c "$out_dir/initramfs.cpio" \
     > "$out_dir/initramfs.cpio.gz"
 
+test -x "$out_dir/root/init"
+test -s "$out_dir/initramfs.cpio"
+test -s "$out_dir/initramfs.cpio.gz"
+gzip -t "$out_dir/initramfs.cpio.gz"
+cpio --quiet -it < "$out_dir/initramfs.cpio" | grep -qx './init'
+
 sha256sum \
     "$out_dir/root/init" \
     "$out_dir/initramfs.cpio" \
@@ -37,3 +43,4 @@ sha256sum \
     > "$out_dir/SHA256SUMS"
 
 printf 'Built VC4 Linux initramfs at %s\n' "$out_dir"
+cat "$out_dir/SHA256SUMS"
