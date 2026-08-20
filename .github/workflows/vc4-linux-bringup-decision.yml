@@ -1,0 +1,217 @@
+name: VC4 Linux bring-up decision
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-linux-bringup-decision.yml
+      - VC4_DIRECT_LINUX_CONTROL_STATUS.json
+      - VC4_DIRECT_LINUX_DIAGNOSTIC_STATUS.json
+      - VC4_DIRECT_LINUX_DUAL_UART_STATUS.json
+      - VC4_DIRECT_ARM_LINUX_ENTRY_MATRIX.json
+      - VC4_LINUX_ENTRY_NORMALIZER_STATUS.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-bringup-decision
+  cancel-in-progress: true
+
+jobs:
+  decide:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Reduce all independent witnesses
+        id: reduce
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          paths = [
+              Path('VC4_DIRECT_LINUX_CONTROL_STATUS.json'),
+              Path('VC4_DIRECT_LINUX_DIAGNOSTIC_STATUS.json'),
+              Path('VC4_DIRECT_LINUX_DUAL_UART_STATUS.json'),
+              Path('VC4_DIRECT_ARM_LINUX_ENTRY_MATRIX.json'),
+              Path('VC4_LINUX_ENTRY_NORMALIZER_STATUS.json'),
+          ]
+          documents = {}
+          for path in paths:
+              if path.is_file():
+                  try:
+                      documents[path.name] = json.loads(path.read_text())
+                  except Exception as exc:
+                      documents[path.name] = {
+                          'parse_error': f'{type(exc).__name__}: {exc}'
+                      }
+
+          blobs = []
+          def walk(value):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      if key in {
+                          'serial_tail', 'pl011_tail', 'aux_tail',
+                          'direct_serial', 'stderr_tail'
+                      }:
+                          if isinstance(child, list):
+                              blobs.extend(str(line) for line in child)
+                          elif isinstance(child, str):
+                              blobs.append(child)
+                      walk(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      walk(child)
+          walk(documents)
+          transcript = '\n'.join(blobs)
+
+          def any_true(*keys):
+              found = False
+              def visit(value):
+                  nonlocal found
+                  if found:
+                      return
+                  if isinstance(value, dict):
+                      for key, child in value.items():
+                          if key in keys and child is True:
+                              found = True
+                              return
+                          visit(child)
+                  elif isinstance(value, list):
+                      for child in value:
+                          visit(child)
+              visit(documents)
+              return found
+
+          direct_arm = any_true('direct_arm_entry_seen') or \
+                       'VC4_ARM_DIRECT_ENTRY' in transcript
+          trampoline = any_true(
+              'linux_jump_marker_seen', 'normalizer_start_seen'
+          ) or 'VC4_ARM_LINUX_JUMP' in transcript or \
+               'VC4_ARM_NORMALIZER_START' in transcript
+          normalized_jump = any_true('normalizer_jump_seen') or \
+                            'VC4_ARM_NORMALIZER_JUMP' in transcript
+          linux = any_true(
+              'linux_version_seen', 'combined_linux_version_seen',
+              'pl011_linux_version_seen', 'aux_linux_version_seen'
+          ) or 'Linux version ' in transcript
+          init_seen = any_true('init_seen', 'combined_init_seen') or \
+                      'VC4_LINUX_INIT_START' in transcript
+          fb_marker = any_true(
+              'framebuffer_marker_seen',
+              'combined_framebuffer_marker_seen'
+          ) or 'VC4_LINUX_FB_OK' in transcript
+          scanout = any_true('scanout_passed')
+          fb_open_failure = 'VC4_LINUX_FB_FAIL stage=open' in transcript
+          fb_paint_failure = 'VC4_LINUX_FB_FAIL stage=paint' in transcript
+
+          if scanout and fb_marker and init_seen and linux:
+              next_action = 'direct-linux-framebuffer-validated'
+              branch = 'agent/vc4-linux-framebuffer-bringup'
+          elif fb_marker:
+              next_action = 'fix-qemu-framebuffer-scanout'
+              branch = 'agent/vc4-linux-scanout-fix'
+          elif init_seen and fb_open_failure:
+              next_action = 'provide-linux-framebuffer-device'
+              branch = 'agent/vc4-linux-fb-device-fix'
+          elif init_seen and fb_paint_failure:
+              next_action = 'fix-linux-framebuffer-mapping'
+              branch = 'agent/vc4-linux-fb-mapping-fix'
+          elif init_seen:
+              next_action = 'diagnose-linux-framebuffer-registration'
+              branch = 'agent/vc4-linux-fb-registration'
+          elif linux:
+              next_action = 'fix-linux-initramfs-handoff'
+              branch = 'agent/vc4-linux-initramfs-fix'
+          elif normalized_jump or trampoline:
+              next_action = 'fix-linux-image-entry-or-boot-protocol'
+              branch = 'agent/vc4-linux-image-entry-fix'
+          elif direct_arm:
+              next_action = 'fix-linux-trampoline-or-loader'
+              branch = 'agent/vc4-linux-loader-fix'
+          else:
+              next_action = 'fix-direct-arm-release-control'
+              branch = 'agent/vc4-direct-arm-release-fix'
+
+          decision = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'next_action': next_action,
+              'continuation_branch': branch,
+              'evidence': {
+                  'direct_arm_entry_seen': direct_arm,
+                  'trampoline_entry_seen': trampoline,
+                  'normalized_linux_jump_seen': normalized_jump,
+                  'linux_version_seen': linux,
+                  'init_seen': init_seen,
+                  'framebuffer_marker_seen': fb_marker,
+                  'scanout_passed': scanout,
+                  'framebuffer_open_failure_seen': fb_open_failure,
+                  'framebuffer_paint_failure_seen': fb_paint_failure,
+              },
+              'source_documents': documents,
+          }
+          Path('VC4_LINUX_BRINGUP_DECISION.json').write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + '\n'
+          )
+          lines = [
+              '# VC4 Linux bring-up decision',
+              '',
+              f'Next action: **`{next_action}`**',
+              '',
+              f'Continuation branch: `{branch}`',
+              '',
+              '| Boundary | Reached |',
+              '|---|---:|',
+          ]
+          for key, value in decision['evidence'].items():
+              lines.append(f'| `{key}` | `{value}` |')
+          Path('VC4_LINUX_BRINGUP_DECISION.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps({
+              'next_action': next_action,
+              'continuation_branch': branch,
+              'evidence': decision['evidence'],
+          }, indent=2))
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'next_action={next_action}\n')
+              output.write(f'branch={branch}\n')
+          PY
+
+      - name: Publish consolidated decision
+        env:
+          NEXT_ACTION: ${{ steps.reduce.outputs.next_action }}
+          CONTINUATION_BRANCH: ${{ steps.reduce.outputs.branch }}
+        run: |
+          set -euo pipefail
+          cp VC4_LINUX_BRINGUP_DECISION.json /tmp/linux-decision.json
+          cp VC4_LINUX_BRINGUP_DECISION.md /tmp/linux-decision.md
+          git reset --hard "$GITHUB_SHA"
+          cp /tmp/linux-decision.json VC4_LINUX_BRINGUP_DECISION.json
+          cp /tmp/linux-decision.md VC4_LINUX_BRINGUP_DECISION.md
+          git rm .github/workflows/vc4-linux-bringup-decision.yml
+          git add \
+            VC4_LINUX_BRINGUP_DECISION.json \
+            VC4_LINUX_BRINGUP_DECISION.md
+          git diff --cached --check
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m "ci/vc4: select ${NEXT_ACTION} [skip ci]"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
+          git push --force-with-lease \
+            origin HEAD:"$CONTINUATION_BRANCH"
