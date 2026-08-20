@@ -1,0 +1,280 @@
+name: VC4 current stock-bootcode flow frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode-flow-current
+    paths:
+      - .github/workflows/vc4-stock-bootcode-flow-current.yml
+      - scripts/vc4/bootcode-flow-trace-fixup.py
+      - scripts/vc4/stock-probe-log-fixup.py
+      - scripts/vc4/summarize-bootcode-flow.py
+      - scripts/vc4/raspi3-stock-bootcode-state.py
+      - scripts/vc4/raspi3-stock-bootcode-0200.py
+      - target/vc4/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-bootcode-flow-current
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OUT_DIR: /tmp/vc4-current-boot-flow
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize bounded diagnostic tracing
+        id: materialize
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/bootcode-flow-trace-fixup.py \
+            scripts/vc4/stock-probe-log-fixup.py \
+            scripts/vc4/summarize-bootcode-flow.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py
+          python3 scripts/vc4/summarize-bootcode-flow.py --selftest
+          python3 scripts/vc4/bootcode-flow-trace-fixup.py
+          python3 scripts/vc4/stock-probe-log-fixup.py
+          first="$(sha256sum \
+            target/vc4/helper.h \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c \
+            scripts/vc4/raspi3-stock-bootcode-state.py)"
+          python3 scripts/vc4/bootcode-flow-trace-fixup.py
+          python3 scripts/vc4/stock-probe-log-fixup.py
+          second="$(sha256sum \
+            target/vc4/helper.h \
+            target/vc4/op_helper.c \
+            target/vc4/translate.c \
+            scripts/vc4/raspi3-stock-bootcode-state.py)"
+          test "$first" = "$second"
+          grep -q VC4_BOOT_FLOW_TRACE target/vc4/helper.h
+          grep -q VC4_BOOT_FLOW_TRACE target/vc4/op_helper.c
+          grep -q VC4_BOOT_FLOW_TRACE target/vc4/translate.c
+          grep -q VC4_RAW_QEMU_LOG_EXPORT \
+            scripts/vc4/raspi3-stock-bootcode-state.py
+          git diff --check
+
+      - name: Download pinned official firmware
+        id: firmware
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 5 \
+              --output "$OUT_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OUT_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$OUT_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$OUT_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Configure and build both linked frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$OUT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$OUT_DIR/build.log"
+
+      - name: Preserve focused architectural regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$OUT_DIR/preg-smoke.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$OUT_DIR/msync-smoke.log"
+
+      - name: Trace completed delay/retry generations
+        id: probe
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            "$OUT_DIR/bootcode.bin" \
+            --start-elf "$OUT_DIR/start.elf" \
+            --fixup-dat "$OUT_DIR/fixup.dat" \
+            --seconds 30 \
+            --qemu-log "$OUT_DIR/qemu.stderr.log" \
+            --barrier-is-success \
+            2>&1 | tee "$OUT_DIR/probe.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > "$OUT_DIR/probe.status"
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+
+          if test -s "$OUT_DIR/qemu.stderr.log"; then
+            set +e
+            python3 scripts/vc4/summarize-bootcode-flow.py \
+              --raw-output "$OUT_DIR/raw-flow.log" \
+              "$OUT_DIR/qemu.stderr.log" \
+              2>&1 | tee "$OUT_DIR/summary.log"
+            summary_rc=${PIPESTATUS[0]}
+            python3 scripts/vc4/summarize-bootcode-flow.py \
+              --require-all-callers \
+              "$OUT_DIR/qemu.stderr.log" \
+              > "$OUT_DIR/all-callers.log" 2>&1
+            all_callers_rc=$?
+            set -e
+          else
+            summary_rc=2
+            all_callers_rc=2
+            printf '%s\n' 'complete QEMU log was not produced' \
+              > "$OUT_DIR/summary.log"
+          fi
+          printf '%s\n' "$summary_rc" > "$OUT_DIR/summary.status"
+          printf '%s\n' "$all_callers_rc" > "$OUT_DIR/all-callers.status"
+          echo "summary_return_code=$summary_rc" >> "$GITHUB_OUTPUT"
+          echo "all_callers_return_code=$all_callers_rc" >> "$GITHUB_OUTPUT"
+
+      - name: Record exact current frontier
+        id: record
+        if: always()
+        env:
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          MATERIALIZE_OUTCOME: ${{ steps.materialize.outcome }}
+          FIRMWARE_OUTCOME: ${{ steps.firmware.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PROBE_RETURN_CODE: ${{ steps.probe.outputs.return_code }}
+          SUMMARY_RETURN_CODE: ${{ steps.probe.outputs.summary_return_code }}
+          ALL_CALLERS_RETURN_CODE: ${{ steps.probe.outputs.all_callers_return_code }}
+        run: |
+          python3 - <<'PY'
+          from collections import Counter
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+          import re
+
+          out = Path(os.environ['OUT_DIR'])
+          raw = (out / 'raw-flow.log').read_text(
+              encoding='utf-8', errors='replace'
+          ) if (out / 'raw-flow.log').is_file() else ''
+          summary = (out / 'summary.log').read_text(
+              encoding='utf-8', errors='replace'
+          ) if (out / 'summary.log').is_file() else ''
+          records = []
+          for line in raw.splitlines():
+              fields = dict(re.findall(
+                  r'([a-zA-Z][a-zA-Z0-9-]*)=([^ ]+)', line
+              ))
+              if fields:
+                  records.append(fields)
+          callers = Counter(record.get('caller') for record in records)
+          events = Counter(record.get('event') for record in records)
+          outcomes = {
+              key.removesuffix('_OUTCOME').lower(): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'outcomes': outcomes,
+              'probe_return_code': os.environ.get('PROBE_RETURN_CODE'),
+              'summary_return_code': os.environ.get(
+                  'SUMMARY_RETURN_CODE'),
+              'all_callers_return_code': os.environ.get(
+                  'ALL_CALLERS_RETURN_CODE'),
+              'record_count': len(records),
+              'callers': dict(sorted(callers.items())),
+              'events': dict(sorted(events.items())),
+              'summary': summary.splitlines(),
+          }
+          Path('VC4_STOCK_BOOT_FLOW_CURRENT.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          lines = [
+              '# Current VC4 stock-bootcode flow frontier',
+              '',
+              f'- Source commit: `{os.environ["GITHUB_SHA"]}`',
+              f'- Workflow run: `{os.environ["GITHUB_RUN_ID"]}`',
+              f'- Trace records: `{len(records)}`',
+              f'- Delay callers observed: `{dict(sorted(callers.items()))}`',
+              f'- Event counts: `{dict(sorted(events.items()))}`',
+              '',
+              '## Bounded retry-flow summary',
+              '',
+              '```text',
+              summary.rstrip() or 'No summary was produced.',
+              '```',
+          ]
+          Path('VC4_STOCK_BOOT_FLOW_CURRENT.md').write_text(
+              '\n'.join(lines) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+          git diff --check
+
+      - name: Upload complete trace evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-bootcode-flow-current-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-current-boot-flow
+            VC4_STOCK_BOOT_FLOW_CURRENT.json
+            VC4_STOCK_BOOT_FLOW_CURRENT.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish summary without diagnostic target changes
+        if: always()
+        run: |
+          set -euo pipefail
+          cp VC4_STOCK_BOOT_FLOW_CURRENT.json /tmp/flow-status.json
+          cp VC4_STOCK_BOOT_FLOW_CURRENT.md /tmp/flow-status.md
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          cp /tmp/flow-status.json VC4_STOCK_BOOT_FLOW_CURRENT.json
+          cp /tmp/flow-status.md VC4_STOCK_BOOT_FLOW_CURRENT.md
+          git rm -- .github/workflows/vc4-stock-bootcode-flow-current.yml
+          git add -- \
+            VC4_STOCK_BOOT_FLOW_CURRENT.json \
+            VC4_STOCK_BOOT_FLOW_CURRENT.md
+          git diff --cached --check
+          git config user.name "VC4 Flow Trace CI"
+          git config user.email "vc4-flow-trace-ci@users.noreply.github.com"
+          git commit -m 'ci/vc4: record current stock bootcode retry flow [skip ci]'
+          git pull --rebase origin agent/vc4-stock-bootcode-flow-current
+          git push origin HEAD:agent/vc4-stock-bootcode-flow-current
