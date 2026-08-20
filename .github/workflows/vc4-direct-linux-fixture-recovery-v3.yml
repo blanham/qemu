@@ -1,0 +1,91 @@
+name: VC4 direct Linux fixture recovery v3
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-fixture-recovery-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-fixture-recovery-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Canonicalize the builder argument before any directory change
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/build-linux-initramfs.sh')
+          text = path.read_text(encoding='utf-8')
+          marker = '# VC4_ABSOLUTE_ARGV1'
+          if marker not in text:
+              anchor = 'set -euo pipefail\n'
+              if anchor not in text:
+                  raise SystemExit('strict-shell anchor missing')
+              block = (
+                  anchor
+                  + '\n'
+                  + marker + '\n'
+                  + 'case "${1:-}" in\n'
+                  + '    /*) ;;\n'
+                  + '    "") set -- "$PWD/build/vc4-linux-initramfs" ;;\n'
+                  + '    *) set -- "$PWD/$1" ;;\n'
+                  + 'esac\n'
+              )
+              text = text.replace(anchor, block, 1)
+              path.write_text(text, encoding='utf-8')
+
+          workflow = Path('.github/workflows/vc4-hetero-direct-linux.yml')
+          if workflow.is_file():
+              workflow_text = workflow.read_text(encoding='utf-8')
+              absolute = '$GITHUB_WORKSPACE/build/vc4-linux-initramfs'
+              if absolute not in workflow_text:
+                  needle = '  build/vc4-linux-initramfs'
+                  if needle not in workflow_text:
+                      raise SystemExit('workflow fixture argument missing')
+                  workflow_text = workflow_text.replace(
+                      needle,
+                      '  "$GITHUB_WORKSPACE/build/vc4-linux-initramfs"',
+                      1,
+                  )
+                  workflow.write_text(workflow_text, encoding='utf-8')
+          PY
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          grep -q 'VC4_ABSOLUTE_ARGV1' scripts/vc4/build-linux-initramfs.sh
+          git diff --check
+
+      - name: Publish and remove recovery scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-direct-linux-fixture-recovery.yml \
+            .github/workflows/vc4-direct-linux-fixture-recovery-v2.yml \
+            .github/workflows/vc4-direct-linux-fixture-recovery-v3.yml
+          git add scripts/vc4/build-linux-initramfs.sh
+          if test -f .github/workflows/vc4-hetero-direct-linux.yml; then
+            git add .github/workflows/vc4-hetero-direct-linux.yml
+          fi
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "tests/vc4: stabilize initramfs output directory"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
