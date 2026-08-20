@@ -1,0 +1,23 @@
+{
+  "arm_payload_signature_seen": false,
+  "classification": "stock-mmio-ring-empty",
+  "final_accesses": [],
+  "generated_at": "2026-08-20T11:20:48.831748+00:00",
+  "outcomes": {
+    "build": "failure",
+    "firmware": "success",
+    "probe": "skipped",
+    "regressions": "skipped"
+  },
+  "plugin_lines_tail": [],
+  "qemu_diagnostics_tail": [],
+  "run_id": "32362881181",
+  "schema_version": 1,
+  "source_result": {},
+  "source_sha": "a3650816a315622de1d5729412c256454394f42b",
+  "top_io_accesses": [],
+  "top_pcs": [],
+  "total_ring_accesses": 0,
+  "vc4_cpu_indices": [],
+  "vpu_ring_accesses": 0
+}
