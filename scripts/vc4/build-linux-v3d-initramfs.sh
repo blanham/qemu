@@ -42,8 +42,9 @@ chmod 0755 "$out_dir/root/init"
 strings "$out_dir/root/init" > "$out_dir/STRINGS"
 for marker in \
     VC4_LINUX_DRM_PROBE_START \
-    VC4_LINUX_DRM_CARD0_OK \
-    VC4_LINUX_DRM_RENDER128_OK \
+    'VC4_LINUX_DRM_%s_OK' \
+    CARD0 \
+    RENDER128 \
     VC4_LINUX_DRM_UAPI_START \
     VC4_LINUX_DRM_IDENT_OK \
     VC4_LINUX_DRM_BO_OK \
