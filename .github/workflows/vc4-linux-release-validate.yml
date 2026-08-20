@@ -1,0 +1,135 @@
+name: VC4 Linux framebuffer release validation
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-framebuffer-release
+    paths:
+      - .github/workflows/vc4-linux-release-validate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-framebuffer-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio \
+            gcc-aarch64-linux-gnu \
+            gzip \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Validate source and deterministic fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/vc4/*.py
+          bash -n scripts/vc4/build-arm-framebuffer-smoke.sh
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          rm -rf build/vc4-arm-framebuffer build/vc4-linux-initramfs
+          bash scripts/vc4/build-arm-framebuffer-smoke.sh \
+            build/vc4-arm-framebuffer
+          bash scripts/vc4/build-linux-initramfs.sh \
+            build/vc4-linux-initramfs
+          test -s build/vc4-arm-framebuffer/kernel8.img
+          test -s build/vc4-linux-initramfs/initramfs.cpio
+          test -s build/vc4-linux-initramfs/SHA256SUMS
+          git diff --check
+
+      - name: Build both frontends
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror \
+            2>&1 | tee /tmp/vc4-linux-release-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-linux-release-build.log
+
+      - name: Run retained VC4 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-linux-release-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-linux-release-msync.log
+
+      - name: Reconfirm the promoted evidence record
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          status = json.loads(
+              Path('VC4_HETERO_DIRECT_LINUX_STATUS.json').read_text()
+          )
+          bare = status.get('bare') or {}
+          linux = status.get('linux') or {}
+          checks = {
+              'bare framebuffer': bool(bare.get('passed')),
+              'Linux version': bool(linux.get('linux_version_seen')),
+              'Linux init': bool(linux.get('init_seen')),
+              'Linux framebuffer': bool(linux.get('passed')),
+          }
+          failed = [name for name, passed in checks.items() if not passed]
+          if failed:
+              raise SystemExit('promoted evidence regressed: ' + ', '.join(failed))
+          print(json.dumps(checks, indent=2))
+          PY
+
+      - name: Reconcile with the ARM-payload stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          validated=$(git rev-parse HEAD)
+          git fetch origin agent/vc4-arm-payload-stage-repair
+          git checkout -B agent/vc4-linux-framebuffer-stage-reconcile \
+            origin/agent/vc4-arm-payload-stage-repair
+          git merge --no-ff --no-edit "$validated"
+          git diff --check origin/agent/vc4-arm-payload-stage-repair...HEAD
+          git push --force-with-lease \
+            origin HEAD:refs/heads/agent/vc4-linux-framebuffer-stage-reconcile
+
+      - name: Remove the one-shot workflow from the release branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout agent/vc4-linux-framebuffer-release
+          git reset --hard "$GITHUB_SHA"
+          git rm .github/workflows/vc4-linux-release-validate.yml
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m 'ci/vc4: retire Linux release validation [skip ci]'
+          git pull --rebase origin agent/vc4-linux-framebuffer-release
+          git push origin HEAD:agent/vc4-linux-framebuffer-release
