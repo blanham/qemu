@@ -1,0 +1,25 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    /*
+     * Enable only the DRM master and V3D component.  Display pipeline nodes
+     * remain in their base-DTB state so this variant isolates render-node
+     * registration from HVS, pixel-valve, HDMI, and firmware-KMS behavior.
+     */
+    fragment@0 {
+        target = <&v3d>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@1 {
+        target = <&vc4>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+};
