@@ -1,0 +1,97 @@
+name: VC4 direct Linux proof promotion v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-promote-v2.yml
+      - VC4_HETERO_DIRECT_LINUX_STATUS.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-proof-promotion-v2
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Require final bare-metal and Linux scanout results
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          status_path = Path("VC4_HETERO_DIRECT_LINUX_STATUS.json")
+          status = json.loads(status_path.read_text(encoding="utf-8"))
+          bare = status.get("bare") or {}
+          linux = status.get("linux") or {}
+          if not bare.get("passed"):
+              raise SystemExit("bare-metal framebuffer control did not pass")
+          if not linux.get("passed"):
+              raise SystemExit("Linux framebuffer/scanout control did not pass")
+
+          Path("VC4_LINUX_FRAMEBUFFER_DIRECT_PROOF.md").write_text(
+              "# VC4 heterogeneous Linux/framebuffer control proof\n\n"
+              f"Source commit: `{status.get('source_sha', 'unknown')}`\n\n"
+              f"Workflow run: `{status.get('run_id', 'unknown')}`\n\n"
+              f"Classification: `{status.get('classification', 'unknown')}`\n\n"
+              "The final bare-metal and Linux host probes both passed. "
+              "Those probes jointly require property-mailbox completion, "
+              "guest framebuffer-RAM samples, and matching QMP display "
+              "scanout. The Linux probe additionally requires the pinned "
+              "kernel to reach the deterministic `/init` and paint `/dev/fb0`.\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Publish proof and stable control branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/vc4-direct-linux-promote.yml \
+            .github/workflows/vc4-direct-linux-promote-v2.yml
+          git add -A
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "tests/vc4: record Linux framebuffer control proof"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
+          git push --force-with-lease \
+            origin HEAD:agent/vc4-linux-framebuffer-bringup
+
+      - name: Trigger stock-firmware continuation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin agent/vc4-deterministic-time-linux
+          git switch -C agent/vc4-deterministic-time-linux \
+            origin/agent/vc4-deterministic-time-linux
+          workflow=$(grep -l -E \
+            'deterministic.*(Linux|linux)|(Linux|linux).*deterministic' \
+            .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null \
+            | head -n 1 || true)
+          if [ -z "$workflow" ]; then
+            echo "No deterministic-time Linux workflow was found" >&2
+            exit 1
+          fi
+          printf '\n# Direct Linux/framebuffer proof: %s\n' \
+            "${GITHUB_SHA}" >> "$workflow"
+          git add "$workflow"
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "ci/vc4: resume stock Linux after control proof"
+          git push origin HEAD:agent/vc4-deterministic-time-linux
