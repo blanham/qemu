@@ -39,6 +39,10 @@ for marker in \
     VC4_LINUX_DRM_PROBE_START \
     VC4_LINUX_DRM_CARD0_OK \
     VC4_LINUX_DRM_RENDER128_OK \
+    VC4_LINUX_DRM_UAPI_START \
+    VC4_LINUX_DRM_IDENT_OK \
+    VC4_LINUX_DRM_BO_OK \
+    VC4_LINUX_DRM_UAPI_OK \
     VC4_LINUX_V3D_DRIVER_OK; do
     strings "$out_dir/root/init" | grep -Fq "$marker"
 done
