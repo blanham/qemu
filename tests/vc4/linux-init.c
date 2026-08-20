@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fb.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,28 +15,71 @@
 #include <time.h>
 #include <unistd.h>
 
-static void marker(const char *text)
+static int write_all(int fd, const char *text, size_t length)
 {
-    size_t length = strlen(text);
-
     while (length != 0) {
-        ssize_t written = write(STDOUT_FILENO, text, length);
+        ssize_t written = write(fd, text, length);
 
         if (written < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            return;
+            return -1;
         }
         text += written;
         length -= written;
     }
+    return 0;
+}
+
+static void marker(const char *text)
+{
+    size_t length = strlen(text);
+    int saved_errno = errno;
+
+    if (write_all(STDOUT_FILENO, text, length) < 0) {
+        int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+
+        if (fd >= 0) {
+            (void)write_all(fd, text, length);
+            close(fd);
+        }
+    }
+    errno = saved_errno;
+}
+
+static void report(const char *format, ...)
+{
+    char buffer[256];
+    va_list arguments;
+    int length;
+
+    va_start(arguments, format);
+    length = vsnprintf(buffer, sizeof(buffer), format, arguments);
+    va_end(arguments);
+
+    if (length <= 0) {
+        return;
+    }
+    marker(buffer);
 }
 
 static void reopen_console(void)
 {
-    int fd = open("/dev/console", O_RDWR | O_CLOEXEC);
+    static const char *const candidates[] = {
+        "/dev/console",
+        "/dev/ttyAMA1",
+        "/dev/ttyAMA0",
+    };
+    int fd = -1;
 
+    for (unsigned index = 0;
+         index < sizeof(candidates) / sizeof(candidates[0]); index++) {
+        fd = open(candidates[index], O_RDWR | O_CLOEXEC);
+        if (fd >= 0) {
+            break;
+        }
+    }
     if (fd < 0) {
         return;
     }
@@ -161,10 +205,9 @@ static int paint_framebuffer(int fd)
     (void)msync((void *)framebuffer, map_size, MS_SYNC);
     (void)ioctl(fd, FBIOPAN_DISPLAY, &var);
 
-    dprintf(STDOUT_FILENO,
-            "VC4_LINUX_FB_OK xres=%u yres=%u bpp=%u pitch=%u bytes=%u\n",
-            width, height, var.bits_per_pixel, fix.line_length,
-            fix.smem_len);
+    report("VC4_LINUX_FB_OK xres=%u yres=%u bpp=%u pitch=%u bytes=%u\n",
+           width, height, var.bits_per_pixel, fix.line_length,
+           fix.smem_len);
     (void)munmap((void *)framebuffer, map_size);
     return 0;
 }
@@ -207,12 +250,12 @@ int main(void)
 
     framebuffer = open_framebuffer();
     if (framebuffer < 0) {
-        dprintf(STDOUT_FILENO, "VC4_LINUX_FB_MISSING errno=%d (%s)\n",
-                errno, strerror(errno));
+        report("VC4_LINUX_FB_MISSING errno=%d (%s)\n",
+               errno, strerror(errno));
     } else {
         if (paint_framebuffer(framebuffer) < 0) {
-            dprintf(STDOUT_FILENO, "VC4_LINUX_FB_FAILED errno=%d (%s)\n",
-                    errno, strerror(errno));
+            report("VC4_LINUX_FB_FAILED errno=%d (%s)\n",
+                   errno, strerror(errno));
         }
         close(framebuffer);
     }
