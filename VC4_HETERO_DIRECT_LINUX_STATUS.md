@@ -1,10 +1,10 @@
 # VC4 heterogeneous direct Linux frontier
 
-Classification: **`hetero-direct-fixtures-failed`**
+Classification: **`hetero-linux-early-boot`**
 
-Bare framebuffer passed: `False`
+Bare framebuffer passed: `True`
 
-Linux version seen: `False`
+Linux version seen: `True`
 
 Init seen: `False`
 

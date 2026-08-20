@@ -271,7 +271,10 @@ def build_command(args: argparse.Namespace, temp: Path,
     command = [str(args.qemu.resolve())]
 
     if args.mode in {"bare-direct", "linux-direct"}:
-        command.extend(["-M", "raspi3b", "-m", "1G", "-smp", "4"])
+        command.extend([
+            "-M", "raspi3b-vc4-hetero,direct-arm-kernel=on",
+            "-m", "1G", "-smp", "5",
+        ])
         command.extend(["-kernel", str(args.kernel.resolve())])
         if args.mode == "linux-direct":
             assert args.dtb is not None and args.initrd is not None
