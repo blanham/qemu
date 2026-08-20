@@ -1,0 +1,320 @@
+{
+  "observed_at": "2026-08-20T04:11:17.392768+00:00",
+  "schema_version": 1,
+  "targets": {
+    "deterministic": {
+      "branch": "agent/vc4-deterministic-time-linux",
+      "runs": [
+        {
+          "conclusion": null,
+          "created_at": "2026-08-20T04:02:33Z",
+          "event": "push",
+          "head_branch": "agent/vc4-deterministic-time-linux",
+          "head_sha": "4c25039234ed608118aaf38bb00914d91a115358",
+          "html_url": "https://github.com/blanham/qemu/actions/runs/32330404423",
+          "id": 32330404423,
+          "jobs": [
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "html_url": "https://github.com/blanham/qemu/actions/runs/32330404423/job/96309803724",
+              "id": 96309803724,
+              "name": "build-probe-publish",
+              "started_at": "2026-08-20T04:02:36Z",
+              "status": "in_progress",
+              "steps": [
+                {
+                  "completed_at": "2026-08-20T04:02:37Z",
+                  "conclusion": "success",
+                  "name": "Set up job",
+                  "number": 1,
+                  "started_at": "2026-08-20T04:02:37Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:03:18Z",
+                  "conclusion": "success",
+                  "name": "Run actions/checkout@v5",
+                  "number": 2,
+                  "started_at": "2026-08-20T04:02:37Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:03:35Z",
+                  "conclusion": "success",
+                  "name": "Install build and probe dependencies",
+                  "number": 3,
+                  "started_at": "2026-08-20T04:03:18Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:03:35Z",
+                  "conclusion": "success",
+                  "name": "Materialize deterministic timing and validate harnesses",
+                  "number": 4,
+                  "started_at": "2026-08-20T04:03:35Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:03:42Z",
+                  "conclusion": "success",
+                  "name": "Build framebuffer and Linux userspace payloads",
+                  "number": 5,
+                  "started_at": "2026-08-20T04:03:35Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:08:14Z",
+                  "conclusion": "success",
+                  "name": "Configure and build both QEMU frontends",
+                  "number": 6,
+                  "started_at": "2026-08-20T04:03:42Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:08:16Z",
+                  "conclusion": "success",
+                  "name": "Run focused architectural regressions",
+                  "number": 7,
+                  "started_at": "2026-08-20T04:08:14Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:08:17Z",
+                  "conclusion": "success",
+                  "name": "Download one pinned firmware, kernel, and DTB set",
+                  "number": 8,
+                  "started_at": "2026-08-20T04:08:16Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:08:17Z",
+                  "conclusion": "success",
+                  "name": "Build the minimal AArch64 handoff witness",
+                  "number": 9,
+                  "started_at": "2026-08-20T04:08:17Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Select the least aggressive deterministic timing that hands off",
+                  "number": 10,
+                  "started_at": "2026-08-20T04:08:17Z",
+                  "status": "in_progress"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Prove bare-metal property framebuffer and QMP scanout",
+                  "number": 11,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Boot pinned Raspberry Pi Linux and paint /dev/fb0",
+                  "number": 12,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Classify the exact deterministic-time frontier",
+                  "number": 13,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Upload all deterministic-time evidence",
+                  "number": 14,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Publish materialized probes and evidence",
+                  "number": 15,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Post Run actions/checkout@v5",
+                  "number": 30,
+                  "started_at": null,
+                  "status": "pending"
+                }
+              ]
+            }
+          ],
+          "name": "VC4 deterministic-time Linux and framebuffer frontier",
+          "run_attempt": 1,
+          "run_number": 1,
+          "status": "in_progress",
+          "updated_at": "2026-08-20T04:02:37Z"
+        }
+      ],
+      "workflow": "vc4-deterministic-time-linux.yml"
+    },
+    "direct": {
+      "branch": "agent/vc4-hetero-direct-linux",
+      "runs": [
+        {
+          "conclusion": "failure",
+          "created_at": "2026-08-20T01:44:52Z",
+          "event": "push",
+          "head_branch": "agent/vc4-hetero-direct-linux",
+          "head_sha": "bf4d136ffbca85707ebc17cf297db75fc26c025a",
+          "html_url": "https://github.com/blanham/qemu/actions/runs/32322129685",
+          "id": 32322129685,
+          "jobs": [
+            {
+              "completed_at": "2026-08-20T01:50:21Z",
+              "conclusion": "failure",
+              "html_url": "https://github.com/blanham/qemu/actions/runs/32322129685/job/96286261928",
+              "id": 96286261928,
+              "name": "build-and-probe",
+              "started_at": "2026-08-20T01:44:55Z",
+              "status": "completed",
+              "steps": [
+                {
+                  "completed_at": "2026-08-20T01:44:57Z",
+                  "conclusion": "success",
+                  "name": "Set up job",
+                  "number": 1,
+                  "started_at": "2026-08-20T01:44:56Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:45:43Z",
+                  "conclusion": "success",
+                  "name": "Run actions/checkout@v5",
+                  "number": 2,
+                  "started_at": "2026-08-20T01:44:57Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:46:03Z",
+                  "conclusion": "success",
+                  "name": "Install dependencies",
+                  "number": 3,
+                  "started_at": "2026-08-20T01:45:43Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:46:03Z",
+                  "conclusion": "success",
+                  "name": "Materialize the heterogeneous direct-boot path",
+                  "number": 4,
+                  "started_at": "2026-08-20T01:46:03Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:46:04Z",
+                  "conclusion": "success",
+                  "name": "Download pinned official Linux artifacts",
+                  "number": 5,
+                  "started_at": "2026-08-20T01:46:03Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:14Z",
+                  "conclusion": "failure",
+                  "name": "Configure and build both frontends",
+                  "number": 6,
+                  "started_at": "2026-08-20T01:46:04Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:14Z",
+                  "conclusion": "skipped",
+                  "name": "Preserve VC4 architectural regressions",
+                  "number": 7,
+                  "started_at": "2026-08-20T01:50:14Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:14Z",
+                  "conclusion": "skipped",
+                  "name": "Build deterministic ARM and initramfs fixtures",
+                  "number": 8,
+                  "started_at": "2026-08-20T01:50:14Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:14Z",
+                  "conclusion": "skipped",
+                  "name": "Prove direct ARM mailbox and framebuffer behavior",
+                  "number": 9,
+                  "started_at": "2026-08-20T01:50:14Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:14Z",
+                  "conclusion": "skipped",
+                  "name": "Boot the pinned official Linux kernel on the heterogeneous machine",
+                  "number": 10,
+                  "started_at": "2026-08-20T01:50:14Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:14Z",
+                  "conclusion": "success",
+                  "name": "Record heterogeneous Linux frontier",
+                  "number": 11,
+                  "started_at": "2026-08-20T01:50:14Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:16Z",
+                  "conclusion": "success",
+                  "name": "Upload complete evidence",
+                  "number": 12,
+                  "started_at": "2026-08-20T01:50:14Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:18Z",
+                  "conclusion": "success",
+                  "name": "Publish validated direct mode or retain the exact failure",
+                  "number": 13,
+                  "started_at": "2026-08-20T01:50:16Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:18Z",
+                  "conclusion": "success",
+                  "name": "Post Run actions/checkout@v5",
+                  "number": 26,
+                  "started_at": "2026-08-20T01:50:18Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T01:50:18Z",
+                  "conclusion": "success",
+                  "name": "Complete job",
+                  "number": 27,
+                  "started_at": "2026-08-20T01:50:18Z",
+                  "status": "completed"
+                }
+              ]
+            }
+          ],
+          "name": "VC4 heterogeneous direct Linux control",
+          "run_attempt": 1,
+          "run_number": 1,
+          "status": "completed",
+          "updated_at": "2026-08-20T01:50:21Z"
+        }
+      ],
+      "workflow": "vc4-hetero-direct-linux.yml"
+    }
+  }
+}
