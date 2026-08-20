@@ -171,8 +171,11 @@ jobs:
       - name: Publish diagnostic record
         run: |
           set -euo pipefail
+          cp VC4_V3D_DIAGNOSTICS.json /tmp/VC4_V3D_DIAGNOSTICS.json
           git config user.name "VC4 CI"
           git config user.email "vc4-ci@users.noreply.github.com"
+          git reset --hard "$GITHUB_SHA"
+          cp /tmp/VC4_V3D_DIAGNOSTICS.json VC4_V3D_DIAGNOSTICS.json
           git rm -- .github/workflows/vc4-v3d-diagnostics.yml
           git add -- VC4_V3D_DIAGNOSTICS.json
           git diff --cached --check
