@@ -1,0 +1,17 @@
+{
+  "classification": "normalizer-not-entered",
+  "framebuffer_marker_seen": false,
+  "generated_at": "2026-08-20T12:09:44.552713+00:00",
+  "image_header": null,
+  "init_seen": false,
+  "linux_version_seen": false,
+  "normalizer_bad_el_seen": false,
+  "normalizer_jump_seen": false,
+  "normalizer_start_seen": false,
+  "probe_return_code": "",
+  "result": {},
+  "run_id": "32367299258",
+  "scanout_passed": false,
+  "schema_version": 1,
+  "source_sha": "60ba3779ecf1e999b463006d9a8de61c52b816ca"
+}
