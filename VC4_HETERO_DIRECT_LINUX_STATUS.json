@@ -1,20 +1,20 @@
 {
   "bare": null,
   "bare_return_code": "",
-  "classification": "hetero-direct-build-failed",
-  "generated_at": "2026-08-20T01:50:14.914690+00:00",
+  "classification": "hetero-direct-control-failed",
+  "generated_at": "2026-08-20T04:20:23.325195+00:00",
   "linux": null,
   "linux_return_code": "",
   "outcomes": {
     "artifacts": "success",
     "bare": "skipped",
-    "build": "failure",
-    "fixtures": "skipped",
+    "build": "success",
+    "fixtures": "failure",
     "linux": "skipped",
     "materialize": "success",
-    "regressions": "skipped"
+    "regressions": "success"
   },
-  "run_id": "32322129685",
+  "run_id": "32331090148",
   "schema_version": 1,
-  "source_sha": "bf4d136ffbca85707ebc17cf297db75fc26c025a"
+  "source_sha": "5de95afcea706aaf56cf7c089103109d0c38d8b1"
 }
