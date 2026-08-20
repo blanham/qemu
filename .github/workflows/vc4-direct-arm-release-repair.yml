@@ -1,0 +1,249 @@
+name: VC4 direct ARM CPU release repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-direct-arm-release-fix
+    paths:
+      - .github/workflows/vc4-direct-arm-release-repair.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-arm-release-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-official
+      OUT_DIR: /tmp/vc4-release-repair
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Confirm this is the selected boundary
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('VC4_LINUX_BRINGUP_DECISION_V2.json')
+          if not path.is_file():
+              print('missing')
+          else:
+              print(json.loads(path.read_text()).get('next_action', 'missing'))
+          PY
+          )
+          echo "selected=$selected" >>"$GITHUB_OUTPUT"
+          test "$selected" = fix-direct-arm-cpu-release
+
+      - name: Install dependencies
+        if: steps.guard.outputs.selected == 'fix-direct-arm-cpu-release'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu cpio curl file \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            linux-libc-dev-arm64-cross ninja-build pkg-config \
+            python3 python3-venv libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize and add a direct-mode CPU0 reset release
+        if: steps.guard.outputs.selected == 'fix-direct-arm-cpu-release'
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/hetero-direct-linux-integrate.py
+          python3 scripts/vc4/hetero-direct-linux-integrate.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('hw/arm/vc4_raspi3_hetero.c')
+          text = path.read_text(encoding='utf-8')
+          include_anchor = '#include "sysemu/runstate.h"\n'
+          if '#include "sysemu/cpus.h"' not in text:
+              if include_anchor in text:
+                  text = text.replace(
+                      include_anchor,
+                      include_anchor + '#include "sysemu/cpus.h"\n'
+                      '#include "sysemu/reset.h"\n',
+                      1,
+                  )
+              else:
+                  first_include = re.search(r'^(#include .*\n)', text, re.M)
+                  if not first_include:
+                      raise SystemExit('no include anchor in heterogeneous machine')
+                  text = (
+                      text[:first_include.end()] +
+                      '#include "sysemu/cpus.h"\n'
+                      '#include "sysemu/reset.h"\n' +
+                      text[first_include.end():]
+                  )
+
+          helper = '''
+static void vc4_direct_arm_release_reset(void *opaque)
+{
+    CPUState *cs = opaque;
+
+    cs->halted = 0;
+    qemu_cpu_kick(cs);
+}
+
+'''
+          if 'vc4_direct_arm_release_reset' not in text:
+              anchor = re.search(
+                  r'^static void vc4_raspi3_hetero_[A-Za-z0-9_]+\(',
+                  text,
+                  re.M,
+              )
+              if not anchor:
+                  raise SystemExit('could not locate heterogeneous machine helper anchor')
+              text = text[:anchor.start()] + helper + text[anchor.start():]
+
+          registration = '''
+        /*
+         * The normal heterogeneous path deliberately leaves the ARM cluster
+         * power-gated for VPU firmware.  Direct-control boot bypasses that
+         * firmware, so release CPU0 after arm_load_kernel() has installed its
+         * architectural reset state.  Registering here makes this callback
+         * later than the SoC/CPU reset handlers while leaving CPUs 1-3 off.
+         */
+        CPUState *arm0 = qemu_get_cpu(0);
+
+        g_assert(arm0 != NULL);
+        qemu_register_reset(vc4_direct_arm_release_reset, arm0);
+'''
+          if 'qemu_register_reset(vc4_direct_arm_release_reset' not in text:
+              matches = list(re.finditer(r'arm_load_kernel\s*\(', text))
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f'expected one arm_load_kernel call, found {len(matches)}'
+                  )
+              start = matches[0].start()
+              semicolon = text.find(';', matches[0].end())
+              if semicolon < 0:
+                  raise SystemExit('unterminated arm_load_kernel call')
+              insertion = semicolon + 1
+              text = text[:insertion] + registration + text[insertion:]
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+          grep -q 'qemu_register_reset(vc4_direct_arm_release_reset' \
+            hw/arm/vc4_raspi3_hetero.c
+
+      - name: Configure, build, and preserve regressions
+        if: steps.guard.outputs.selected == 'fix-direct-arm-cpu-release'
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-release-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-release-build.log
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-release-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-release-msync.log
+
+      - name: Re-run the paused direct ARM boundary
+        id: boundary
+        if: steps.guard.outputs.selected == 'fix-direct-arm-cpu-release'
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash scripts/vc4/build-direct-arm-entry.sh \
+            "$PWD/build/vc4-direct-arm-entry"
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          python3 scripts/vc4/direct-arm-boundary-probe.py \
+            build/qemu-system-aarch64 \
+            build/vc4-direct-arm-entry/direct-arm-entry.bin \
+            --serial-marker VC4_ARM_DIRECT_ENTRY \
+            --memory-marker 0x1000=0x5643345f44495245 \
+            --seconds 12 \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee "$OUT_DIR/probe.log"
+          rc=${PIPESTATUS[0]}
+          echo "return_code=$rc" >>"$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Require byte load, CPU execution, serial, and RAM witness
+        id: validate
+        if: steps.guard.outputs.selected == 'fix-direct-arm-cpu-release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          result = json.loads(Path(os.environ['OUT_DIR'], 'result.json').read_text())
+          load_ok = bool(result.get('load_checks')) and all(
+              item.get('matched') for item in result['load_checks']
+          )
+          memory_ok = bool(result.get('memory_marker_checks')) and all(
+              item.get('matched') for item in result['memory_marker_checks']
+          )
+          passed = load_ok and memory_ok and result.get('serial_marker_seen')
+          status = {
+              'schema_version': 1,
+              'passed': bool(passed),
+              'load_ok': load_ok,
+              'memory_ok': memory_ok,
+              'serial_ok': bool(result.get('serial_marker_seen')),
+              'result': result,
+          }
+          Path('VC4_DIRECT_ARM_RELEASE_REPAIR_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write('passed=' + ('true' if passed else 'false') + '\n')
+          if not passed:
+              raise SystemExit('direct ARM release repair did not cross the boundary')
+          PY
+
+      - name: Upload repair evidence
+        if: always() && steps.guard.outputs.selected == 'fix-direct-arm-cpu-release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-direct-arm-release-repair-${{ github.run_attempt }}
+          path: |
+            VC4_DIRECT_ARM_RELEASE_REPAIR_STATUS.json
+            /tmp/vc4-release-repair
+            /tmp/vc4-release-configure.log
+            /tmp/vc4-release-build.log
+            /tmp/vc4-release-preg.log
+            /tmp/vc4-release-msync.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish validated release repair
+        if: steps.validate.outputs.passed == 'true'
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/vc4-direct-arm-release-repair.yml
+          git add \
+            hw/arm/vc4_raspi3_hetero.c \
+            VC4_DIRECT_ARM_RELEASE_REPAIR_STATUS.json
+          git diff --cached --check
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m 'hw/arm: release CPU0 for direct heterogeneous boot'
+          git pull --rebase origin agent/vc4-direct-arm-release-fix
+          git push origin HEAD:agent/vc4-direct-arm-release-fix
+          git push --force-with-lease \
+            origin HEAD:agent/vc4-hetero-direct-linux
