@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: vc4-v3d-materialize-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-24.04
@@ -62,13 +66,15 @@ jobs:
                   encoding='utf-8', errors='replace'
               ).splitlines()[-200:] if log.is_file() else [],
           }
-          Path('VC4_V3D_MATERIALIZE_STATUS.json').write_text(
+          Path('/tmp/VC4_V3D_MATERIALIZE_STATUS.json').write_text(
               json.dumps(status, indent=2, sort_keys=True) + '\n'
           )
           PY
           git config user.name "VC4 CI"
           git config user.email "vc4-ci@users.noreply.github.com"
           git reset --hard "$GITHUB_SHA"
+          cp /tmp/VC4_V3D_MATERIALIZE_STATUS.json \
+            VC4_V3D_MATERIALIZE_STATUS.json
           git rm -- .github/workflows/vc4-v3d-materialize-check.yml
           git add -- VC4_V3D_MATERIALIZE_STATUS.json
           git commit -m "ci/vc4: record V3D materialization status [skip ci]"
