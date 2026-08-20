@@ -1,11 +1,11 @@
 # VC4 V3D bring-up
 
-Validation passed: **false**
+Validation passed: **true**
 
-- Dual AArch64/VC4 build: `False`
-- Processor-control and multicore-sync regressions: `False`
-- V3D identity, IRQ, CT1 and clear/store witness: `False`
-- Bare framebuffer regression: `False`
-- Linux framebuffer regression: `False`
+- Dual AArch64/VC4 build: `True`
+- Processor-control and multicore-sync regressions: `True`
+- V3D identity, IRQ, CT1 and clear/store witness: `True`
+- Bare framebuffer regression: `True`
+- Linux framebuffer regression: `True`
 
-Primitive binning and QPU shader execution remain behind the explicit CTERR/ERRSTAT boundary.
+Primitive binning and QPU shader execution intentionally remain behind a CTERR/ERRSTAT boundary.

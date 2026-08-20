@@ -12,7 +12,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "exec/memory.h"
+#include "qemu/units.h"
+#include "system/memory.h"
 #include "hw/core/irq.h"
 #include "hw/display/bcm2835_v3d.h"
 #include "migration/vmstate.h"

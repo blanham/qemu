@@ -120,6 +120,12 @@ static void raspi_peripherals_base_init(Object *obj)
     object_property_add_const_link(OBJECT(&s->fb), "dma-mr",
                                    OBJECT(&s->gpu_bus_mr));
 
+    /* VideoCore IV 3D accelerator */
+    object_initialize_child(obj, "v3d", &s->v3d,
+                            TYPE_BCM2835_V3D);
+    object_property_add_const_link(OBJECT(&s->v3d), "dma-mr",
+                                   OBJECT(&s->gpu_bus_mr));
+
     /* OTP */
     object_initialize_child(obj, "bcm2835-otp", &s->otp,
                             TYPE_BCM2835_OTP);
@@ -588,13 +594,25 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
                                                  BCM2835_IC_GPU_IRQ,
                                                  INTERRUPT_I2C));
 
+    /* VideoCore IV 3D accelerator */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->v3d), errp)) {
+        return;
+    }
+    memory_region_add_subregion(
+        &s->peri_mr, V3D_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->v3d), 0));
+    sysbus_connect_irq(
+        SYS_BUS_DEVICE(&s->v3d), 0,
+        qdev_get_gpio_in_named(DEVICE(&s->ic),
+                               BCM2835_IC_GPU_IRQ,
+                               INTERRUPT_3D));
+
     create_unimp(s, &s->txp, "bcm2835-txp", TXP_OFFSET, 0x1000);
     create_unimp(s, &s->armtmr, "bcm2835-sp804", ARMCTRL_TIMER0_1_OFFSET, 0x40);
     create_unimp(s, &s->i2s, "bcm2835-i2s", I2S_OFFSET, 0x100);
     create_unimp(s, &s->smi, "bcm2835-smi", SMI_OFFSET, 0x100);
     create_unimp(s, &s->bscsl, "bcm2835-spis", BSC_SL_OFFSET, 0x100);
     create_unimp(s, &s->ave0, "bcm2835-ave0", AVE0_OFFSET, 0x8000);
-    create_unimp(s, &s->v3d, "bcm2835-v3d", V3D_OFFSET, 0x1000);
 }
 
 static void bcm2835_peripherals_class_init(ObjectClass *oc, const void *data)

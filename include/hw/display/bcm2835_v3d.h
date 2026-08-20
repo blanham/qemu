@@ -7,7 +7,7 @@
 #ifndef HW_DISPLAY_BCM2835_V3D_H
 #define HW_DISPLAY_BCM2835_V3D_H
 
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "hw/core/sysbus.h"
 #include "qom/object.h"
 
