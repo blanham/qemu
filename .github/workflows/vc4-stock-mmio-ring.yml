@@ -1,0 +1,391 @@
+name: VC4 recovered stock MMIO ring
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-linux-recovered
+    paths:
+      - .github/workflows/vc4-stock-mmio-ring.yml
+      - tests/vc4/vc4-mmio-ring-plugin.c
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-mmio-ring-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OUT_DIR: /tmp/vc4-stock-mmio-ring
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether a trace is still required
+        id: decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >>"$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          path = Path('tests/vc4/results/stock-recovered/result.json')
+          status = json.loads(path.read_text()) if path.is_file() else {}
+          reached = bool(status.get('arm_payload_signature_seen'))
+          print(f'reached={str(reached).lower()}')
+          print(f'need_trace={str(not reached).lower()}')
+          print(f'classification={status.get("classification", "unknown")}')
+          PY
+
+      - name: Install trace dependencies
+        if: steps.decision.outputs.need_trace == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned stock firmware
+        if: steps.decision.outputs.need_trace == 'true'
+        id: firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 5 \
+              --output "/tmp/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build QEMU, plugin, and ARM witness
+        if: steps.decision.outputs.need_trace == 'true'
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/vc4/*.py
+          git diff --check
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --enable-plugins \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-stock-mmio-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-stock-mmio-build.log
+
+          cc -std=c11 -O2 -g -fPIC -shared \
+            -Wall -Wextra -Werror \
+            -Iinclude \
+            -o /tmp/vc4-mmio-ring.so \
+            tests/vc4/vc4-mmio-ring-plugin.c \
+            2>&1 | tee /tmp/vc4-stock-plugin-build.log
+          test -s /tmp/vc4-mmio-ring.so
+
+          cat >/tmp/vc4-stock-arm-witness.S <<'EOF'
+          .section .text
+          .global _start
+          .type _start, %function
+          _start:
+              mov x4, x0
+              mov x5, sp
+              mrs x6, mpidr_el1
+              ldr x0, =0x0000000000001000
+              ldr x1, =0x5643345f41524d21
+              str x1, [x0]
+              str x4, [x0, #8]
+              str x5, [x0, #16]
+              str x6, [x0, #24]
+              dsb sy
+          1:
+              wfe
+              b 1b
+              .ltorg
+          .size _start, . - _start
+          EOF
+          aarch64-linux-gnu-as \
+            -o /tmp/vc4-stock-arm-witness.o \
+            /tmp/vc4-stock-arm-witness.S
+          aarch64-linux-gnu-ld \
+            -nostdlib --entry=_start -Ttext=0x80000 \
+            -o /tmp/vc4-stock-arm-witness.elf \
+            /tmp/vc4-stock-arm-witness.o
+          aarch64-linux-gnu-objcopy \
+            -O binary /tmp/vc4-stock-arm-witness.elf \
+            /tmp/kernel8.img
+
+          cat >/tmp/qemu-system-aarch64-vc4-mmio <<EOF
+          #!/usr/bin/env bash
+          exec "$PWD/build/qemu-system-aarch64" \
+            "\$@" \
+            -plugin /tmp/vc4-mmio-ring.so,ring=16384
+          EOF
+          chmod +x /tmp/qemu-system-aarch64-vc4-mmio
+
+      - name: Preserve VC4 regressions
+        if: steps.decision.outputs.need_trace == 'true'
+        id: regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f scripts/vc4/preg-mutex-smoke.py; then
+            python3 scripts/vc4/preg-mutex-smoke.py \
+              --qemu build/qemu-system-vc4 \
+              2>&1 | tee /tmp/vc4-stock-mmio-preg.log
+          fi
+          if test -f scripts/vc4/msync-smoke.py; then
+            python3 scripts/vc4/msync-smoke.py \
+              --qemu build/qemu-system-aarch64 \
+              2>&1 | tee /tmp/vc4-stock-mmio-msync.log
+          fi
+
+      - name: Run the stock path with the physical access ring
+        if: steps.decision.outputs.need_trace == 'true'
+        id: probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR"
+          python3 scripts/vc4/raspi3-stock-arm-payload.py \
+            /tmp/qemu-system-aarch64-vc4-mmio \
+            /tmp/bootcode.bin \
+            /tmp/start.elf \
+            /tmp/fixup.dat \
+            /tmp/kernel8.img \
+            --seconds 120 \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee /tmp/vc4-stock-mmio-probe.log
+
+      - name: Reduce the access ring
+        if: always() && steps.decision.outputs.need_trace == 'true'
+        id: record
+        shell: bash
+        env:
+          FIRMWARE_OUTCOME: ${{ steps.firmware.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p tests/vc4/results/stock-mmio-ring
+          python3 - <<'PY'
+          from collections import Counter
+          from datetime import datetime, timezone
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-stock-mmio-ring')
+          result_path = out / 'result.json'
+          result = (
+              json.loads(result_path.read_text())
+              if result_path.is_file() else {}
+          )
+          stderr_path = out / 'qemu.stderr'
+          stderr = (
+              stderr_path.read_text(encoding='utf-8', errors='replace')
+              if stderr_path.is_file() else ''
+          )
+          pattern = re.compile(
+              r'^VC4MMIO seq=(?P<seq>\d+) cpu=(?P<cpu>\d+) '
+              r'pc=0x(?P<pc>[0-9a-f]+) (?P<direction>load|store) '
+              r'size=(?P<size>\d+) vaddr=0x(?P<vaddr>[0-9a-f]+) '
+              r'paddr=0x(?P<paddr>[0-9a-f]+) '
+              r'physical=(?P<physical>[01]) io=(?P<io>[01])$',
+              re.IGNORECASE,
+          )
+          accesses = []
+          for line in stderr.splitlines():
+              match = pattern.match(line.strip())
+              if not match:
+                  continue
+              item = {
+                  'sequence': int(match.group('seq')),
+                  'cpu_index': int(match.group('cpu')),
+                  'pc': f"0x{int(match.group('pc'), 16):x}",
+                  'direction': match.group('direction').lower(),
+                  'size': int(match.group('size')),
+                  'vaddr': f"0x{int(match.group('vaddr'), 16):x}",
+                  'paddr': f"0x{int(match.group('paddr'), 16):x}",
+                  'physical_valid': match.group('physical') == '1',
+                  'io': match.group('io') == '1',
+              }
+              accesses.append(item)
+
+          vc4_indices = {
+              int(cpu.get('cpu_index'))
+              for cpu in result.get('cpu_snapshot', {}).get('cpus', [])
+              if 'vc4' in str(cpu.get('qom_type', '')).lower()
+              and cpu.get('cpu_index') is not None
+          }
+          if vc4_indices:
+              vpu_accesses = [
+                  item for item in accesses
+                  if item['cpu_index'] in vc4_indices
+              ]
+          else:
+              vpu_accesses = accesses
+
+          address_counts = Counter(
+              (item['pc'], item['paddr'], item['direction'], item['size'])
+              for item in vpu_accesses
+              if item['io']
+          )
+          pc_counts = Counter(item['pc'] for item in vpu_accesses)
+          final = vpu_accesses[-512:]
+          classification = (
+              'stock-arm-payload-reached'
+              if result.get('signature_seen')
+              else 'stock-mmio-ring-captured'
+              if vpu_accesses
+              else 'stock-mmio-ring-empty'
+          )
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'classification': classification,
+              'arm_payload_signature_seen': bool(result.get('signature_seen')),
+              'outcomes': {
+                  key.lower().removesuffix('_outcome'): value
+                  for key, value in os.environ.items()
+                  if key.endswith('_OUTCOME')
+              },
+              'vc4_cpu_indices': sorted(vc4_indices),
+              'total_ring_accesses': len(accesses),
+              'vpu_ring_accesses': len(vpu_accesses),
+              'top_io_accesses': [
+                  {
+                      'pc': pc,
+                      'paddr': paddr,
+                      'direction': direction,
+                      'size': size,
+                      'count': count,
+                  }
+                  for (pc, paddr, direction, size), count
+                  in address_counts.most_common(100)
+              ],
+              'top_pcs': [
+                  {'pc': pc, 'count': count}
+                  for pc, count in pc_counts.most_common(100)
+              ],
+              'final_accesses': final,
+              'source_result': result,
+              'plugin_lines_tail': [
+                  line for line in stderr.splitlines()
+                  if line.startswith('VC4MMIO')
+              ][-17000:],
+              'qemu_diagnostics_tail': [
+                  line for line in stderr.splitlines()
+                  if not line.startswith('VC4MMIO')
+              ][-500:],
+          }
+          root = Path('tests/vc4/results/stock-mmio-ring')
+          (root / 'result.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          lines = [
+              '# VC4 recovered stock MMIO frontier',
+              '',
+              f'- Classification: **`{classification}`**',
+              f'- VPU ring entries: `{len(vpu_accesses)}`',
+              f'- VC4 CPU indices: `{sorted(vc4_indices)}`',
+              '',
+              '## Most frequent I/O accesses',
+              '',
+              '```json',
+              json.dumps(status['top_io_accesses'][:30], indent=2),
+              '```',
+              '',
+              '## Final physical accesses',
+              '',
+              '```json',
+              json.dumps(final[-120:], indent=2),
+              '```',
+              '',
+          ]
+          (root / 'RESULT.md').write_text(
+              '\n'.join(lines), encoding='utf-8'
+          )
+          print(json.dumps({
+              'classification': classification,
+              'vpu_ring_accesses': len(vpu_accesses),
+              'top_io_accesses': status['top_io_accesses'][:10],
+              'final_accesses': final[-20:],
+          }, indent=2))
+          PY
+          git diff --check
+
+      - name: Upload complete trace diagnostics
+        if: always() && steps.decision.outputs.need_trace == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-mmio-ring-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-stock-mmio-ring
+            /tmp/vc4-stock-mmio-*.log
+            /tmp/vc4-mmio-ring.so
+            tests/vc4/results/stock-mmio-ring
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the trace or the already-passing boundary
+        if: always()
+        shell: bash
+        env:
+          NEED_TRACE: ${{ steps.decision.outputs.need_trace }}
+        run: |
+          set -euo pipefail
+          if [ "$NEED_TRACE" = true ]; then
+            cp -a tests/vc4/results/stock-mmio-ring \
+              /tmp/stock-mmio-ring-result
+          fi
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-stock-mmio-ring.yml
+          if [ "$NEED_TRACE" = true ]; then
+            rm -rf tests/vc4/results/stock-mmio-ring
+            mkdir -p tests/vc4/results
+            cp -a /tmp/stock-mmio-ring-result \
+              tests/vc4/results/stock-mmio-ring
+            git add tests/vc4/results/stock-mmio-ring
+            message="tests/vc4: record the stock physical MMIO frontier [skip ci]"
+          else
+            cat >VC4_STOCK_ARM_HANDOFF_BASELINE.md <<'EOF'
+          # VC4 stock ARM handoff baseline
+
+          The recovered stock firmware branch already reached the freestanding
+          AArch64 witness.  No MMIO tracing patch was applied; the next gate is
+          a complete stock Linux boot filesystem and framebuffer scanout.
+          EOF
+            git add VC4_STOCK_ARM_HANDOFF_BASELINE.md
+            message="docs/vc4: record the stock ARM handoff baseline [skip ci]"
+          fi
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "$message"
+          git pull --rebase origin agent/vc4-stock-linux-recovered
+          git push origin HEAD:agent/vc4-stock-linux-recovered
