@@ -1,0 +1,124 @@
+name: VC4 heterogeneous Linux abort backtrace
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-hetero-linux-backtrace.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hetero-linux-backtrace
+  cancel-in-progress: false
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-official
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build and debugger dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu cpio curl gdb \
+            gcc-aarch64-linux-gnu gzip \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned Linux inputs
+        run: |
+          set -euo pipefail
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR"
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+      - name: Build heterogeneous AArch64 QEMU and initramfs
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          bash scripts/vc4/build-linux-initramfs.sh \
+            build/vc4-linux-initramfs
+
+      - name: Reproduce abort under GDB
+        run: |
+          set -uo pipefail
+          {
+            printf 'source_sha=%s\n' "$GITHUB_SHA"
+            printf 'generated_at=%s\n\n' "$(date --utc --iso-8601=seconds)"
+          } > VC4_HETERO_LINUX_BACKTRACE.txt
+
+          set +e
+          timeout --signal=TERM --kill-after=5s 90s \
+            gdb -q -nx -batch \
+              -ex 'set pagination off' \
+              -ex 'set confirm off' \
+              -ex 'handle SIGPIPE nostop noprint pass' \
+              -ex 'run' \
+              -ex 'thread apply all bt 64' \
+              --args build/qemu-system-aarch64 \
+                -M raspi3b-vc4-hetero,direct-arm-kernel=on \
+                -m 1G -smp 5 \
+                -kernel "$OFFICIAL_DIR/kernel8.img" \
+                -dtb "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+                -initrd build/vc4-linux-initramfs/initramfs.cpio.gz \
+                -append 'earlycon=pl011,0x3f201000 console=ttyAMA0,115200 rdinit=/init loglevel=8 ignore_loglevel printk.time=1 panic=-1 oops=panic random.trust_cpu=on' \
+                -accel tcg,thread=single \
+                -display none -monitor none \
+                -serial stdio -serial none \
+                -no-reboot -d guest_errors,unimp \
+            2>&1 | tee -a VC4_HETERO_LINUX_BACKTRACE.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '\ngdb_return_code=%s\n' "$rc" \
+            >> VC4_HETERO_LINUX_BACKTRACE.txt
+          grep -q 'not an instance of type arm-cpu' \
+            VC4_HETERO_LINUX_BACKTRACE.txt
+          grep -Eq '^#0 ' VC4_HETERO_LINUX_BACKTRACE.txt
+
+      - name: Upload debugger evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-hetero-linux-backtrace
+          path: VC4_HETERO_LINUX_BACKTRACE.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish trace and retire one-shot workflow
+        if: always()
+        run: |
+          set -euo pipefail
+          test -s VC4_HETERO_LINUX_BACKTRACE.txt
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -- .github/workflows/vc4-hetero-linux-backtrace.yml
+          git add -- VC4_HETERO_LINUX_BACKTRACE.txt
+          git diff --cached --check
+          git commit -m \
+            'ci/vc4: record heterogeneous Linux abort backtrace [skip ci]'
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
