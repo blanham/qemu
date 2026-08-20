@@ -1,0 +1,190 @@
+name: VC4 low bootcode PC map
+
+on:
+  push:
+    branches:
+      - agent/vc4-deterministic-time-linux
+    paths:
+      - .github/workflows/vc4-low-bootcode-pc-map.yml
+      - scripts/vc4/bootcode-lowpc-report.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-low-bootcode-pc-map
+  cancel-in-progress: true
+
+jobs:
+  map-frontiers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIRMWARE_DIR: /tmp/vc4-firmware
+      MAP_DIR: /tmp/vc4-lowpc-map
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Lint and build QEMU
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/bootcode-lowpc-report.py \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          git diff --check
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-lowpc-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-lowpc-build.log
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-lowpc-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-lowpc-msync.log
+
+      - name: Download pinned stock firmware
+        run: |
+          set -euo pipefail
+          rm -rf "$FIRMWARE_DIR"
+          mkdir -p "$FIRMWARE_DIR"
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 5 \
+              --output "$FIRMWARE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIRMWARE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIRMWARE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIRMWARE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          sha256sum "$FIRMWARE_DIR"/* >"$FIRMWARE_DIR/SHA256SUMS"
+
+      - name: Build an ARM-entry witness
+        run: |
+          set -euo pipefail
+          cat >/tmp/vc4-arm-witness.S <<'EOF'
+          .section .text
+          .global _start
+          _start:
+              ldr x0, =0x1000
+              ldr x1, =0x5643345f41524d21
+              str x1, [x0]
+              dsb sy
+          1:
+              wfe
+              b 1b
+              .ltorg
+          EOF
+          aarch64-linux-gnu-as \
+            -o /tmp/vc4-arm-witness.o /tmp/vc4-arm-witness.S
+          aarch64-linux-gnu-ld \
+            -nostdlib --entry=_start -Ttext=0x80000 \
+            -o /tmp/vc4-arm-witness.elf /tmp/vc4-arm-witness.o
+          aarch64-linux-gnu-objcopy \
+            -O binary /tmp/vc4-arm-witness.elf /tmp/kernel8.img
+          test -s /tmp/kernel8.img
+
+      - name: Execute low-PC translation matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$MAP_DIR"
+          mkdir -p "$MAP_DIR"
+          for mode in native shift2 shift4 shift6 shift8; do
+            case "$mode" in
+              native) icount=() ;;
+              shift2) icount=(-icount shift=2,align=off,sleep=off) ;;
+              shift4) icount=(-icount shift=4,align=off,sleep=off) ;;
+              shift6) icount=(-icount shift=6,align=off,sleep=off) ;;
+              shift8) icount=(-icount shift=8,align=off,sleep=off) ;;
+            esac
+            log="$MAP_DIR/$mode-in_asm.log"
+            wrapper="$MAP_DIR/qemu-$mode"
+            printf '%s\n' '#!/usr/bin/env bash' >"$wrapper"
+            printf 'exec %q "$@"' "$PWD/build/qemu-system-aarch64" >>"$wrapper"
+            for argument in "${icount[@]}"; do
+              printf ' %q' "$argument" >>"$wrapper"
+            done
+            printf ' -d in_asm,guest_errors,unimp -D %q\n' "$log" >>"$wrapper"
+            chmod +x "$wrapper"
+            set +e
+            python3 scripts/vc4/raspi3-stock-arm-payload.py \
+              "$wrapper" \
+              "$FIRMWARE_DIR/bootcode.bin" \
+              "$FIRMWARE_DIR/start.elf" \
+              "$FIRMWARE_DIR/fixup.dat" \
+              /tmp/kernel8.img \
+              --seconds 30 \
+              --out-dir "$MAP_DIR/$mode" \
+              >"$MAP_DIR/$mode-probe.log" 2>&1
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" >"$MAP_DIR/$mode-probe.status"
+            test -s "$log"
+          done
+
+      - name: Reduce decoded instruction contexts
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/bootcode-lowpc-report.py \
+            "$MAP_DIR"/*-in_asm.log \
+            --json VC4_LOW_BOOTCODE_PC_MAP.json \
+            --markdown VC4_LOW_BOOTCODE_PC_MAP.md
+          git diff --check
+
+      - name: Upload complete stock-path evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-low-bootcode-pc-map-${{ github.run_attempt }}
+          path: |
+            VC4_LOW_BOOTCODE_PC_MAP.json
+            VC4_LOW_BOOTCODE_PC_MAP.md
+            /tmp/vc4-lowpc-map
+            /tmp/vc4-lowpc-configure.log
+            /tmp/vc4-lowpc-build.log
+            /tmp/vc4-lowpc-preg.log
+            /tmp/vc4-lowpc-msync.log
+            /tmp/vc4-firmware/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish decoded PC map
+        run: |
+          set -euo pipefail
+          cp VC4_LOW_BOOTCODE_PC_MAP.json /tmp/pc-map.json
+          cp VC4_LOW_BOOTCODE_PC_MAP.md /tmp/pc-map.md
+          git reset --hard "$GITHUB_SHA"
+          cp /tmp/pc-map.json VC4_LOW_BOOTCODE_PC_MAP.json
+          cp /tmp/pc-map.md VC4_LOW_BOOTCODE_PC_MAP.md
+          git rm .github/workflows/vc4-low-bootcode-pc-map.yml
+          git add \
+            scripts/vc4/bootcode-lowpc-report.py \
+            VC4_LOW_BOOTCODE_PC_MAP.json \
+            VC4_LOW_BOOTCODE_PC_MAP.md
+          git diff --cached --check
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m 'tests/vc4: map low stock-bootcode frontiers'
+          git pull --rebase origin agent/vc4-deterministic-time-linux
+          git push origin HEAD:agent/vc4-deterministic-time-linux
