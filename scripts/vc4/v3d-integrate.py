@@ -18,8 +18,12 @@ PERIPHERALS_SOURCE = Path("hw/arm/bcm2835_peripherals.c")
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
-    if new in text:
+    if new:
+        if new in text:
+            return text
+    elif old not in text:
         return text
+
     count = text.count(old)
     if count != 1:
         raise RuntimeError(f"{label}: expected one anchor, found {count}")
