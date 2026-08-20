@@ -1,0 +1,491 @@
+name: VC4 V3D 2.1 identification slice
+
+on:
+  push:
+    branches:
+      - agent/vc4-v3d-bringup
+    paths:
+      - .github/workflows/vc4-v3d-ident-slice.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-v3d-identification-slice
+  cancel-in-progress: false
+
+jobs:
+  implement-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize the V3D identification/register slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def insert_once(text, anchor, addition, label, after=False):
+              if addition in text:
+                  return text
+              count = text.count(anchor)
+              if count != 1:
+                  raise RuntimeError(
+                      f"{label}: expected one anchor, found {count}"
+                  )
+              replacement = anchor + addition if after else addition + anchor
+              return text.replace(anchor, replacement, 1)
+
+          header = Path("include/hw/misc/bcm2835_v3d.h")
+          header.parent.mkdir(parents=True, exist_ok=True)
+          header.write_text(r'''/*
+           * BCM2835/BCM2837 VideoCore IV V3D 2.1 register block
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #ifndef HW_MISC_BCM2835_V3D_H
+          #define HW_MISC_BCM2835_V3D_H
+
+          #include "hw/core/sysbus.h"
+          #include "qom/object.h"
+
+          #define TYPE_BCM2835_V3D "bcm2835-v3d"
+          OBJECT_DECLARE_SIMPLE_TYPE(BCM2835V3DState, BCM2835_V3D)
+
+          #define BCM2835_V3D_MMIO_SIZE 0x1000
+
+          struct BCM2835V3DState {
+              SysBusDevice parent_obj;
+
+              MemoryRegion iomem;
+              qemu_irq irq;
+
+              uint32_t ident1;
+              uint32_t ident2;
+              uint32_t scratch;
+              uint32_t l2cactl;
+              uint32_t slcactl;
+              uint32_t int_status;
+              uint32_t int_enable;
+          };
+
+          #endif /* HW_MISC_BCM2835_V3D_H */
+          '''.replace("          ", ""), encoding="utf-8")
+
+          source = Path("hw/misc/bcm2835_v3d.c")
+          source.write_text(r'''/*
+           * BCM2835/BCM2837 VideoCore IV V3D 2.1 register block
+           *
+           * This first slice deliberately models only the guest-visible
+           * identification, scratch/cache-control latches, and interrupt
+           * controller needed to establish the Linux vc4_v3d probe frontier.
+           * Control-list execution, MMU/cache behavior, and QPUs are separate
+           * witnessed slices.
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "hw/misc/bcm2835_v3d.h"
+          #include "hw/irq.h"
+          #include "hw/qdev-properties.h"
+          #include "migration/vmstate.h"
+          #include "qemu/log.h"
+
+          #define V3D_IDENT0             0x000
+          #define V3D_IDENT1             0x004
+          #define V3D_IDENT2             0x008
+          #define V3D_SCRATCH            0x010
+          #define V3D_L2CACTL            0x020
+          #define V3D_SLCACTL            0x024
+          #define V3D_INTCTL             0x030
+          #define V3D_INTENA             0x034
+          #define V3D_INTDIS             0x038
+
+          /* "V3D", architecture major 2: the value checked by Linux vc4. */
+          #define V3D_IDENT0_VC4_2_1     UINT32_C(0x02443356)
+
+          static void bcm2835_v3d_update_irq(BCM2835V3DState *s)
+          {
+              qemu_set_irq(s->irq, (s->int_status & s->int_enable) != 0);
+          }
+
+          static uint64_t bcm2835_v3d_read(void *opaque, hwaddr addr,
+                                           unsigned size)
+          {
+              BCM2835V3DState *s = BCM2835_V3D(opaque);
+
+              switch (addr) {
+              case V3D_IDENT0:
+                  return V3D_IDENT0_VC4_2_1;
+              case V3D_IDENT1:
+                  return s->ident1;
+              case V3D_IDENT2:
+                  return s->ident2;
+              case V3D_SCRATCH:
+                  return s->scratch;
+              case V3D_L2CACTL:
+                  return s->l2cactl;
+              case V3D_SLCACTL:
+                  return s->slcactl;
+              case V3D_INTCTL:
+                  return s->int_status;
+              case V3D_INTENA:
+              case V3D_INTDIS:
+                  return s->int_enable;
+              default:
+                  qemu_log_mask(LOG_UNIMP,
+                                TYPE_BCM2835_V3D
+                                ": unimplemented read at 0x%03" HWADDR_PRIx
+                                "\n", addr);
+                  return 0;
+              }
+          }
+
+          static void bcm2835_v3d_write(void *opaque, hwaddr addr,
+                                        uint64_t value, unsigned size)
+          {
+              BCM2835V3DState *s = BCM2835_V3D(opaque);
+              uint32_t v = value;
+
+              switch (addr) {
+              case V3D_IDENT0:
+              case V3D_IDENT1:
+              case V3D_IDENT2:
+                  qemu_log_mask(LOG_GUEST_ERROR,
+                                TYPE_BCM2835_V3D
+                                ": write to identification register 0x%03"
+                                HWADDR_PRIx "\n", addr);
+                  return;
+              case V3D_SCRATCH:
+                  s->scratch = v;
+                  return;
+              case V3D_L2CACTL:
+                  s->l2cactl = v;
+                  return;
+              case V3D_SLCACTL:
+                  s->slcactl = v;
+                  return;
+              case V3D_INTCTL:
+                  /* Interrupt status is write-one-to-clear. */
+                  s->int_status &= ~v;
+                  bcm2835_v3d_update_irq(s);
+                  return;
+              case V3D_INTENA:
+                  s->int_enable |= v;
+                  bcm2835_v3d_update_irq(s);
+                  return;
+              case V3D_INTDIS:
+                  s->int_enable &= ~v;
+                  bcm2835_v3d_update_irq(s);
+                  return;
+              default:
+                  qemu_log_mask(LOG_UNIMP,
+                                TYPE_BCM2835_V3D
+                                ": unimplemented write at 0x%03" HWADDR_PRIx
+                                " value 0x%08x\n", addr, v);
+                  return;
+              }
+          }
+
+          static const MemoryRegionOps bcm2835_v3d_ops = {
+              .read = bcm2835_v3d_read,
+              .write = bcm2835_v3d_write,
+              .impl.min_access_size = 4,
+              .impl.max_access_size = 4,
+              .valid.min_access_size = 4,
+              .valid.max_access_size = 4,
+              .endianness = DEVICE_LITTLE_ENDIAN,
+          };
+
+          static void bcm2835_v3d_reset(DeviceState *dev)
+          {
+              BCM2835V3DState *s = BCM2835_V3D(dev);
+
+              s->scratch = 0;
+              s->l2cactl = 0;
+              s->slcactl = 0;
+              s->int_status = 0;
+              s->int_enable = 0;
+              bcm2835_v3d_update_irq(s);
+          }
+
+          static int bcm2835_v3d_post_load(void *opaque, int version_id)
+          {
+              BCM2835V3DState *s = opaque;
+
+              bcm2835_v3d_update_irq(s);
+              return 0;
+          }
+
+          static const VMStateDescription bcm2835_v3d_vmstate = {
+              .name = TYPE_BCM2835_V3D,
+              .version_id = 1,
+              .minimum_version_id = 1,
+              .post_load = bcm2835_v3d_post_load,
+              .fields = (const VMStateField[]) {
+                  VMSTATE_UINT32(ident1, BCM2835V3DState),
+                  VMSTATE_UINT32(ident2, BCM2835V3DState),
+                  VMSTATE_UINT32(scratch, BCM2835V3DState),
+                  VMSTATE_UINT32(l2cactl, BCM2835V3DState),
+                  VMSTATE_UINT32(slcactl, BCM2835V3DState),
+                  VMSTATE_UINT32(int_status, BCM2835V3DState),
+                  VMSTATE_UINT32(int_enable, BCM2835V3DState),
+                  VMSTATE_END_OF_LIST()
+              }
+          };
+
+          static void bcm2835_v3d_realize(DeviceState *dev, Error **errp)
+          {
+              BCM2835V3DState *s = BCM2835_V3D(dev);
+
+              memory_region_init_io(&s->iomem, OBJECT(s), &bcm2835_v3d_ops,
+                                    s, TYPE_BCM2835_V3D,
+                                    BCM2835_V3D_MMIO_SIZE);
+              sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+              sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq);
+          }
+
+          static const Property bcm2835_v3d_properties[] = {
+              DEFINE_PROP_UINT32("ident1", BCM2835V3DState, ident1, 0),
+              DEFINE_PROP_UINT32("ident2", BCM2835V3DState, ident2, 0),
+          };
+
+          static void bcm2835_v3d_class_init(ObjectClass *klass,
+                                             const void *data)
+          {
+              DeviceClass *dc = DEVICE_CLASS(klass);
+
+              dc->realize = bcm2835_v3d_realize;
+              device_class_set_legacy_reset(dc, bcm2835_v3d_reset);
+              device_class_set_props(dc, bcm2835_v3d_properties);
+              dc->vmsd = &bcm2835_v3d_vmstate;
+          }
+
+          static const TypeInfo bcm2835_v3d_info = {
+              .name = TYPE_BCM2835_V3D,
+              .parent = TYPE_SYS_BUS_DEVICE,
+              .instance_size = sizeof(BCM2835V3DState),
+              .class_init = bcm2835_v3d_class_init,
+          };
+
+          static void bcm2835_v3d_register_types(void)
+          {
+              type_register_static(&bcm2835_v3d_info);
+          }
+
+          type_init(bcm2835_v3d_register_types)
+          '''.replace("          ", ""), encoding="utf-8")
+
+          meson = Path("hw/misc/meson.build")
+          text = meson.read_text(encoding="utf-8")
+          anchor = "  'bcm2835_msync.c',\n"
+          entry = "  'bcm2835_v3d.c',\n"
+          if entry not in text:
+              text = insert_once(text, anchor, entry,
+                                 "V3D Meson source", after=True)
+              meson.write_text(text, encoding="utf-8")
+
+          ph = Path("include/hw/arm/bcm2835_peripherals.h")
+          text = ph.read_text(encoding="utf-8")
+          include = '#include "hw/misc/bcm2835_v3d.h"\n'
+          if include not in text:
+              anchor = '#include "hw/misc/bcm2835_msync.h"\n'
+              text = insert_once(text, anchor, include,
+                                 "V3D peripheral include", after=True)
+          if "#define V3D_OFFSET" not in text:
+              define_anchor = "#define MSYNC_OFFSET"
+              match = re.search(r"^#define MSYNC_OFFSET.*$", text, re.M)
+              if not match:
+                  raise RuntimeError("MSYNC offset anchor not found")
+              text = text[:match.end()] + \
+                  "\n#define V3D_OFFSET             0x00c00000" + \
+                  text[match.end():]
+          field = "    BCM2835V3DState v3d;\n"
+          if field not in text:
+              anchor = "    BCM2835MSyncState msync;\n"
+              text = insert_once(text, anchor, field,
+                                 "V3D peripheral state", after=True)
+          ph.write_text(text, encoding="utf-8")
+
+          pc = Path("hw/arm/bcm2835_peripherals.c")
+          text = pc.read_text(encoding="utf-8")
+          init = (
+              "    /* VideoCore IV V3D 2.1 */\n"
+              "    object_initialize_child(obj, \"v3d\", &s->v3d,\n"
+              "                            TYPE_BCM2835_V3D);\n\n"
+          )
+          if init not in text:
+              anchor = "    /* Multicore synchronization */\n"
+              text = insert_once(text, anchor, init,
+                                 "V3D child initialization")
+
+          interrupt_name = None
+          for candidate in ("INTERRUPT_V3D", "INTERRUPT_3D"):
+              found = subprocess.run(
+                  ["grep", "-R", "-q", candidate, "include/hw"],
+                  check=False,
+              )
+              if found.returncode == 0:
+                  interrupt_name = candidate
+                  break
+          if interrupt_name is None:
+              raise RuntimeError("no BCM2835 V3D interrupt constant found")
+
+          realize = (
+              "    /* VideoCore IV V3D 2.1 */\n"
+              "    if (!sysbus_realize(SYS_BUS_DEVICE(&s->v3d), errp)) {\n"
+              "        return;\n"
+              "    }\n"
+              "    memory_region_add_subregion(\n"
+              "        &s->peri_mr, V3D_OFFSET,\n"
+              "        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->v3d), 0));\n"
+              "    sysbus_connect_irq(\n"
+              "        SYS_BUS_DEVICE(&s->v3d), 0,\n"
+              "        qdev_get_gpio_in_named(DEVICE(&s->ic),\n"
+              "                               BCM2835_IC_GPU_IRQ,\n"
+              f"                               {interrupt_name}));\n\n"
+          )
+          if realize not in text:
+              anchor = "    /* CPRMAN clock manager */\n"
+              text = insert_once(text, anchor, realize,
+                                 "V3D realization")
+          pc.write_text(text, encoding="utf-8")
+
+          smoke = Path("scripts/vc4/v3d-ident-smoke.py")
+          smoke.write_text(r'''#!/usr/bin/env python3
+          """qtest the first BCM2835 V3D 2.1 register slice."""
+
+          from __future__ import annotations
+
+          import argparse
+          from pathlib import Path
+          import socket
+          import subprocess
+          import tempfile
+          import time
+
+          V3D_BASE = 0x3FC00000
+          IDENT0 = 0x000
+          SCRATCH = 0x010
+          L2CACTL = 0x020
+          INTCTL = 0x030
+          INTENA = 0x034
+          INTDIS = 0x038
+
+          def command(sock, line):
+              sock.sendall((line + "\n").encode())
+              response = b""
+              while not response.endswith(b"\n"):
+                  chunk = sock.recv(4096)
+                  if not chunk:
+                      raise RuntimeError("qtest socket closed")
+                  response += chunk
+              text = response.decode().strip()
+              if not text.startswith("OK"):
+                  raise RuntimeError(f"{line}: {text}")
+              return text[2:].strip()
+
+          def readl(sock, offset):
+              return int(command(sock, f"readl 0x{V3D_BASE + offset:x}"), 16)
+
+          def writel(sock, offset, value):
+              command(sock, f"writel 0x{V3D_BASE + offset:x} 0x{value:x}")
+
+          def main():
+              parser = argparse.ArgumentParser()
+              parser.add_argument("--qemu", type=Path, required=True)
+              args = parser.parse_args()
+              with tempfile.TemporaryDirectory(prefix="vc4-v3d-") as tmp:
+                  path = Path(tmp) / "qtest.sock"
+                  proc = subprocess.Popen([
+                      str(args.qemu.resolve()),
+                      "-M", "raspi3b-vc4-hetero",
+                      "-accel", "tcg",
+                      "-S", "-display", "none",
+                      "-monitor", "none", "-serial", "none",
+                      "-qtest", f"unix:path={path}",
+                  ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                     text=True)
+                  try:
+                      deadline = time.monotonic() + 10
+                      while not path.exists() and time.monotonic() < deadline:
+                          if proc.poll() is not None:
+                              raise RuntimeError(proc.stderr.read())
+                          time.sleep(0.02)
+                      sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                      sock.connect(str(path))
+                      with sock:
+                          assert readl(sock, IDENT0) == 0x02443356
+                          assert readl(sock, SCRATCH) == 0
+                          writel(sock, SCRATCH, 0x12345678)
+                          assert readl(sock, SCRATCH) == 0x12345678
+                          writel(sock, L2CACTL, 0x5a5aa5a5)
+                          assert readl(sock, L2CACTL) == 0x5a5aa5a5
+                          assert readl(sock, INTCTL) == 0
+                          writel(sock, INTENA, 0x7)
+                          assert readl(sock, INTENA) == 0x7
+                          writel(sock, INTDIS, 0x2)
+                          assert readl(sock, INTENA) == 0x5
+                  finally:
+                      proc.terminate()
+                      try:
+                          proc.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          proc.kill()
+                          proc.wait()
+              print("BCM2835 V3D identification smoke test passed")
+              return 0
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          '''.replace("          ", ""), encoding="utf-8")
+          smoke.chmod(0o755)
+          PY
+          python3 -m py_compile scripts/vc4/v3d-ident-smoke.py
+          git diff --check
+
+      - name: Build both frontends and run all architectural smokes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-ident-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish only the validated source slice
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/vc4-v3d-ident-slice.yml
+          git add -A
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "hw/vc4: add V3D 2.1 identification register block"
+          git pull --rebase origin agent/vc4-v3d-bringup
+          git push origin HEAD:agent/vc4-v3d-bringup
