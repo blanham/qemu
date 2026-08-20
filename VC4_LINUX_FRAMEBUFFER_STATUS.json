@@ -23,14 +23,21 @@
     "arm_control1": null,
     "arm_status": null,
     "cpu_frontier": [],
-    "diagnostics_tail": [],
+    "diagnostics_tail": [
+      "qemu-system-aarch64: info: raspi3b-vc4-hetero: loaded bootcode.bin (52624 bytes) from FAT32 boot partition at LBA 2048; entering VPU at 0x00000200",
+      "[I 0.000001] OPENED",
+      "[R +0.000043] readq 0x80000",
+      "[S +0.000063] OK 0x0000000000000000",
+      "[R +0.000211] clock_step 10000000",
+      "[S +0.000223] FAIL Unknown command 'clock_step'"
+    ],
     "kernel_word_after_boot": null,
     "observed_signature": null,
     "pm_proc": null,
-    "probe_error": null,
+    "probe_error": "RuntimeError: unexpected qtest reply: \"FAIL Unknown command 'clock_step'\"",
     "qtest_clock_ns": null,
-    "qtest_clock_steps": null,
-    "signature_seen": null
+    "qtest_clock_steps": 0,
+    "signature_seen": false
   },
   "linux": {
     "arm_control0": null,
@@ -54,11 +61,11 @@
   },
   "return_codes": {
     "framebuffer": "",
-    "handoff": "",
+    "handoff": "2",
     "linux": ""
   },
   "run_attempt": "1",
-  "run_id": "32327689909",
+  "run_id": "32328008773",
   "schema_version": 1,
-  "source_sha": "cbb67bdd333b37e09e6ddeb219f500fdf1de23ad"
+  "source_sha": "beb02215e2dbf39bd3eb8cb39590d7b603e425c4"
 }
