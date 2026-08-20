@@ -12,7 +12,14 @@
 #define UART_ICR        (UART_BASE + UINT32_C(0x44))
 #define UART_FR_TXFF    (UINT32_C(1) << 5)
 
-#define MBOX_BASE       (PERIPHERAL_BASE + UINT32_C(0x00b800))
+/*
+ * The ARM mailbox register window begins at peripheral offset 0xb880.
+ * The surrounding ARM control/semaphore/mailbox block begins at 0xb800,
+ * which is also where QEMU maps the complete device; using that larger
+ * block as the register base shifts every documented mailbox register by
+ * -0x80 and causes reads of offsets 0x00/0x18 rather than 0x80/0x98.
+ */
+#define MBOX_BASE       (PERIPHERAL_BASE + UINT32_C(0x00b880))
 #define MBOX_READ       (MBOX_BASE + UINT32_C(0x00))
 #define MBOX_STATUS     (MBOX_BASE + UINT32_C(0x18))
 #define MBOX_WRITE      (MBOX_BASE + UINT32_C(0x20))
