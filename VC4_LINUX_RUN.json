@@ -1,0 +1,21 @@
+{
+  "located_at": "2026-08-20T00:59:35.134331+00:00",
+  "run": {
+    "artifacts_url": "https://api.github.com/repos/blanham/qemu/actions/runs/32318349084/artifacts",
+    "conclusion": "failure",
+    "created_at": "2026-08-20T00:43:03Z",
+    "event": "push",
+    "head_branch": "agent/vc4-linux-bringup",
+    "head_sha": "b61c317cf258b2e636e1daccc0bf8eb9861411b5",
+    "html_url": "https://github.com/blanham/qemu/actions/runs/32318349084",
+    "id": 32318349084,
+    "jobs_url": "https://api.github.com/repos/blanham/qemu/actions/runs/32318349084/jobs",
+    "name": "VC4 Linux and framebuffer bring-up",
+    "run_attempt": 1,
+    "run_number": 1,
+    "status": "completed",
+    "updated_at": "2026-08-20T00:48:34Z"
+  },
+  "schema_version": 1,
+  "workflow_file": "vc4-linux-bringup.yml"
+}
