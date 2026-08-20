@@ -1,0 +1,149 @@
+name: VC4 V3D 2.1 Linux register frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-v3d-bringup
+    paths:
+      - .github/workflows/vc4-v3d-register-frontier.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  frontier:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Acquire the upstream VC4 driver contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/vc4-v3d-linux
+          base=https://raw.githubusercontent.com/torvalds/linux/master/drivers/gpu/drm/vc4
+          for file in vc4_v3d.c vc4_regs.h vc4_irq.c vc4_drv.c; do
+            curl --fail --location --retry 5 \
+              --output "/tmp/vc4-v3d-linux/$file" "$base/$file"
+          done
+          sha256sum /tmp/vc4-v3d-linux/* \
+            >/tmp/vc4-v3d-linux/SHA256SUMS
+
+      - name: Derive the first register and probe frontier
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+          import subprocess
+
+          source_dir = Path("/tmp/vc4-v3d-linux")
+          driver_text = "\n".join(
+              (source_dir / name).read_text(encoding="utf-8")
+              for name in ("vc4_v3d.c", "vc4_irq.c", "vc4_drv.c")
+          )
+          referenced = sorted(set(re.findall(r"\bV3D_[A-Z0-9_]+\b", driver_text)))
+
+          definitions = {}
+          regs_text = (source_dir / "vc4_regs.h").read_text(encoding="utf-8")
+          for line in regs_text.splitlines():
+              match = re.match(
+                  r"\s*#define\s+(V3D_[A-Z0-9_]+)\s+(.+?)\s*$", line
+              )
+              if match and match.group(1) in referenced:
+                  definitions[match.group(1)] = match.group(2)
+
+          status_files = sorted(Path(".").glob("VC4*.json"))
+          log_hits = []
+          needles = ("vc4", "v3d", "drm", "3fc00000", "7ec00000")
+          for status_file in status_files:
+              text = status_file.read_text(encoding="utf-8", errors="replace")
+              for line in text.splitlines():
+                  lowered = line.lower()
+                  if any(needle in lowered for needle in needles):
+                      log_hits.append({
+                          "source": status_file.name,
+                          "line": line[:1000],
+                      })
+
+          report = {
+              "schema_version": 1,
+              "guest_driver": "drivers/gpu/drm/vc4/vc4_v3d.c",
+              "hardware_generation": "VideoCore IV V3D 2.1",
+              "referenced_register_macros": referenced,
+              "register_definitions": definitions,
+              "existing_linux_log_hits": log_hits[:1000],
+              "first_slice_groups": {
+                  "identification": [
+                      name for name in referenced
+                      if name.startswith("V3D_IDENT")
+                  ],
+                  "interrupts": [
+                      name for name in referenced
+                      if "INT" in name
+                  ],
+                  "cache_control": [
+                      name for name in referenced
+                      if "CACTL" in name or "CACHE" in name
+                  ],
+                  "control_threads": [
+                      name for name in referenced
+                      if re.match(r"V3D_CT[01]", name)
+                  ],
+                  "errors": [
+                      name for name in referenced
+                      if "ERR" in name or "DBGE" in name
+                  ],
+              },
+          }
+          Path("VC4_V3D_REGISTER_FRONTIER.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          md = [
+              "# VC4 V3D 2.1 register frontier",
+              "",
+              "Guest driver: `drivers/gpu/drm/vc4/vc4_v3d.c`",
+              "",
+              "This inventory is derived from the upstream Linux VC4 driver; "
+              "it does not infer the contract from the newer `v3d` driver.",
+              "",
+              "## First slice",
+              "",
+              "The initial model is limited to power/reset visibility, "
+              "identification, scratch/cache-control latches, interrupt state, "
+              "and enough fault reporting for the Linux component bind probe.",
+              "Control-list execution remains a later, separately witnessed slice.",
+              "",
+              "## Referenced registers",
+              "",
+              "| Macro | Definition |",
+              "|---|---|",
+          ]
+          for name in referenced:
+              md.append(f"| `{name}` | `{definitions.get(name, 'indirect')}` |")
+          md += ["", "## Existing Linux-log hits", ""]
+          for hit in log_hits[:200]:
+              md.append(f"- `{hit['source']}`: `{hit['line']}`")
+          Path("VC4_V3D_REGISTER_FRONTIER.md").write_text(
+              "\n".join(md) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Publish the frontier and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/vc4-v3d-register-frontier.yml
+          git add -A
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "docs/vc4: derive V3D register frontier from Linux VC4"
+          git pull --rebase origin agent/vc4-v3d-bringup
+          git push origin HEAD:agent/vc4-v3d-bringup
