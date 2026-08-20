@@ -1,0 +1,265 @@
+name: VC4 independent direct Linux diagnostic
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-diagnostic.yml
+      - scripts/vc4/raspi3-direct-linux-diagnostic.py
+      - scripts/vc4/build-linux-initramfs.sh
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-official
+      OUT_DIR: /tmp/vc4-direct-linux-diagnostic
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl file gcc-aarch64-linux-gnu gzip \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize and validate the test topology
+        id: materialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/raspi3-direct-linux-diagnostic.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          if test -f scripts/vc4/hetero-direct-linux-integrate.py; then
+            python3 scripts/vc4/hetero-direct-linux-integrate.py
+            python3 scripts/vc4/hetero-direct-linux-integrate.py
+          fi
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          git diff --check
+          git diff -- hw/arm/vc4_raspi3_hetero.c \
+            >/tmp/vc4-direct-linux-machine.diff
+
+      - name: Download pinned official Linux inputs
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR"
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* >"$OFFICIAL_DIR/SHA256SUMS"
+
+      - name: Configure and build both frontends
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-direct-linux-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-direct-linux-build.log
+
+      - name: Preserve VC4 architectural regressions
+        id: regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-direct-linux-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-direct-linux-msync.log
+
+      - name: Build the deterministic initramfs
+        id: fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-linux-initramfs.sh \
+            "$PWD/build/vc4-linux-initramfs" \
+            2>&1 | tee /tmp/vc4-direct-linux-initramfs.log
+          test -s build/vc4-linux-initramfs/initramfs.cpio
+          file build/vc4-linux-initramfs/initramfs.cpio
+
+      - name: Boot Linux and verify framebuffer scanout
+        id: probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR"
+          python3 scripts/vc4/raspi3-direct-linux-diagnostic.py \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            --initrd build/vc4-linux-initramfs/initramfs.cpio \
+            --seconds 180 \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee /tmp/vc4-direct-linux-probe.log
+
+      - name: Record the independent frontier
+        id: record
+        if: always()
+        shell: bash
+        env:
+          MATERIALIZE_OUTCOME: ${{ steps.materialize.outcome }}
+          INPUTS_OUTCOME: ${{ steps.inputs.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          FIXTURE_OUTCOME: ${{ steps.fixture.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p tests/vc4/results/direct-linux-diagnostic
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          import json
+          import os
+          from pathlib import Path
+
+          result_path = Path('/tmp/vc4-direct-linux-diagnostic/result.json')
+          result = (
+              json.loads(result_path.read_text(encoding='utf-8'))
+              if result_path.is_file() else {}
+          )
+          outcomes = {
+              key.lower().removesuffix('_outcome'): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'passed': bool(result.get('passed')) and all(
+                  outcomes.get(key) == 'success'
+                  for key in (
+                      'materialize', 'inputs', 'build',
+                      'regressions', 'fixture'
+                  )
+              ),
+              'classification': result.get(
+                  'classification',
+                  'diagnostic-infrastructure-failure',
+              ),
+              'outcomes': outcomes,
+              'result': result,
+          }
+          out = Path(
+              'tests/vc4/results/direct-linux-diagnostic/result.json'
+          )
+          out.write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          lines = [
+              '# VC4 independent direct Linux diagnostic',
+              '',
+              f'- Passed: **`{status["passed"]}`**',
+              f'- Classification: **`{status["classification"]}`**',
+              f'- Linux banner: `{result.get("linux_version_seen")}`',
+              f'- Deterministic init: `{result.get("init_seen")}`',
+              f'- Framebuffer marker: `{result.get("fb_marker_seen")}`',
+              f'- QMP quadrant scanout: '
+              f'`{result.get("screendump_pixels_match")}`',
+              '',
+              '## Serial tail',
+              '',
+              '```text',
+              *result.get('serial_tail', [])[-400:],
+              '```',
+              '',
+          ]
+          Path(
+              'tests/vc4/results/direct-linux-diagnostic/RESULT.md'
+          ).write_text('\n'.join(lines), encoding='utf-8')
+          print(json.dumps(status, indent=2))
+          PY
+          git diff --check
+
+      - name: Upload complete diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-direct-linux-diagnostic-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-direct-linux-diagnostic
+            /tmp/vc4-direct-linux-*.log
+            /tmp/vc4-direct-linux-machine.diff
+            /tmp/vc4-official/SHA256SUMS
+            build/vc4-linux-initramfs/SHA256SUMS
+            tests/vc4/results/direct-linux-diagnostic
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the result without generated machine drift
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a tests/vc4/results/direct-linux-diagnostic \
+            /tmp/direct-linux-diagnostic-result
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          rm -rf tests/vc4/results/direct-linux-diagnostic
+          mkdir -p tests/vc4/results
+          cp -a /tmp/direct-linux-diagnostic-result \
+            tests/vc4/results/direct-linux-diagnostic
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-direct-linux-diagnostic.yml
+          git add tests/vc4/results/direct-linux-diagnostic
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          if python3 - <<'PY'
+          import json
+          from pathlib import Path
+          status = json.loads(
+              Path(
+                  'tests/vc4/results/direct-linux-diagnostic/result.json'
+              ).read_text()
+          )
+          raise SystemExit(0 if status.get('passed') else 1)
+          PY
+          then
+            message="tests/vc4: validate direct Linux framebuffer scanout [skip ci]"
+          else
+            message="tests/vc4: record independent direct Linux frontier [skip ci]"
+          fi
+          git commit -m "$message"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
