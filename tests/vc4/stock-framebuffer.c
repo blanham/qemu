@@ -14,6 +14,9 @@ typedef unsigned int uint32_t;
 typedef unsigned long uint64_t;
 typedef unsigned long uintptr_t;
 
+#define UINT32_C(value) value##U
+#define UINT64_C(value) value##UL
+
 #define MBOX_BASE           UINT64_C(0x3f00b880)
 #define MBOX_READ           0x00
 #define MBOX_STATUS         0x18
@@ -43,9 +46,6 @@ typedef unsigned long uintptr_t;
 #define COLOR_GREEN         UINT32_C(0x0000ff00)
 #define COLOR_BLUE          UINT32_C(0x00ff0000)
 #define COLOR_WHITE         UINT32_C(0x00ffffff)
-
-#define UINT32_C(value) value##U
-#define UINT64_C(value) value##UL
 
 struct framebuffer_result {
     uint64_t magic;
