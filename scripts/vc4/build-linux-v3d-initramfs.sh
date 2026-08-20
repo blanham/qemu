@@ -35,6 +35,11 @@ mkdir -p \
     "$root_dir/tests/vc4/linux-v3d-init.c"
 chmod 0755 "$out_dir/root/init"
 
+# Do not pipe strings(1) into grep -q under pipefail: grep exits as soon as it
+# finds a marker, which can SIGPIPE strings and turn a successful validation
+# into status 141.  Materializing the strings table also leaves useful fixture
+# evidence behind when a marker really is absent.
+strings "$out_dir/root/init" > "$out_dir/STRINGS"
 for marker in \
     VC4_LINUX_DRM_PROBE_START \
     VC4_LINUX_DRM_CARD0_OK \
@@ -44,7 +49,7 @@ for marker in \
     VC4_LINUX_DRM_BO_OK \
     VC4_LINUX_DRM_UAPI_OK \
     VC4_LINUX_V3D_DRIVER_OK; do
-    strings "$out_dir/root/init" | grep -Fq "$marker"
+    grep -Fq -- "$marker" "$out_dir/STRINGS"
 done
 
 (
