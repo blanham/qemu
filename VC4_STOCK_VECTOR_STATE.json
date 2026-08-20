@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-08-20T10:21:18.561471+00:00",
+  "outcomes": {
+    "build": "success",
+    "dependencies": "success",
+    "firmware": "success",
+    "materialize": "success",
+    "regressions": "success",
+    "vector": "success"
+  },
+  "probe_return_code": "2",
+  "probe_tail": [
+    "usage: raspi3-stock-bootcode-0200.py [-h] [--start-elf START_ELF]",
+    "                                     [--fixup-dat FIXUP_DAT]",
+    "                                     [--seconds SECONDS]",
+    "                                     [--icount-shift ICOUNT_SHIFT]",
+    "                                     [--one-insn-per-tb] [--fast-tcg]",
+    "                                     [--barrier-is-success]",
+    "                                     qemu bootcode",
+    "raspi3-stock-bootcode-0200.py: error: unrecognized arguments: --qemu-log /tmp/vc4-stock-vector-state/qemu.stderr.log"
+  ],
+  "qemu_stderr": [],
+  "run_attempt": "1",
+  "run_id": "32358055395",
+  "schema_version": 1,
+  "source_sha": "9964cc7605bd87021a2027a9e7a9decfc2fd7391",
+  "vector": null,
+  "vector_state_captured": false
+}
