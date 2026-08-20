@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 V3D_SOURCE = Path("hw/display/bcm2835_v3d.c")
+V3D_HEADER = Path("include/hw/display/bcm2835_v3d.h")
 DISPLAY_MESON = Path("hw/display/meson.build")
 PERIPHERALS_HEADER = Path("include/hw/arm/bcm2835_peripherals.h")
 PERIPHERALS_SOURCE = Path("hw/arm/bcm2835_peripherals.c")
@@ -38,7 +39,24 @@ def update_v3d_source() -> None:
         '#include "qemu/osdep.h"\n#include "qemu/units.h"\n',
         "V3D unit definitions",
     )
+    text = replace_once(
+        text,
+        '#include "exec/memory.h"\n',
+        '#include "system/memory.h"\n',
+        "V3D memory API include",
+    )
     V3D_SOURCE.write_text(text, encoding="utf-8")
+
+
+def update_v3d_header() -> None:
+    text = V3D_HEADER.read_text(encoding="utf-8")
+    text = replace_once(
+        text,
+        '#include "exec/memory.h"\n',
+        '#include "system/memory.h"\n',
+        "V3D header memory API include",
+    )
+    V3D_HEADER.write_text(text, encoding="utf-8")
 
 
 def update_meson() -> None:
@@ -148,6 +166,7 @@ def update_peripherals() -> None:
 
 def main() -> int:
     update_v3d_source()
+    update_v3d_header()
     update_meson()
     update_header()
     update_peripherals()
