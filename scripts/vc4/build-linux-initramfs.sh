@@ -34,7 +34,8 @@ test -x "$out_dir/root/init"
 test -s "$out_dir/initramfs.cpio"
 test -s "$out_dir/initramfs.cpio.gz"
 gzip -t "$out_dir/initramfs.cpio.gz"
-cpio --quiet -it < "$out_dir/initramfs.cpio" | grep -qx './init'
+cpio --quiet -it < "$out_dir/initramfs.cpio" > "$out_dir/CONTENTS"
+grep -Eq '^(\./)?init$' "$out_dir/CONTENTS"
 
 sha256sum \
     "$out_dir/root/init" \
