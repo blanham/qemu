@@ -1,0 +1,9 @@
+{
+  "classification": "direct-linux-probe-infrastructure-failed",
+  "generated_at": "2026-08-20T11:51:46.695203+00:00",
+  "probe_return_code": "",
+  "result": {},
+  "run_id": "32365801218",
+  "schema_version": 2,
+  "source_sha": "5753eb637e5b25a92724c84abed1fdcc62bfd257"
+}
