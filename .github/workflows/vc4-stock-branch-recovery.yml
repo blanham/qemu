@@ -1,0 +1,445 @@
+name: VC4 stock-firmware branch recovery
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-stock-branch-recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-branch-recovery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Score stock-firmware evidence across VC4 branches
+        id: score
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin '+refs/heads/agent/vc4-*:refs/remotes/origin/agent/vc4-*'
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from datetime import datetime, timezone
+          import json
+          from pathlib import Path
+          import re
+          import subprocess
+
+          branch_pattern = re.compile(
+              r'(?:stock|bootcode|startelf|stage2|sdhost|deterministic|'
+              r'linux-(?:boot|bringup|framebuffer)|post-hub|usb|cache|pm-|'
+              r'image-grafx)',
+              re.IGNORECASE,
+          )
+
+          def run(*args: str) -> str:
+              return subprocess.check_output(args, text=True).strip()
+
+          def flatten(value, prefix=''):
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      path = f'{prefix}.{key}' if prefix else str(key)
+                      yield from flatten(child, path)
+              elif isinstance(value, list):
+                  for index, child in enumerate(value):
+                      yield from flatten(child, f'{prefix}[{index}]')
+              else:
+                  yield prefix.lower(), value
+
+          refs = run(
+              'git', 'for-each-ref', '--format=%(refname)',
+              'refs/remotes/origin/agent/vc4-*'
+          ).splitlines()
+          rows = []
+          for ref in refs:
+              branch = ref.removeprefix('refs/remotes/origin/')
+              if branch in {
+                  'agent/vc4-hetero-direct-linux',
+                  'agent/vc4-linux-framebuffer-baseline',
+              }:
+                  continue
+              if not branch_pattern.search(branch):
+                  continue
+              sha = run('git', 'rev-parse', ref)
+              timestamp = int(run('git', 'show', '-s', '--format=%ct', sha))
+              files = run('git', 'ls-tree', '-r', '--name-only', sha).splitlines()
+              json_files = [
+                  path for path in files
+                  if path.endswith('.json') and (
+                      Path(path).name.startswith('VC4_')
+                      or path.startswith('tests/vc4/results/')
+                  )
+              ]
+              score = 0
+              evidence = []
+              parsed_files = []
+              for path in json_files[:80]:
+                  try:
+                      raw = subprocess.check_output(
+                          ['git', 'show', f'{sha}:{path}'],
+                          stderr=subprocess.DEVNULL,
+                      )
+                      if len(raw) > 2 * 1024 * 1024:
+                          continue
+                      data = json.loads(raw)
+                  except Exception:
+                      continue
+                  parsed_files.append(path)
+                  for key, value in flatten(data):
+                      if value is not True and value != 'success':
+                          continue
+                      weight = 0
+                      if 'screendump' in key and 'match' in key:
+                          weight = 1200
+                      elif 'framebuffer' in key and (
+                          'pass' in key or 'seen' in key or 'match' in key
+                      ):
+                          weight = 900
+                      elif key.endswith('init_seen'):
+                          weight = 750
+                      elif 'linux_version_seen' in key:
+                          weight = 650
+                      elif 'arm_payload_signature_seen' in key:
+                          weight = 550
+                      elif key.endswith('signature_seen'):
+                          weight = 450
+                      elif 'start' in key and 'elf' in key and (
+                          'seen' in key or 'entered' in key or 'loaded' in key
+                      ):
+                          weight = 350
+                      elif 'bootcode' in key and (
+                          'progress' in key or 'cleared' in key or 'passed' in key
+                      ):
+                          weight = 200
+                      elif 'old_' in key and 'cleared' in key:
+                          weight = 100
+                      elif value == 'success' and any(
+                          word in key for word in (
+                              'build', 'regression', 'smoke', 'configure'
+                          )
+                      ):
+                          weight = 25
+                      if weight:
+                          score += weight
+                          evidence.append({'key': key, 'weight': weight})
+              # Branch naming is weak evidence only; status files dominate.
+              if 'linux-framebuffer' in branch:
+                  score += 80
+              elif 'linux-bringup' in branch or 'linux-boot' in branch:
+                  score += 60
+              elif 'startelf' in branch or 'stage2' in branch:
+                  score += 40
+              elif 'bootcode' in branch:
+                  score += 20
+              rows.append({
+                  'branch': branch,
+                  'sha': sha,
+                  'timestamp': timestamp,
+                  'timestamp_iso': datetime.fromtimestamp(
+                      timestamp, timezone.utc
+                  ).isoformat(),
+                  'score': score,
+                  'evidence': sorted(
+                      evidence, key=lambda item: item['weight'], reverse=True
+                  )[:30],
+                  'status_files': parsed_files,
+              })
+
+          rows.sort(key=lambda row: (row['score'], row['timestamp']), reverse=True)
+          report = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': run('git', 'rev-parse', 'HEAD'),
+              'candidates': rows,
+          }
+          Path('/tmp/vc4-stock-candidates.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          shortlist = [row for row in rows if row['score'] > 0][:4]
+          Path('/tmp/vc4-stock-shortlist.json').write_text(
+              json.dumps(shortlist, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          if not shortlist:
+              raise SystemExit('no stock-firmware candidate carried evidence')
+          print(json.dumps(shortlist, indent=2))
+          PY
+
+      - name: Build and regress the strongest candidates
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/vc4-stock-validation
+          mkdir -p /tmp/vc4-stock-validation
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import shutil
+          import subprocess
+
+          candidates = json.loads(
+              Path('/tmp/vc4-stock-shortlist.json').read_text()
+          )
+          results = []
+          selected = None
+
+          def execute(command, cwd, log):
+              with log.open('a', encoding='utf-8') as stream:
+                  stream.write('$ ' + ' '.join(command) + '\n')
+                  completed = subprocess.run(
+                      command,
+                      cwd=cwd,
+                      stdout=stream,
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                  )
+                  stream.write(f'\n[return code {completed.returncode}]\n')
+                  return completed.returncode
+
+          for index, candidate in enumerate(candidates):
+              root = Path(f'/tmp/vc4-stock-validation/candidate-{index}')
+              log = Path(f'/tmp/vc4-stock-validation/candidate-{index}.log')
+              subprocess.run(
+                  ['git', 'worktree', 'add', '--detach', str(root), candidate['sha']],
+                  check=True,
+              )
+              result = {
+                  'branch': candidate['branch'],
+                  'sha': candidate['sha'],
+                  'score': candidate['score'],
+                  'log': str(log),
+              }
+              try:
+                  py_files = sorted(
+                      str(path.relative_to(root))
+                      for path in (root / 'scripts/vc4').glob('*.py')
+                  ) if (root / 'scripts/vc4').is_dir() else []
+                  if py_files:
+                      result['py_compile_rc'] = execute(
+                          ['python3', '-m', 'py_compile', *py_files], root, log
+                      )
+                  else:
+                      result['py_compile_rc'] = 0
+                  result['diff_check_rc'] = execute(
+                      ['git', 'diff', '--check'], root, log
+                  )
+                  result['configure_rc'] = execute(
+                      [
+                          './configure',
+                          '--target-list=aarch64-softmmu,vc4-softmmu',
+                          '--disable-docs',
+                          '--disable-werror',
+                      ],
+                      root,
+                      log,
+                  )
+                  if result['configure_rc'] == 0:
+                      result['build_rc'] = execute(
+                          [
+                              'ninja', '-C', 'build',
+                              'qemu-system-aarch64', 'qemu-system-vc4',
+                          ],
+                          root,
+                          log,
+                      )
+                  else:
+                      result['build_rc'] = None
+                  if result['build_rc'] == 0 and (
+                      root / 'scripts/vc4/preg-mutex-smoke.py'
+                  ).is_file():
+                      result['preg_rc'] = execute(
+                          [
+                              'python3', 'scripts/vc4/preg-mutex-smoke.py',
+                              '--qemu', 'build/qemu-system-vc4',
+                          ],
+                          root,
+                          log,
+                      )
+                  else:
+                      result['preg_rc'] = None
+                  if result['build_rc'] == 0 and (
+                      root / 'scripts/vc4/msync-smoke.py'
+                  ).is_file():
+                      result['msync_rc'] = execute(
+                          [
+                              'python3', 'scripts/vc4/msync-smoke.py',
+                              '--qemu', 'build/qemu-system-aarch64',
+                          ],
+                          root,
+                          log,
+                      )
+                  else:
+                      result['msync_rc'] = None
+
+                  required = (
+                      result['py_compile_rc'] == 0
+                      and result['diff_check_rc'] == 0
+                      and result['configure_rc'] == 0
+                      and result['build_rc'] == 0
+                      and result.get('preg_rc') in (0, None)
+                      and result.get('msync_rc') in (0, None)
+                  )
+                  result['validated'] = required
+                  if required and selected is None:
+                      selected = result
+                      results.append(result)
+                      break
+              finally:
+                  results.append(result) if result not in results else None
+                  subprocess.run(
+                      ['git', 'worktree', 'remove', '--force', str(root)],
+                      check=False,
+                  )
+                  shutil.rmtree(root, ignore_errors=True)
+
+          output = {
+              'schema_version': 1,
+              'selected': selected,
+              'results': results,
+          }
+          Path('/tmp/vc4-stock-validation.json').write_text(
+              json.dumps(output, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          if selected is None:
+              raise SystemExit('no shortlisted stock branch passed validation')
+          Path('/tmp/vc4-stock-selected-sha').write_text(
+              selected['sha'] + '\n', encoding='utf-8'
+          )
+          Path('/tmp/vc4-stock-selected-branch').write_text(
+              selected['branch'] + '\n', encoding='utf-8'
+          )
+          print(json.dumps(output, indent=2))
+          PY
+
+      - name: Generate the recovery report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tests/vc4/results/stock-branch-recovery
+          cp /tmp/vc4-stock-candidates.json \
+            tests/vc4/results/stock-branch-recovery/candidates.json
+          if test -f /tmp/vc4-stock-validation.json; then
+            cp /tmp/vc4-stock-validation.json \
+              tests/vc4/results/stock-branch-recovery/validation.json
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          candidates = json.loads(
+              Path('/tmp/vc4-stock-candidates.json').read_text()
+          ).get('candidates', [])
+          validation_path = Path('/tmp/vc4-stock-validation.json')
+          validation = (
+              json.loads(validation_path.read_text())
+              if validation_path.is_file() else {}
+          )
+          selected = validation.get('selected')
+          lines = [
+              '# VC4 stock-firmware branch recovery',
+              '',
+              f'- Candidate branches scored: `{len(candidates)}`',
+              f'- Selected branch: '
+              f'`{selected.get("branch") if selected else None}`',
+              f'- Selected SHA: `{selected.get("sha") if selected else None}`',
+              f'- Dual-frontend build/regressions: '
+              f'`{bool(selected and selected.get("validated"))}`',
+              '',
+              'The selected tip is published only after Python validation, '
+              '`git diff --check`, both QEMU frontend builds, and every '
+              'available VC4 P-register and multicore-sync smoke test.',
+              '',
+              '## Highest static scores',
+              '',
+          ]
+          for row in candidates[:15]:
+              lines.append(
+                  f'- `{row["branch"]}` — score `{row["score"]}`, '
+                  f'SHA `{row["sha"][:12]}`'
+              )
+          Path(
+              'tests/vc4/results/stock-branch-recovery/RESULT.md'
+          ).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Upload complete recovery diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-branch-recovery
+          path: |
+            /tmp/vc4-stock-candidates.json
+            /tmp/vc4-stock-shortlist.json
+            /tmp/vc4-stock-validation.json
+            /tmp/vc4-stock-validation
+            tests/vc4/results/stock-branch-recovery
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the report and selected branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a tests/vc4/results/stock-branch-recovery \
+            /tmp/stock-branch-recovery-result
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          rm -rf tests/vc4/results/stock-branch-recovery
+          mkdir -p tests/vc4/results
+          cp -a /tmp/stock-branch-recovery-result \
+            tests/vc4/results/stock-branch-recovery
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-stock-branch-recovery.yml
+          git add tests/vc4/results/stock-branch-recovery
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "tests/vc4: reconcile stock-firmware experiment branches [skip ci]"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
+
+          if test -f /tmp/vc4-stock-selected-sha; then
+            selected=$(cat /tmp/vc4-stock-selected-sha)
+            remote=$(git ls-remote --heads origin \
+              agent/vc4-stock-linux-recovered | awk '{print $1}')
+            if [ -n "$remote" ]; then
+              git push \
+                --force-with-lease="refs/heads/agent/vc4-stock-linux-recovered:$remote" \
+                origin "$selected:refs/heads/agent/vc4-stock-linux-recovered"
+            else
+              git push origin \
+                "$selected:refs/heads/agent/vc4-stock-linux-recovered"
+            fi
+          fi
