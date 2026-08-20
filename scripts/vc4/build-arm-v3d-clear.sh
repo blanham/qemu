@@ -8,6 +8,13 @@ ld=${AARCH64_LD:-aarch64-linux-gnu-ld}
 objcopy=${AARCH64_OBJCOPY:-aarch64-linux-gnu-objcopy}
 objdump=${AARCH64_OBJDUMP:-aarch64-linux-gnu-objdump}
 
+for tool in "$cc" "$ld" "$objcopy" "$objdump" sha256sum grep; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf 'required V3D witness build tool not found: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+
 rm -rf "$out_dir"
 mkdir -p "$out_dir"
 
