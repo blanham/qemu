@@ -1,0 +1,118 @@
+name: VC4 heterogeneous direct-Linux fixture recovery
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-hetero-direct-linux-fixture-recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hetero-direct-linux-fixture-recovery
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install fixture toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            linux-libc-dev-arm64-cross \
+            python3
+
+      - name: Repair output-path handling and classification
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          builder = Path('scripts/vc4/build-linux-initramfs.sh')
+          text = builder.read_text(encoding='utf-8')
+          if 'VC4_INITRAMFS_OUTPUT_CANONICALIZED' not in text:
+              lines = text.splitlines(keepends=True)
+              assignment = None
+              variable = None
+              for index, line in enumerate(lines):
+                  match = re.match(r'^(OUT(?:_DIR)?)[ \t]*=', line)
+                  if match:
+                      assignment = index
+                      variable = match.group(1)
+                      break
+              if assignment is None or variable is None:
+                  raise SystemExit('could not locate initramfs output variable')
+              insertion = (
+                  f'# VC4_INITRAMFS_OUTPUT_CANONICALIZED: subshells may chdir.\n'
+                  f'{variable}=$(realpath -m -- "${variable}")\n'
+              )
+              lines.insert(assignment + 1, insertion)
+              text = ''.join(lines)
+              builder.write_text(text, encoding='utf-8')
+
+          workflow = Path('.github/workflows/vc4-hetero-direct-linux.yml')
+          wtext = workflow.read_text(encoding='utf-8')
+          old = (
+              "elif os.environ.get('BUILD_OUTCOME') != 'success':\n"
+              "    classification = 'hetero-direct-build-failed'\n"
+          )
+          new = (
+              "elif os.environ.get('FIXTURES_OUTCOME') != 'success':\n"
+              "    classification = 'hetero-direct-fixtures-failed'\n"
+              "elif os.environ.get('BUILD_OUTCOME') != 'success':\n"
+              "    classification = 'hetero-direct-build-failed'\n"
+          )
+          if 'hetero-direct-fixtures-failed' not in wtext:
+              if old not in wtext:
+                  raise SystemExit('could not locate direct-Linux classification block')
+              wtext = wtext.replace(old, new, 1)
+              workflow.write_text(wtext, encoding='utf-8')
+          PY
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          python3 -m py_compile scripts/vc4/raspi3-linux-probe.py
+          git diff --check
+
+      - name: Build deterministic initramfs twice
+        run: |
+          set -euo pipefail
+          rm -rf build/vc4-linux-initramfs-a build/vc4-linux-initramfs-b
+          bash scripts/vc4/build-linux-initramfs.sh \
+            build/vc4-linux-initramfs-a
+          bash scripts/vc4/build-linux-initramfs.sh \
+            "$PWD/build/vc4-linux-initramfs-b"
+          test -s build/vc4-linux-initramfs-a/initramfs.cpio
+          test -s build/vc4-linux-initramfs-b/initramfs.cpio
+          cmp \
+            build/vc4-linux-initramfs-a/initramfs.cpio \
+            build/vc4-linux-initramfs-b/initramfs.cpio
+          test -s build/vc4-linux-initramfs-a/SHA256SUMS
+
+      - name: Publish repair and remove recovery workflow
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/vc4-hetero-direct-linux-fixture-recovery.yml
+          git add \
+            scripts/vc4/build-linux-initramfs.sh \
+            .github/workflows/vc4-hetero-direct-linux.yml
+          git diff --cached --check
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m 'tests/vc4: make Linux initramfs output path stable'
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
