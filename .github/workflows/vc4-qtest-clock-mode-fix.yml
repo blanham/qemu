@@ -1,0 +1,60 @@
+name: VC4 qtest-under-TCG clock-mode migration
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-framebuffer-bringup
+    paths:
+      - .github/workflows/vc4-qtest-clock-mode-fix.yml
+      - scripts/vc4/migrate-qtest-clock-mode.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-qtest-clock-mode-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-framebuffer-bringup
+          fetch-depth: 0
+
+      - name: Apply the exact source migration
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/migrate-qtest-clock-mode.py
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-framebuffer.py \
+            scripts/vc4/raspi3-stock-linux.py
+          python3 -m py_compile scripts/vc4/migrate-qtest-clock-mode.py
+          git diff --check
+
+      - name: Publish only the validated harness changes
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -- \
+            .github/workflows/vc4-qtest-clock-mode-fix.yml \
+            scripts/vc4/migrate-qtest-clock-mode.py
+          git rm -f -- \
+            .github/workflows/vc4-stock-clock-recovery.yml \
+            2>/dev/null || true
+          git add -- \
+            .github/workflows/vc4-linux-framebuffer-bringup.yml \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-framebuffer.py \
+            scripts/vc4/raspi3-stock-linux.py
+          git diff --cached --check
+          git commit -m "tests/vc4: handle qtest control sockets under TCG"
+          git pull --rebase origin agent/vc4-linux-framebuffer-bringup
+          git push origin HEAD:agent/vc4-linux-framebuffer-bringup
