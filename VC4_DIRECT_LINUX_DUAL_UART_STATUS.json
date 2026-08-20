@@ -1,0 +1,17 @@
+{
+  "aux_linux_version_seen": false,
+  "aux_tail": [],
+  "base_result": {},
+  "classification": "dual-uart-probe-infrastructure",
+  "combined_framebuffer_marker_seen": false,
+  "combined_init_seen": false,
+  "combined_linux_version_seen": false,
+  "generated_at": "2026-08-20T12:01:27.996027+00:00",
+  "pl011_linux_version_seen": false,
+  "pl011_tail": [],
+  "probe_return_code": "",
+  "run_id": "32366599753",
+  "scanout_passed": false,
+  "schema_version": 1,
+  "source_sha": "84ad213feb4ed18a084c1546cb646f52e3cd6891"
+}
