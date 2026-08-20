@@ -1,0 +1,491 @@
+name: VC4 deterministic-time Linux and framebuffer frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-deterministic-time-linux
+    paths:
+      - .github/workflows/vc4-deterministic-time-linux.yml
+      - scripts/vc4/materialize-deterministic-time.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-deterministic-time-linux
+  cancel-in-progress: false
+
+jobs:
+  build-probe-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BRANCH: agent/vc4-deterministic-time-linux
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIRMWARE_DIR: /tmp/rpi-firmware
+      PAYLOAD_DIR: /tmp/vc4-framebuffer-payload
+      INITRAMFS_DIR: /tmp/vc4-linux-initramfs
+      RESULTS_DIR: /tmp/vc4-deterministic-time
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-deterministic-time-linux
+          fetch-depth: 0
+
+      - name: Install build and probe dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            curl \
+            gcc-aarch64-linux-gnu \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev
+
+      - name: Materialize deterministic timing and validate harnesses
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/materialize-deterministic-time.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/vc4/raspi3-stock-linux.py')
+          text = path.read_text()
+          old = 'b"console=ttyAMA0,115200 console=tty1 "'
+          new = 'b"console=tty1 console=ttyAMA0,115200 "'
+          if old in text:
+              if text.count(old) != 1:
+                  raise SystemExit('ambiguous Linux console ordering')
+              path.write_text(text.replace(old, new, 1))
+          elif new not in text:
+              raise SystemExit('Linux console command line not found')
+          PY
+          python3 -m py_compile \
+            scripts/vc4/build-initramfs.py \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-framebuffer.py \
+            scripts/vc4/raspi3-stock-linux.py \
+            scripts/vc4/msync-smoke.py \
+            scripts/vc4/preg-mutex-smoke.py
+          bash -n \
+            scripts/vc4/build-linux-initramfs.sh \
+            scripts/vc4/build-stock-framebuffer.sh
+          git diff --check
+
+      - name: Build framebuffer and Linux userspace payloads
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-stock-framebuffer.sh "$PAYLOAD_DIR"
+          bash scripts/vc4/build-linux-initramfs.sh "$INITRAMFS_DIR"
+          test -s "$PAYLOAD_DIR/kernel8.img"
+          test -s "$INITRAMFS_DIR/initramfs.cpio.gz"
+          gzip -t "$INITRAMFS_DIR/initramfs.cpio.gz"
+
+      - name: Configure and build both QEMU frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+
+      - name: Run focused architectural regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Download one pinned firmware, kernel, and DTB set
+        run: |
+          set -euo pipefail
+          mkdir -p "$FIRMWARE_DIR"
+          for file in \
+            bootcode.bin \
+            start.elf \
+            fixup.dat \
+            kernel8.img \
+            bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 4 \
+              --output "$FIRMWARE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIRMWARE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIRMWARE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIRMWARE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIRMWARE_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$FIRMWARE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+      - name: Build the minimal AArch64 handoff witness
+        run: |
+          set -euo pipefail
+          cat >/tmp/vc4-arm-payload.S <<'EOF'
+          .section .text
+          .global _start
+          .type _start, %function
+          _start:
+              mov x4, x0
+              mov x5, sp
+              mrs x6, mpidr_el1
+              ldr x0, =0x0000000000001000
+              ldr x1, =0x5643345f41524d21
+              str x1, [x0]
+              str x4, [x0, #8]
+              str x5, [x0, #16]
+              str x6, [x0, #24]
+              dsb sy
+          1:
+              wfe
+              b 1b
+              .ltorg
+          .size _start, . - _start
+          EOF
+          aarch64-linux-gnu-as \
+            -o /tmp/vc4-arm-payload.o /tmp/vc4-arm-payload.S
+          aarch64-linux-gnu-ld \
+            -nostdlib --entry=_start -Ttext=0x80000 \
+            -o /tmp/vc4-arm-payload.elf /tmp/vc4-arm-payload.o
+          aarch64-linux-gnu-objcopy \
+            -O binary /tmp/vc4-arm-payload.elf /tmp/vc4-handoff-kernel8.img
+          aarch64-linux-gnu-objdump -d /tmp/vc4-arm-payload.elf \
+            >/tmp/vc4-arm-payload.dis
+
+      - name: Select the least aggressive deterministic timing that hands off
+        id: handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RESULTS_DIR"
+          mkdir -p "$RESULTS_DIR/handoff"
+          cp /tmp/vc4-arm-payload.dis "$RESULTS_DIR/handoff/payload.dis"
+          selected=
+          for shift in 2 4 6 8; do
+            out="$RESULTS_DIR/handoff/shift-${shift}"
+            mkdir -p "$out"
+            set +e
+            python3 scripts/vc4/raspi3-stock-arm-payload.py \
+              build/qemu-system-aarch64 \
+              "$FIRMWARE_DIR/bootcode.bin" \
+              "$FIRMWARE_DIR/start.elf" \
+              "$FIRMWARE_DIR/fixup.dat" \
+              /tmp/vc4-handoff-kernel8.img \
+              --seconds 150 \
+              --clock-step-ns 10000000 \
+              --icount-shift "$shift" \
+              --out-dir "$out" \
+              2>&1 | tee "$out/probe.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            printf '%s\n' "$rc" > "$out/probe.status"
+            if python3 - "$out/result.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          raise SystemExit(
+              0 if path.is_file() and json.loads(path.read_text()).get(
+                  'signature_seen'
+              ) else 1
+          )
+          PY
+            then
+              selected=$shift
+              break
+            fi
+          done
+          printf '%s\n' "$selected" > "$RESULTS_DIR/selected-shift.txt"
+          echo "selected_shift=$selected" >> "$GITHUB_OUTPUT"
+          if test -n "$selected"; then
+            echo "reached=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reached=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prove bare-metal property framebuffer and QMP scanout
+        id: framebuffer
+        if: steps.handoff.outputs.reached == 'true'
+        shell: bash
+        env:
+          SHIFT: ${{ steps.handoff.outputs.selected_shift }}
+        run: |
+          set -euo pipefail
+          out="$RESULTS_DIR/framebuffer"
+          mkdir -p "$out"
+          set +e
+          python3 scripts/vc4/raspi3-stock-framebuffer.py \
+            build/qemu-system-aarch64 \
+            "$FIRMWARE_DIR/bootcode.bin" \
+            "$FIRMWARE_DIR/start.elf" \
+            "$FIRMWARE_DIR/fixup.dat" \
+            "$PAYLOAD_DIR/kernel8.img" \
+            --seconds 360 \
+            --clock-step-ns 10000000 \
+            --icount-shift "$SHIFT" \
+            --out-dir "$out" \
+            2>&1 | tee "$out/probe.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > "$out/probe.status"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Boot pinned Raspberry Pi Linux and paint /dev/fb0
+        id: linux
+        if: steps.handoff.outputs.reached == 'true'
+        shell: bash
+        env:
+          SHIFT: ${{ steps.handoff.outputs.selected_shift }}
+        run: |
+          set -euo pipefail
+          out="$RESULTS_DIR/linux"
+          mkdir -p "$out"
+          set +e
+          python3 scripts/vc4/raspi3-stock-linux.py \
+            build/qemu-system-aarch64 \
+            "$FIRMWARE_DIR/bootcode.bin" \
+            "$FIRMWARE_DIR/start.elf" \
+            "$FIRMWARE_DIR/fixup.dat" \
+            "$FIRMWARE_DIR/kernel8.img" \
+            "$FIRMWARE_DIR/bcm2710-rpi-3-b.dtb" \
+            "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --seconds 1200 \
+            --clock-step-ns 10000000 \
+            --icount-shift "$SHIFT" \
+            --poll-interval 0.005 \
+            --out-dir "$out" \
+            2>&1 | tee "$out/probe.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > "$out/probe.status"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Classify the exact deterministic-time frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import re
+
+          root = Path('/tmp/vc4-deterministic-time')
+
+          def load(path: Path):
+              if not path.is_file():
+                  return {}
+              return json.loads(path.read_text())
+
+          handoffs = []
+          for path in sorted((root / 'handoff').glob('shift-*/result.json')):
+              item = load(path)
+              item['_path'] = str(path)
+              handoffs.append(item)
+          selected_text = (
+              (root / 'selected-shift.txt').read_text().strip()
+              if (root / 'selected-shift.txt' else ''
+          )
+          selected_shift = int(selected_text) if selected_text else None
+          selected = next(
+              (item for item in handoffs
+               if item.get('icount_shift') == selected_shift),
+              {},
+          )
+          framebuffer = load(root / 'framebuffer/result.json')
+          linux = load(root / 'linux/result.json')
+
+          def cpu_frontier(result):
+              records = []
+              for cpu in result.get('cpu_snapshot', {}).get('cpus', []):
+                  registers = str(cpu.get('registers', ''))
+                  match = re.search(
+                      r'(?:^|\\s)pc\\s*=\\s*([0-9a-f]+)',
+                      registers, re.I,
+                  )
+                  records.append({
+                      'cpu_index': cpu.get('cpu_index'),
+                      'qom_type': cpu.get('qom_type'),
+                      'halted': cpu.get('halted'),
+                      'pc': None if match is None else f"0x{match.group(1)}",
+                      'registers': registers,
+                  })
+              return records
+
+          if not selected.get('signature_seen'):
+              classification = 'stock-firmware-handoff'
+          elif not framebuffer.get('passed'):
+              classification = 'bare-metal-framebuffer'
+          elif not linux.get('linux_banner_seen'):
+              classification = 'linux-kernel-entry'
+          elif not linux.get('init_marker_seen'):
+              classification = 'linux-userspace-entry'
+          elif not linux.get('framebuffer_marker_seen'):
+              classification = 'linux-framebuffer-device'
+          elif not linux.get('screendump_samples_match'):
+              classification = 'linux-framebuffer-scanout'
+          else:
+              classification = 'complete'
+
+          status = {
+              'schema_version': 1,
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'classification': classification,
+              'selected_icount_shift': selected_shift,
+              'handoff_matrix': [
+                  {
+                      'icount_shift': item.get('icount_shift'),
+                      'signature_seen': item.get('signature_seen'),
+                      'elapsed_seconds': item.get('elapsed_seconds'),
+                      'clock_mode': item.get('clock_mode'),
+                      'observed_signature': item.get('observed_signature'),
+                      'arm_control0': item.get('arm_control0'),
+                      'arm_control1': item.get('arm_control1'),
+                      'arm_status': item.get('arm_status'),
+                      'pm_proc': item.get('pm_proc'),
+                      'kernel_word_after_boot': item.get(
+                          'kernel_word_after_boot'
+                      ),
+                      'probe_error': item.get('probe_error'),
+                      'cpu_frontier': cpu_frontier(item),
+                      'diagnostics_tail': item.get(
+                          'qemu_diagnostics_tail', []
+                      )[-120:],
+                  }
+                  for item in handoffs
+              ],
+              'framebuffer': {
+                  key: framebuffer.get(key)
+                  for key in (
+                      'passed', 'payload_completed', 'status', 'stage',
+                      'geometry_ok', 'framebuffer_bus', 'framebuffer_phys',
+                      'framebuffer_size', 'pitch', 'width', 'height',
+                      'depth', 'pixel_order', 'payload_samples_match',
+                      'qtest_samples_match', 'screendump_samples_match',
+                      'screendump_width', 'screendump_height',
+                      'probe_error', 'clock_mode', 'icount_shift'
+                  )
+              } | {
+                  'cpu_frontier': cpu_frontier(framebuffer),
+                  'diagnostics_tail': framebuffer.get(
+                      'qemu_diagnostics_tail', []
+                  )[-160:],
+              },
+              'linux': {
+                  key: linux.get(key)
+                  for key in (
+                      'passed', 'linux_banner_seen', 'init_marker_seen',
+                      'framebuffer_marker_seen',
+                      'framebuffer_failure_marker',
+                      'screendump_samples_match', 'screendump_width',
+                      'screendump_height', 'probe_error', 'clock_mode',
+                      'icount_shift', 'arm_control0', 'arm_control1',
+                      'arm_status', 'pm_proc'
+                  )
+              } | {
+                  'cpu_frontier': cpu_frontier(linux),
+                  'serial_tail': linux.get('serial_tail', [])[-600:],
+                  'diagnostics_tail': linux.get(
+                      'qemu_diagnostics_tail', []
+                  )[-240:],
+              },
+          }
+          Path('VC4_DETERMINISTIC_TIME_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+
+          lines = [
+              '# VC4 deterministic-time Linux and framebuffer frontier',
+              '',
+              f"Classification: **`{classification}`**",
+              f"Selected icount shift: **`{selected_shift}`**",
+              '',
+              '## Handoff matrix',
+              '',
+          ]
+          for item in status['handoff_matrix']:
+              lines.append(
+                  f"- shift `{item['icount_shift']}`: "
+                  f"signature `{item['signature_seen']}`, "
+                  f"PCs `{[cpu['pc'] for cpu in item['cpu_frontier']]}`"
+              )
+          lines.extend([
+              '',
+              '## Gates',
+              '',
+              f"- Stock firmware entered the ARM witness: "
+              f"**{bool(selected.get('signature_seen'))}**",
+              f"- Bare-metal framebuffer and QMP scanout: "
+              f"**{bool(framebuffer.get('passed'))}**",
+              f"- Linux banner: **{bool(linux.get('linux_banner_seen'))}**",
+              f"- Linux `/init`: **{bool(linux.get('init_marker_seen'))}**",
+              f"- Linux `/dev/fb0` painter: "
+              f"**{bool(linux.get('framebuffer_marker_seen'))}**",
+              f"- Linux quadrant scanout: "
+              f"**{bool(linux.get('screendump_samples_match'))}**",
+          ])
+          Path('VC4_DETERMINISTIC_TIME_STATUS.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload all deterministic-time evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-deterministic-time-linux-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-deterministic-time
+            /tmp/vc4-framebuffer-payload
+            /tmp/vc4-linux-initramfs
+            VC4_DETERMINISTIC_TIME_STATUS.json
+            VC4_DETERMINISTIC_TIME_STATUS.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish materialized probes and evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f VC4_DETERMINISTIC_TIME_STATUS.json
+          test -f VC4_DETERMINISTIC_TIME_STATUS.md
+          git fetch origin "$BRANCH"
+          remote_head=$(git rev-parse "origin/$BRANCH")
+          if test "$remote_head" != "$GITHUB_SHA"; then
+            echo "Branch moved from $GITHUB_SHA to $remote_head; preserving artifacts only."
+            exit 1
+          fi
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -f -- \
+            .github/workflows/vc4-deterministic-time-linux.yml \
+            .github/workflows/vc4-qtest-clock-mode-fix.yml \
+            .github/workflows/vc4-stock-clock-recovery.yml \
+            scripts/vc4/materialize-deterministic-time.py \
+            scripts/vc4/migrate-qtest-clock-mode.py \
+            2>/dev/null || true
+          git add -- \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-framebuffer.py \
+            scripts/vc4/raspi3-stock-linux.py \
+            VC4_DETERMINISTIC_TIME_STATUS.json \
+            VC4_DETERMINISTIC_TIME_STATUS.md
+          git diff --cached --check
+          git commit -m \
+            "ci/vc4: record deterministic Linux framebuffer frontier [skip ci]"
+          git push origin HEAD:"$BRANCH"
