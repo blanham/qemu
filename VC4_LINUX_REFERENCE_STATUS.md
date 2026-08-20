@@ -1,6 +1,6 @@
 # VC4 Linux reference control
 
-Classification: **`reference-bare-framebuffer-failed`**
+Classification: **`reference-build-failed`**
 
 Bare framebuffer passed: `False`
 
