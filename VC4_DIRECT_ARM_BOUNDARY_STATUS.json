@@ -1,0 +1,11 @@
+{
+  "classification": "direct-arm-primary-image-load-blocked",
+  "generated_at": "2026-08-20T12:15:36.053244+00:00",
+  "normalizer": {},
+  "normalizer_return_code": "",
+  "run_id": "32367803741",
+  "schema_version": 1,
+  "source_sha": "b9b8aef3f47ceaf20539ed815994d9fae3cbb2a8",
+  "witness": {},
+  "witness_return_code": ""
+}
