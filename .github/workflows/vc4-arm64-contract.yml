@@ -1,0 +1,243 @@
+name: VC4 heterogeneous ARM64 Linux contract
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-arm64-contract.yml
+      - tests/vc4/arm64-linux-contract.S
+      - tests/vc4/arm64-linux-contract.ld
+      - scripts/vc4/build-arm64-linux-contract.sh
+      - scripts/vc4/arm64-linux-contract-probe.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-arm64-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OUT_DIR: /tmp/vc4-arm64-contract
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize the direct-loader delta and validate sources
+        id: materialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/arm64-linux-contract-probe.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          if test -f scripts/vc4/hetero-direct-linux-integrate.py; then
+            python3 scripts/vc4/hetero-direct-linux-integrate.py
+            python3 scripts/vc4/hetero-direct-linux-integrate.py
+          fi
+          bash -n scripts/vc4/build-arm64-linux-contract.sh
+          git diff --check
+          git diff -- hw/arm/vc4_raspi3_hetero.c \
+            >/tmp/vc4-arm64-contract-machine.diff
+
+      - name: Download the pinned Raspberry Pi 3 DTB
+        id: dtb
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 \
+            --output /tmp/bcm2710-rpi-3-b.dtb \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/bcm2710-rpi-3-b.dtb"
+          test "$(git hash-object /tmp/bcm2710-rpi-3-b.dtb)" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum /tmp/bcm2710-rpi-3-b.dtb >/tmp/vc4-arm64-contract-dtb.sha256
+
+      - name: Configure and build both frontends
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-arm64-contract-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-arm64-contract-build.log
+
+      - name: Preserve VC4 architectural regressions
+        id: regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-arm64-contract-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-arm64-contract-msync.log
+
+      - name: Build the contract witness
+        id: payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-arm64-linux-contract.sh \
+            "$PWD/build/vc4-arm64-linux-contract" \
+            2>&1 | tee /tmp/vc4-arm64-contract-payload.log
+
+      - name: Exercise the direct ARM64 boot contract
+        id: probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR"
+          python3 scripts/vc4/arm64-linux-contract-probe.py \
+            --qemu build/qemu-system-aarch64 \
+            --kernel build/vc4-arm64-linux-contract/kernel8.img \
+            --dtb /tmp/bcm2710-rpi-3-b.dtb \
+            --seconds 12 \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee /tmp/vc4-arm64-contract-probe.log
+
+      - name: Record the exact contract frontier
+        id: record
+        if: always()
+        shell: bash
+        env:
+          MATERIALIZE_OUTCOME: ${{ steps.materialize.outcome }}
+          DTB_OUTCOME: ${{ steps.dtb.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          PAYLOAD_OUTCOME: ${{ steps.payload.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p tests/vc4/results/arm64-contract
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          import json
+          import os
+          from pathlib import Path
+
+          result_path = Path('/tmp/vc4-arm64-contract/result.json')
+          result = (
+              json.loads(result_path.read_text(encoding='utf-8'))
+              if result_path.is_file() else {}
+          )
+          outcomes = {
+              key.lower().removesuffix('_outcome'): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'outcomes': outcomes,
+              'passed': bool(result.get('passed')) and all(
+                  outcomes.get(key) == 'success'
+                  for key in (
+                      'materialize', 'dtb', 'build', 'regressions', 'payload'
+                  )
+              ),
+              'result': result,
+          }
+          out = Path('tests/vc4/results/arm64-contract/result.json')
+          out.write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          checks = result.get('checks', {})
+          lines = [
+              '# VC4 heterogeneous ARM64 Linux entry contract',
+              '',
+              f'- Passed: **`{status["passed"]}`**',
+              f'- Source run: `{status["run_id"]}`',
+              f'- Entry PC: `{result.get("record", {}).get("entry_pc")}`',
+              f'- DTB pointer/magic: `{checks.get("dtb_pointer_valid")}` / '
+              f'`{checks.get("dtb_magic_valid")}`',
+              f'- x1-x3 zero: `{checks.get("x1_x3_zero")}`',
+              f'- EL1/EL2: `{checks.get("entry_el_valid")}`',
+              f'- MMU disabled: `{checks.get("mmu_disabled")}`',
+              f'- UART marker: `{checks.get("uart_marker_seen")}`',
+              '',
+              'The JSON file contains the complete incoming register record, '
+              'CPU snapshot, serial tail, and QEMU diagnostics.',
+              '',
+          ]
+          Path('tests/vc4/results/arm64-contract/RESULT.md').write_text(
+              '\n'.join(lines), encoding='utf-8'
+          )
+          print(json.dumps(status, indent=2))
+          PY
+          git diff --check
+
+      - name: Upload complete diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-arm64-contract-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-arm64-contract
+            /tmp/vc4-arm64-contract-*.log
+            /tmp/vc4-arm64-contract-*.sha256
+            /tmp/vc4-arm64-contract-machine.diff
+            build/vc4-arm64-linux-contract
+            tests/vc4/results/arm64-contract
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the result without generated machine drift
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a tests/vc4/results/arm64-contract /tmp/arm64-contract-result
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          rm -rf tests/vc4/results/arm64-contract
+          mkdir -p tests/vc4/results
+          cp -a /tmp/arm64-contract-result tests/vc4/results/arm64-contract
+          git rm -f --ignore-unmatch .github/workflows/vc4-arm64-contract.yml
+          git add tests/vc4/results/arm64-contract
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          if python3 - <<'PY'
+          import json
+          from pathlib import Path
+          status = json.loads(
+              Path('tests/vc4/results/arm64-contract/result.json').read_text()
+          )
+          raise SystemExit(0 if status.get('passed') else 1)
+          PY
+          then
+            message="tests/vc4: validate the heterogeneous ARM64 boot contract [skip ci]"
+          else
+            message="tests/vc4: record the ARM64 boot-contract frontier [skip ci]"
+          fi
+          git commit -m "$message"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
