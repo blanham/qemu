@@ -1,0 +1,120 @@
+name: VC4 direct-Linux fixture recovery v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-fixture-recovery-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-fixture-recovery-v2
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install fixture dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            linux-libc-dev-arm64-cross \
+            python3
+
+      - name: Canonicalize the builder output directory
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('scripts/vc4/build-linux-initramfs.sh')
+          text = path.read_text(encoding='utf-8')
+          marker = 'VC4_INITRAMFS_OUTPUT_CANONICALIZED'
+          if marker not in text:
+              lines = text.splitlines(keepends=True)
+              found = None
+              for index, line in enumerate(lines):
+                  match = re.match(
+                      r'^([A-Z][A-Z0-9_]*)[ \t]*=.*(?:\$\{?1|\$1)',
+                      line,
+                  )
+                  if match:
+                      found = (index, match.group(1))
+                      break
+              if found is None:
+                  raise SystemExit(
+                      'could not locate the output-directory argument assignment'
+                  )
+              index, variable = found
+              lines.insert(
+                  index + 1,
+                  f'# {marker}: later subshells may chdir.\n'
+                  f'{variable}=$(realpath -m -- "${variable}")\n',
+              )
+              path.write_text(''.join(lines), encoding='utf-8')
+          PY
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          git diff --check
+
+      - name: Prove relative and absolute output paths
+        run: |
+          set -euo pipefail
+          rm -rf build/vc4-initramfs-relative build/vc4-initramfs-absolute
+          bash scripts/vc4/build-linux-initramfs.sh \
+            build/vc4-initramfs-relative
+          bash scripts/vc4/build-linux-initramfs.sh \
+            "$PWD/build/vc4-initramfs-absolute"
+          for directory in \
+            build/vc4-initramfs-relative \
+            build/vc4-initramfs-absolute; do
+            test -s "$directory/initramfs.cpio"
+            test -s "$directory/SHA256SUMS"
+            cpio -it <"$directory/initramfs.cpio" | grep -qx '\./init'
+          done
+          cmp \
+            build/vc4-initramfs-relative/initramfs.cpio \
+            build/vc4-initramfs-absolute/initramfs.cpio
+
+      - name: Publish the source fix and retrigger the full lane
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          Path('VC4_LINUX_FIXTURE_RECOVERY.json').write_text(
+              json.dumps({
+                  'schema_version': 1,
+                  'fixture_builder_passed': True,
+                  'relative_and_absolute_outputs_match': True,
+                  'generated_at': datetime.now(timezone.utc).isoformat(),
+              }, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          git rm .github/workflows/vc4-direct-linux-fixture-recovery-v2.yml
+          git add \
+            scripts/vc4/build-linux-initramfs.sh \
+            VC4_LINUX_FIXTURE_RECOVERY.json
+          git diff --cached --check
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m 'tests/vc4: repair deterministic Linux initramfs packaging'
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
