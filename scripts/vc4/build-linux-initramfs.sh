@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# VC4_ABSOLUTE_ARGV1
+case "${1:-}" in
+    /*) ;;
+    "") set -- "$PWD/build/vc4-linux-initramfs" ;;
+    *) set -- "$PWD/$1" ;;
+esac
+
 root_dir=$(cd "$(dirname "$0")/../.." && pwd)
 out_dir=${1:-"$root_dir/build/vc4-linux-initramfs"}
 cc=${AARCH64_CC:-aarch64-linux-gnu-gcc}
