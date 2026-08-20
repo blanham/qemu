@@ -11,7 +11,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: vc4-linux-source-build
+  cancel-in-progress: true
 
 jobs:
   source-build:
@@ -19,6 +23,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install AArch64 userspace build dependencies
         run: |
@@ -42,13 +48,21 @@ jobs:
         id: build
         shell: bash
         run: |
+          set +e
           set -o pipefail
           bash -x scripts/vc4/build-linux-initramfs.sh \
             /tmp/vc4-linux-initramfs.cpio \
             2>&1 | tee /tmp/vc4-linux-initramfs-build.log
-          file /tmp/vc4-linux-initramfs.cpio | \
-            tee /tmp/vc4-linux-initramfs-file.log
-          test -s /tmp/vc4-linux-initramfs.cpio
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$rc" >/tmp/vc4-linux-initramfs-build.rc
+          if test -f /tmp/vc4-linux-initramfs.cpio; then
+            file /tmp/vc4-linux-initramfs.cpio | \
+              tee /tmp/vc4-linux-initramfs-file.log
+            sha256sum /tmp/vc4-linux-initramfs.cpio | \
+              tee /tmp/vc4-linux-initramfs.sha256
+          fi
 
       - name: Upload source-build evidence
         if: always()
@@ -58,7 +72,63 @@ jobs:
           path: |
             /tmp/vc4-linux-toolchain.log
             /tmp/vc4-linux-initramfs-build.log
+            /tmp/vc4-linux-initramfs-build.rc
             /tmp/vc4-linux-initramfs-file.log
+            /tmp/vc4-linux-initramfs.sha256
             /tmp/vc4-linux-initramfs.cpio
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Publish diagnostic to the branch
+        if: always()
+        env:
+          BUILD_RC: ${{ steps.build.outputs.return_code }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          def text(path: str) -> str:
+              p = Path(path)
+              return p.read_text(encoding='utf-8', errors='replace') if p.is_file() else '<missing>\n'
+
+          rc = os.environ.get('BUILD_RC') or text('/tmp/vc4-linux-initramfs-build.rc').strip()
+          log = text('/tmp/vc4-linux-initramfs-build.log')
+          toolchain = text('/tmp/vc4-linux-toolchain.log')
+          archive = text('/tmp/vc4-linux-initramfs-file.log')
+          digest = text('/tmp/vc4-linux-initramfs.sha256')
+          report = [
+              '# VC4 Linux initramfs source-build diagnostic',
+              '',
+              f'- Source commit: `{os.environ["GITHUB_SHA"]}`',
+              f'- Workflow run: `{os.environ["GITHUB_RUN_ID"]}`',
+              f'- Build return code: `{rc}`',
+              '',
+              '## Toolchain',
+              '```text', toolchain[-12000:].rstrip(), '```',
+              '',
+              '## Build log',
+              '```text', log[-30000:].rstrip(), '```',
+              '',
+              '## Archive',
+              '```text', archive.rstrip(), digest.rstrip(), '```',
+              '',
+          ]
+          Path('VC4_LINUX_SOURCE_BUILD_DIAGNOSTIC.md').write_text(
+              '\n'.join(report), encoding='utf-8'
+          )
+          PY
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- VC4_LINUX_SOURCE_BUILD_DIAGNOSTIC.md
+          git commit -m "ci/vc4: record Linux initramfs build diagnostic [skip ci]"
+          git pull --rebase origin agent/vc4-linux-bringup
+          git push origin HEAD:agent/vc4-linux-bringup
+
+      - name: Fail if source build failed
+        if: always()
+        env:
+          BUILD_RC: ${{ steps.build.outputs.return_code }}
+        run: |
+          test "${BUILD_RC:-1}" = 0
