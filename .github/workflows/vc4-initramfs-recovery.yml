@@ -1,0 +1,116 @@
+name: VC4 deterministic initramfs recovery
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-initramfs-recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-initramfs-recovery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repair-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install fixture dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio \
+            gcc-aarch64-linux-gnu \
+            gzip
+
+      - name: Canonicalize the output directory before entering the rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('scripts/vc4/build-linux-initramfs.sh')
+          text = path.read_text(encoding='utf-8')
+
+          if not re.search(
+              r'(?m)^(?:OUT_DIR|OUTPUT_DIR|out_dir)=' 
+              r'.*realpath(?:\s+-m)?',
+              text,
+          ):
+              match = re.search(
+                  r'(?m)^(?P<indent>[ \t]*)'
+                  r'(?P<var>OUT_DIR|OUTPUT_DIR|out_dir)=(?P<rhs>[^\n]+)$',
+                  text,
+              )
+              if not match:
+                  raise SystemExit(
+                      'could not locate the initramfs output-directory assignment'
+                  )
+
+              var = match.group('var')
+              canonicalize = (
+                  f"\n{match.group('indent')}{var}="
+                  f"\"$(realpath -m \"${{{var}}}\")\""
+              )
+              text = text[:match.end()] + canonicalize + text[match.end():]
+              path.write_text(text, encoding='utf-8')
+
+          repaired = path.read_text(encoding='utf-8')
+          if not re.search(
+              r'(?m)^(?:OUT_DIR|OUTPUT_DIR|out_dir)=' 
+              r'.*realpath(?:\s+-m)?',
+              repaired,
+          ):
+              raise SystemExit('output directory was not canonicalized')
+          PY
+          bash -n scripts/vc4/build-linux-initramfs.sh
+          git diff --check
+
+      - name: Prove relative and absolute output paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/vc4-linux-initramfs /tmp/vc4-linux-initramfs-absolute
+
+          bash scripts/vc4/build-linux-initramfs.sh \
+            build/vc4-linux-initramfs
+          test -s build/vc4-linux-initramfs/initramfs.cpio
+          test -s build/vc4-linux-initramfs/SHA256SUMS
+
+          bash scripts/vc4/build-linux-initramfs.sh \
+            /tmp/vc4-linux-initramfs-absolute
+          test -s /tmp/vc4-linux-initramfs-absolute/initramfs.cpio
+          test -s /tmp/vc4-linux-initramfs-absolute/SHA256SUMS
+
+          cmp \
+            build/vc4-linux-initramfs/initramfs.cpio \
+            /tmp/vc4-linux-initramfs-absolute/initramfs.cpio
+
+      - name: Publish the repaired fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/vc4-initramfs-recovery.yml
+          git add scripts/vc4/build-linux-initramfs.sh
+          git diff --cached --check
+
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git commit -m 'tests/vc4: canonicalize initramfs output path'
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
