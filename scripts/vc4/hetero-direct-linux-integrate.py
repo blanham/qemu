@@ -38,6 +38,7 @@ def update_machine() -> None:
         text,
         '#define VC4_IC1_OFFSET 0x2800\n',
         '#define VC4_IC1_OFFSET 0x2800\n'
+        '#define VC4_RASPI3_LEGACY_MACHINE_ID 3138\n'
         '#define VC4_SMPBOOT_ADDR 0x300\n'
         '#define VC4_SPINTABLE_ADDR 0xd8\n',
         "direct-boot constants",
@@ -121,7 +122,7 @@ static void vc4_raspi3_set_direct_arm_kernel(Object *obj, bool value,
      * The VPU sees the 4 GiB GPU bus, but its first-stage ROM loads
 '''
     direct_setup = r'''    if (s->direct_arm_kernel) {
-        s->binfo.board_id = MACH_TYPE_BCM2708;
+        s->binfo.board_id = VC4_RASPI3_LEGACY_MACHINE_ID;
         s->binfo.ram_size = machine->ram_size - vcram_size;
         s->binfo.smp_loader_start = VC4_SMPBOOT_ADDR;
         s->binfo.write_secondary_boot = vc4_raspi3_write_smpboot64;
