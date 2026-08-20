@@ -1,0 +1,354 @@
+name: VC4 Linux V3D driver probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-v3d-driver-probe
+    paths:
+      - .github/workflows/vc4-linux-v3d-driver-probe.yml
+      - hw/arm/bcm2835_peripherals.c
+      - hw/display/bcm2835_v3d.c
+      - include/hw/arm/bcm2835_peripherals.h
+      - include/hw/display/bcm2835_v3d.h
+      - scripts/vc4/build-linux-v3d-initramfs.sh
+      - scripts/vc4/build-v3d-linux-dtbs.sh
+      - scripts/vc4/raspi3-linux-probe.py
+      - scripts/vc4/raspi3-linux-v3d-probe.py
+      - scripts/vc4/v3d-smoke.py
+      - tests/vc4/linux-v3d-init.c
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-v3d-driver-probe
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-linux-v3d-official
+      DTB_DIR: /tmp/vc4-linux-v3d-dtbs
+      INITRAMFS_DIR: /tmp/vc4-linux-v3d-initramfs
+      RESULT_DIR: /tmp/vc4-linux-v3d-results
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Validate sources and fetch pinned Raspberry Pi artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/raspi3-linux-probe.py \
+            scripts/vc4/raspi3-linux-v3d-probe.py \
+            scripts/vc4/v3d-smoke.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          bash -n \
+            scripts/vc4/build-linux-v3d-initramfs.sh \
+            scripts/vc4/build-v3d-linux-dtbs.sh
+          git diff --check
+
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR/overlays"
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          for file in vc4-kms-v3d.dtbo vc4-fkms-v3d.dtbo; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/overlays/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/overlays/$file"
+          done
+
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          test "$(git hash-object "$OFFICIAL_DIR/overlays/vc4-kms-v3d.dtbo")" = \
+            572697308de9c682e973633514205e02b173c277
+          test "$(git hash-object "$OFFICIAL_DIR/overlays/vc4-fkms-v3d.dtbo")" = \
+            230dd8cb0923f2dce912569a3e8959ad68cd7273
+          sha256sum \
+            "$OFFICIAL_DIR/kernel8.img" \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$OFFICIAL_DIR/overlays"/*.dtbo \
+            > "$OFFICIAL_DIR/SHA256SUMS"
+
+      - name: Materialize base, KMS, and FKMS device trees
+        id: dtbs
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-v3d-linux-dtbs.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$OFFICIAL_DIR/overlays/vc4-kms-v3d.dtbo" \
+            "$OFFICIAL_DIR/overlays/vc4-fkms-v3d.dtbo" \
+            "$DTB_DIR"
+
+      - name: Configure and build QEMU frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-linux-v3d-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-linux-v3d-build.log
+
+      - name: Preserve V3D and multicore architectural regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-linux-v3d-registers.log
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-linux-v3d-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-linux-v3d-msync.log
+
+      - name: Build deterministic VC4 DRM userspace witness
+        id: fixture
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-linux-v3d-initramfs.sh "$INITRAMFS_DIR"
+          test -s "$INITRAMFS_DIR/initramfs.cpio.gz"
+
+      - name: Probe base, KMS, and FKMS Linux configurations
+        id: probes
+        run: |
+          set -euo pipefail
+          rm -rf "$RESULT_DIR"
+          mkdir -p "$RESULT_DIR"
+          for variant in base kms fkms; do
+            out="$RESULT_DIR/$variant"
+            set +e
+            python3 scripts/vc4/raspi3-linux-v3d-probe.py \
+              --mode linux-direct \
+              --qemu build/qemu-system-aarch64 \
+              --kernel "$OFFICIAL_DIR/kernel8.img" \
+              --dtb "$DTB_DIR/$variant.dtb" \
+              --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+              --out-dir "$out" \
+              --seconds 120 --sample-interval 2 \
+              2>&1 | tee "$RESULT_DIR/$variant.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            printf '%s\n' "$rc" > "$out/return-code"
+          done
+
+      - name: Classify the strongest Linux V3D result
+        id: record
+        if: always()
+        env:
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          ARTIFACTS_OUTCOME: ${{ steps.artifacts.outcome }}
+          DTBS_OUTCOME: ${{ steps.dtbs.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          FIXTURE_OUTCOME: ${{ steps.fixture.outcome }}
+          PROBES_OUTCOME: ${{ steps.probes.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          root = Path(os.environ['RESULT_DIR'])
+          variants = {}
+          for name in ('base', 'kms', 'fkms'):
+              directory = root / name
+              path = directory / 'result.json'
+              result = json.loads(path.read_text()) if path.is_file() else {}
+              rc_path = directory / 'return-code'
+              result['return_code'] = (
+                  rc_path.read_text().strip() if rc_path.is_file() else None
+              )
+              variants[name] = result
+
+          def score(result):
+              return (
+                  1000 * bool(result.get('passed')) +
+                  200 * bool(result.get('uapi_ok')) +
+                  100 * bool(result.get('render128_seen')) +
+                   50 * bool(result.get('card0_seen')) +
+                   25 * bool(result.get('dt_v3d_enabled')) +
+                   10 * bool(result.get('framebuffer_passed')) +
+                    5 * bool(result.get('init_seen')) +
+                    1 * bool(result.get('linux_version_seen'))
+              )
+
+          best_name = max(variants, key=lambda name: score(variants[name]))
+          best = variants[best_name]
+          outcomes = {
+              key.removesuffix('_OUTCOME').lower(): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
+          infrastructure_ok = all(
+              outcomes.get(key) == 'success'
+              for key in (
+                  'dependencies', 'artifacts', 'dtbs', 'build',
+                  'regressions', 'fixture', 'probes'
+              )
+          )
+          passed = infrastructure_ok and any(
+              result.get('passed') is True for result in variants.values()
+          )
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'passed': passed,
+              'infrastructure_ok': infrastructure_ok,
+              'outcomes': outcomes,
+              'best_variant': best_name,
+              'classification': best.get(
+                  'classification', 'linux-vc4-probe-infrastructure-failed'
+              ),
+              'variants': {
+                  name: {
+                      'return_code': result.get('return_code'),
+                      'classification': result.get('classification'),
+                      'passed': result.get('passed'),
+                      'linux_version_seen': result.get('linux_version_seen'),
+                      'init_seen': result.get('init_seen'),
+                      'framebuffer_passed': result.get('framebuffer_passed'),
+                      'dt_v3d_enabled': result.get('dt_v3d_enabled'),
+                      'v3d_platform_device_seen': result.get(
+                          'v3d_platform_device_seen'),
+                      'card0_seen': result.get('card0_seen'),
+                      'render128_seen': result.get('render128_seen'),
+                      'ident_ok': result.get('ident_ok'),
+                      'bo_ok': result.get('bo_ok'),
+                      'uapi_ok': result.get('uapi_ok'),
+                      'uapi_failure_stage': result.get(
+                          'uapi_failure_stage'),
+                      'driver_ok': result.get('driver_ok'),
+                  }
+                  for name, result in variants.items()
+              },
+          }
+          Path('VC4_LINUX_V3D_PROBE_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+          lines = [
+              '# VC4 Linux V3D driver probe',
+              '',
+              f'Validation passed: **{str(passed).lower()}**',
+              '',
+              f'- Source commit: `{os.environ["GITHUB_SHA"]}`',
+              f'- Workflow run: `{os.environ["GITHUB_RUN_ID"]}`',
+              f'- Best device-tree variant: `{best_name}`',
+              f'- Classification: `{status["classification"]}`',
+              '',
+              '| Variant | Result | DT V3D | card0 | renderD128 | IDENT | GEM BO |',
+              '|---|---:|---:|---:|---:|---:|---:|',
+          ]
+          for name, result in variants.items():
+              lines.append(
+                  f'| {name} | {bool(result.get("passed"))} | '
+                  f'{bool(result.get("dt_v3d_enabled"))} | '
+                  f'{bool(result.get("card0_seen"))} | '
+                  f'{bool(result.get("render128_seen"))} | '
+                  f'{bool(result.get("ident_ok"))} | '
+                  f'{bool(result.get("bo_ok"))} |'
+              )
+          Path('VC4_LINUX_V3D_PROBE_STATUS.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload complete diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-v3d-driver-probe-${{ github.run_attempt }}
+          path: |
+            VC4_LINUX_V3D_PROBE_STATUS.json
+            VC4_LINUX_V3D_PROBE_STATUS.md
+            /tmp/vc4-linux-v3d-configure.log
+            /tmp/vc4-linux-v3d-build.log
+            /tmp/vc4-linux-v3d-registers.log
+            /tmp/vc4-linux-v3d-preg.log
+            /tmp/vc4-linux-v3d-msync.log
+            /tmp/vc4-linux-v3d-official/SHA256SUMS
+            /tmp/vc4-linux-v3d-dtbs
+            /tmp/vc4-linux-v3d-initramfs/SHA256SUMS
+            /tmp/vc4-linux-v3d-results
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the live frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f VC4_LINUX_V3D_PROBE_STATUS.json
+          passed=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          status = json.loads(
+              Path('VC4_LINUX_V3D_PROBE_STATUS.json').read_text()
+          )
+          print('true' if status.get('passed') else 'false')
+          PY
+          )
+
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add -- \
+            VC4_LINUX_V3D_PROBE_STATUS.json \
+            VC4_LINUX_V3D_PROBE_STATUS.md
+          if ! git diff --cached --quiet; then
+            git diff --cached --check
+            git commit -m \
+              "ci/vc4: record Linux V3D probe ${passed} [skip ci]"
+            git pull --rebase origin agent/vc4-linux-v3d-driver-probe
+            git push origin HEAD:agent/vc4-linux-v3d-driver-probe
+          fi
+
+      - name: Require a complete Linux VC4 DRM UAPI witness
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          status = json.loads(
+              Path('VC4_LINUX_V3D_PROBE_STATUS.json').read_text()
+          )
+          if status.get('passed') is not True:
+              raise SystemExit(
+                  'Linux VC4 DRM UAPI witness failed: ' +
+                  str(status.get('classification'))
+              )
+          PY
