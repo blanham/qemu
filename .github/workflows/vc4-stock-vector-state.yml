@@ -1,0 +1,233 @@
+name: VC4 stock interrupt-vector state
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-bootcode-flow-current
+    paths:
+      - .github/workflows/vc4-stock-vector-state.yml
+      - scripts/vc4/vector-state-fixup.py
+      - scripts/vc4/raspi3-stock-bootcode-0200.py
+      - scripts/vc4/raspi3-stock-bootcode-state.py
+      - target/vc4/**
+      - hw/vc4/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-vector-state
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OUT_DIR: /tmp/vc4-stock-vector-state
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize exact vector-state capture
+        id: materialize
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/vector-state-fixup.py \
+            scripts/vc4/raspi3-stock-bootcode-0200.py \
+            scripts/vc4/raspi3-stock-bootcode-state.py
+          python3 scripts/vc4/vector-state-fixup.py
+          python3 scripts/vc4/vector-state-fixup.py
+          python3 -m py_compile scripts/vc4/raspi3-stock-bootcode-0200.py
+          grep -q STOCK_VECTOR_STATE scripts/vc4/raspi3-stock-bootcode-0200.py
+          git diff --check
+
+      - name: Download pinned firmware
+        id: firmware
+        run: |
+          set -euo pipefail
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 5 \
+              --output "$OUT_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OUT_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$OUT_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$OUT_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+
+      - name: Build both linked frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$OUT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$OUT_DIR/build.log"
+
+      - name: Preserve architectural regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$OUT_DIR/preg-smoke.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$OUT_DIR/msync-smoke.log"
+
+      - name: Capture deterministic stock vector frontier
+        id: vector
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          python3 scripts/vc4/raspi3-stock-bootcode-0200.py \
+            build/qemu-system-aarch64 \
+            "$OUT_DIR/bootcode.bin" \
+            --start-elf "$OUT_DIR/start.elf" \
+            --fixup-dat "$OUT_DIR/fixup.dat" \
+            --seconds 30 \
+            --qemu-log "$OUT_DIR/qemu.stderr.log" \
+            --barrier-is-success \
+            2>&1 | tee "$OUT_DIR/probe.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Reduce vector state to durable evidence
+        id: record
+        if: always()
+        env:
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          MATERIALIZE_OUTCOME: ${{ steps.materialize.outcome }}
+          FIRMWARE_OUTCOME: ${{ steps.firmware.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          VECTOR_OUTCOME: ${{ steps.vector.outcome }}
+          VECTOR_RETURN_CODE: ${{ steps.vector.outputs.return_code }}
+        run: |
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          out = Path(os.environ['OUT_DIR'])
+          probe = (out / 'probe.log').read_text(
+              encoding='utf-8', errors='replace'
+          ) if (out / 'probe.log').is_file() else ''
+          prefix = 'STOCK_VECTOR_STATE '
+          payloads = [
+              line[len(prefix):]
+              for line in probe.splitlines()
+              if line.startswith(prefix)
+          ]
+          vector = json.loads(payloads[-1]) if payloads else None
+          outcomes = {
+              key.removesuffix('_OUTCOME').lower(): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'outcomes': outcomes,
+              'probe_return_code': os.environ.get('VECTOR_RETURN_CODE'),
+              'vector_state_captured': vector is not None,
+              'vector': vector,
+              'probe_tail': probe.splitlines()[-80:],
+              'qemu_stderr': (
+                  (out / 'qemu.stderr.log').read_text(
+                      encoding='utf-8', errors='replace'
+                  ).splitlines()[-200:]
+                  if (out / 'qemu.stderr.log').is_file() else []
+              ),
+          }
+          Path('VC4_STOCK_VECTOR_STATE.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+
+          if vector is None:
+              summary = 'No STOCK_VECTOR_STATE record was captured.'
+          else:
+              low_nonzero = vector.get('low_nonzero_words', [])
+              summary = '\n'.join([
+                  f"- VPU PC: `{vector.get('pc')}`",
+                  f"- Saved return/LR: `{vector.get('lr')}`",
+                  f"- IC status: `{vector.get('status')}`",
+                  f"- Active vector: `{vector.get('active_vector')}`",
+                  f"- Active priority: `{vector.get('active_priority')}`",
+                  f"- Vector base: `{vector.get('vector_base')}`",
+                  f"- Vector word address: `{vector.get('vector_address')}`",
+                  f"- Vector word: `{vector.get('vector_word')}`",
+                  f"- Vector target: `{vector.get('vector_target')}`",
+                  f"- Non-zero words below 0x200: `{len(low_nonzero)}`",
+              ])
+          Path('VC4_STOCK_VECTOR_STATE.md').write_text(
+              '# VC4 stock interrupt-vector frontier\n\n'
+              f'- Source commit: `{os.environ["GITHUB_SHA"]}`\n'
+              f'- Workflow run: `{os.environ["GITHUB_RUN_ID"]}`\n'
+              f'- Vector state captured: `{vector is not None}`\n\n'
+              + summary + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+          git diff --check
+
+      - name: Upload complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-vector-state-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-stock-vector-state
+            VC4_STOCK_VECTOR_STATE.json
+            VC4_STOCK_VECTOR_STATE.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish evidence and retire one-shot workflow
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f VC4_STOCK_VECTOR_STATE.json
+          cp VC4_STOCK_VECTOR_STATE.json /tmp/vector-state.json
+          cp VC4_STOCK_VECTOR_STATE.md /tmp/vector-state.md
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          cp /tmp/vector-state.json VC4_STOCK_VECTOR_STATE.json
+          cp /tmp/vector-state.md VC4_STOCK_VECTOR_STATE.md
+          git rm -- .github/workflows/vc4-stock-vector-state.yml
+          git add -- VC4_STOCK_VECTOR_STATE.json VC4_STOCK_VECTOR_STATE.md
+          git diff --cached --check
+          git config user.name "VC4 Vector State CI"
+          git config user.email "vc4-vector-state-ci@users.noreply.github.com"
+          git commit -m 'ci/vc4: record stock interrupt-vector state [skip ci]'
+          git pull --rebase origin agent/vc4-stock-bootcode-flow-current
+          git push origin HEAD:agent/vc4-stock-bootcode-flow-current
