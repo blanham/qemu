@@ -1,0 +1,13 @@
+{
+  "classification": "linux-probe-infrastructure-failed",
+  "framebuffer_marker_seen": false,
+  "generated_at": "2026-08-20T12:22:27.403251+00:00",
+  "init_seen": false,
+  "linux_version_seen": false,
+  "probe_return_code": "",
+  "result": {},
+  "run_id": "32368418548",
+  "scanout_passed": false,
+  "schema_version": 1,
+  "source_sha": "ff845141b9187d9232df1598698b200681d864f8"
+}
