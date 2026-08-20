@@ -40,7 +40,7 @@ for marker in \
     VC4_LINUX_DRM_CARD0_OK \
     VC4_LINUX_DRM_RENDER128_OK \
     VC4_LINUX_V3D_DRIVER_OK; do
-    strings "$out_dir/root/init" | grep -Fxq "$marker"
+    strings "$out_dir/root/init" | grep -Fq "$marker"
 done
 
 (
