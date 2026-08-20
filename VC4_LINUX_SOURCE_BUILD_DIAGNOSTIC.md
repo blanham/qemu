@@ -1,8 +1,8 @@
 # VC4 Linux initramfs source-build diagnostic
 
-- Source commit: `580b0a70e2b2f212f12f3e648cc4517285cd45b5`
-- Workflow run: `32321197114`
-- Build return code: `0`
+- Source commit: `1cfb585dd60dc164392f889740f725f12fbe199b`
+- Workflow run: `32321352775`
+- Build return code: `1`
 
 ## Toolchain
 ```text
@@ -30,13 +30,16 @@ warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 + chmod 0755 /tmp/vc4-linux-initramfs.cpio/root/init
 + cd /tmp/vc4-linux-initramfs.cpio/root
 + find . -print0
++ cpio --null --quiet -o --format=newc --owner=0:0
 + LC_ALL=C
 + sort -z
-+ cpio --null --quiet -o --format=newc --owner=0:0
 + gzip -n -9 -c /tmp/vc4-linux-initramfs.cpio/initramfs.cpio
-+ sha256sum /tmp/vc4-linux-initramfs.cpio/root/init /tmp/vc4-linux-initramfs.cpio/initramfs.cpio /tmp/vc4-linux-initramfs.cpio/initramfs.cpio.gz
-+ printf 'Built VC4 Linux initramfs at %s\n' /tmp/vc4-linux-initramfs.cpio
-Built VC4 Linux initramfs at /tmp/vc4-linux-initramfs.cpio
++ test -x /tmp/vc4-linux-initramfs.cpio/root/init
++ test -s /tmp/vc4-linux-initramfs.cpio/initramfs.cpio
++ test -s /tmp/vc4-linux-initramfs.cpio/initramfs.cpio.gz
++ gzip -t /tmp/vc4-linux-initramfs.cpio/initramfs.cpio.gz
++ cpio --quiet -it
++ grep -qx ./init
 ```
 
 ## Archive
