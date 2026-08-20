@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-08-20T13:04:38.171812+00:00",
+  "linux_regression": {
+    "elapsed_seconds": null,
+    "framebuffer_marker_seen": null,
+    "init_seen": null,
+    "passed": null,
+    "screenshot": null,
+    "version_seen": null
+  },
+  "log_tails": {
+    "build": [],
+    "clear_probe": [],
+    "configure": [],
+    "msync": [],
+    "preg": [],
+    "v3d_mmio": []
+  },
+  "outcomes": {
+    "build": "skipped",
+    "clear_fixture": "skipped",
+    "clear_probe": "skipped",
+    "dependencies": "success",
+    "linux": "skipped",
+    "linux_artifacts": "skipped",
+    "linux_fixture": "skipped",
+    "materialize": "failure",
+    "regressions": "skipped"
+  },
+  "passed": false,
+  "run_attempt": "1",
+  "run_id": "32372132946",
+  "schema_version": 1,
+  "source_sha": "33cb5a4e481d25c7919f3c8380f2b24fc5d418ff",
+  "v3d_clear_scanout": {
+    "elapsed_seconds": null,
+    "failure": null,
+    "framebuffer": null,
+    "guest_memory_passed": null,
+    "passed": null,
+    "screenshot": null,
+    "serial_success_seen": null,
+    "v3d": null
+  }
+}
