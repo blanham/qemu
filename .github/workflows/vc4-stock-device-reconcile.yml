@@ -1,0 +1,555 @@
+name: VC4 stock device-frontier reconciliation
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-linux-recovered
+    paths:
+      - .github/workflows/vc4-stock-device-reconcile.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-device-reconcile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Classify the retained physical frontier
+        id: frontier
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin '+refs/heads/agent/vc4-*:refs/remotes/origin/agent/vc4-*'
+          python3 - <<'PY' >>"$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          stock = Path('tests/vc4/results/stock-recovered/result.json')
+          stock_status = json.loads(stock.read_text()) if stock.is_file() else {}
+          reached = bool(stock_status.get('arm_payload_signature_seen'))
+
+          ring = Path('tests/vc4/results/stock-mmio-ring/result.json')
+          ring_status = json.loads(ring.read_text()) if ring.is_file() else {}
+          final = ring_status.get('final_accesses') or []
+          io_final = [item for item in final if item.get('io')]
+          selected = io_final[-1] if io_final else (final[-1] if final else {})
+          raw = selected.get('paddr') or selected.get('vaddr') or '0x0'
+          address = int(str(raw), 0)
+          low = address & 0x00ffffff
+
+          if reached:
+              family = 'handoff'
+              pattern = ''
+          elif 0x002000 <= low < 0x004000:
+              family = 'timer'
+              pattern = 'deterministic-time|systmr|timer'
+          elif 0x007000 <= low < 0x008000:
+              family = 'dma'
+              pattern = 'dma'
+          elif 0x100000 <= low < 0x102000:
+              family = 'power-clock-cache'
+              pattern = 'pm-|power|cprman|clock|cache|image-grafx'
+          elif 0x200000 <= low < 0x202000:
+              family = 'gpio-uart'
+              pattern = 'gpio|uart'
+          elif 0x202000 <= low < 0x203000:
+              family = 'sdhost'
+              pattern = 'sdhost'
+          elif 0x300000 <= low < 0x310000:
+              family = 'emmc-sdhci'
+              pattern = 'sdhost|sdhci|emmc'
+          elif 0x980000 <= low < 0x9a0000:
+              family = 'usb'
+              pattern = 'usb|hub|lan9514'
+          elif low < 0x001000:
+              family = 'multicore-sync'
+              pattern = 'msync|multicore|post-msync'
+          else:
+              family = 'unknown'
+              pattern = 'mmio|bootcode|stage2|startelf'
+
+          print(f'reached={str(reached).lower()}')
+          print(f'need_reconcile={str(not reached).lower()}')
+          print(f'family={family}')
+          print(f'pattern={pattern}')
+          print(f'address=0x{address:x}')
+          print(f'pc={selected.get("pc", "unknown")}')
+          PY
+
+      - name: Create the stock Linux filesystem branch after a proven handoff
+        if: steps.frontier.outputs.reached == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >VC4_STOCK_LINUX_NEXT.md <<EOF
+          # VC4 stock Linux continuation
+
+          The recovered stock firmware path reached the freestanding AArch64
+          witness.  The next gate is therefore a complete FAT boot volume with
+          the pinned Linux Image, Pi 3 DTB, deterministic initramfs, command
+          line, and four-quadrant framebuffer verification.
+          EOF
+          git diff --check
+
+      - name: Install candidate-validation dependencies
+        if: steps.frontier.outputs.need_reconcile == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            curl ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Download pinned firmware and build the witness
+        if: steps.frontier.outputs.need_reconcile == 'true'
+        id: fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in bootcode.bin start.elf fixup.dat; do
+            curl --fail --location --retry 5 \
+              --output "/tmp/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object /tmp/bootcode.bin)" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object /tmp/start.elf)" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object /tmp/fixup.dat)" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          cat >/tmp/vc4-stock-arm-witness.S <<'EOF'
+          .section .text
+          .global _start
+          _start:
+              mov x4, x0
+              mov x5, sp
+              mrs x6, mpidr_el1
+              ldr x0, =0x1000
+              ldr x1, =0x5643345f41524d21
+              str x1, [x0]
+              str x4, [x0, #8]
+              str x5, [x0, #16]
+              str x6, [x0, #24]
+              dsb sy
+          1:  wfe
+              b 1b
+              .ltorg
+          EOF
+          aarch64-linux-gnu-as -o /tmp/witness.o /tmp/vc4-stock-arm-witness.S
+          aarch64-linux-gnu-ld -nostdlib --entry=_start -Ttext=0x80000 \
+            -o /tmp/witness.elf /tmp/witness.o
+          aarch64-linux-gnu-objcopy -O binary /tmp/witness.elf \
+            /tmp/kernel8.img
+
+      - name: Merge, build, regress, and probe matching experiment branches
+        if: steps.frontier.outputs.need_reconcile == 'true'
+        id: evaluate
+        shell: bash
+        env:
+          FAMILY: ${{ steps.frontier.outputs.family }}
+          PATTERN: ${{ steps.frontier.outputs.pattern }}
+          BASELINE_ADDRESS: ${{ steps.frontier.outputs.address }}
+          BASELINE_PC: ${{ steps.frontier.outputs.pc }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/vc4-device-reconcile
+          mkdir -p /tmp/vc4-device-reconcile
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+
+          root_repo = Path.cwd()
+          pattern = re.compile(os.environ['PATTERN'], re.IGNORECASE)
+          refs = subprocess.check_output(
+              [
+                  'git', 'for-each-ref', '--format=%(refname)',
+                  'refs/remotes/origin/agent/vc4-*',
+              ],
+              text=True,
+          ).splitlines()
+          current = subprocess.check_output(
+              ['git', 'rev-parse', 'HEAD'], text=True
+          ).strip()
+          candidates = []
+          for ref in refs:
+              branch = ref.removeprefix('refs/remotes/origin/')
+              if branch in {
+                  'agent/vc4-stock-linux-recovered',
+                  'agent/vc4-hetero-direct-linux',
+              } or not pattern.search(branch):
+                  continue
+              sha = subprocess.check_output(
+                  ['git', 'rev-parse', ref], text=True
+              ).strip()
+              timestamp = int(subprocess.check_output(
+                  ['git', 'show', '-s', '--format=%ct', sha], text=True
+              ).strip())
+              candidates.append({
+                  'branch': branch,
+                  'ref': ref,
+                  'sha': sha,
+                  'timestamp': timestamp,
+              })
+          candidates.sort(key=lambda item: item['timestamp'], reverse=True)
+          candidates = candidates[:5]
+
+          def run(command, cwd, log, timeout=None):
+              with log.open('a', encoding='utf-8') as stream:
+                  stream.write('$ ' + ' '.join(command) + '\n')
+                  try:
+                      completed = subprocess.run(
+                          command,
+                          cwd=cwd,
+                          stdout=stream,
+                          stderr=subprocess.STDOUT,
+                          text=True,
+                          timeout=timeout,
+                      )
+                      rc = completed.returncode
+                  except subprocess.TimeoutExpired:
+                      stream.write('\n[timeout]\n')
+                      rc = 124
+                  stream.write(f'\n[return code {rc}]\n')
+                  return rc
+
+          def load_result(path):
+              try:
+                  return json.loads(path.read_text())
+              except Exception:
+                  return {}
+
+          def probe_score(result):
+              score = 0
+              if result.get('signature_seen'):
+                  score += 1_000_000
+              for key in ('arm_control0', 'arm_control1', 'arm_status', 'pm_proc'):
+                  value = result.get(key)
+                  if isinstance(value, str):
+                      try:
+                          value = int(value, 0)
+                      except ValueError:
+                          value = 0
+                  if value:
+                      score += 50_000
+              word = result.get('kernel_word_after_boot')
+              if isinstance(word, str):
+                  try:
+                      word = int(word, 0)
+                  except ValueError:
+                      word = 0
+              if word and word != 0x0f030f030f030f03:
+                  score += 10_000
+              for cpu in result.get('cpu_snapshot', {}).get('cpus', []):
+                  if 'vc4' not in str(cpu.get('qom_type', '')).lower():
+                      continue
+                  text = str(cpu.get('registers', ''))
+                  match = re.search(
+                      r'(?:^|\s)pc\s*=\s*([0-9a-f]+)', text, re.I
+                  )
+                  if match:
+                      pc = int(match.group(1), 16)
+                      if pc >= 0x100000:
+                          score += 30_000
+                      elif pc >= 0x10000:
+                          score += 5_000
+                      else:
+                          score += pc // 16
+              return score
+
+          results = []
+          selected = None
+          selected_root = None
+          baseline_result_path = root_repo / 'tests/vc4/results/stock-recovered/result.json'
+          baseline_status = load_result(baseline_result_path)
+          baseline_score = probe_score(baseline_status.get('result') or {})
+
+          # Include the current branch as the control experiment.
+          experiments = [
+              {'branch': 'control/current', 'ref': None, 'sha': current},
+              *candidates,
+          ]
+          for index, candidate in enumerate(experiments):
+              worktree = Path(f'/tmp/vc4-device-reconcile/worktree-{index}')
+              log = Path(f'/tmp/vc4-device-reconcile/candidate-{index}.log')
+              subprocess.run(
+                  ['git', 'worktree', 'add', '--detach', str(worktree), current],
+                  check=True,
+              )
+              result = {
+                  'branch': candidate['branch'],
+                  'candidate_sha': candidate['sha'],
+                  'merge_rc': 0,
+              }
+              try:
+                  if candidate.get('ref'):
+                      result['merge_rc'] = run(
+                          [
+                              'git', 'merge', '--no-commit', '--no-ff',
+                              candidate['ref'],
+                          ],
+                          worktree,
+                          log,
+                      )
+                      if result['merge_rc'] != 0:
+                          run(['git', 'merge', '--abort'], worktree, log)
+                          results.append(result)
+                          continue
+                  py_files = sorted(
+                      str(path.relative_to(worktree))
+                      for path in (worktree / 'scripts/vc4').glob('*.py')
+                  )
+                  result['python_rc'] = run(
+                      ['python3', '-m', 'py_compile', *py_files],
+                      worktree,
+                      log,
+                  ) if py_files else 0
+                  result['configure_rc'] = run(
+                      [
+                          './configure',
+                          '--target-list=aarch64-softmmu,vc4-softmmu',
+                          '--disable-docs', '--disable-werror',
+                      ],
+                      worktree,
+                      log,
+                  )
+                  if result['configure_rc'] != 0:
+                      results.append(result)
+                      continue
+                  result['build_rc'] = run(
+                      [
+                          'ninja', '-C', 'build',
+                          'qemu-system-aarch64', 'qemu-system-vc4',
+                      ],
+                      worktree,
+                      log,
+                  )
+                  if result['build_rc'] != 0:
+                      results.append(result)
+                      continue
+                  preg = worktree / 'scripts/vc4/preg-mutex-smoke.py'
+                  result['preg_rc'] = run(
+                      [
+                          'python3', str(preg.relative_to(worktree)),
+                          '--qemu', 'build/qemu-system-vc4',
+                      ],
+                      worktree,
+                      log,
+                  ) if preg.is_file() else 0
+                  msync = worktree / 'scripts/vc4/msync-smoke.py'
+                  result['msync_rc'] = run(
+                      [
+                          'python3', str(msync.relative_to(worktree)),
+                          '--qemu', 'build/qemu-system-aarch64',
+                      ],
+                      worktree,
+                      log,
+                  ) if msync.is_file() else 0
+                  if result['preg_rc'] or result['msync_rc']:
+                      results.append(result)
+                      continue
+                  probe_dir = Path(
+                      f'/tmp/vc4-device-reconcile/probe-{index}'
+                  )
+                  result['probe_rc'] = run(
+                      [
+                          'python3', 'scripts/vc4/raspi3-stock-arm-payload.py',
+                          'build/qemu-system-aarch64',
+                          '/tmp/bootcode.bin', '/tmp/start.elf',
+                          '/tmp/fixup.dat', '/tmp/kernel8.img',
+                          '--seconds', '90',
+                          '--out-dir', str(probe_dir),
+                      ],
+                      worktree,
+                      log,
+                      timeout=180,
+                  )
+                  probe = load_result(probe_dir / 'result.json')
+                  result['probe'] = probe
+                  result['score'] = probe_score(probe)
+                  result['improves_baseline'] = (
+                      result['score'] > baseline_score
+                  )
+                  results.append(result)
+                  if candidate['branch'] != 'control/current' and (
+                      probe.get('signature_seen')
+                      or result['score'] > baseline_score
+                  ):
+                      if selected is None or result['score'] > selected['score']:
+                          selected = result
+                          selected_root = worktree
+                          continue
+              finally:
+                  if selected_root != worktree:
+                      subprocess.run(
+                          ['git', 'worktree', 'remove', '--force', str(worktree)],
+                          check=False,
+                      )
+                      shutil.rmtree(worktree, ignore_errors=True)
+
+          output = {
+              'schema_version': 1,
+              'family': os.environ['FAMILY'],
+              'baseline_address': os.environ['BASELINE_ADDRESS'],
+              'baseline_pc': os.environ['BASELINE_PC'],
+              'baseline_score': baseline_score,
+              'candidates': candidates,
+              'results': results,
+              'selected': selected,
+          }
+          Path('/tmp/vc4-device-reconcile/result.json').write_text(
+              json.dumps(output, indent=2, sort_keys=True) + '\n'
+          )
+
+          if selected is not None and selected_root is not None:
+              subprocess.run(
+                  ['git', 'add', '-A'], cwd=selected_root, check=True
+              )
+              subprocess.run(
+                  [
+                      'git', '-c', 'user.name=VC4 CI',
+                      '-c', 'user.email=vc4-ci@users.noreply.github.com',
+                      'commit', '-m',
+                      f"hw/vc4: reconcile {os.environ['FAMILY']} frontier",
+                  ],
+                  cwd=selected_root,
+                  check=True,
+              )
+              selected_commit = subprocess.check_output(
+                  ['git', 'rev-parse', 'HEAD'],
+                  cwd=selected_root,
+                  text=True,
+              ).strip()
+              Path('/tmp/vc4-device-reconcile/selected-sha').write_text(
+                  selected_commit + '\n'
+              )
+              subprocess.run(
+                  ['git', 'worktree', 'remove', '--force', str(selected_root)],
+                  check=False,
+              )
+          print(json.dumps(output, indent=2))
+          PY
+
+      - name: Record the device-family decision
+        if: always() && steps.frontier.outputs.need_reconcile == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tests/vc4/results/stock-device-reconcile
+          if test -f /tmp/vc4-device-reconcile/result.json; then
+            cp /tmp/vc4-device-reconcile/result.json \
+              tests/vc4/results/stock-device-reconcile/result.json
+          else
+            echo '{"error":"evaluation did not produce a result"}' \
+              >tests/vc4/results/stock-device-reconcile/result.json
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path('tests/vc4/results/stock-device-reconcile/result.json')
+          result = json.loads(path.read_text())
+          selected = result.get('selected')
+          lines = [
+              '# VC4 stock device-frontier reconciliation',
+              '',
+              f'- Device family: **`{result.get("family")}`**',
+              f'- Baseline address: `{result.get("baseline_address")}`',
+              f'- Baseline PC: `{result.get("baseline_pc")}`',
+              f'- Selected experiment: '
+              f'`{selected.get("branch") if selected else None}`',
+              f'- Selected score: '
+              f'`{selected.get("score") if selected else None}`',
+              '',
+          ]
+          Path(
+              'tests/vc4/results/stock-device-reconcile/RESULT.md'
+          ).write_text('\n'.join(lines), encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Upload reconciliation diagnostics
+        if: always() && steps.frontier.outputs.need_reconcile == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-device-reconcile-${{ steps.frontier.outputs.family }}
+          path: |
+            /tmp/vc4-device-reconcile
+            tests/vc4/results/stock-device-reconcile
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the next branch or Linux-filesystem handoff
+        if: always()
+        shell: bash
+        env:
+          REACHED: ${{ steps.frontier.outputs.reached }}
+        run: |
+          set -euo pipefail
+          if [ "$REACHED" = true ]; then
+            cp VC4_STOCK_LINUX_NEXT.md /tmp/vc4-stock-linux-next.md
+          else
+            cp -a tests/vc4/results/stock-device-reconcile \
+              /tmp/stock-device-reconcile-result
+          fi
+          git reset --hard "$GITHUB_SHA"
+          git clean -fd
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-stock-device-reconcile.yml
+          if [ "$REACHED" = true ]; then
+            cp /tmp/vc4-stock-linux-next.md VC4_STOCK_LINUX_NEXT.md
+            git add VC4_STOCK_LINUX_NEXT.md
+            message="docs/vc4: advance the stock path to a Linux filesystem [skip ci]"
+          else
+            rm -rf tests/vc4/results/stock-device-reconcile
+            mkdir -p tests/vc4/results
+            cp -a /tmp/stock-device-reconcile-result \
+              tests/vc4/results/stock-device-reconcile
+            git add tests/vc4/results/stock-device-reconcile
+            message="tests/vc4: reconcile the stock device frontier [skip ci]"
+          fi
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "$message"
+          git pull --rebase origin agent/vc4-stock-linux-recovered
+          git push origin HEAD:agent/vc4-stock-linux-recovered
+
+          if [ "$REACHED" = true ]; then
+            if ! git ls-remote --exit-code --heads origin \
+                agent/vc4-stock-linux-filesystem >/dev/null 2>&1; then
+              git push origin HEAD:agent/vc4-stock-linux-filesystem
+            fi
+          elif test -f /tmp/vc4-device-reconcile/selected-sha; then
+            selected=$(cat /tmp/vc4-device-reconcile/selected-sha)
+            remote=$(git ls-remote --heads origin \
+              agent/vc4-stock-linux-next | awk '{print $1}')
+            if [ -n "$remote" ]; then
+              git push \
+                --force-with-lease="refs/heads/agent/vc4-stock-linux-next:$remote" \
+                origin "$selected:refs/heads/agent/vc4-stock-linux-next"
+            else
+              git push origin \
+                "$selected:refs/heads/agent/vc4-stock-linux-next"
+            fi
+          fi
