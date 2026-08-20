@@ -1,0 +1,64 @@
+name: VC4 Linux source-build diagnostic
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-bringup
+    paths:
+      - .github/workflows/vc4-linux-source-build.yml
+      - scripts/vc4/build-linux-initramfs.sh
+      - tests/vc4/linux-init.c
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install AArch64 userspace build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            cpio \
+            file
+
+      - name: Record toolchain
+        run: |
+          set -o pipefail
+          {
+            aarch64-linux-gnu-gcc --version
+            aarch64-linux-gnu-gcc -print-sysroot
+            aarch64-linux-gnu-gcc -print-file-name=libc.a
+          } 2>&1 | tee /tmp/vc4-linux-toolchain.log
+
+      - name: Build static initramfs with full diagnostics
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          bash -x scripts/vc4/build-linux-initramfs.sh \
+            /tmp/vc4-linux-initramfs.cpio \
+            2>&1 | tee /tmp/vc4-linux-initramfs-build.log
+          file /tmp/vc4-linux-initramfs.cpio | \
+            tee /tmp/vc4-linux-initramfs-file.log
+          test -s /tmp/vc4-linux-initramfs.cpio
+
+      - name: Upload source-build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-source-build-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-linux-toolchain.log
+            /tmp/vc4-linux-initramfs-build.log
+            /tmp/vc4-linux-initramfs-file.log
+            /tmp/vc4-linux-initramfs.cpio
+          if-no-files-found: warn
+          retention-days: 7
