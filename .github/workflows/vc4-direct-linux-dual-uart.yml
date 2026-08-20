@@ -1,0 +1,230 @@
+name: VC4 direct Linux dual-UART diagnostic
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-dual-uart.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-dual-uart
+  cancel-in-progress: true
+
+jobs:
+  dual-uart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-official
+      OUT_DIR: /tmp/vc4-direct-linux-dual-uart
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu cpio curl file \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            linux-libc-dev-arm64-cross ninja-build pkg-config \
+            python3 python3-venv libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize, download, and build
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/hetero-direct-linux-integrate.py
+          python3 scripts/vc4/hetero-direct-linux-integrate.py
+          python3 -m py_compile \
+            scripts/vc4/raspi3-direct-linux-control.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          bash -n scripts/vc4/build-linux-initramfs-v2.sh
+          git diff --check
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR"
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-dual-uart-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-dual-uart-build.log
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-dual-uart-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-dual-uart-msync.log
+          bash scripts/vc4/build-linux-initramfs-v2.sh \
+            "$PWD/build/vc4-linux-initramfs-v2"
+
+      - name: Run Linux with both Pi UARTs captured
+        id: probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+          cat >"$OUT_DIR/qemu-wrapper" <<EOF
+          #!/usr/bin/env bash
+          exec "$PWD/build/qemu-system-aarch64" "\$@" \
+            -serial "file:$OUT_DIR/aux-uart.log"
+          EOF
+          chmod +x "$OUT_DIR/qemu-wrapper"
+          append='console=ttyAMA0,115200 console=ttyS0,115200 earlycon=pl011,mmio32,0x3f201000 rdinit=/init root=/dev/ram0 rw loglevel=8 ignore_loglevel panic=-1 printk.time=1'
+          python3 scripts/vc4/raspi3-direct-linux-control.py \
+            "$OUT_DIR/qemu-wrapper" \
+            "$OFFICIAL_DIR/kernel8.img" \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            build/vc4-linux-initramfs-v2/initramfs.cpio \
+            --seconds 180 \
+            --append "$append" \
+            --out-dir "$OUT_DIR" \
+            2>&1 | tee "$OUT_DIR/probe.log"
+          rc=${PIPESTATUS[0]}
+          echo "return_code=$rc" >>"$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Combine UART evidence
+        if: always()
+        shell: bash
+        env:
+          PROBE_RC: ${{ steps.probe.outputs.return_code }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+          import re
+
+          out = Path(os.environ['OUT_DIR'])
+          result_path = out / 'result.json'
+          result = json.loads(result_path.read_text()) if result_path.is_file() else {}
+          pl011 = (out / 'serial.log').read_text(
+              encoding='utf-8', errors='replace'
+          ) if (out / 'serial.log').is_file() else ''
+          aux = (out / 'aux-uart.log').read_text(
+              encoding='utf-8', errors='replace'
+          ) if (out / 'aux-uart.log').is_file() else ''
+          combined = pl011 + '\n' + aux
+          linux_version_seen = bool(re.search(r'Linux version\s+\S+', combined))
+          init_seen = 'VC4_LINUX_INIT_START' in combined
+          framebuffer_marker_seen = 'VC4_LINUX_FB_OK' in combined
+          if result.get('scanout_passed') and framebuffer_marker_seen:
+              classification = 'dual-uart-linux-framebuffer-scanout'
+          elif init_seen and 'VC4_LINUX_FB_FAIL stage=open' in combined:
+              classification = 'dual-uart-linux-framebuffer-device-missing'
+          elif init_seen and 'VC4_LINUX_FB_FAIL stage=paint' in combined:
+              classification = 'dual-uart-linux-framebuffer-paint-blocked'
+          elif init_seen:
+              classification = 'dual-uart-linux-init'
+          elif linux_version_seen:
+              classification = 'dual-uart-linux-kernel-before-init'
+          elif result:
+              classification = 'dual-uart-linux-entry-blocked'
+          else:
+              classification = 'dual-uart-probe-infrastructure'
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'probe_return_code': os.environ.get('PROBE_RC', ''),
+              'classification': classification,
+              'pl011_linux_version_seen': bool(
+                  re.search(r'Linux version\s+\S+', pl011)
+              ),
+              'aux_linux_version_seen': bool(
+                  re.search(r'Linux version\s+\S+', aux)
+              ),
+              'combined_linux_version_seen': linux_version_seen,
+              'combined_init_seen': init_seen,
+              'combined_framebuffer_marker_seen': framebuffer_marker_seen,
+              'scanout_passed': bool(result.get('scanout_passed')),
+              'pl011_tail': pl011.splitlines()[-400:],
+              'aux_tail': aux.splitlines()[-400:],
+              'base_result': result,
+          }
+          Path('VC4_DIRECT_LINUX_DUAL_UART_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_DIRECT_LINUX_DUAL_UART_STATUS.md').write_text(
+              '# VC4 direct Linux dual-UART diagnostic\n\n'
+              f'Classification: **`{classification}`**\n\n'
+              f'PL011 Linux banner: '
+              f'`{status["pl011_linux_version_seen"]}`\n\n'
+              f'AUX Linux banner: `{status["aux_linux_version_seen"]}`\n\n'
+              f'Init reached on either UART: `{init_seen}`\n\n'
+              f'Framebuffer scanout: `{status["scanout_passed"]}`\n'
+          )
+          print(json.dumps({
+              key: status[key]
+              for key in (
+                  'classification',
+                  'pl011_linux_version_seen',
+                  'aux_linux_version_seen',
+                  'combined_init_seen',
+                  'combined_framebuffer_marker_seen',
+                  'scanout_passed',
+              )
+          }, indent=2))
+          PY
+
+      - name: Upload UART and framebuffer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-direct-linux-dual-uart-${{ github.run_attempt }}
+          path: |
+            VC4_DIRECT_LINUX_DUAL_UART_STATUS.json
+            VC4_DIRECT_LINUX_DUAL_UART_STATUS.md
+            /tmp/vc4-direct-linux-dual-uart
+            /tmp/vc4-dual-uart-configure.log
+            /tmp/vc4-dual-uart-build.log
+            /tmp/vc4-dual-uart-preg.log
+            /tmp/vc4-dual-uart-msync.log
+            build/vc4-linux-initramfs-v2/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish UART classification
+        if: always()
+        run: |
+          set -euo pipefail
+          cp VC4_DIRECT_LINUX_DUAL_UART_STATUS.json /tmp/uart-status.json
+          cp VC4_DIRECT_LINUX_DUAL_UART_STATUS.md /tmp/uart-status.md
+          git reset --hard "$GITHUB_SHA"
+          cp /tmp/uart-status.json VC4_DIRECT_LINUX_DUAL_UART_STATUS.json
+          cp /tmp/uart-status.md VC4_DIRECT_LINUX_DUAL_UART_STATUS.md
+          git rm .github/workflows/vc4-direct-linux-dual-uart.yml
+          git add \
+            VC4_DIRECT_LINUX_DUAL_UART_STATUS.json \
+            VC4_DIRECT_LINUX_DUAL_UART_STATUS.md
+          git diff --cached --check
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          classification=$(python3 -c \
+            'import json; print(json.load(open("VC4_DIRECT_LINUX_DUAL_UART_STATUS.json"))["classification"])')
+          git commit -m "ci/vc4: record ${classification} [skip ci]"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
