@@ -1,0 +1,20 @@
+{
+  "bare": null,
+  "bare_return_code": "",
+  "classification": "hetero-direct-build-failed",
+  "generated_at": "2026-08-20T01:50:14.914690+00:00",
+  "linux": null,
+  "linux_return_code": "",
+  "outcomes": {
+    "artifacts": "success",
+    "bare": "skipped",
+    "build": "failure",
+    "fixtures": "skipped",
+    "linux": "skipped",
+    "materialize": "success",
+    "regressions": "skipped"
+  },
+  "run_id": "32322129685",
+  "schema_version": 1,
+  "source_sha": "bf4d136ffbca85707ebc17cf297db75fc26c025a"
+}
