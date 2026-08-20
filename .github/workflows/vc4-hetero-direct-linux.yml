@@ -6,7 +6,12 @@ on:
       - agent/vc4-hetero-direct-linux
     paths:
       - .github/workflows/vc4-hetero-direct-linux.yml
+      - hw/arm/vc4_raspi3_hetero.c
+      - scripts/vc4/build-arm-framebuffer-smoke.sh
+      - scripts/vc4/build-linux-initramfs.sh
       - scripts/vc4/hetero-direct-linux-integrate.py
+      - scripts/vc4/raspi3-linux-probe.py
+      - tests/vc4/**
   workflow_dispatch:
 
 permissions:
@@ -117,7 +122,10 @@ jobs:
           echo "return_code=$rc" >> "$GITHUB_OUTPUT"
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          result = json.load(open('/tmp/vc4-hetero-bare/result.json'))
+          from pathlib import Path
+
+          path = Path('/tmp/vc4-hetero-bare/result.json')
+          result = json.loads(path.read_text()) if path.is_file() else {}
           print('passed=' + str(bool(result.get('passed'))).lower())
           PY
 
@@ -138,6 +146,14 @@ jobs:
           rc=$?
           set -e
           echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          path = Path('/tmp/vc4-hetero-linux/result.json')
+          result = json.loads(path.read_text()) if path.is_file() else {}
+          print('passed=' + str(bool(result.get('passed'))).lower())
+          PY
 
       - name: Record heterogeneous Linux frontier
         id: record
@@ -153,6 +169,7 @@ jobs:
           BARE_PASSED: ${{ steps.bare.outputs.passed }}
           LINUX_OUTCOME: ${{ steps.linux.outcome }}
           LINUX_RC: ${{ steps.linux.outputs.return_code }}
+          LINUX_PASSED: ${{ steps.linux.outputs.passed }}
         run: |
           python3 - <<'PY'
           from datetime import datetime, timezone
@@ -174,6 +191,10 @@ jobs:
               classification = 'hetero-linux-early-boot'
           elif bare and bare.get('passed'):
               classification = 'hetero-bare-framebuffer-linux-entry-blocked'
+          elif os.environ.get('FIXTURES_OUTCOME') != 'success':
+              classification = 'hetero-direct-fixtures-failed'
+          elif os.environ.get('REGRESSIONS_OUTCOME') != 'success':
+              classification = 'hetero-direct-regressions-failed'
           elif os.environ.get('BUILD_OUTCOME') != 'success':
               classification = 'hetero-direct-build-failed'
           else:
@@ -232,6 +253,7 @@ jobs:
         if: always()
         env:
           BARE_PASSED: ${{ steps.bare.outputs.passed }}
+          LINUX_PASSED: ${{ steps.linux.outputs.passed }}
         run: |
           set -euo pipefail
           cp VC4_HETERO_DIRECT_LINUX_STATUS.json /tmp/status.json
@@ -239,15 +261,19 @@ jobs:
           git config user.name "VC4 CI"
           git config user.email "vc4-ci@users.noreply.github.com"
           if [ "${BARE_PASSED:-false}" = true ]; then
-            git rm -- \
-              .github/workflows/vc4-hetero-direct-linux.yml \
-              scripts/vc4/hetero-direct-linux-integrate.py
             git add -- \
               hw/arm/vc4_raspi3_hetero.c \
               scripts/vc4/raspi3-linux-probe.py \
               VC4_HETERO_DIRECT_LINUX_STATUS.json \
               VC4_HETERO_DIRECT_LINUX_STATUS.md
-            message="hw/arm: add validated heterogeneous direct Linux control"
+            if [ "${LINUX_PASSED:-false}" = true ]; then
+              git rm -- \
+                .github/workflows/vc4-hetero-direct-linux.yml \
+                scripts/vc4/hetero-direct-linux-integrate.py
+              message="hw/arm: validate heterogeneous Linux framebuffer boot"
+            else
+              message="hw/arm: add validated heterogeneous direct boot control"
+            fi
           else
             git reset --hard "$GITHUB_SHA"
             cp /tmp/status.json VC4_HETERO_DIRECT_LINUX_STATUS.json
@@ -258,6 +284,10 @@ jobs:
             message="ci/vc4: record heterogeneous direct Linux failure [skip ci]"
           fi
           git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No frontier change to publish"
+            exit 0
+          fi
           git commit -m "$message"
           git pull --rebase origin agent/vc4-hetero-direct-linux
           git push origin HEAD:agent/vc4-hetero-direct-linux
