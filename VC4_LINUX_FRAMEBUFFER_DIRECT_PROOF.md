@@ -4,11 +4,6 @@ Source commit: `dac6323557f8b3535c7d6bac1c5dbfffc9a1eb01`
 
 Workflow run: `32353720694`
 
-Validated results:
+Classification: `hetero-linux-framebuffer`
 
-- both AArch64 and VC4 QEMU frontends built;
-- processor-control and multicore-sync regressions passed;
-- the bare-metal property-mailbox framebuffer witness passed;
-- the pinned Raspberry Pi Linux kernel reached `/init`;
-- `/init` opened and painted `/dev/fb0`;
-- QMP scanout matched the four-quadrant framebuffer witness.
+The final bare-metal and Linux host probes both passed. Those probes jointly require property-mailbox completion, guest framebuffer-RAM samples, and matching QMP display scanout. The Linux probe additionally requires the pinned kernel to reach the deterministic `/init` and paint `/dev/fb0`.
