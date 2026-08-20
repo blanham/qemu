@@ -14,6 +14,7 @@
 #include "qemu/error-report.h"
 #include "qemu/units.h"
 #include "hw/arm/bcm2836.h"
+#include "hw/arm/boot.h"
 #include "hw/arm/machines-qom.h"
 #include "hw/arm/vc4_raspi3_bootrom.h"
 #include "hw/core/boards.h"
@@ -45,6 +46,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(VC4Raspi3HeteroMachineState,
 #define RASPI3_LAN9514_HUB_PORTS 5
 #define VC4_IC0_OFFSET 0x2000
 #define VC4_IC1_OFFSET 0x2800
+#define VC4_RASPI3_LEGACY_MACHINE_ID 3138
+#define VC4_SMPBOOT_ADDR 0x300
+#define VC4_SPINTABLE_ADDR 0xd8
 
 struct VC4Raspi3HeteroMachineState {
     MachineState parent_obj;
@@ -56,7 +60,9 @@ struct VC4Raspi3HeteroMachineState {
     CPUState *vpu_cpu;
     BlockBackend *sd_blk;
     qemu_irq arm_power_irq;
+    struct arm_boot_info binfo;
 
+    bool direct_arm_kernel;
     bool arm_cpu0_released;
     uint32_t arm_release_count;
     hwaddr vpu_entry;
@@ -164,6 +170,52 @@ static void vc4_raspi3_create_onboard_usb_hub(BCMSocPeripheralBaseState *ps)
     usb_realize_and_unref(hub, &ps->dwc2.bus, &error_fatal);
 }
 
+static void vc4_raspi3_write_smpboot64(
+    ARMCPU *cpu, const struct arm_boot_info *info)
+{
+    AddressSpace *as = arm_boot_address_space(cpu, info);
+    static const ARMInsnFixup smpboot[] = {
+        { 0xd2801b05 }, /* mov x5, #0xd8 */
+        { 0xd53800a6 }, /* mrs x6, mpidr_el1 */
+        { 0x924004c6 }, /* and x6, x6, #3 */
+        { 0xd503205f }, /* spin: wfe */
+        { 0xf86678a4 }, /* ldr x4, [x5, x6, lsl #3] */
+        { 0xb4ffffc4 }, /* cbz x4, spin */
+        { 0xd2800000 }, /* mov x0, #0 */
+        { 0xd2800001 }, /* mov x1, #0 */
+        { 0xd2800002 }, /* mov x2, #0 */
+        { 0xd2800003 }, /* mov x3, #0 */
+        { 0xd61f0080 }, /* br x4 */
+        { 0, FIXUP_TERMINATOR },
+    };
+    static const uint32_t fixupcontext[FIXUP_MAX] = { 0 };
+    static const uint64_t spintables[BCM283X_NCPUS] = { 0 };
+
+    arm_write_bootloader("vc4_raspi3_smpboot", as,
+                         info->smp_loader_start,
+                         smpboot, fixupcontext);
+    rom_add_blob_fixed_as("vc4_raspi3_spintables",
+                          spintables, sizeof(spintables),
+                          VC4_SPINTABLE_ADDR, as);
+}
+
+static void vc4_raspi3_reset_secondary(
+    ARMCPU *cpu, const struct arm_boot_info *info)
+{
+    cpu_set_pc(CPU(cpu), info->smp_loader_start);
+}
+
+static bool vc4_raspi3_get_direct_arm_kernel(Object *obj, Error **errp)
+{
+    return VC4_RASPI3_HETERO_MACHINE(obj)->direct_arm_kernel;
+}
+
+static void vc4_raspi3_set_direct_arm_kernel(Object *obj, bool value,
+                                              Error **errp)
+{
+    VC4_RASPI3_HETERO_MACHINE(obj)->direct_arm_kernel = value;
+}
+
 static void vc4_raspi3_machine_initfn(Object *obj)
 {
     VC4Raspi3HeteroMachineState *s =
@@ -215,8 +267,10 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     object_property_set_int(OBJECT(soc), "vcram-base",
                             machine->ram_size - vcram_size, &error_abort);
 
-    /* All four A53s remain in PSCI_OFF until firmware releases CPU0. */
-    object_property_set_int(OBJECT(soc), "enabled-cpus", 0, &error_abort);
+    /* Stock firmware owns ARM release; direct control starts all A53s. */
+    object_property_set_int(OBJECT(soc), "enabled-cpus",
+                            s->direct_arm_kernel ? BCM283X_NCPUS : 0,
+                            &error_abort);
     qdev_realize(DEVICE(soc), NULL, &error_fatal);
 
     vc4_raspi3_create_onboard_usb_hub(ps);
@@ -245,6 +299,23 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
                                    BCM2835_VC4_INTC_GPU_IRQ, i));
     }
 
+    if (s->direct_arm_kernel) {
+        s->binfo.board_id = VC4_RASPI3_LEGACY_MACHINE_ID;
+        s->binfo.ram_size = machine->ram_size - vcram_size;
+        s->binfo.smp_loader_start = VC4_SMPBOOT_ADDR;
+        s->binfo.write_secondary_boot = vc4_raspi3_write_smpboot64;
+        s->binfo.secondary_cpu_reset_hook = vc4_raspi3_reset_secondary;
+
+        /*
+         * The VPU is deliberately not realized yet: arm_load_kernel()
+         * historically iterates the global CPU list as ARM CPUs.  Keeping
+         * the powered-off VPU out of that list preserves the generic ARM
+         * loader contract without weakening its type assumptions globally.
+         */
+        arm_load_kernel(&soc->cpu[0].core, machine, &s->binfo);
+        s->arm_cpu0_released = true;
+    }
+
     /*
      * The VPU sees the 4 GiB GPU bus, but its first-stage ROM loads
      * bootcode.bin into a local 128 KiB L2-backed area at VPU address zero.
@@ -262,7 +333,7 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
 
     cpu_address_space_init(s->vpu_cpu, 0, "vc4-vpu",
                            &s->vpu_address_space);
-    s->vpu_cpu->start_powered_off = false;
+    s->vpu_cpu->start_powered_off = s->direct_arm_kernel;
     if (!qdev_realize(DEVICE(s->vpu_cpu), NULL, &error_fatal)) {
         g_assert_not_reached();
     }
@@ -273,6 +344,10 @@ static void vc4_raspi3_hetero_init(MachineState *machine)
     qdev_connect_gpio_out_named(
         DEVICE(&ps->powermgt), BCM2835_POWERMGT_ARM_POWER_ON, 0,
         s->arm_power_irq);
+
+    if (s->direct_arm_kernel) {
+        return;
+    }
 
     if (!image) {
         image = machine->firmware;
@@ -320,6 +395,13 @@ static void vc4_raspi3_hetero_machine_class_init(ObjectClass *oc,
     MachineClass *mc = MACHINE_CLASS(oc);
 
     mc->desc = "Raspberry Pi 3B with VC4-first heterogeneous boot";
+    object_class_property_add_bool(
+        oc, "direct-arm-kernel",
+        vc4_raspi3_get_direct_arm_kernel,
+        vc4_raspi3_set_direct_arm_kernel);
+    object_class_property_set_description(
+        oc, "direct-arm-kernel",
+        "Load -kernel/-dtb/-initrd on ARM while the VPU is powered off");
     mc->init = vc4_raspi3_hetero_init;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a53");
     mc->default_ram_size = 1 * GiB;
