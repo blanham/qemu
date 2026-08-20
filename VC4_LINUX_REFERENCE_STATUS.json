@@ -3,7 +3,7 @@
     "bare_marker_seen": false,
     "bare_signature_seen": false,
     "earlycon_seen": false,
-    "elapsed_seconds": 120.07093072199996,
+    "elapsed_seconds": 120.08377964299996,
     "fat_layout": null,
     "final_cpu_snapshot": {
       "cpus": [
@@ -11,60 +11,60 @@
           "cpu_index": 0,
           "halted": null,
           "qom_type": "cortex-a53-arm-cpu",
-          "registers": "\r\nCPU#0\r\n PC=0000000000080148 X00=00000000061d22a3 X01=000000003f00b818\r\nX02=0000000000000000 X03=0000000000080388 X04=000000003f00b800\r\nX05=000000000000000d X06=00000000000802f0 X07=0000000000000000\r\nX08=0000000000000000 X09=0000000000000000 X10=0000000000080380\r\nX11=0000000000000000 X12=0000000000000000 X13=0000000000000000\r\nX14=0000000000000000 X15=0000000000000000 X16=0000000000000000\r\nX17=0000000000000000 X18=0000000000000000 X19=0000000000000000\r\nX20=0000000000000000 X21=0000000000000000 X22=0000000000000000\r\nX23=0000000000000000 X24=0000000000000000 X25=0000000000000000\r\nX26=0000000000000000 X27=0000000000000000 X28=0000000000000000\r\nX29=00000000007ffff0 X30=00000000000800cc  SP=00000000007ffff0\r\nPSTATE=00000000200003c9 --C- NS EL2h     FPCR=00000000 FPSR=00000000\r\nQ00=0000000000000000:0000000000000000 Q01=0000000000000000:0000000000000000\r\nQ02=0000000000000000:0000000000000000 Q03=0000000000000000:0000000000000000\r\nQ04=0000000000000000:0000000000000000 Q05=0000000000000000:0000000000000000\r\nQ06=0000000000000000:0000000000000000 Q07=0000000000000000:0000000000000000\r\nQ08=0000000000000000:0000000000000000 Q09=0000000000000000:0000000000000000\r\nQ10=0000000000000000:0000000000000000 Q11=0000000000000000:0000000000000000\r\nQ12=0000000000000000:0000000000000000 Q13=0000000000000000:0000000000000000\r\nQ14=0000000000000000:0000000000000000 Q15=0000000000000000:0000000000000000\r\nQ16=0000000000000000:0000000000000000 Q17=0000000000000000:0000000000000000\r\nQ18=0000000000000000:0000000000000000 Q19=0000000000000000:0000000000000000\r\nQ20=0000000000000000:0000000000000000 Q21=0000000000000000:0000000000000000\r\nQ22=0000000000000000:0000000000000000 Q23=0000000000000000:0000000000000000\r\nQ24=0000000000000000:0000000000000000 Q25=0000000000000000:0000000000000000\r\nQ26=0000000000000000:0000000000000000 Q27=0000000000000000:0000000000000000\r\nQ28=0000000000000000:0000000000000000 Q29=0000000000000000:0000000000000000\r\nQ30=0000000000000000:0000000000000000 Q31=0000000000000000:0000000000000000\r\n",
-          "thread_id": 13435
+          "registers": "\r\nCPU#0\r\n PC=0000000000080140 X00=0000000006241e0a X01=000000003f00b818\r\nX02=0000000000000000 X03=0000000000080388 X04=000000003f00b800\r\nX05=000000000000000d X06=00000000000802f0 X07=0000000000000000\r\nX08=0000000000000000 X09=0000000000000000 X10=0000000000080380\r\nX11=0000000000000000 X12=0000000000000000 X13=0000000000000000\r\nX14=0000000000000000 X15=0000000000000000 X16=0000000000000000\r\nX17=0000000000000000 X18=0000000000000000 X19=0000000000000000\r\nX20=0000000000000000 X21=0000000000000000 X22=0000000000000000\r\nX23=0000000000000000 X24=0000000000000000 X25=0000000000000000\r\nX26=0000000000000000 X27=0000000000000000 X28=0000000000000000\r\nX29=00000000007ffff0 X30=00000000000800cc  SP=00000000007ffff0\r\nPSTATE=00000000200003c9 --C- NS EL2h     FPCR=00000000 FPSR=00000000\r\nQ00=0000000000000000:0000000000000000 Q01=0000000000000000:0000000000000000\r\nQ02=0000000000000000:0000000000000000 Q03=0000000000000000:0000000000000000\r\nQ04=0000000000000000:0000000000000000 Q05=0000000000000000:0000000000000000\r\nQ06=0000000000000000:0000000000000000 Q07=0000000000000000:0000000000000000\r\nQ08=0000000000000000:0000000000000000 Q09=0000000000000000:0000000000000000\r\nQ10=0000000000000000:0000000000000000 Q11=0000000000000000:0000000000000000\r\nQ12=0000000000000000:0000000000000000 Q13=0000000000000000:0000000000000000\r\nQ14=0000000000000000:0000000000000000 Q15=0000000000000000:0000000000000000\r\nQ16=0000000000000000:0000000000000000 Q17=0000000000000000:0000000000000000\r\nQ18=0000000000000000:0000000000000000 Q19=0000000000000000:0000000000000000\r\nQ20=0000000000000000:0000000000000000 Q21=0000000000000000:0000000000000000\r\nQ22=0000000000000000:0000000000000000 Q23=0000000000000000:0000000000000000\r\nQ24=0000000000000000:0000000000000000 Q25=0000000000000000:0000000000000000\r\nQ26=0000000000000000:0000000000000000 Q27=0000000000000000:0000000000000000\r\nQ28=0000000000000000:0000000000000000 Q29=0000000000000000:0000000000000000\r\nQ30=0000000000000000:0000000000000000 Q31=0000000000000000:0000000000000000\r\n",
+          "thread_id": 13361
         },
         {
           "cpu_index": 1,
           "halted": null,
           "qom_type": "cortex-a53-arm-cpu",
           "registers": "\r\nCPU#1\r\n PC=0000000000000310 X00=0000000000000000 X01=0000000000000000\r\nX02=0000000000000000 X03=0000000000000000 X04=0000000000000000\r\nX05=00000000000000d8 X06=0000000000000001 X07=0000000000000000\r\nX08=0000000000000000 X09=0000000000000000 X10=0000000000000000\r\nX11=0000000000000000 X12=0000000000000000 X13=0000000000000000\r\nX14=0000000000000000 X15=0000000000000000 X16=0000000000000000\r\nX17=0000000000000000 X18=0000000000000000 X19=0000000000000000\r\nX20=0000000000000000 X21=0000000000000000 X22=0000000000000000\r\nX23=0000000000000000 X24=0000000000000000 X25=0000000000000000\r\nX26=0000000000000000 X27=0000000000000000 X28=0000000000000000\r\nX29=0000000000000000 X30=0000000000000000  SP=0000000000000000\r\nPSTATE=00000000400003c9 -Z-- NS EL2h     FPCR=00000000 FPSR=00000000\r\nQ00=0000000000000000:0000000000000000 Q01=0000000000000000:0000000000000000\r\nQ02=0000000000000000:0000000000000000 Q03=0000000000000000:0000000000000000\r\nQ04=0000000000000000:0000000000000000 Q05=0000000000000000:0000000000000000\r\nQ06=0000000000000000:0000000000000000 Q07=0000000000000000:0000000000000000\r\nQ08=0000000000000000:0000000000000000 Q09=0000000000000000:0000000000000000\r\nQ10=0000000000000000:0000000000000000 Q11=0000000000000000:0000000000000000\r\nQ12=0000000000000000:0000000000000000 Q13=0000000000000000:0000000000000000\r\nQ14=0000000000000000:0000000000000000 Q15=0000000000000000:0000000000000000\r\nQ16=0000000000000000:0000000000000000 Q17=0000000000000000:0000000000000000\r\nQ18=0000000000000000:0000000000000000 Q19=0000000000000000:0000000000000000\r\nQ20=0000000000000000:0000000000000000 Q21=0000000000000000:0000000000000000\r\nQ22=0000000000000000:0000000000000000 Q23=0000000000000000:0000000000000000\r\nQ24=0000000000000000:0000000000000000 Q25=0000000000000000:0000000000000000\r\nQ26=0000000000000000:0000000000000000 Q27=0000000000000000:0000000000000000\r\nQ28=0000000000000000:0000000000000000 Q29=0000000000000000:0000000000000000\r\nQ30=0000000000000000:0000000000000000 Q31=0000000000000000:0000000000000000\r\n",
-          "thread_id": 13435
+          "thread_id": 13361
         },
         {
           "cpu_index": 2,
           "halted": null,
           "qom_type": "cortex-a53-arm-cpu",
           "registers": "\r\nCPU#2\r\n PC=0000000000000310 X00=0000000000000000 X01=0000000000000000\r\nX02=0000000000000000 X03=0000000000000000 X04=0000000000000000\r\nX05=00000000000000d8 X06=0000000000000002 X07=0000000000000000\r\nX08=0000000000000000 X09=0000000000000000 X10=0000000000000000\r\nX11=0000000000000000 X12=0000000000000000 X13=0000000000000000\r\nX14=0000000000000000 X15=0000000000000000 X16=0000000000000000\r\nX17=0000000000000000 X18=0000000000000000 X19=0000000000000000\r\nX20=0000000000000000 X21=0000000000000000 X22=0000000000000000\r\nX23=0000000000000000 X24=0000000000000000 X25=0000000000000000\r\nX26=0000000000000000 X27=0000000000000000 X28=0000000000000000\r\nX29=0000000000000000 X30=0000000000000000  SP=0000000000000000\r\nPSTATE=00000000400003c9 -Z-- NS EL2h     FPCR=00000000 FPSR=00000000\r\nQ00=0000000000000000:0000000000000000 Q01=0000000000000000:0000000000000000\r\nQ02=0000000000000000:0000000000000000 Q03=0000000000000000:0000000000000000\r\nQ04=0000000000000000:0000000000000000 Q05=0000000000000000:0000000000000000\r\nQ06=0000000000000000:0000000000000000 Q07=0000000000000000:0000000000000000\r\nQ08=0000000000000000:0000000000000000 Q09=0000000000000000:0000000000000000\r\nQ10=0000000000000000:0000000000000000 Q11=0000000000000000:0000000000000000\r\nQ12=0000000000000000:0000000000000000 Q13=0000000000000000:0000000000000000\r\nQ14=0000000000000000:0000000000000000 Q15=0000000000000000:0000000000000000\r\nQ16=0000000000000000:0000000000000000 Q17=0000000000000000:0000000000000000\r\nQ18=0000000000000000:0000000000000000 Q19=0000000000000000:0000000000000000\r\nQ20=0000000000000000:0000000000000000 Q21=0000000000000000:0000000000000000\r\nQ22=0000000000000000:0000000000000000 Q23=0000000000000000:0000000000000000\r\nQ24=0000000000000000:0000000000000000 Q25=0000000000000000:0000000000000000\r\nQ26=0000000000000000:0000000000000000 Q27=0000000000000000:0000000000000000\r\nQ28=0000000000000000:0000000000000000 Q29=0000000000000000:0000000000000000\r\nQ30=0000000000000000:0000000000000000 Q31=0000000000000000:0000000000000000\r\n",
-          "thread_id": 13435
+          "thread_id": 13361
         },
         {
           "cpu_index": 3,
           "halted": null,
           "qom_type": "cortex-a53-arm-cpu",
           "registers": "\r\nCPU#3\r\n PC=0000000000000310 X00=0000000000000000 X01=0000000000000000\r\nX02=0000000000000000 X03=0000000000000000 X04=0000000000000000\r\nX05=00000000000000d8 X06=0000000000000003 X07=0000000000000000\r\nX08=0000000000000000 X09=0000000000000000 X10=0000000000000000\r\nX11=0000000000000000 X12=0000000000000000 X13=0000000000000000\r\nX14=0000000000000000 X15=0000000000000000 X16=0000000000000000\r\nX17=0000000000000000 X18=0000000000000000 X19=0000000000000000\r\nX20=0000000000000000 X21=0000000000000000 X22=0000000000000000\r\nX23=0000000000000000 X24=0000000000000000 X25=0000000000000000\r\nX26=0000000000000000 X27=0000000000000000 X28=0000000000000000\r\nX29=0000000000000000 X30=0000000000000000  SP=0000000000000000\r\nPSTATE=00000000400003c9 -Z-- NS EL2h     FPCR=00000000 FPSR=00000000\r\nQ00=0000000000000000:0000000000000000 Q01=0000000000000000:0000000000000000\r\nQ02=0000000000000000:0000000000000000 Q03=0000000000000000:0000000000000000\r\nQ04=0000000000000000:0000000000000000 Q05=0000000000000000:0000000000000000\r\nQ06=0000000000000000:0000000000000000 Q07=0000000000000000:0000000000000000\r\nQ08=0000000000000000:0000000000000000 Q09=0000000000000000:0000000000000000\r\nQ10=0000000000000000:0000000000000000 Q11=0000000000000000:0000000000000000\r\nQ12=0000000000000000:0000000000000000 Q13=0000000000000000:0000000000000000\r\nQ14=0000000000000000:0000000000000000 Q15=0000000000000000:0000000000000000\r\nQ16=0000000000000000:0000000000000000 Q17=0000000000000000:0000000000000000\r\nQ18=0000000000000000:0000000000000000 Q19=0000000000000000:0000000000000000\r\nQ20=0000000000000000:0000000000000000 Q21=0000000000000000:0000000000000000\r\nQ22=0000000000000000:0000000000000000 Q23=0000000000000000:0000000000000000\r\nQ24=0000000000000000:0000000000000000 Q25=0000000000000000:0000000000000000\r\nQ26=0000000000000000:0000000000000000 Q27=0000000000000000:0000000000000000\r\nQ28=0000000000000000:0000000000000000 Q29=0000000000000000:0000000000000000\r\nQ30=0000000000000000:0000000000000000 Q31=0000000000000000:0000000000000000\r\n",
-          "thread_id": 13435
+          "thread_id": 13361
         }
       ],
-      "info_cpus": "* CPU #0: thread_id=13435 model=cortex-a53\r\n  CPU #1: thread_id=13435 model=cortex-a53\r\n  CPU #2: thread_id=13435 model=cortex-a53\r\n  CPU #3: thread_id=13435 model=cortex-a53\r\n",
+      "info_cpus": "* CPU #0: thread_id=13361 model=cortex-a53\r\n  CPU #1: thread_id=13361 model=cortex-a53\r\n  CPU #2: thread_id=13361 model=cortex-a53\r\n  CPU #3: thread_id=13361 model=cortex-a53\r\n",
       "query_cpus_fast": [
         {
           "cpu-index": 0,
           "qom-path": "/machine/soc/cpu[0]",
           "qom-type": "cortex-a53-arm-cpu",
           "target": "aarch64",
-          "thread-id": 13435
+          "thread-id": 13361
         },
         {
           "cpu-index": 1,
           "qom-path": "/machine/soc/cpu[1]",
           "qom-type": "cortex-a53-arm-cpu",
           "target": "aarch64",
-          "thread-id": 13435
+          "thread-id": 13361
         },
         {
           "cpu-index": 2,
           "qom-path": "/machine/soc/cpu[2]",
           "qom-type": "cortex-a53-arm-cpu",
           "target": "aarch64",
-          "thread-id": 13435
+          "thread-id": 13361
         },
         {
           "cpu-index": 3,
           "qom-path": "/machine/soc/cpu[3]",
           "qom-type": "cortex-a53-arm-cpu",
           "target": "aarch64",
-          "thread-id": 13435
+          "thread-id": 13361
         }
       ]
     },
@@ -82,10 +82,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 0.04527485500011608,
+        "elapsed_seconds": 0.045040648999929545,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x000001dd",
+        "system_timer_low": "0x0000020e",
         "vpu": null
       },
       {
@@ -94,10 +94,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 2.0570559170000706,
+        "elapsed_seconds": 2.0572355459999017,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x001eb633",
+        "system_timer_low": "0x001eb8df",
         "vpu": null
       },
       {
@@ -106,10 +106,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 4.070775464999997,
+        "elapsed_seconds": 4.070522905999951,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x003d6f46",
+        "system_timer_low": "0x003d7021",
         "vpu": null
       },
       {
@@ -118,10 +118,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 6.083137036999915,
+        "elapsed_seconds": 6.083837345999996,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x005c256d",
+        "system_timer_low": "0x005c287c",
         "vpu": null
       },
       {
@@ -130,10 +130,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 8.096041596000077,
+        "elapsed_seconds": 8.096951571999966,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x007adab3",
+        "system_timer_low": "0x007adf77",
         "vpu": null
       },
       {
@@ -142,10 +142,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 10.007136941999988,
+        "elapsed_seconds": 10.008235691999971,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x00980546",
+        "system_timer_low": "0x0098098d",
         "vpu": null
       },
       {
@@ -154,10 +154,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 12.020187152000062,
+        "elapsed_seconds": 12.020905542999913,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x00b6bbf7",
+        "system_timer_low": "0x00b6bf29",
         "vpu": null
       },
       {
@@ -166,10 +166,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 14.032962845999918,
+        "elapsed_seconds": 14.035968902999912,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x00d57282",
+        "system_timer_low": "0x00d57e7d",
         "vpu": null
       },
       {
@@ -178,10 +178,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 16.04632370200011,
+        "elapsed_seconds": 16.048895303999984,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x00f42aef",
+        "system_timer_low": "0x00f437ad",
         "vpu": null
       },
       {
@@ -190,10 +190,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 18.059263195000085,
+        "elapsed_seconds": 18.061807627999997,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0112e1ed",
+        "system_timer_low": "0x0112ec67",
         "vpu": null
       },
       {
@@ -202,10 +202,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 20.07122167600005,
+        "elapsed_seconds": 20.07355819999998,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x01319504",
+        "system_timer_low": "0x0131a01e",
         "vpu": null
       },
       {
@@ -214,10 +214,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 22.083190132000027,
+        "elapsed_seconds": 22.087653850999914,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x01504850",
+        "system_timer_low": "0x01505ab6",
         "vpu": null
       },
       {
@@ -226,10 +226,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 24.095747300000085,
+        "elapsed_seconds": 24.00113545499994,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x016efed1",
+        "system_timer_low": "0x016d8ce0",
         "vpu": null
       },
       {
@@ -238,10 +238,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 26.00826250299997,
+        "elapsed_seconds": 26.01589129699994,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x018c2c53",
+        "system_timer_low": "0x018c4b1a",
         "vpu": null
       },
       {
@@ -250,10 +250,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 28.023164583999915,
+        "elapsed_seconds": 28.0316821749999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x01aaeb21",
+        "system_timer_low": "0x01ab1046",
         "vpu": null
       },
       {
@@ -262,10 +262,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 30.035009016999993,
+        "elapsed_seconds": 30.045566557999905,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x01c99ee0",
+        "system_timer_low": "0x01c9c85d",
         "vpu": null
       },
       {
@@ -274,10 +274,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 32.04790317800007,
+        "elapsed_seconds": 32.0585249479999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x01e854fc",
+        "system_timer_low": "0x01e880e9",
         "vpu": null
       },
       {
@@ -286,10 +286,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 34.060018506999995,
+        "elapsed_seconds": 34.072722013999964,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0207089d",
+        "system_timer_low": "0x02073b92",
         "vpu": null
       },
       {
@@ -298,10 +298,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 36.07292634600003,
+        "elapsed_seconds": 36.08608255399997,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0225bf43",
+        "system_timer_low": "0x0225f42f",
         "vpu": null
       },
       {
@@ -310,10 +310,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 38.08607318700001,
+        "elapsed_seconds": 38.100349983,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x02447832",
+        "system_timer_low": "0x0244b070",
         "vpu": null
       },
       {
@@ -322,10 +322,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 40.100433419999945,
+        "elapsed_seconds": 40.01247351899997,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0263355c",
+        "system_timer_low": "0x0261de28",
         "vpu": null
       },
       {
@@ -334,10 +334,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 42.01154423699995,
+        "elapsed_seconds": 42.02537404299994,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x02805dba",
+        "system_timer_low": "0x02809469",
         "vpu": null
       },
       {
@@ -346,10 +346,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 44.024905264999916,
+        "elapsed_seconds": 44.03858643199999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x029f15c8",
+        "system_timer_low": "0x029f4cbb",
         "vpu": null
       },
       {
@@ -358,10 +358,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 46.037192829000105,
+        "elapsed_seconds": 46.051510082999926,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x02bdcb27",
+        "system_timer_low": "0x02be03d2",
         "vpu": null
       },
       {
@@ -370,10 +370,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 48.05177436200006,
+        "elapsed_seconds": 48.06515465099994,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x02dc87aa",
+        "system_timer_low": "0x02dcbd7a",
         "vpu": null
       },
       {
@@ -382,10 +382,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 50.06514136800001,
+        "elapsed_seconds": 50.079040545,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x02fb4086",
+        "system_timer_low": "0x02fb7853",
         "vpu": null
       },
       {
@@ -394,10 +394,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 52.07697693399996,
+        "elapsed_seconds": 52.092770333999965,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0319f32b",
+        "system_timer_low": "0x031a3450",
         "vpu": null
       },
       {
@@ -406,10 +406,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 54.088900260999935,
+        "elapsed_seconds": 54.00636921899991,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0338a7c0",
+        "system_timer_low": "0x0337658d",
         "vpu": null
       },
       {
@@ -418,10 +418,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 56.00352732100009,
+        "elapsed_seconds": 56.0184556129999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0355ddbf",
+        "system_timer_low": "0x03561b11",
         "vpu": null
       },
       {
@@ -430,10 +430,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 58.01670319699997,
+        "elapsed_seconds": 58.03452924099997,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x037495b6",
+        "system_timer_low": "0x0374dd41",
         "vpu": null
       },
       {
@@ -442,10 +442,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 60.029630015000066,
+        "elapsed_seconds": 60.05094675999999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x03934ca7",
+        "system_timer_low": "0x0393a228",
         "vpu": null
       },
       {
@@ -454,10 +454,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 62.04303306800011,
+        "elapsed_seconds": 62.06396129399991,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x03b205a9",
+        "system_timer_low": "0x03b2582a",
         "vpu": null
       },
       {
@@ -466,10 +466,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 64.056317068,
+        "elapsed_seconds": 64.07659398599992,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x03d0bddc",
+        "system_timer_low": "0x03d10de1",
         "vpu": null
       },
       {
@@ -478,10 +478,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 66.069002232,
+        "elapsed_seconds": 66.08992320999994,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x03ef73d1",
+        "system_timer_low": "0x03efc6e0",
         "vpu": null
       },
       {
@@ -490,10 +490,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 68.08128308699997,
+        "elapsed_seconds": 68.00266156199996,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x040e2870",
+        "system_timer_low": "0x040cf67f",
         "vpu": null
       },
       {
@@ -502,10 +502,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 70.09378897600004,
+        "elapsed_seconds": 70.0152629129999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x042cde03",
+        "system_timer_low": "0x042bab8a",
         "vpu": null
       },
       {
@@ -514,10 +514,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 72.00606938100009,
+        "elapsed_seconds": 72.02882250099992,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x044a0b8f",
+        "system_timer_low": "0x044a656b",
         "vpu": null
       },
       {
@@ -526,10 +526,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 74.01928552499999,
+        "elapsed_seconds": 74.04495076199998,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0468c402",
+        "system_timer_low": "0x046928ea",
         "vpu": null
       },
       {
@@ -538,10 +538,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 76.03207489600004,
+        "elapsed_seconds": 76.05797058999997,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x04877a4c",
+        "system_timer_low": "0x0487e0cf",
         "vpu": null
       },
       {
@@ -550,10 +550,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 78.04523823099998,
+        "elapsed_seconds": 78.07297523199998,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x04a63241",
+        "system_timer_low": "0x04a69f48",
         "vpu": null
       },
       {
@@ -562,10 +562,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 80.05855737899992,
+        "elapsed_seconds": 80.0893926729999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x04c4eac8",
+        "system_timer_low": "0x04c56689",
         "vpu": null
       },
       {
@@ -574,10 +574,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 82.07127401799994,
+        "elapsed_seconds": 82.0028858899999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x04e3a0c3",
+        "system_timer_low": "0x04e29669",
         "vpu": null
       },
       {
@@ -586,10 +586,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 84.08455342100001,
+        "elapsed_seconds": 84.01495652599999,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x05025ae3",
+        "system_timer_low": "0x05014a11",
         "vpu": null
       },
       {
@@ -598,10 +598,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 86.09666908000008,
+        "elapsed_seconds": 86.02751119799996,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x05211227",
+        "system_timer_low": "0x051fffe8",
         "vpu": null
       },
       {
@@ -610,10 +610,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 88.01055611800007,
+        "elapsed_seconds": 88.04010738299996,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x053e40b6",
+        "system_timer_low": "0x053eb578",
         "vpu": null
       },
       {
@@ -622,10 +622,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 90.02545364000002,
+        "elapsed_seconds": 90.05220463,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x055cff77",
+        "system_timer_low": "0x055d6c3b",
         "vpu": null
       },
       {
@@ -634,10 +634,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 92.03849488700007,
+        "elapsed_seconds": 92.06590375899998,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x057bb7a3",
+        "system_timer_low": "0x057c2336",
         "vpu": null
       },
       {
@@ -646,10 +646,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 94.05849087699994,
+        "elapsed_seconds": 94.07844528099997,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x059a896f",
+        "system_timer_low": "0x059ad8f7",
         "vpu": null
       },
       {
@@ -658,10 +658,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 96.07527032899998,
+        "elapsed_seconds": 96.09149127499995,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x05b95136",
+        "system_timer_low": "0x05b9901e",
         "vpu": null
       },
       {
@@ -670,10 +670,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 98.08806589999995,
+        "elapsed_seconds": 98.004630002,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x05d8072e",
+        "system_timer_low": "0x05d6c171",
         "vpu": null
       },
       {
@@ -682,10 +682,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 100.09963923500004,
+        "elapsed_seconds": 100.01703935299997,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x05f6ba48",
+        "system_timer_low": "0x05f57662",
         "vpu": null
       },
       {
@@ -694,10 +694,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 102.01225373700004,
+        "elapsed_seconds": 102.02874062699993,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0613ea51",
+        "system_timer_low": "0x06142887",
         "vpu": null
       },
       {
@@ -706,10 +706,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 104.030080473,
+        "elapsed_seconds": 104.04137986899991,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0632b14b",
+        "system_timer_low": "0x0632dec5",
         "vpu": null
       },
       {
@@ -718,10 +718,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 106.045951199,
+        "elapsed_seconds": 106.054849924,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x06517351",
+        "system_timer_low": "0x065197a7",
         "vpu": null
       },
       {
@@ -730,10 +730,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 108.05895228700001,
+        "elapsed_seconds": 108.07013798799994,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x06702aa5",
+        "system_timer_low": "0x067057a4",
         "vpu": null
       },
       {
@@ -742,10 +742,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 110.07756350699992,
+        "elapsed_seconds": 110.08220847399991,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x068ef85a",
+        "system_timer_low": "0x068f0b46",
         "vpu": null
       },
       {
@@ -754,10 +754,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 112.08871113000009,
+        "elapsed_seconds": 112.09600122199993,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x06ada83e",
+        "system_timer_low": "0x06adccf0",
         "vpu": null
       },
       {
@@ -766,10 +766,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 114.00276317099997,
+        "elapsed_seconds": 114.01374174499995,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x06cadcde",
+        "system_timer_low": "0x06cb08fa",
         "vpu": null
       },
       {
@@ -778,10 +778,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 116.0148762880001,
+        "elapsed_seconds": 116.02696576199992,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x06e990bc",
+        "system_timer_low": "0x06e9c164",
         "vpu": null
       },
       {
@@ -790,10 +790,10 @@
         "arm_id": "0x00000000",
         "arm_status": "0x00000000",
         "bare_signature": "0x0000000000000000",
-        "elapsed_seconds": 118.02757063600006,
+        "elapsed_seconds": 118.04004686299993,
         "kernel_word": "0x580000a0d5034fdf",
         "pm_proc": "0x00000000",
-        "system_timer_low": "0x0708470e",
+        "system_timer_low": "0x070878cc",
         "vpu": null
       }
     ],
@@ -821,12 +821,11 @@
       "-d",
       "guest_errors,unimp",
       "-qmp",
-      "unix:/tmp/vc4-linux-probe-medyu80z/qmp.sock,server=on,wait=off",
+      "unix:/tmp/vc4-linux-probe-t8ze_twu/qmp.sock,server=on,wait=off",
       "-qtest",
-      "unix:/tmp/vc4-linux-probe-medyu80z/qtest.sock,server=on,wait=off"
+      "unix:/tmp/vc4-linux-probe-t8ze_twu/qtest.sock,server=on,wait=off"
     ],
     "qemu_diagnostics_tail": [
-      "bcm2835_mbox_read: Unsupported offset 0x18",
       "bcm2835_mbox_read: Unsupported offset 0x0",
       "bcm2835_mbox_read: Unsupported offset 0x18",
       "bcm2835_mbox_read: Unsupported offset 0x0",
@@ -1325,7 +1324,8 @@
       "bcm2835_mbox_read: Unsupported offset 0x18",
       "bcm2835_mbox_read: Unsupported offset 0x0",
       "bcm2835_mbox_read: Unsupported offset 0x18",
-      "bcm2835_mbox_read: Unsupported offset 0x0"
+      "bcm2835_mbox_read: Unsupported offset 0x0",
+      "bcm2835_mbox_read: Unsupported offset 0x18"
     ],
     "qemu_returncode_before_stop": null,
     "schema_version": 1,
@@ -1370,7 +1370,7 @@
   },
   "bare_return_code": "5",
   "classification": "reference-bare-framebuffer-failed",
-  "generated_at": "2026-08-20T05:26:42.700256+00:00",
+  "generated_at": "2026-08-20T05:39:21.454120+00:00",
   "linux": null,
   "linux_return_code": "",
   "outcomes": {
@@ -1381,7 +1381,7 @@
     "linux": "skipped",
     "sources": "success"
   },
-  "run_id": "32335139405",
+  "run_id": "32335926722",
   "schema_version": 1,
-  "source_sha": "43b02d7814e949490526b083bb654ce58d2e0938"
+  "source_sha": "630f9a2de10c8ac6ca25ce9c55a5a154726978f1"
 }
