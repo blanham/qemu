@@ -1,6 +1,6 @@
 {
-  "observed_at": "2026-08-20T04:11:17.392768+00:00",
-  "schema_version": 1,
+  "observed_at": "2026-08-20T04:16:43.037053+00:00",
+  "schema_version": 2,
   "targets": {
     "deterministic": {
       "branch": "agent/vc4-deterministic-time-linux",
@@ -9,7 +9,6 @@
           "conclusion": null,
           "created_at": "2026-08-20T04:02:33Z",
           "event": "push",
-          "head_branch": "agent/vc4-deterministic-time-linux",
           "head_sha": "4c25039234ed608118aaf38bb00914d91a115358",
           "html_url": "https://github.com/blanham/qemu/actions/runs/32330404423",
           "id": 32330404423,
@@ -154,7 +153,6 @@
               ]
             }
           ],
-          "name": "VC4 deterministic-time Linux and framebuffer frontier",
           "run_attempt": 1,
           "run_number": 1,
           "status": "in_progress",
@@ -163,14 +161,169 @@
       ],
       "workflow": "vc4-deterministic-time-linux.yml"
     },
+    "deterministic-fix": {
+      "branch": "agent/vc4-deterministic-time-linux",
+      "runs": [
+        {
+          "conclusion": "failure",
+          "created_at": "2026-08-20T04:13:48Z",
+          "event": "push",
+          "head_sha": "fec078a0df01601f53e79ed0dd4dc4f14802b28d",
+          "html_url": "https://github.com/blanham/qemu/actions/runs/32331108265",
+          "id": 32331108265,
+          "jobs": [],
+          "run_attempt": 1,
+          "run_number": 1,
+          "status": "completed",
+          "updated_at": "2026-08-20T04:13:48Z"
+        }
+      ],
+      "workflow": "vc4-fix-deterministic-classifier.yml"
+    },
     "direct": {
       "branch": "agent/vc4-hetero-direct-linux",
       "runs": [
         {
+          "conclusion": null,
+          "created_at": "2026-08-20T04:13:30Z",
+          "event": "workflow_dispatch",
+          "head_sha": "5de95afcea706aaf56cf7c089103109d0c38d8b1",
+          "html_url": "https://github.com/blanham/qemu/actions/runs/32331090148",
+          "id": 32331090148,
+          "jobs": [
+            {
+              "completed_at": null,
+              "conclusion": null,
+              "html_url": "https://github.com/blanham/qemu/actions/runs/32331090148/job/96311705371",
+              "id": 96311705371,
+              "name": "build-and-probe",
+              "started_at": "2026-08-20T04:13:35Z",
+              "status": "in_progress",
+              "steps": [
+                {
+                  "completed_at": "2026-08-20T04:13:36Z",
+                  "conclusion": "success",
+                  "name": "Set up job",
+                  "number": 1,
+                  "started_at": "2026-08-20T04:13:36Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:14:27Z",
+                  "conclusion": "success",
+                  "name": "Run actions/checkout@v5",
+                  "number": 2,
+                  "started_at": "2026-08-20T04:13:36Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:15:41Z",
+                  "conclusion": "success",
+                  "name": "Install dependencies",
+                  "number": 3,
+                  "started_at": "2026-08-20T04:14:27Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:15:41Z",
+                  "conclusion": "success",
+                  "name": "Materialize the heterogeneous direct-boot path",
+                  "number": 4,
+                  "started_at": "2026-08-20T04:15:41Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:15:43Z",
+                  "conclusion": "success",
+                  "name": "Download pinned official Linux artifacts",
+                  "number": 5,
+                  "started_at": "2026-08-20T04:15:41Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Configure and build both frontends",
+                  "number": 6,
+                  "started_at": "2026-08-20T04:15:43Z",
+                  "status": "in_progress"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Preserve VC4 architectural regressions",
+                  "number": 7,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Build deterministic ARM and initramfs fixtures",
+                  "number": 8,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Prove direct ARM mailbox and framebuffer behavior",
+                  "number": 9,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Boot the pinned official Linux kernel on the heterogeneous machine",
+                  "number": 10,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Record heterogeneous Linux frontier",
+                  "number": 11,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Upload complete evidence",
+                  "number": 12,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Publish validated direct mode or retain the exact failure",
+                  "number": 13,
+                  "started_at": null,
+                  "status": "pending"
+                },
+                {
+                  "completed_at": null,
+                  "conclusion": null,
+                  "name": "Post Run actions/checkout@v5",
+                  "number": 26,
+                  "started_at": null,
+                  "status": "pending"
+                }
+              ]
+            }
+          ],
+          "run_attempt": 1,
+          "run_number": 2,
+          "status": "in_progress",
+          "updated_at": "2026-08-20T04:13:36Z"
+        },
+        {
           "conclusion": "failure",
           "created_at": "2026-08-20T01:44:52Z",
           "event": "push",
-          "head_branch": "agent/vc4-hetero-direct-linux",
           "head_sha": "bf4d136ffbca85707ebc17cf297db75fc26c025a",
           "html_url": "https://github.com/blanham/qemu/actions/runs/32322129685",
           "id": 32322129685,
@@ -307,7 +460,6 @@
               ]
             }
           ],
-          "name": "VC4 heterogeneous direct Linux control",
           "run_attempt": 1,
           "run_number": 1,
           "status": "completed",
@@ -315,6 +467,85 @@
         }
       ],
       "workflow": "vc4-hetero-direct-linux.yml"
+    },
+    "direct-dispatch": {
+      "branch": "agent/vc4-hetero-direct-linux",
+      "runs": [
+        {
+          "conclusion": "success",
+          "created_at": "2026-08-20T04:12:33Z",
+          "event": "push",
+          "head_sha": "5de95afcea706aaf56cf7c089103109d0c38d8b1",
+          "html_url": "https://github.com/blanham/qemu/actions/runs/32331028739",
+          "id": 32331028739,
+          "jobs": [
+            {
+              "completed_at": "2026-08-20T04:13:35Z",
+              "conclusion": "success",
+              "html_url": "https://github.com/blanham/qemu/actions/runs/32331028739/job/96311524911",
+              "id": 96311524911,
+              "name": "dispatch",
+              "started_at": "2026-08-20T04:12:37Z",
+              "status": "completed",
+              "steps": [
+                {
+                  "completed_at": "2026-08-20T04:12:38Z",
+                  "conclusion": "success",
+                  "name": "Set up job",
+                  "number": 1,
+                  "started_at": "2026-08-20T04:12:38Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:13:29Z",
+                  "conclusion": "success",
+                  "name": "Run actions/checkout@v5",
+                  "number": 2,
+                  "started_at": "2026-08-20T04:12:39Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:13:30Z",
+                  "conclusion": "success",
+                  "name": "Dispatch the repaired control workflow",
+                  "number": 3,
+                  "started_at": "2026-08-20T04:13:29Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:13:33Z",
+                  "conclusion": "success",
+                  "name": "Remove one-shot dispatcher",
+                  "number": 4,
+                  "started_at": "2026-08-20T04:13:30Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:13:33Z",
+                  "conclusion": "success",
+                  "name": "Post Run actions/checkout@v5",
+                  "number": 8,
+                  "started_at": "2026-08-20T04:13:33Z",
+                  "status": "completed"
+                },
+                {
+                  "completed_at": "2026-08-20T04:13:33Z",
+                  "conclusion": "success",
+                  "name": "Complete job",
+                  "number": 9,
+                  "started_at": "2026-08-20T04:13:33Z",
+                  "status": "completed"
+                }
+              ]
+            }
+          ],
+          "run_attempt": 1,
+          "run_number": 1,
+          "status": "completed",
+          "updated_at": "2026-08-20T04:13:36Z"
+        }
+      ],
+      "workflow": "vc4-dispatch-direct-linux-repair.yml"
     }
   }
 }
