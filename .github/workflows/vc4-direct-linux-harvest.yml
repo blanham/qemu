@@ -1,0 +1,283 @@
+name: VC4 direct Linux result harvest
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-direct-linux-harvest.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: vc4-direct-linux-harvest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harvest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Download and reduce the exact source-run artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/vc4-harvest
+          mkdir -p /tmp/vc4-harvest
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import io
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import urllib.request
+          import zipfile
+
+          status_path = Path('VC4_HETERO_DIRECT_LINUX_STATUS.json')
+          if not status_path.is_file():
+              raise SystemExit('direct-Linux status file is missing')
+          status = json.loads(status_path.read_text(encoding='utf-8'))
+          run_id = str(status.get('run_id') or '')
+          if not run_id:
+              raise SystemExit('status does not name its source workflow run')
+
+          api = os.environ['GITHUB_API_URL']
+          repo = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+
+          def request_json(url: str) -> dict:
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request) as response:
+                  return json.load(response)
+
+          artifacts = request_json(
+              f'{api}/repos/{repo}/actions/runs/{run_id}/artifacts'
+          ).get('artifacts', [])
+          candidates = [
+              artifact for artifact in artifacts
+              if str(artifact.get('name', '')).startswith(
+                  'vc4-hetero-direct-linux-'
+              ) and not artifact.get('expired')
+          ]
+          if not candidates:
+              raise SystemExit(f'run {run_id} has no live direct-Linux artifact')
+          artifact = max(candidates, key=lambda item: item.get('id', 0))
+          request = urllib.request.Request(
+              artifact['archive_download_url'], headers=headers
+          )
+          with urllib.request.urlopen(request) as response:
+              payload = response.read()
+          root = Path('/tmp/vc4-harvest/extracted')
+          root.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+              archive.extractall(root)
+
+          output = Path('tests/vc4/results/direct-linux')
+          output.mkdir(parents=True, exist_ok=True)
+          for existing in output.iterdir():
+              if existing.is_file():
+                  existing.unlink()
+              elif existing.is_dir():
+                  shutil.rmtree(existing)
+
+          interesting_names = {
+              'result.json',
+              'qemu.stderr',
+              'serial.log',
+              'probe.log',
+              'SHA256SUMS',
+              'payload.dis',
+          }
+          copied = []
+          for source in root.rglob('*'):
+              if not source.is_file() or source.name not in interesting_names:
+                  continue
+              lowered = str(source).lower()
+              if 'vc4-hetero-linux' in lowered:
+                  prefix = 'linux'
+              elif 'vc4-hetero-bare' in lowered:
+                  prefix = 'bare'
+              elif 'vc4-official' in lowered:
+                  prefix = 'official'
+              elif 'vc4-linux-initramfs' in lowered:
+                  prefix = 'initramfs'
+              else:
+                  continue
+              destination = output / f'{prefix}-{source.name}'
+              if destination.exists():
+                  continue
+              data = source.read_bytes()
+              if len(data) > 512 * 1024:
+                  if source.suffix in {'.log', '.stderr'} or source.name == 'qemu.stderr':
+                      lines = data.decode('utf-8', errors='replace').splitlines()
+                      data = ('\n'.join(lines[-2500:]) + '\n').encode()
+                  else:
+                      continue
+              destination.write_bytes(data)
+              copied.append(str(destination))
+
+          (output / 'source-status.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          (output / 'artifact.json').write_text(
+              json.dumps({
+                  'run_id': run_id,
+                  'artifact_id': artifact.get('id'),
+                  'artifact_name': artifact.get('name'),
+                  'artifact_size': artifact.get('size_in_bytes'),
+                  'copied_files': copied,
+              }, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Generate the durable frontier report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          root = Path('tests/vc4/results/direct-linux')
+
+          def load(name: str):
+              path = root / name
+              if not path.is_file():
+                  return None
+              try:
+                  return json.loads(path.read_text(encoding='utf-8'))
+              except Exception:
+                  return None
+
+          status = load('source-status.json') or {}
+          bare = load('bare-result.json') or status.get('bare') or {}
+          linux = load('linux-result.json') or status.get('linux') or {}
+          classification = str(status.get('classification', 'unknown'))
+
+          serial_candidates = [
+              root / 'linux-serial.log',
+              root / 'linux-probe.log',
+              root / 'linux-qemu.stderr',
+          ]
+          serial_tail = []
+          for path in serial_candidates:
+              if path.is_file():
+                  serial_tail.extend(
+                      path.read_text(
+                          encoding='utf-8', errors='replace'
+                      ).splitlines()[-240:]
+                  )
+          if not serial_tail:
+              value = linux.get('serial_tail') or linux.get('serial') or []
+              serial_tail = (
+                  value.splitlines() if isinstance(value, str) else list(value)
+              )[-240:]
+
+          if classification == 'hetero-linux-framebuffer':
+              next_action = 'promote-direct-baseline-and-return-to-stock-firmware'
+          elif classification == 'hetero-linux-init-framebuffer-blocked':
+              next_action = 'instrument-linux-framebuffer-registration'
+          elif classification == 'hetero-linux-early-boot':
+              next_action = 'repair-initramfs-or-root-handoff'
+          elif classification == 'hetero-bare-framebuffer-linux-entry-blocked':
+              next_action = 'instrument-arm-linux-entry-and-dtb-contract'
+          elif status.get('outcomes', {}).get('fixtures') == 'failure':
+              next_action = 'repair-fixture-construction'
+          elif status.get('outcomes', {}).get('build') == 'failure':
+              next_action = 'repair-direct-machine-build'
+          else:
+              next_action = 'inspect-control-path-failure'
+
+          decision = {
+              'schema_version': 1,
+              'source_run_id': status.get('run_id'),
+              'source_sha': status.get('source_sha'),
+              'classification': classification,
+              'next_action': next_action,
+              'bare_passed': bool(bare.get('passed')),
+              'linux_version_seen': bool(linux.get('linux_version_seen')),
+              'init_seen': bool(linux.get('init_seen')),
+              'framebuffer_passed': bool(linux.get('passed')),
+              'serial_marker_seen': bool(linux.get('serial_marker_seen')),
+              'memory_marker_seen': bool(linux.get('memory_marker_seen')),
+              'framebuffer': {
+                  key: linux.get(key)
+                  for key in (
+                      'fb_opened', 'fb_info_seen', 'fb_width', 'fb_height',
+                      'fb_pitch', 'fb_bpp', 'fb_address', 'fb_size',
+                      'guest_pixels_match', 'qtest_pixels_match',
+                      'screendump_pixels_match', 'screendump_error',
+                  )
+                  if key in linux
+              },
+              'outcomes': status.get('outcomes', {}),
+          }
+          (root / 'decision.json').write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          marker = root / f'CLASSIFICATION_{classification}'
+          marker.write_text(next_action + '\n', encoding='utf-8')
+
+          lines = [
+              '# VC4 heterogeneous direct Linux frontier',
+              '',
+              f'- Source run: `{status.get("run_id")}`',
+              f'- Source SHA: `{status.get("source_sha")}`',
+              f'- Classification: **`{classification}`**',
+              f'- Next action: **`{next_action}`**',
+              '',
+              '## Gates',
+              '',
+              f'- Bare-metal framebuffer and scanout: `{bool(bare.get("passed"))}`',
+              f'- Linux version banner: `{bool(linux.get("linux_version_seen"))}`',
+              f'- Deterministic `/init`: `{bool(linux.get("init_seen"))}`',
+              f'- Linux framebuffer and scanout: `{bool(linux.get("passed"))}`',
+              '',
+              '## Linux serial tail',
+              '',
+              '```text',
+              *serial_tail[-240:],
+              '```',
+              '',
+          ]
+          (root / 'FRONTIER.md').write_text(
+              '\n'.join(lines), encoding='utf-8'
+          )
+          print(json.dumps(decision, indent=2))
+          PY
+          git diff --check
+
+      - name: Publish the frontier and remove this one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/vc4-direct-linux-harvest.yml
+          git add tests/vc4/results/direct-linux
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "tests/vc4: record direct Linux framebuffer frontier [skip ci]"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
