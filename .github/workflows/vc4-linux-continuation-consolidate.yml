@@ -1,0 +1,215 @@
+name: VC4 Linux/framebuffer continuation consolidation
+
+on:
+  push:
+    branches:
+      - agent/vc4-hetero-direct-linux
+    paths:
+      - .github/workflows/vc4-linux-continuation-consolidate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Fetch and classify all continuation branches
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          branches=(
+            agent/vc4-hetero-direct-linux
+            agent/vc4-linux-framebuffer-bringup
+            agent/vc4-deterministic-time-linux
+            agent/vc4-stock-linux-framebuffer
+            agent/vc4-stock-linux-frontier
+            agent/vc4-stock-bootcode-frontier
+          )
+          for branch in "${branches[@]}"; do
+            git fetch origin "$branch:refs/remotes/origin/$branch" || true
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import subprocess
+
+          branches = [
+              "agent/vc4-hetero-direct-linux",
+              "agent/vc4-linux-framebuffer-bringup",
+              "agent/vc4-deterministic-time-linux",
+              "agent/vc4-stock-linux-framebuffer",
+              "agent/vc4-stock-linux-frontier",
+              "agent/vc4-stock-bootcode-frontier",
+          ]
+
+          def git(*args, check=True):
+              result = subprocess.run(
+                  ["git", *args], text=True,
+                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+              )
+              if check and result.returncode:
+                  raise RuntimeError(result.stderr)
+              return result.stdout.strip()
+
+          def read_json(ref, path):
+              result = subprocess.run(
+                  ["git", "show", f"{ref}:{path}"], text=True,
+                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+              )
+              if result.returncode:
+                  return None
+              try:
+                  return json.loads(result.stdout)
+              except json.JSONDecodeError:
+                  return None
+
+          records = []
+          direct_pass = False
+          stock_pass = False
+          selected_candidate = None
+          for branch in branches:
+              ref = "refs/remotes/origin/" + branch
+              if subprocess.run(
+                  ["git", "rev-parse", "--verify", "--quiet", ref],
+                  stdout=subprocess.DEVNULL,
+              ).returncode:
+                  continue
+              sha = git("rev-parse", ref)
+              subject = git("log", "-1", "--format=%s", ref)
+              files = git("ls-tree", "-r", "--name-only", ref).splitlines()
+              json_files = [
+                  path for path in files
+                  if path.startswith("VC4") and path.endswith(".json")
+              ]
+              statuses = {}
+              branch_pass = False
+              for path in json_files:
+                  value = read_json(ref, path)
+                  if value is None:
+                      continue
+                  statuses[path] = value
+                  linux = value.get("linux") if isinstance(value, dict) else None
+                  bare = value.get("bare") if isinstance(value, dict) else None
+                  if isinstance(linux, dict) and linux.get("passed"):
+                      branch_pass = True
+                  if path == "VC4_HETERO_DIRECT_LINUX_STATUS.json":
+                      direct_pass = bool(
+                          isinstance(linux, dict) and linux.get("passed")
+                          and isinstance(bare, dict) and bare.get("passed")
+                      )
+                  if path in (
+                      "VC4_STOCK_SDHOST_MATRIX.json",
+                      "VC4_STOCK_BOOTCODE_MATRIX.json",
+                  ) and isinstance(value, dict) and value.get("selected"):
+                      selected_candidate = value.get("selected")
+              if branch.startswith("agent/vc4-stock-") and branch_pass:
+                  stock_pass = True
+              records.append({
+                  "branch": branch,
+                  "sha": sha,
+                  "subject": subject,
+                  "linux_framebuffer_pass": branch_pass,
+                  "status_files": statuses,
+              })
+
+          report = {
+              "schema_version": 1,
+              "direct_linux_framebuffer_pass": direct_pass,
+              "stock_linux_framebuffer_pass": stock_pass,
+              "selected_stock_candidate": selected_candidate,
+              "branches": records,
+          }
+          Path("VC4_LINUX_FRAMEBUFFER_CONTINUATION_STATUS.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          md = [
+              "# VC4 Linux and framebuffer continuation status",
+              "",
+              f"Direct heterogeneous control passed: `{direct_pass}`",
+              "",
+              f"Stock-firmware Linux/framebuffer passed: `{stock_pass}`",
+              "",
+              f"Selected stock candidate: `{selected_candidate}`",
+              "",
+              "| Branch | Head | Linux/framebuffer | Subject |",
+              "|---|---|---:|---|",
+          ]
+          for record in records:
+              md.append(
+                  f"| `{record['branch']}` | `{record['sha'][:12]}` | "
+                  f"`{record['linux_framebuffer_pass']}` | "
+                  f"{record['subject']} |"
+              )
+          md += [
+              "",
+              "A hardware candidate is accepted only when the supplied ARM "
+              "witness executes through stock firmware; VPU PC movement alone "
+              "is diagnostic and is never treated as a pass.",
+              "",
+          ]
+          Path("VC4_LINUX_FRAMEBUFFER_CONTINUATION_STATUS.md").write_text(
+              "\n".join(md), encoding="utf-8"
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"stock_pass={'true' if stock_pass else 'false'}\n")
+          print(json.dumps(report, indent=2))
+          PY
+
+      - name: Publish consolidated status
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/vc4-linux-continuation-consolidate.yml
+          git add -A
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "docs/vc4: consolidate Linux framebuffer frontier"
+          git pull --rebase origin agent/vc4-hetero-direct-linux
+          git push origin HEAD:agent/vc4-hetero-direct-linux
+
+      - name: Open the isolated V3D bring-up branch after stock proof
+        if: steps.classify.outputs.stock_pass == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/vc4
+          cat >docs/vc4/V3D_BRINGUP.md <<'EOF'
+          # VideoCore IV V3D bring-up
+
+          This branch starts only after the heterogeneous machine has booted
+          the pinned Raspberry Pi Linux kernel through stock firmware and the
+          Linux `/init` framebuffer witness has produced verified QMP scanout.
+
+          ## Acceptance ladder
+
+          1. Model V3D identification, power, reset, and interrupt registers.
+          2. Add qtest coverage for register reset values and interrupt edges.
+          3. Make the Linux `v3d` DRM driver bind without probe errors.
+          4. Run a kernel GEM/create/map/submit smoke test.
+          5. Execute a single binning/render control list generated by a tiny
+             freestanding userspace witness and verify rendered pixels.
+          6. Add Mesa `kmscube`/GBM proof with software-reference image checks.
+          7. Introduce accelerated host rendering only behind a conformance
+             boundary; retain a deterministic software path for tests.
+
+          Host acceleration must not substitute for missing guest-visible V3D
+          semantics. Every promoted slice needs a register-level regression and
+          a rendered-image witness.
+          EOF
+          git add docs/vc4/V3D_BRINGUP.md
+          git diff --cached --check
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git commit -m "docs/vc4: begin gated V3D bring-up"
+          git push --force-with-lease \
+            origin HEAD:agent/vc4-v3d-bringup
