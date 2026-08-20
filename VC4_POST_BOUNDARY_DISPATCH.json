@@ -1,0 +1,33 @@
+{
+  "continuation_branch": "agent/vc4-linux-probe-fix",
+  "direct_arm_boundary_status": {
+    "classification": "direct-arm-primary-image-load-blocked",
+    "generated_at": "2026-08-20T12:15:36.053244+00:00",
+    "normalizer": {},
+    "normalizer_return_code": "",
+    "run_id": "32367803741",
+    "schema_version": 1,
+    "source_sha": "b9b8aef3f47ceaf20539ed815994d9fae3cbb2a8",
+    "witness": {},
+    "witness_return_code": ""
+  },
+  "generated_at": "2026-08-20T12:23:32.215324+00:00",
+  "next_action": "repair-linux-probe-infrastructure",
+  "post_boundary_classification": "linux-probe-infrastructure-failed",
+  "post_boundary_status": {
+    "classification": "linux-probe-infrastructure-failed",
+    "framebuffer_marker_seen": false,
+    "generated_at": "2026-08-20T12:22:27.403251+00:00",
+    "init_seen": false,
+    "linux_version_seen": false,
+    "probe_return_code": "",
+    "result": {},
+    "run_id": "32368418548",
+    "scanout_passed": false,
+    "schema_version": 1,
+    "source_sha": "ff845141b9187d9232df1598698b200681d864f8"
+  },
+  "run_id": "32368527347",
+  "schema_version": 1,
+  "source_sha": "061ebd563b168e9ec102cffbefdde2039df870c4"
+}
