@@ -1,6 +1,6 @@
 # VC4 heterogeneous direct Linux frontier
 
-Classification: **`hetero-direct-control-failed`**
+Classification: **`hetero-direct-fixtures-failed`**
 
 Bare framebuffer passed: `False`
 
