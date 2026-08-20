@@ -1,0 +1,331 @@
+name: VC4 V3D bring-up recovery
+
+on:
+  push:
+    branches:
+      - agent/vc4-v3d-bringup
+    paths:
+      - .github/workflows/vc4-v3d-bringup-recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-v3d-bringup-recovery
+  cancel-in-progress: true
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      OFFICIAL_DIR: /tmp/vc4-v3d-official
+      BARE_DIR: /tmp/vc4-v3d-bare
+      LINUX_DIR: /tmp/vc4-v3d-linux
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build and fixture dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl file gcc-aarch64-linux-gnu gzip \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 python3-venv \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Materialize and validate the V3D production delta
+        id: materialize
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/v3d-integrate.py \
+            scripts/vc4/v3d-smoke.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py \
+            scripts/vc4/raspi3-linux-probe.py
+          python3 scripts/vc4/v3d-integrate.py
+          python3 scripts/vc4/v3d-integrate.py
+          git diff --check
+          grep -q "bcm2835_v3d.c" hw/display/meson.build
+          grep -q "BCM2835V3DState v3d" \
+            include/hw/arm/bcm2835_peripherals.h
+          grep -q 'object_initialize_child(obj, "v3d"' \
+            hw/arm/bcm2835_peripherals.c
+          grep -q "INTERRUPT_3D" hw/arm/bcm2835_peripherals.c
+          ! grep -q 'create_unimp(s, &s->v3d' \
+            hw/arm/bcm2835_peripherals.c
+
+      - name: Fetch pinned Raspberry Pi Linux artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+          rm -rf "$OFFICIAL_DIR"
+          mkdir -p "$OFFICIAL_DIR"
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* > "$OFFICIAL_DIR/SHA256SUMS"
+
+      - name: Configure and build AArch64 and VC4 frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee /tmp/vc4-v3d-configure.log
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-v3d-build.log
+
+      - name: Preserve VC4 processor and multicore regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee /tmp/vc4-v3d-preg.log
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-v3d-msync.log
+
+      - name: Exercise V3D identity, IRQ, control thread, and clear render
+        id: v3d
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee /tmp/vc4-v3d-smoke.log
+
+      - name: Build deterministic ARM and Linux framebuffer fixtures
+        id: fixtures
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-arm-framebuffer-smoke.sh \
+            build/vc4-arm-framebuffer
+          bash scripts/vc4/build-linux-initramfs.sh \
+            build/vc4-linux-initramfs
+          test -s build/vc4-arm-framebuffer/kernel8.img
+          test -s build/vc4-linux-initramfs/initramfs.cpio.gz
+
+      - name: Preserve bare ARM mailbox and framebuffer scanout
+        id: bare
+        run: |
+          set -euo pipefail
+          rm -rf "$BARE_DIR"
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode bare-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel build/vc4-arm-framebuffer/kernel8.img \
+            --out-dir "$BARE_DIR" \
+            --seconds 120 --sample-interval 2
+
+      - name: Preserve pinned Linux boot and framebuffer scanout
+        id: linux
+        run: |
+          set -euo pipefail
+          rm -rf "$LINUX_DIR"
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            --initrd build/vc4-linux-initramfs/initramfs.cpio.gz \
+            --out-dir "$LINUX_DIR" \
+            --seconds 300 --sample-interval 5
+
+      - name: Record complete validation frontier
+        id: record
+        if: always()
+        env:
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          MATERIALIZE_OUTCOME: ${{ steps.materialize.outcome }}
+          ARTIFACTS_OUTCOME: ${{ steps.artifacts.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          V3D_OUTCOME: ${{ steps.v3d.outcome }}
+          FIXTURES_OUTCOME: ${{ steps.fixtures.outcome }}
+          BARE_OUTCOME: ${{ steps.bare.outcome }}
+          LINUX_OUTCOME: ${{ steps.linux.outcome }}
+        run: |
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          def load_result(directory):
+              path = Path(directory) / 'result.json'
+              return json.loads(path.read_text()) if path.is_file() else {}
+
+          def tail(path, count):
+              file = Path(path)
+              if not file.is_file():
+                  return []
+              return file.read_text(
+                  encoding='utf-8', errors='replace'
+              ).splitlines()[-count:]
+
+          outcomes = {
+              key.removesuffix('_OUTCOME').lower(): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
+          bare = load_result(os.environ['BARE_DIR'])
+          linux = load_result(os.environ['LINUX_DIR'])
+          required = (
+              'dependencies', 'materialize', 'artifacts', 'build',
+              'regressions', 'v3d', 'fixtures', 'bare', 'linux',
+          )
+          passed = (
+              all(outcomes.get(key) == 'success' for key in required)
+              and bare.get('passed') is True
+              and linux.get('passed') is True
+          )
+          status = {
+              'schema_version': 2,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'passed': passed,
+              'outcomes': outcomes,
+              'v3d': {
+                  'identity': '0x02443356',
+                  'control_thread_clear_render': (
+                      outcomes.get('v3d') == 'success'),
+                  'primitive_execution': 'deliberately-unimplemented',
+              },
+              'bare': {
+                  'passed': bare.get('passed'),
+                  'marker_seen': bare.get('bare_marker_seen'),
+                  'signature_seen': bare.get('bare_signature_seen'),
+                  'quadrants_match': (
+                      bare.get('screenshot', {}).get('quadrants_match')
+                  ),
+                  'elapsed_seconds': bare.get('elapsed_seconds'),
+              },
+              'linux': {
+                  'passed': linux.get('passed'),
+                  'version_seen': linux.get('linux_version_seen'),
+                  'init_seen': linux.get('init_seen'),
+                  'framebuffer_marker_seen': linux.get(
+                      'framebuffer_marker_seen'),
+                  'quadrants_match': (
+                      linux.get('screenshot', {}).get('quadrants_match')
+                  ),
+                  'elapsed_seconds': linux.get('elapsed_seconds'),
+              },
+              'log_tails': {
+                  'configure': tail('/tmp/vc4-v3d-configure.log', 100),
+                  'build': tail('/tmp/vc4-v3d-build.log', 180),
+                  'preg': tail('/tmp/vc4-v3d-preg.log', 80),
+                  'msync': tail('/tmp/vc4-v3d-msync.log', 100),
+                  'v3d': tail('/tmp/vc4-v3d-smoke.log', 120),
+              },
+          }
+          Path('VC4_V3D_BRINGUP_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_V3D_BRINGUP_STATUS.md').write_text(
+              '# VC4 V3D bring-up\n\n'
+              f'Validation passed: **{str(passed).lower()}**\n\n'
+              f'- Dual AArch64/VC4 build: '
+              f'`{outcomes.get("build") == "success"}`\n'
+              f'- Processor-control and multicore-sync regressions: '
+              f'`{outcomes.get("regressions") == "success"}`\n'
+              f'- V3D identity, IRQ, CT1 and clear/store witness: '
+              f'`{outcomes.get("v3d") == "success"}`\n'
+              f'- Bare framebuffer regression: '
+              f'`{bare.get("passed") is True}`\n'
+              f'- Linux framebuffer regression: '
+              f'`{linux.get("passed") is True}`\n\n'
+              'Primitive binning and QPU shader execution remain behind '
+              'the explicit CTERR/ERRSTAT boundary.\n'
+          )
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write('passed=' + str(passed).lower() + '\n')
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload complete validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-v3d-bringup-recovery-${{ github.run_attempt }}
+          path: |
+            VC4_V3D_BRINGUP_STATUS.json
+            VC4_V3D_BRINGUP_STATUS.md
+            /tmp/vc4-v3d-configure.log
+            /tmp/vc4-v3d-build.log
+            /tmp/vc4-v3d-preg.log
+            /tmp/vc4-v3d-msync.log
+            /tmp/vc4-v3d-smoke.log
+            /tmp/vc4-v3d-official/SHA256SUMS
+            /tmp/vc4-v3d-bare
+            /tmp/vc4-v3d-linux
+            build/vc4-linux-initramfs/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish production slice or failure frontier
+        if: always()
+        env:
+          PASSED: ${{ steps.record.outputs.passed }}
+        run: |
+          set -euo pipefail
+          test -f VC4_V3D_BRINGUP_STATUS.json
+          cp VC4_V3D_BRINGUP_STATUS.json /tmp/vc4-v3d-status.json
+          cp VC4_V3D_BRINGUP_STATUS.md /tmp/vc4-v3d-status.md
+
+          git fetch origin agent/vc4-v3d-bringup
+          remote_head=$(git rev-parse origin/agent/vc4-v3d-bringup)
+          if [ "$remote_head" != "$GITHUB_SHA" ]; then
+            echo "Branch moved from $GITHUB_SHA to $remote_head; refusing to overwrite it."
+            exit 1
+          fi
+
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          if [ "${PASSED:-false}" = true ]; then
+            git rm -- \
+              .github/workflows/vc4-v3d-bringup.yml \
+              .github/workflows/vc4-v3d-bringup-recovery.yml \
+              scripts/vc4/v3d-integrate.py
+            git add -- \
+              hw/display/bcm2835_v3d.c \
+              hw/display/meson.build \
+              include/hw/display/bcm2835_v3d.h \
+              include/hw/arm/bcm2835_peripherals.h \
+              hw/arm/bcm2835_peripherals.c \
+              scripts/vc4/v3d-smoke.py \
+              VC4_V3D_BRINGUP_STATUS.json \
+              VC4_V3D_BRINGUP_STATUS.md
+            message="hw/display: add validated BCM2835 V3D clear-render slice"
+          else
+            git reset --hard "$GITHUB_SHA"
+            git clean -fd
+            cp /tmp/vc4-v3d-status.json VC4_V3D_BRINGUP_STATUS.json
+            cp /tmp/vc4-v3d-status.md VC4_V3D_BRINGUP_STATUS.md
+            git add -- \
+              VC4_V3D_BRINGUP_STATUS.json \
+              VC4_V3D_BRINGUP_STATUS.md
+            message="ci/vc4: record V3D bring-up failure [skip ci]"
+          fi
+          git diff --cached --check
+          git commit -m "$message"
+          git push origin HEAD:agent/vc4-v3d-bringup
