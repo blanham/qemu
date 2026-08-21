@@ -1,0 +1,70 @@
+name: Capture live VC4 isolated workflow runs
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-v3d-modular-isolated
+    paths:
+      - .github/workflows/vc4-run-index.yml
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Record current isolated gate runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/vc4-linux-v3d-modular.yml/runs" \
+            -f branch='agent/vc4-linux-v3d-modular-isolated' \
+            -F per_page=20 > /tmp/runs.json
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+
+          source = json.loads(Path('/tmp/runs.json').read_text())
+          runs = []
+          for run in source.get('workflow_runs', []):
+              runs.append({
+                  'id': run.get('id'),
+                  'run_number': run.get('run_number'),
+                  'run_attempt': run.get('run_attempt'),
+                  'event': run.get('event'),
+                  'status': run.get('status'),
+                  'conclusion': run.get('conclusion'),
+                  'head_sha': run.get('head_sha'),
+                  'created_at': run.get('created_at'),
+                  'updated_at': run.get('updated_at'),
+                  'html_url': run.get('html_url'),
+              })
+          output = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'branch': 'agent/vc4-linux-v3d-modular-isolated',
+              'runs': runs,
+          }
+          Path('VC4_LINUX_V3D_LIVE_RUNS.json').write_text(
+              json.dumps(output, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add -- VC4_LINUX_V3D_LIVE_RUNS.json
+          git rm -- .github/workflows/vc4-run-index.yml
+          git diff --cached --check
+          git commit -m 'ci/vc4: record live isolated workflow runs [skip ci]'
+          git pull --rebase origin agent/vc4-linux-v3d-modular-isolated
+          git push origin HEAD:agent/vc4-linux-v3d-modular-isolated
