@@ -10,7 +10,6 @@
 #include "linux-v3d-uapi-init.c"
 #undef main
 
-#include <stddef.h>
 #include <drm.h>
 #include <vc4_drm.h>
 
@@ -24,19 +23,24 @@
 #define VC4_SUBMIT_RENDER_BITS       UINT16_C(4)
 #define VC4_SUBMIT_WAIT_NS           UINT64_C(5000000000)
 
-static void initialize_rcl_surfaces(struct drm_vc4_submit_rcl *rcl)
+static void submit_memory_barrier(void)
 {
-    size_t surface_offset = offsetof(struct drm_vc4_submit_rcl, color_read);
-    size_t surface_bytes = sizeof(*rcl) - surface_offset;
-    struct drm_vc4_submit_rcl_surface *surfaces =
-        (struct drm_vc4_submit_rcl_surface *)
-        ((uint8_t *)rcl + surface_offset);
-    size_t surface_count =
-        surface_bytes / sizeof(struct drm_vc4_submit_rcl_surface);
+    __sync_synchronize();
+}
 
-    for (size_t index = 0; index < surface_count; index++) {
-        surfaces[index].hindex = UINT32_MAX;
-    }
+static void initialize_rcl_surfaces(struct drm_vc4_submit_cl *submit)
+{
+    /*
+     * The VC4 UAPI embeds the six RCL surfaces directly in submit_cl.  A
+     * hindex of ~0 means that a surface is absent.  Start from that safe
+     * state and enable only color_write below.
+     */
+    submit->color_read.hindex = UINT32_MAX;
+    submit->color_write.hindex = UINT32_MAX;
+    submit->zs_read.hindex = UINT32_MAX;
+    submit->zs_write.hindex = UINT32_MAX;
+    submit->msaa_color_write.hindex = UINT32_MAX;
+    submit->msaa_zs_write.hindex = UINT32_MAX;
 }
 
 static int submit_clear_job(VC4DRMNode *node)
@@ -83,10 +87,10 @@ static int submit_clear_job(VC4DRMNode *node)
     for (size_t index = 0; index < pixel_count; index++) {
         pixels[index] = VC4_SUBMIT_BACKGROUND;
     }
-    barrier();
+    submit_memory_barrier();
     (void)msync((void *)pixels, VC4_SUBMIT_BO_SIZE, MS_SYNC);
 
-    initialize_rcl_surfaces(&submit.rcl);
+    initialize_rcl_surfaces(&submit);
     submit.bo_handles = (uintptr_t)handles;
     submit.bo_handle_count = 1;
     submit.width = VC4_SUBMIT_WIDTH;
@@ -95,14 +99,14 @@ static int submit_clear_job(VC4DRMNode *node)
     submit.min_y_tile = 0;
     submit.max_x_tile = 0;
     submit.max_y_tile = 0;
-    submit.rcl.clear_color[0] = VC4_SUBMIT_CLEAR;
-    submit.rcl.clear_color[1] = VC4_SUBMIT_CLEAR;
-    submit.rcl.clear_z = UINT32_C(0x00ffffff);
-    submit.rcl.clear_s = 0;
-    submit.rcl.color_write.hindex = 0;
-    submit.rcl.color_write.offset = 0;
-    submit.rcl.color_write.bits = VC4_SUBMIT_RENDER_BITS;
-    submit.rcl.color_write.flags = 0;
+    submit.clear_color[0] = VC4_SUBMIT_CLEAR;
+    submit.clear_color[1] = VC4_SUBMIT_CLEAR;
+    submit.clear_z = UINT32_C(0x00ffffff);
+    submit.clear_s = 0;
+    submit.color_write.hindex = 0;
+    submit.color_write.offset = 0;
+    submit.color_write.bits = VC4_SUBMIT_RENDER_BITS;
+    submit.color_write.flags = 0;
     submit.flags = VC4_SUBMIT_CL_USE_CLEAR_COLOR;
 
     if (ioctl(node->fd, DRM_IOCTL_VC4_SUBMIT_CL, &submit) < 0) {
@@ -110,8 +114,8 @@ static int submit_clear_job(VC4DRMNode *node)
                errno, strerror(errno));
         goto out;
     }
-    report("VC4_LINUX_DRM_SUBMIT_CL_OK seqno=%u handle=%u size=%u\n",
-           submit.seqno, create.handle, create.size);
+    report("VC4_LINUX_DRM_SUBMIT_CL_OK seqno=%llu handle=%u size=%u\n",
+           (unsigned long long)submit.seqno, create.handle, create.size);
 
     wait.handle = create.handle;
     if (ioctl(node->fd, DRM_IOCTL_VC4_WAIT_BO, &wait) < 0) {
@@ -121,7 +125,7 @@ static int submit_clear_job(VC4DRMNode *node)
     }
     report("VC4_LINUX_DRM_SUBMIT_WAIT_OK handle=%u timeout_ns=%llu\n",
            wait.handle, (unsigned long long)wait.timeout_ns);
-    barrier();
+    submit_memory_barrier();
 
     report("VC4_LINUX_DRM_SUBMIT_SAMPLES first=0x%08x center=0x%08x last=0x%08x expected=0x%08x\n",
            pixels[0], pixels[pixel_count / 2], pixels[pixel_count - 1],
