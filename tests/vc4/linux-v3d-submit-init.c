@@ -13,6 +13,10 @@
 #include <drm.h>
 #include <vc4_drm.h>
 
+#ifndef VC4_LINUX_V3D_SUBMIT_ENTRY
+#define VC4_LINUX_V3D_SUBMIT_ENTRY main
+#endif
+
 #define VC4_SUBMIT_WIDTH             64U
 #define VC4_SUBMIT_HEIGHT            64U
 #define VC4_SUBMIT_BYTES_PER_PIXEL   4U
@@ -151,7 +155,7 @@ out:
     return result;
 }
 
-int main(void)
+int VC4_LINUX_V3D_SUBMIT_ENTRY(void)
 {
     VC4DRMNode card;
     VC4DRMNode render;
