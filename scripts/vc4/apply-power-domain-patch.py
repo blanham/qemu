@@ -180,45 +180,6 @@ static uint32_t bcm2835_property_set_power_state(uint32_t *states,
 """,
     )
 
-    replace_once(
-        ".github/workflows/vc4-linux-v3d-modular.yml",
-        """      - include/hw/display/bcm2835_v3d.h
-      - scripts/vc4/fetch-linux-vc4-modules.py
-""",
-        """      - include/hw/display/bcm2835_v3d.h
-      - hw/misc/bcm2835_property.c
-      - include/hw/misc/bcm2835_property.h
-      - scripts/vc4/fetch-linux-vc4-modules.py
-      - scripts/vc4/property-power-domain-smoke.py
-""",
-    )
-
-    replace_once(
-        ".github/workflows/vc4-linux-v3d-modular.yml",
-        """            scripts/vc4/fetch-linux-vc4-modules.py \\
-            scripts/vc4/raspi3-linux-probe.py \\
-""",
-        """            scripts/vc4/fetch-linux-vc4-modules.py \\
-            scripts/vc4/property-power-domain-smoke.py \\
-            scripts/vc4/raspi3-linux-probe.py \\
-""",
-    )
-
-    replace_once(
-        ".github/workflows/vc4-linux-v3d-modular.yml",
-        """          python3 scripts/vc4/preg-mutex-smoke.py \\
-            --qemu build/qemu-system-vc4 \\
-            2>&1 | tee \"$EVIDENCE_DIR/preg.log\"
-""",
-        """          python3 scripts/vc4/property-power-domain-smoke.py \\
-            --qemu build/qemu-system-aarch64 \\
-            2>&1 | tee \"$EVIDENCE_DIR/power-domain.log\"
-          python3 scripts/vc4/preg-mutex-smoke.py \\
-            --qemu build/qemu-system-vc4 \\
-            2>&1 | tee \"$EVIDENCE_DIR/preg.log\"
-""",
-    )
-
     return 0
 
 
