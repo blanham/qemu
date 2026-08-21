@@ -43,6 +43,9 @@ mkdir -p \
     "$root_dir/tests/vc4/linux-v3d-submit-init.c"
 chmod 0755 "$out_dir/root/init"
 
+# Materialize strings once.  A strings|grep -q pipeline is racy under
+# pipefail because a successful early grep exit delivers SIGPIPE to strings.
+strings "$out_dir/root/init" > "$out_dir/init.strings"
 for marker in \
     VC4_LINUX_DRM_SUBMIT_PROBE_START \
     VC4_LINUX_DRM_UAPI_OK \
@@ -53,7 +56,7 @@ for marker in \
     VC4_LINUX_DRM_SUBMIT_OK \
     VC4_LINUX_DRM_SUBMIT_PROBE_DONE \
     VC4_LINUX_V3D_SUBMIT_DRIVER_OK; do
-    strings "$out_dir/root/init" | grep -Fq "$marker"
+    grep -Fq "$marker" "$out_dir/init.strings"
 done
 
 (
