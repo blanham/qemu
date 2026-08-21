@@ -1,6 +1,6 @@
 {
   "classification": "pinned-vc4-module-fetch-failed",
-  "generated_at": "2026-08-21T06:56:48.761885+00:00",
+  "generated_at": "2026-08-21T06:59:56.542152+00:00",
   "outcomes": {
     "build": "skipped",
     "dependencies": "skipped",
@@ -53,9 +53,9 @@
     "vc4_v3d_driver_path": false
   },
   "run_attempt": "1",
-  "run_id": "32456427043",
+  "run_id": "32456642219",
   "schema_version": 1,
   "score": 10,
-  "source_sha": "694789388edae57a4a312ca5b0654191db6fb351",
+  "source_sha": "fff3cf94f35fa5a4da7f0aaef61682cb08364e18",
   "variant": "render-only"
 }
