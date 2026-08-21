@@ -2,9 +2,9 @@
 
 Validation passed: **false**
 
-Frontier: **`modular-submit-qemu-build-failed`**
+Frontier: **`vc4-drm-unavailable-after-init`**
 
-- Module closure loaded: `false`
+- Module closure loaded: `true`
 - VC4 render node: `false`
 - Baseline UAPI: `false`
 - `SUBMIT_CL` accepted: `false`
