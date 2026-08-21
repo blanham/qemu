@@ -1,9 +1,9 @@
-name: VC4 pinned-module Linux DRM submit
+name: VC4 pinned-module Linux DRM submit (isolated)
 
 on:
   push:
     branches:
-      - agent/vc4-linux-v3d-driver-probe
+      - agent/vc4-linux-v3d-modular-isolated
     paths:
       - .github/workflows/vc4-linux-v3d-modular.yml
       - hw/arm/bcm2835_peripherals.c
@@ -29,8 +29,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: vc4-linux-v3d-pinned-modules
-  cancel-in-progress: true
+  group: vc4-linux-v3d-pinned-modules-isolated
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -96,10 +96,6 @@ jobs:
           test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
             398c480adc49a5fcb03aa4c095ea74db5d1f893b
 
-          # kernel8.img is compressed, so its release string is not a stable
-          # byte-search contract. Pin the module index from the same firmware
-          # commit instead; the next step resolves and downloads the exact VC4
-          # dependency closure from this versioned tree.
           curl --fail --location --retry 5 \
             --output "$EVIDENCE_DIR/modules.dep.pinned" \
             "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}/modules.dep"
@@ -237,7 +233,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vc4-linux-v3d-modular-${{ github.run_attempt }}
+          name: vc4-linux-v3d-modular-isolated-${{ github.run_attempt }}
           path: vc4-linux-v3d-modular-evidence
           if-no-files-found: warn
           retention-days: 14
@@ -266,9 +262,9 @@ jobs:
             git rm -- .github/workflows/vc4-linux-v3d-modular.yml
             message='hw/display: validate pinned-module Linux VC4 submission'
           else
-            message='ci/vc4: record pinned-module Linux DRM frontier [skip ci]'
+            message='ci/vc4: record isolated pinned-module DRM frontier [skip ci]'
           fi
           git diff --cached --check
           git commit -m "$message"
-          git pull --rebase origin agent/vc4-linux-v3d-driver-probe
-          git push origin HEAD:agent/vc4-linux-v3d-driver-probe
+          git pull --rebase origin agent/vc4-linux-v3d-modular-isolated
+          git push origin HEAD:agent/vc4-linux-v3d-modular-isolated
