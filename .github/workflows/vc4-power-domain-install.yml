@@ -46,3 +46,5 @@ jobs:
           git commit -m 'hw/misc: model Raspberry Pi firmware power domains'
           git pull --rebase origin agent/vc4-linux-v3d-modular-isolated
           git push origin HEAD:agent/vc4-linux-v3d-modular-isolated
+
+# Triggered after the helper and regression fixture were present.
