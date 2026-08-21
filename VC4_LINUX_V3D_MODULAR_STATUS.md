@@ -2,9 +2,9 @@
 
 Validation passed: **false**
 
-Frontier: **`vc4-drm-unavailable-after-init`**
+Frontier: **`pinned-vc4-module-fetch-failed`**
 
-- Module closure loaded: `true`
+- Module closure loaded: `false`
 - VC4 render node: `false`
 - Baseline UAPI: `false`
 - `SUBMIT_CL` accepted: `false`
