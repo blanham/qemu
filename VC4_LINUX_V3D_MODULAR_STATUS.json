@@ -1,8 +1,8 @@
 {
   "classification": "modular-submit-qemu-build-failed",
-  "generated_at": "2026-08-21T02:13:10.485872+00:00",
+  "generated_at": "2026-08-21T02:18:50.595769+00:00",
   "outcomes": {
-    "build": "failure",
+    "build": "cancelled",
     "dependencies": "success",
     "dtb": "success",
     "fixture": "success",
@@ -53,9 +53,9 @@
     "vc4_v3d_driver_path": false
   },
   "run_attempt": "1",
-  "run_id": "32439004710",
+  "run_id": "32439310026",
   "schema_version": 1,
   "score": 14,
-  "source_sha": "3112093cb4a9bd6c05a5168142af10ab131a6342",
+  "source_sha": "fb0536f067d6aaaa0ad35d51cc89a3b4ba4eda8e",
   "variant": "render-only"
 }
