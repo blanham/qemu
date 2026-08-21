@@ -65,17 +65,24 @@ while IFS= read -r module; do
             ;;
     esac
     test -s "$module_bundle/$module"
-    file "$module_bundle/$module" | grep -q 'ELF 64-bit LSB relocatable, ARM aarch64'
+    file "$module_bundle/$module" > "$out_dir/module.file"
+    grep -Fq 'ELF 64-bit LSB relocatable, ARM aarch64' \
+        "$out_dir/module.file"
     cp "$module_bundle/$module" \
        "$out_dir/root/lib/vc4-modules/$module"
     printf '/lib/vc4-modules/%s\n' "$module" \
         >> "$out_dir/root/etc/vc4-modules.manifest"
 done < "$module_bundle/MANIFEST"
+rm -f "$out_dir/module.file"
 
 test -s "$out_dir/root/etc/vc4-modules.manifest"
 cp "$module_bundle/MANIFEST" "$out_dir/MODULE_MANIFEST"
 cp "$module_bundle/PROVENANCE" "$out_dir/MODULE_PROVENANCE"
 
+# Avoid strings|grep -q under pipefail: a successful early grep exit can
+# deliver SIGPIPE to strings and turn marker validation into status 141.
+strings "$out_dir/root/init" > "$out_dir/init.strings"
+test -s "$out_dir/init.strings"
 for marker in \
     VC4_LINUX_V3D_MODULAR_START \
     VC4_LINUX_MODULE_LOAD_START \
@@ -86,7 +93,7 @@ for marker in \
     VC4_LINUX_DRM_SUBMIT_OK \
     VC4_LINUX_V3D_MODULAR_DONE \
     VC4_LINUX_V3D_MODULAR_OK; do
-    strings "$out_dir/root/init" | grep -Fq "$marker"
+    grep -Fq "$marker" "$out_dir/init.strings"
 done
 
 (
