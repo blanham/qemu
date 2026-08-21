@@ -1,11 +1,11 @@
 {
-  "classification": "modular-submit-fixture-build-failed",
-  "generated_at": "2026-08-21T02:09:15.767586+00:00",
+  "classification": "modular-submit-qemu-build-failed",
+  "generated_at": "2026-08-21T02:13:10.485872+00:00",
   "outcomes": {
-    "build": "skipped",
+    "build": "failure",
     "dependencies": "success",
-    "dtb": "skipped",
-    "fixture": "failure",
+    "dtb": "success",
+    "fixture": "success",
     "modules": "success",
     "regressions": "skipped",
     "runtime": "skipped",
@@ -53,9 +53,9 @@
     "vc4_v3d_driver_path": false
   },
   "run_attempt": "1",
-  "run_id": "32438780164",
+  "run_id": "32439004710",
   "schema_version": 1,
-  "score": 12,
-  "source_sha": "8f4ee11608f41284afdc222682f7ed33c8a72d45",
+  "score": 14,
+  "source_sha": "3112093cb4a9bd6c05a5168142af10ab131a6342",
   "variant": "render-only"
 }

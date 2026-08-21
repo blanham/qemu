@@ -2,7 +2,7 @@
 
 Validation passed: **false**
 
-Frontier: **`modular-submit-fixture-build-failed`**
+Frontier: **`modular-submit-qemu-build-failed`**
 
 - Module closure loaded: `false`
 - VC4 render node: `false`
