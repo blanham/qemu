@@ -5,9 +5,14 @@
     compatible = "brcm,bcm2835";
 
     /*
-     * Enable only the DRM master and V3D component.  Display pipeline nodes
-     * remain in their base-DTB state so this variant isolates render-node
-     * registration from HVS, pixel-valve, HDMI, and firmware-KMS behavior.
+     * Enable the DRM master, V3D, and HVS.  The VC4 DRM master allocates
+     * planes from HVS state even when the test only intends to exercise the
+     * render node, so a V3D-only component set is not a valid Linux VC4
+     * topology and crashes in vc4_plane_create_additional_planes().
+     *
+     * Keep pixel valves, HDMI, VEC, TXP, and firmware-KMS nodes in their
+     * base-DTB state.  This remains the smallest useful render-oriented
+     * topology while matching the driver's real component assumptions.
      */
     fragment@0 {
         target = <&v3d>;
@@ -17,6 +22,13 @@
     };
 
     fragment@1 {
+        target = <&hvs>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@2 {
         target = <&vc4>;
         __overlay__ {
             status = "okay";
