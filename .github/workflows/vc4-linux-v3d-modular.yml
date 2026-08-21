@@ -51,6 +51,41 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install firmware power-domain support
+        id: bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/apply-power-domain-patch.py \
+            scripts/vc4/property-power-domain-smoke.py
+          python3 scripts/vc4/apply-power-domain-patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/vc4-linux-v3d-modular.yml')
+          text = path.read_text(encoding='utf-8')
+          start_marker = '      - name: Install firmware power-domain support\n'
+          next_marker = '      - name: Install dependencies\n'
+          start = text.index(start_marker)
+          end = text.index(next_marker, start)
+          path.write_text(text[:start] + text[end:], encoding='utf-8')
+          PY
+          git diff --check
+
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            hw/misc/bcm2835_property.c \
+            include/hw/misc/bcm2835_property.h \
+            .github/workflows/vc4-linux-v3d-modular.yml
+          git rm -- scripts/vc4/apply-power-domain-patch.py
+          git diff --cached --check
+          git commit -m 'hw/misc: model Raspberry Pi firmware power domains'
+          git pull --rebase origin agent/vc4-linux-v3d-modular-isolated
+          git push origin HEAD:agent/vc4-linux-v3d-modular-isolated
+          echo 'installed=true' >> "$GITHUB_OUTPUT"
+
       - name: Install dependencies
         id: dependencies
         run: |
@@ -239,7 +274,7 @@ jobs:
           retention-days: 14
 
       - name: Publish frontier and retire successful modular gate
-        if: always()
+        if: always() && steps.bootstrap.outputs.installed != 'true'
         shell: bash
         run: |
           set -euo pipefail
