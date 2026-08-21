@@ -36,6 +36,10 @@ mkdir -p \
     "$root_dir/tests/vc4/linux-v3d-boundary-init.c"
 chmod 0755 "$out_dir/root/init"
 
+# Do not pipe strings(1) into grep -q under pipefail: grep exits as soon as it
+# finds a marker and strings then reports SIGPIPE, turning a successful marker
+# check into status 141.  Materialize the finite output once and inspect it.
+strings "$out_dir/root/init" > "$out_dir/init.strings"
 for marker in \
     VC4_LINUX_V3D_BOUNDARY_START \
     VC4_LINUX_BIND_EVIDENCE_BEGIN \
@@ -46,7 +50,7 @@ for marker in \
     VC4_LINUX_DRM_WAIT_BO_OK \
     VC4_LINUX_V3D_BOUNDARY_DONE \
     VC4_LINUX_V3D_BOUNDARY_OK; do
-    strings "$out_dir/root/init" | grep -Fq "$marker"
+    grep -Fq "$marker" "$out_dir/init.strings"
 done
 
 (
