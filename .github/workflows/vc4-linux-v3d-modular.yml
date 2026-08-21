@@ -94,7 +94,7 @@ jobs:
             a694aa64988bbecadc770c874488165303eac673
           test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
             398c480adc49a5fcb03aa4c095ea74db5d1f893b
-          strings "$OFFICIAL_DIR/kernel8.img" | grep -Fq "$RPI_KERNEL_RELEASE"
+          grep -aFq "$RPI_KERNEL_RELEASE" "$OFFICIAL_DIR/kernel8.img"
           sha256sum "$OFFICIAL_DIR"/* > "$EVIDENCE_DIR/OFFICIAL_SHA256SUMS"
 
       - name: Fetch the matching VC4 module dependency closure
