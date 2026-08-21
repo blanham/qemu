@@ -4,12 +4,12 @@
     "score": 0,
     "variant": "base"
   },
-  "generated_at": "2026-08-20T23:40:05.736506+00:00",
+  "generated_at": "2026-08-21T21:20:36.499977+00:00",
   "passed": false,
   "run_attempt": "1",
-  "run_id": "32429213765",
+  "run_id": "32527670431",
   "schema_version": 1,
-  "source_sha": "881f36a561e388141de2445be6a71bd523582e54",
+  "source_sha": "e066235e9f1eb554d0d37c0900defbe3497d1475",
   "variants": [
     {
       "card0_vc4": false,
