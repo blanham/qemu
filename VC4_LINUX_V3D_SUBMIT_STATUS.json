@@ -1,13 +1,13 @@
 {
   "boundary_ready": false,
-  "classification": "submit-fixture-build-failed",
-  "generated_at": "2026-08-21T01:42:22.738430+00:00",
+  "classification": "submit-blocked-before-linux-vc4-boundary",
+  "generated_at": "2026-08-21T01:53:05.116395+00:00",
   "outcomes": {
     "artifacts": "skipped",
     "boundary": "success",
     "build": "skipped",
     "dependencies": "success",
-    "fixture": "failure",
+    "fixture": "success",
     "regressions": "skipped",
     "runtime": "skipped"
   },
@@ -47,9 +47,9 @@
     "vc4_v3d_driver_path": false
   },
   "run_attempt": "1",
-  "run_id": "32437181779",
+  "run_id": "32437790393",
   "schema_version": 1,
-  "score": 4,
-  "source_sha": "62762bfdfbff7a6e0ef713e905d40e5eb1ca2cd4",
+  "score": 8,
+  "source_sha": "b0781b2debd5cc9ef08cb403af8c315981d6d2da",
   "variant": "base"
 }
