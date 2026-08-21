@@ -4,6 +4,8 @@
  * Load the dependency-ordered, release-matched Raspberry Pi VC4 module
  * closure before running the exact DRM UAPI and SUBMIT_CL witness.  This
  * distinguishes missing guest modules from emulated-hardware failures.
+ * The DT's V3D power-domain dependency is intentionally part of the witness:
+ * firmware-domain failures must be resolved before a VC4 DRM node can exist.
  */
 #define VC4_LINUX_V3D_SUBMIT_ENTRY vc4_linux_v3d_submit_base_main
 #include "linux-v3d-submit-init.c"
