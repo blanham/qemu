@@ -32,6 +32,8 @@ struct BCM2835PropertyState {
     MACAddr macaddr;
     uint32_t board_rev;
     uint32_t addr;
+    uint32_t legacy_power_state;
+    uint32_t power_domain_state;
     char *command_line;
     bool pending;
 };
