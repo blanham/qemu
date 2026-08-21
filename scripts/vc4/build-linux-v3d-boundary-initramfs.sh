@@ -40,6 +40,7 @@ chmod 0755 "$out_dir/root/init"
 # finds a marker and strings then reports SIGPIPE, turning a successful marker
 # check into status 141.  Materialize the finite output once and inspect it.
 strings "$out_dir/root/init" > "$out_dir/init.strings"
+test -s "$out_dir/init.strings"
 for marker in \
     VC4_LINUX_V3D_BOUNDARY_START \
     VC4_LINUX_BIND_EVIDENCE_BEGIN \
