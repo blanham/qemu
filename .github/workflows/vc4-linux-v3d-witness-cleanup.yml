@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: vc4-linux-v3d-witness-cleanup
@@ -27,13 +27,17 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install cross-build dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
+            binutils \
             binutils-aarch64-linux-gnu \
+            file \
             gcc-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
             libdrm-dev \
@@ -78,3 +82,46 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
+
+      - name: Publish successful cleanup validation
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          status = {
+              "schema_version": 1,
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "source_sha": os.environ["SOURCE_SHA"],
+              "run_id": os.environ["RUN_ID"],
+              "run_attempt": os.environ["RUN_ATTEMPT"],
+              "passed": True,
+              "checks": {
+                  "python_compile": "success",
+                  "summary_regressions": "success",
+                  "aarch64_static_build": "success",
+                  "required_markers": "success",
+                  "diff_check": "success",
+              },
+          }
+          Path("VC4_LINUX_V3D_WITNESS_CLEANUP_STATUS.json").write_text(
+              json.dumps(status, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- VC4_LINUX_V3D_WITNESS_CLEANUP_STATUS.json
+          git commit -m 'ci/vc4: record witness cleanup validation [skip ci]'
+          git pull --rebase origin "$REF_NAME"
+          git push origin "HEAD:$REF_NAME"
