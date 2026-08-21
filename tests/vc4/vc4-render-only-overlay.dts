@@ -5,14 +5,15 @@
     compatible = "brcm,bcm2835";
 
     /*
-     * Enable the DRM master, V3D, and HVS.  The VC4 DRM master allocates
-     * planes from HVS state even when the test only intends to exercise the
-     * render node, so a V3D-only component set is not a valid Linux VC4
-     * topology and crashes in vc4_plane_create_additional_planes().
+     * Enable the DRM master, V3D, HVS, and TXP.  Linux VC4 allocates planes
+     * against an existing CRTC and its plane setup unconditionally expects
+     * the TXP CRTC to be present.  HVS + V3D alone therefore is not a valid
+     * component topology and crashes in vc4_plane_create_additional_planes().
      *
-     * Keep pixel valves, HDMI, VEC, TXP, and firmware-KMS nodes in their
-     * base-DTB state.  This remains the smallest useful render-oriented
-     * topology while matching the driver's real component assumptions.
+     * TXP supplies the smallest headless CRTC/writeback path.  Keep the
+     * pixel valves, HDMI, VEC, and firmware-KMS nodes in their base-DTB state
+     * so this variant remains focused on render-node registration and V3D
+     * command submission rather than physical scanout.
      */
     fragment@0 {
         target = <&v3d>;
@@ -29,6 +30,13 @@
     };
 
     fragment@2 {
+        target = <&txp>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@3 {
         target = <&vc4>;
         __overlay__ {
             status = "okay";
