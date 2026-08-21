@@ -2,7 +2,7 @@
 
 Validation passed: **false**
 
-Frontier: **`pinned-vc4-module-fetch-failed`**
+Frontier: **`modular-submit-fixture-build-failed`**
 
 - Module closure loaded: `false`
 - VC4 render node: `false`

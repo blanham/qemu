@@ -1,15 +1,15 @@
 {
-  "classification": "pinned-vc4-module-fetch-failed",
-  "generated_at": "2026-08-21T02:02:39.146774+00:00",
+  "classification": "modular-submit-fixture-build-failed",
+  "generated_at": "2026-08-21T02:08:03.443717+00:00",
   "outcomes": {
     "build": "skipped",
     "dependencies": "success",
     "dtb": "skipped",
-    "fixture": "skipped",
-    "modules": "skipped",
+    "fixture": "failure",
+    "modules": "success",
     "regressions": "skipped",
     "runtime": "skipped",
-    "source": "failure"
+    "source": "success"
   },
   "passed": false,
   "result": {
@@ -53,9 +53,9 @@
     "vc4_v3d_driver_path": false
   },
   "run_attempt": "1",
-  "run_id": "32438362302",
+  "run_id": "32438703337",
   "schema_version": 1,
-  "score": 10,
-  "source_sha": "d361bca1b9936f689a6732312ad4d7239d293ca9",
+  "score": 12,
+  "source_sha": "0ad3fdc3bacd99e798d5840903a819b6d608454a",
   "variant": "render-only"
 }
