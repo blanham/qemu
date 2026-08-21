@@ -41,6 +41,7 @@ jobs:
       RPI_KERNEL_RELEASE: 6.18.44-v8+
       OFFICIAL_DIR: /tmp/vc4-linux-v3d-modular-official
       MODULE_DIR: /tmp/vc4-linux-v3d-modules
+      INITRAMFS_DIR: /tmp/vc4-linux-v3d-modular-initramfs
       DTB_DIR: /tmp/vc4-linux-v3d-modular-dtbs
       MATRIX_DIR: /tmp/vc4-linux-v3d-modular-matrix
       EVIDENCE_DIR: vc4-linux-v3d-modular-evidence
@@ -63,8 +64,8 @@ jobs:
             ninja-build pkg-config python3 python3-venv \
             libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
           rm -rf \
-            "$OFFICIAL_DIR" "$MODULE_DIR" "$DTB_DIR" \
-            "$MATRIX_DIR" "$EVIDENCE_DIR"
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" \
+            "$DTB_DIR" "$MATRIX_DIR" "$EVIDENCE_DIR"
           mkdir -p \
             "$OFFICIAL_DIR" "$DTB_DIR" "$MATRIX_DIR" "$EVIDENCE_DIR"
 
@@ -96,7 +97,7 @@ jobs:
             398c480adc49a5fcb03aa4c095ea74db5d1f893b
 
           # kernel8.img is compressed, so its release string is not a stable
-          # byte-search contract.  Pin the module index from the same firmware
+          # byte-search contract. Pin the module index from the same firmware
           # commit instead; the next step resolves and downloads the exact VC4
           # dependency closure from this versioned tree.
           curl --fail --location --retry 5 \
@@ -132,10 +133,10 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
-            build/vc4-linux-v3d-modular-initramfs \
+            "$INITRAMFS_DIR" \
             "$MODULE_DIR" \
             2>&1 | tee "$EVIDENCE_DIR/fixture.log"
-          cp build/vc4-linux-v3d-modular-initramfs/SHA256SUMS \
+          cp "$INITRAMFS_DIR/SHA256SUMS" \
             "$EVIDENCE_DIR/INITRAMFS_SHA256SUMS"
 
       - name: Build the render-only DTB
@@ -191,7 +192,7 @@ jobs:
             --qemu build/qemu-system-aarch64 \
             --kernel "$OFFICIAL_DIR/kernel8.img" \
             --dtb "$DTB_DIR/render-only.dtb" \
-            --initrd build/vc4-linux-v3d-modular-initramfs/initramfs.cpio.gz \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
             --out-dir "$out" \
             --seconds 120 --sample-interval 5 \
             > "$out/probe.stdout" 2>&1
