@@ -5,9 +5,9 @@
  * closure before running the exact DRM UAPI and SUBMIT_CL witness.  This
  * distinguishes missing guest modules from emulated-hardware failures.
  */
-#define main vc4_linux_v3d_submit_base_main
+#define VC4_LINUX_V3D_SUBMIT_ENTRY vc4_linux_v3d_submit_base_main
 #include "linux-v3d-submit-init.c"
-#undef main
+#undef VC4_LINUX_V3D_SUBMIT_ENTRY
 
 #include <sys/syscall.h>
 
