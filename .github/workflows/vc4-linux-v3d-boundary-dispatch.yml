@@ -1,0 +1,33 @@
+name: VC4 Linux V3D boundary dispatch
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-v3d-driver-probe
+    paths:
+      - .github/workflows/vc4-linux-v3d-boundary-dispatch.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch the repaired Linux V3D boundary gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          payload=$(printf '{"ref":"%s"}' "$REF_NAME")
+          curl --fail-with-body \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPOSITORY/actions/workflows/vc4-linux-v3d-boundary.yml/dispatches" \
+            --data "$payload"
