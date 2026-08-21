@@ -11,6 +11,7 @@
 #include "linux-v3d-submit-init.c"
 #undef VC4_LINUX_V3D_SUBMIT_ENTRY
 
+#include <sys/reboot.h>
 #include <sys/syscall.h>
 
 #define VC4_MODULE_MANIFEST "/etc/vc4-modules.manifest"
@@ -117,6 +118,7 @@ int main(void)
     VC4DRMNode card;
     VC4DRMNode render;
     VC4DRMNode *selected = NULL;
+    bool success;
     int module_result;
     int uapi_result = -1;
     int submit_result = -1;
@@ -133,13 +135,27 @@ int main(void)
     render = open_drm_node("RENDER128", "/dev/dri/renderD128");
     if (render.fd >= 0 && render.vc4) {
         selected = &render;
+        marker("VC4_LINUX_DRM_RENDER128_OK\n");
     } else if (card.fd >= 0 && card.vc4) {
         selected = &card;
+        marker("VC4_LINUX_DRM_CARD0_OK\n");
     }
     if (selected != NULL) {
         uapi_result = probe_vc4_uapi(selected);
         if (uapi_result == 0) {
+            /*
+             * These fixed markers duplicate the formatted diagnostics from
+             * the base witness.  They remain visible through /dev/kmsg even
+             * on kernels that cannot attach PID 1's stdout to a console.
+             */
+            marker("VC4_LINUX_DRM_CREATE_BO_OK\n");
+            marker("VC4_LINUX_DRM_MMAP_BO_OK\n");
+            marker("VC4_LINUX_DRM_GEM_MEMORY_OK\n");
             submit_result = submit_clear_job(selected);
+            if (submit_result == 0) {
+                marker("VC4_LINUX_DRM_SUBMIT_CL_OK\n");
+                marker("VC4_LINUX_DRM_SUBMIT_WAIT_OK\n");
+            }
         }
     } else {
         marker("VC4_LINUX_DRM_SUBMIT_SKIPPED no-vc4-node\n");
@@ -151,7 +167,8 @@ int main(void)
            card.fd >= 0 && card.vc4 ? 0 : -1,
            render.fd >= 0 && render.vc4 ? 0 : -1,
            uapi_result, submit_result, framebuffer_result);
-    if (module_result == 0 && submit_result == 0) {
+    success = module_result == 0 && submit_result == 0;
+    if (success) {
         marker("VC4_LINUX_V3D_MODULAR_OK\n");
     } else {
         marker("VC4_LINUX_V3D_MODULAR_PARTIAL\n");
@@ -163,6 +180,17 @@ int main(void)
     if (card.fd >= 0) {
         close(card.fd);
     }
+
+    if (success) {
+        /* -no-reboot turns this guest reset into a clean, immediate exit. */
+        marker("VC4_LINUX_V3D_MODULAR_REBOOT\n");
+        sync();
+        if (reboot(RB_AUTOBOOT) < 0) {
+            report("VC4_LINUX_V3D_MODULAR_REBOOT_FAILED errno=%d (%s)\n",
+                   errno, strerror(errno));
+        }
+    }
+
     marker("VC4_LINUX_INIT_IDLE\n");
     for (;;) {
         pause();
