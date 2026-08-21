@@ -28,6 +28,18 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def submit_witness_complete(record: dict[str, Any]) -> bool:
+    return all(
+        record[key]
+        for key in (
+            "submit_cl_ok",
+            "submit_wait_ok",
+            "submit_pixels_ok",
+            "submit_ok",
+        )
+    )
+
+
 def classify(record: dict[str, Any], outcomes: dict[str, str]) -> tuple[int, str]:
     if outcomes.get("modules") not in {None, "success"}:
         return 10, "pinned-vc4-module-fetch-failed"
@@ -37,9 +49,12 @@ def classify(record: dict[str, Any], outcomes: dict[str, str]) -> tuple[int, str
         return 14, "modular-submit-qemu-build-failed"
     if outcomes.get("regressions") not in {None, "success"}:
         return 16, "modular-submit-regression-gate-failed"
-    if record["modular_ok"] and record["submit_ok"]:
+    if (record["modular_ok"] and record["module_closure_ok"] and
+            record["uapi_ok"] and submit_witness_complete(record)):
         return 180, "linux-vc4-modular-drm-submit-clear"
-    if record["module_closure_ok"] and record["submit_ok"]:
+    if record["modular_ok"] and record["submit_ok"]:
+        return 178, "linux-vc4-modular-submit-markers-incomplete"
+    if record["module_closure_ok"] and submit_witness_complete(record):
         return 175, "linux-vc4-module-closure-submit-clear"
     if record["module_closure_ok"] and record["uapi_ok"]:
         return 160, "linux-vc4-modular-uapi-submit-failed"
@@ -66,8 +81,10 @@ def make_markdown(status: dict[str, Any]) -> str:
         f"Frontier: **`{status['classification']}`**\n\n"
         f"- Module closure loaded: `{str(item['module_closure_ok']).lower()}`\n"
         f"- VC4 render node: `{str(item['render128_vc4']).lower()}`\n"
+        f"- VC4 card node: `{str(item['card0_vc4']).lower()}`\n"
         f"- Baseline UAPI: `{str(item['uapi_ok']).lower()}`\n"
         f"- `SUBMIT_CL` accepted: `{str(item['submit_cl_ok']).lower()}`\n"
+        f"- BO wait completed: `{str(item['submit_wait_ok']).lower()}`\n"
         f"- GPU pixels verified: `{str(item['submit_pixels_ok']).lower()}`\n"
     )
 
@@ -84,11 +101,17 @@ def main() -> int:
     base = load_base_module()
     record = base.summarize_variant(args.root, args.variant)
     serial = read_text(args.root / args.variant / "serial.log")
+
+    module_closure_ok = "VC4_LINUX_MODULE_CLOSURE_OK" in serial
+    submit_ok = "VC4_LINUX_DRM_SUBMIT_OK" in serial
+    modular_ok = "VC4_LINUX_V3D_MODULAR_OK" in serial
     record.update({
         "modular_started": "VC4_LINUX_V3D_MODULAR_START" in serial,
         "module_load_started": "VC4_LINUX_MODULE_LOAD_START" in serial,
-        "module_load_done": "VC4_LINUX_MODULE_LOAD_DONE" in serial,
-        "module_closure_ok": "VC4_LINUX_MODULE_CLOSURE_OK" in serial,
+        "module_load_done": (
+            "VC4_LINUX_MODULE_LOAD_DONE" in serial or module_closure_ok
+        ),
+        "module_closure_ok": module_closure_ok,
         "module_manifest_missing": (
             "VC4_LINUX_MODULE_MANIFEST_MISSING" in serial
         ),
@@ -102,30 +125,58 @@ def main() -> int:
             if "VC4_LINUX_MODULE_LOAD_FAILED" in line
             or "VC4_LINUX_MODULE_OPEN_FAILED" in line
         ][-128:],
-        "submit_cl_ok": "VC4_LINUX_DRM_SUBMIT_CL_OK" in serial,
-        "submit_wait_ok": "VC4_LINUX_DRM_SUBMIT_WAIT_OK" in serial,
-        "submit_pixels_ok": "VC4_LINUX_DRM_SUBMIT_PIXELS_OK" in serial,
-        "submit_ok": "VC4_LINUX_DRM_SUBMIT_OK" in serial,
+        # SUBMIT_OK is emitted only after submit, wait, and pixel verification.
+        # Accept it as a compatibility fallback for older witnesses whose
+        # formatted diagnostics could not reach the serial console.
+        "submit_cl_ok": (
+            "VC4_LINUX_DRM_SUBMIT_CL_OK" in serial or submit_ok
+        ),
+        "submit_wait_ok": (
+            "VC4_LINUX_DRM_SUBMIT_WAIT_OK" in serial or submit_ok
+        ),
+        "submit_pixels_ok": (
+            "VC4_LINUX_DRM_SUBMIT_PIXELS_OK" in serial or submit_ok
+        ),
+        "submit_ok": submit_ok,
         "submit_failures": [
             line for line in serial.splitlines()
             if "VC4_LINUX_DRM_SUBMIT_FAILED" in line
         ][-64:],
-        "modular_done": "VC4_LINUX_V3D_MODULAR_DONE" in serial,
-        "modular_ok": "VC4_LINUX_V3D_MODULAR_OK" in serial,
+        "modular_done": (
+            "VC4_LINUX_V3D_MODULAR_DONE" in serial or modular_ok
+        ),
+        "modular_ok": modular_ok,
+        "modular_reboot": "VC4_LINUX_V3D_MODULAR_REBOOT" in serial,
     })
+
+    # A complete UAPI witness necessarily created, mapped, and coherently
+    # accessed a GEM BO even when the formatted per-step lines were lost.
+    if record["uapi_ok"]:
+        record["create_bo_ok"] = True
+        record["mmap_bo_ok"] = True
+        record["gem_memory_ok"] = True
+    if modular_ok:
+        record["probe_passed"] = True
+
     outcomes = {
         key.removesuffix("_OUTCOME").lower(): value
         for key, value in os.environ.items()
         if key.endswith("_OUTCOME")
     }
     score, classification = classify(record, outcomes)
+    passed = (
+        record["modular_ok"]
+        and record["module_closure_ok"]
+        and record["uapi_ok"]
+        and submit_witness_complete(record)
+    )
     status = {
         "schema_version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_sha": os.environ.get("GITHUB_SHA"),
         "run_id": os.environ.get("GITHUB_RUN_ID"),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
-        "passed": record["modular_ok"] and record["submit_ok"],
+        "passed": passed,
         "variant": args.variant,
         "classification": classification,
         "score": score,
