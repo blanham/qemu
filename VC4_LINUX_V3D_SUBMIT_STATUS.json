@@ -1,7 +1,7 @@
 {
   "boundary_ready": false,
   "classification": "submit-blocked-before-linux-vc4-boundary",
-  "generated_at": "2026-08-21T01:53:05.116395+00:00",
+  "generated_at": "2026-08-21T02:12:30.919140+00:00",
   "outcomes": {
     "artifacts": "skipped",
     "boundary": "success",
@@ -47,9 +47,9 @@
     "vc4_v3d_driver_path": false
   },
   "run_attempt": "1",
-  "run_id": "32437790393",
+  "run_id": "32438966005",
   "schema_version": 1,
   "score": 8,
-  "source_sha": "b0781b2debd5cc9ef08cb403af8c315981d6d2da",
+  "source_sha": "fda323bd1b08de9b59de268e48ca30b665d0cd4d",
   "variant": "base"
 }
