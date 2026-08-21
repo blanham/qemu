@@ -1,0 +1,15 @@
+{
+  "checks": {
+    "aarch64_static_build": "success",
+    "diff_check": "success",
+    "python_compile": "success",
+    "required_markers": "success",
+    "summary_regressions": "success"
+  },
+  "generated_at": "2026-08-21T21:28:27.183311+00:00",
+  "passed": true,
+  "run_attempt": "1",
+  "run_id": "32528567984",
+  "schema_version": 1,
+  "source_sha": "7f3bd1c19733cbb2c56692e334ce9be60af59eb2"
+}
