@@ -15,6 +15,23 @@
 
 #define VC4_MODULE_MANIFEST "/etc/vc4-modules.manifest"
 
+static void redirect_output_to_kmsg(void)
+{
+    int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+
+    if (fd < 0) {
+        return;
+    }
+    for (int target = STDOUT_FILENO; target <= STDERR_FILENO; target++) {
+        if (fd != target) {
+            (void)dup2(fd, target);
+        }
+    }
+    if (fd > STDERR_FILENO) {
+        close(fd);
+    }
+}
+
 static int load_one_module(const char *path)
 {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -123,6 +140,7 @@ int main(void)
     int framebuffer_result;
 
     prepare_filesystems();
+    redirect_output_to_kmsg();
     marker("VC4_LINUX_INIT_OK\n");
     marker("VC4_LINUX_V3D_MODULAR_START\n");
     module_result = load_vc4_module_manifest();
