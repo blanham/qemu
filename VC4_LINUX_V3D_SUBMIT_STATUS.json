@@ -1,7 +1,7 @@
 {
   "boundary_ready": false,
   "classification": "submit-fixture-build-failed",
-  "generated_at": "2026-08-20T23:56:29.996045+00:00",
+  "generated_at": "2026-08-21T01:42:22.738430+00:00",
   "outcomes": {
     "artifacts": "skipped",
     "boundary": "success",
@@ -47,9 +47,9 @@
     "vc4_v3d_driver_path": false
   },
   "run_attempt": "1",
-  "run_id": "32430592744",
+  "run_id": "32437181779",
   "schema_version": 1,
   "score": 4,
-  "source_sha": "57e4f2b9d1aa3cd7c728a92092d1d901eca6fd82",
+  "source_sha": "62762bfdfbff7a6e0ef713e905d40e5eb1ca2cd4",
   "variant": "base"
 }
