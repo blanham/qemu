@@ -94,7 +94,18 @@ jobs:
             a694aa64988bbecadc770c874488165303eac673
           test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
             398c480adc49a5fcb03aa4c095ea74db5d1f893b
-          grep -aFq "$RPI_KERNEL_RELEASE" "$OFFICIAL_DIR/kernel8.img"
+
+          # kernel8.img is compressed, so its release string is not a stable
+          # byte-search contract.  Pin the module index from the same firmware
+          # commit instead; the next step resolves and downloads the exact VC4
+          # dependency closure from this versioned tree.
+          curl --fail --location --retry 5 \
+            --output "$EVIDENCE_DIR/modules.dep.pinned" \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}/modules.dep"
+          test "$(git hash-object "$EVIDENCE_DIR/modules.dep.pinned")" = \
+            6915f11f1b934c29ed51761262d540fb34207671
+          grep -Fq 'drivers/gpu/drm/vc4/vc4.ko' \
+            "$EVIDENCE_DIR/modules.dep.pinned"
           sha256sum "$OFFICIAL_DIR"/* > "$EVIDENCE_DIR/OFFICIAL_SHA256SUMS"
 
       - name: Fetch the matching VC4 module dependency closure
