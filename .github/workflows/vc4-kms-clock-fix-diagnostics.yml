@@ -40,70 +40,55 @@ jobs:
           defs = defs_path.read_text()
           defs = replace_once(
               defs,
-              """    RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
-              RPI_FIRMWARE_VEC_CLK_ID,
-              RPI_FIRMWARE_NUM_CLK_ID,
-          """,
-              """    RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
-              RPI_FIRMWARE_VEC_CLK_ID,
-              RPI_FIRMWARE_DISP_CLK_ID,
-              RPI_FIRMWARE_NUM_CLK_ID,
-          """,
+              "    RPI_FIRMWARE_VEC_CLK_ID,\n    RPI_FIRMWARE_NUM_CLK_ID,",
+              "    RPI_FIRMWARE_VEC_CLK_ID,\n"
+              "    RPI_FIRMWARE_DISP_CLK_ID,\n"
+              "    RPI_FIRMWARE_NUM_CLK_ID,",
               "firmware clock enum",
           )
           defs_path.write_text(defs)
 
           property_path = Path("hw/misc/bcm2835_property.c")
           source = property_path.read_text()
-          source = replace_once(
-              source,
-              """/*
-           * The Linux firmware-clock provider sizes its onecell table from the
-           * IDs returned by GET_CLOCKS.  Advertise every clock that QEMU can
-           * service and that the upstream Raspberry Pi clock driver exports;
-           * otherwise display consumers such as HDMI fail before component
-           * binding when their clock index lies above the ARM clock.
-           */
-          static const uint32_t bcm2835_property_clock_ids[] = {
-              RPI_FIRMWARE_ARM_CLK_ID,
-              RPI_FIRMWARE_CORE_CLK_ID,
-              RPI_FIRMWARE_V3D_CLK_ID,
-              RPI_FIRMWARE_ISP_CLK_ID,
-              RPI_FIRMWARE_PIXEL_CLK_ID,
-              RPI_FIRMWARE_HEVC_CLK_ID,
-              RPI_FIRMWARE_M2MC_CLK_ID,
-              RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
-              RPI_FIRMWARE_VEC_CLK_ID,
-          };
-          """,
-              """/*
-           * GET_CLOCKS is an ordered firmware ABI, not a sparse capability
-           * list.  Linux advances the size of its onecell provider while it
-           * walks this response, so omitting an earlier ID can make later
-           * clocks (notably HDMI pixel clock 9) impossible to address even if
-           * that later ID is present.  Return every defined clock in order.
-           */
-          static const uint32_t bcm2835_property_clock_ids[] = {
-              RPI_FIRMWARE_EMMC_CLK_ID,
-              RPI_FIRMWARE_UART_CLK_ID,
-              RPI_FIRMWARE_ARM_CLK_ID,
-              RPI_FIRMWARE_CORE_CLK_ID,
-              RPI_FIRMWARE_V3D_CLK_ID,
-              RPI_FIRMWARE_H264_CLK_ID,
-              RPI_FIRMWARE_ISP_CLK_ID,
-              RPI_FIRMWARE_SDRAM_CLK_ID,
-              RPI_FIRMWARE_PIXEL_CLK_ID,
-              RPI_FIRMWARE_PWM_CLK_ID,
-              RPI_FIRMWARE_HEVC_CLK_ID,
-              RPI_FIRMWARE_EMMC2_CLK_ID,
-              RPI_FIRMWARE_M2MC_CLK_ID,
-              RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
-              RPI_FIRMWARE_VEC_CLK_ID,
-              RPI_FIRMWARE_DISP_CLK_ID,
-          };
-          """,
-              "GET_CLOCKS table",
+          table_start = source.index(
+              "/*\n * The Linux firmware-clock provider sizes its onecell table"
           )
+          table_end = source.index(
+              "/* https://github.com/raspberrypi/firmware/wiki/"
+              "Mailbox-property-interface */",
+              table_start,
+          )
+          clock_block = "\n".join(
+              [
+                  "/*",
+                  " * GET_CLOCKS is an ordered firmware ABI, not a sparse capability",
+                  " * list.  Linux advances the size of its onecell provider while it",
+                  " * walks this response, so omitting an earlier ID can make later",
+                  " * clocks (notably HDMI pixel clock 9) impossible to address even if",
+                  " * that later ID is present.  Return every defined clock in order.",
+                  " */",
+                  "static const uint32_t bcm2835_property_clock_ids[] = {",
+                  "    RPI_FIRMWARE_EMMC_CLK_ID,",
+                  "    RPI_FIRMWARE_UART_CLK_ID,",
+                  "    RPI_FIRMWARE_ARM_CLK_ID,",
+                  "    RPI_FIRMWARE_CORE_CLK_ID,",
+                  "    RPI_FIRMWARE_V3D_CLK_ID,",
+                  "    RPI_FIRMWARE_H264_CLK_ID,",
+                  "    RPI_FIRMWARE_ISP_CLK_ID,",
+                  "    RPI_FIRMWARE_SDRAM_CLK_ID,",
+                  "    RPI_FIRMWARE_PIXEL_CLK_ID,",
+                  "    RPI_FIRMWARE_PWM_CLK_ID,",
+                  "    RPI_FIRMWARE_HEVC_CLK_ID,",
+                  "    RPI_FIRMWARE_EMMC2_CLK_ID,",
+                  "    RPI_FIRMWARE_M2MC_CLK_ID,",
+                  "    RPI_FIRMWARE_PIXEL_BVB_CLK_ID,",
+                  "    RPI_FIRMWARE_VEC_CLK_ID,",
+                  "    RPI_FIRMWARE_DISP_CLK_ID,",
+                  "};",
+                  "",
+              ]
+          )
+          source = source[:table_start] + clock_block + source[table_end:]
           property_path.write_text(source)
 
           smoke_path = Path("scripts/vc4/property-power-domain-smoke.py")
@@ -116,58 +101,60 @@ jobs:
           )
           smoke = replace_once(
               smoke,
-              """PROPERTY_RESPONSE_LENGTH = (1 << 31) | 8
-
-          RPI_FWREQ_GET_POWER_STATE = 0x00020001
-          """,
-              """PROPERTY_RESPONSE_LENGTH = (1 << 31) | 8
-
-          RPI_FWREQ_GET_CLOCKS = 0x00010007
-          EXPECTED_FIRMWARE_CLOCK_IDS = tuple(range(1, 17))
-
-          RPI_FWREQ_GET_POWER_STATE = 0x00020001
-          """,
+              "PROPERTY_RESPONSE_LENGTH = (1 << 31) | 8\n\n"
+              "RPI_FWREQ_GET_POWER_STATE = 0x00020001",
+              "PROPERTY_RESPONSE_LENGTH = (1 << 31) | 8\n\n"
+              "RPI_FWREQ_GET_CLOCKS = 0x00010007\n"
+              "EXPECTED_FIRMWARE_CLOCK_IDS = tuple(range(1, 17))\n\n"
+              "RPI_FWREQ_GET_POWER_STATE = 0x00020001",
               "smoke clock constants",
           )
 
-          helper = '''
-
-          def firmware_clock_ids(qtest: QTestClient) -> tuple[int, ...]:
-              pair_count = len(EXPECTED_FIRMWARE_CLOCK_IDS)
-              response = property_words_request(
-                  qtest,
-                  RPI_FWREQ_GET_CLOCKS,
-                  tuple(0 for _ in range(pair_count * 2)),
-                  pair_count * 2 * 4,
-              )
-              parents = tuple(response[0::2])
-              if any(parent != 0 for parent in parents):
-                  raise RuntimeError(
-                      f"GET_CLOCKS returned unsupported parents: {parents!r}"
-                  )
-              return tuple(response[1::2])
-          '''
+          helper = "\n".join(
+              [
+                  "def firmware_clock_ids(qtest: QTestClient) -> tuple[int, ...]:",
+                  "    pair_count = len(EXPECTED_FIRMWARE_CLOCK_IDS)",
+                  "    response = property_words_request(",
+                  "        qtest,",
+                  "        RPI_FWREQ_GET_CLOCKS,",
+                  "        tuple(0 for _ in range(pair_count * 2)),",
+                  "        pair_count * 2 * 4,",
+                  "    )",
+                  "    parents = tuple(response[0::2])",
+                  "    if any(parent != 0 for parent in parents):",
+                  "        raise RuntimeError(",
+                  "            f\"GET_CLOCKS returned unsupported parents: {parents!r}\"",
+                  "        )",
+                  "    return tuple(response[1::2])",
+                  "",
+                  "",
+              ]
+          )
           marker = "def expect_state(\n"
           if smoke.count(marker) != 1:
               raise SystemExit("smoke helper insertion anchor changed")
-          smoke = smoke.replace(marker, helper + "\n\n" + marker, 1)
-          smoke = smoke.replace("        )\ndef expect_state(\n", "        )\n\n\ndef expect_state(\n", 1)
+          smoke = smoke.replace(marker, helper + marker, 1)
+          smoke = smoke.replace("        )\ndef firmware_clock_ids", "        )\n\n\ndef firmware_clock_ids", 1)
 
-          runtime = """            clock_ids = firmware_clock_ids(qtest)
-              if clock_ids != EXPECTED_FIRMWARE_CLOCK_IDS:
-                  raise RuntimeError(
-                      f"unexpected GET_CLOCKS response: {clock_ids!r}"
-                  )
-
-          """
           runtime_anchor = "            for offset in range(EXP_GPIO_COUNT):\n"
+          runtime = "\n".join(
+              [
+                  "            clock_ids = firmware_clock_ids(qtest)",
+                  "            if clock_ids != EXPECTED_FIRMWARE_CLOCK_IDS:",
+                  "                raise RuntimeError(",
+                  "                    f\"unexpected GET_CLOCKS response: {clock_ids!r}\"",
+                  "                )",
+                  "",
+              ]
+          )
           if smoke.count(runtime_anchor) != 1:
               raise SystemExit("smoke runtime anchor changed")
           smoke = smoke.replace(runtime_anchor, runtime + runtime_anchor, 1)
-          smoke = smoke.replace(
+          smoke = replace_once(
+              smoke,
               'print("Raspberry Pi firmware power-domain and expander GPIO smoke test passed")',
               'print("Raspberry Pi firmware power, clock, and GPIO smoke test passed")',
-              1,
+              "smoke success message",
           )
           smoke_path.write_text(smoke)
           PY
