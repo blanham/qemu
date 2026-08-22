@@ -1,0 +1,25 @@
+{
+  "blockers": [
+    "kms_status_present",
+    "kms_topology_clear",
+    "cprman_status_present",
+    "cprman_reset_patch_applied"
+  ],
+  "conditions": {
+    "all_kms_workflow_steps_passed": true,
+    "cprman_reset_patch_applied": false,
+    "cprman_status_present": false,
+    "diagnostic_hsm_assignment_removed": true,
+    "kms_status_present": false,
+    "kms_topology_clear": false
+  },
+  "cprman_strategy": null,
+  "failed_kms_steps": [],
+  "feature_branch": "agent/vc4-linux-kms-clock-contract-v2",
+  "integration_branch": "agent/vc4-linux-kms-frontier",
+  "kms_classification": null,
+  "merged": false,
+  "ready": false,
+  "schema_version": 1,
+  "source_sha": null
+}
