@@ -1,0 +1,21 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    /*
+     * Substitute the already-proven firmware core clock for both HDMI clock
+     * inputs.  vc4_hdmi_bind() only needs to acquire the pixel clock and to
+     * prepare/read a non-zero state-machine clock at this frontier; no mode is
+     * programmed yet.  Advancement therefore identifies the normal pixel/HSM
+     * clock handles as the silent -EPROBE_DEFER source.
+     */
+    fragment@0 {
+        target = <&hdmi>;
+        __overlay__ {
+            clocks = <&firmware_clocks 4>, <&firmware_clocks 4>;
+            clock-names = "pixel", "hdmi";
+        };
+    };
+};
