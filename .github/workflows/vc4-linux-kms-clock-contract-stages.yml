@@ -1,0 +1,308 @@
+name: VC4 Linux KMS clock-contract stages
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-linux-kms-clock-contract-stages.yml
+      - scripts/vc4/summarize-linux-kms-stages.py
+      - scripts/vc4/property-clock-smoke.py
+      - scripts/vc4/hdmi-ddc-smoke.py
+      - hw/misc/bcm2835_property.c
+      - hw/arm/bcm2835_peripherals.c
+      - include/hw/arm/raspberrypi-fw-defs.h
+      - tests/vc4/linux-v3d-modular-init.c
+      - tests/vc4/vc4-kms-frontier-overlay.dts
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-kms-clock-contract-stages
+  cancel-in-progress: true
+
+jobs:
+  stages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-kms-stages-official
+      MODULE_DIR: /tmp/vc4-kms-stages-modules
+      INITRAMFS_DIR: /tmp/vc4-kms-stages-initramfs
+      DTB_DIR: /tmp/vc4-kms-stages-dtbs
+      OUT_DIR: /tmp/vc4-kms-stages-results
+      EVIDENCE_DIR: vc4-linux-kms-stage-evidence
+      STATUS_JSON: VC4_LINUX_KMS_STAGE_STATUS.json
+      STATUS_MD: VC4_LINUX_KMS_STAGE_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" \
+            "$DTB_DIR" "$OUT_DIR" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$OUT_DIR" "$EVIDENCE_DIR"
+
+      - name: Validate diagnostic sources
+        id: source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/fetch-linux-vc4-modules.py \
+            scripts/vc4/raspi3-linux-probe.py \
+            scripts/vc4/summarize-linux-kms-stages.py \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/property-clock-smoke.py \
+            scripts/vc4/msync-smoke.py \
+            scripts/vc4/v3d-smoke.py
+          if test -f scripts/vc4/hdmi-ddc-smoke.py; then
+            python3 -m py_compile scripts/vc4/hdmi-ddc-smoke.py
+          fi
+          bash -n \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            scripts/vc4/build-vc4-kms-linux-dtb.sh
+          git diff --check
+
+      - name: Fetch the pinned Linux fixture
+        id: pinned
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" \
+            2>&1 | tee "$EVIDENCE_DIR/fixture.log"
+
+      - name: Build full and staged device trees
+        id: dtb
+        run: |
+          set -euo pipefail
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/full.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/full.dtbo" \
+            "$DTB_DIR/full.dtb"
+          dtc -q -I dtb -O dts \
+            -o "$DTB_DIR/full.dts" "$DTB_DIR/full.dtb"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          source = Path('/tmp/vc4-kms-stages-dtbs/full.dts').read_text()
+          stack: list[str] = []
+          found: dict[str, list[str]] = {
+              'pixelvalve': [],
+              'hdmi': [],
+              'txp': [],
+          }
+          node_re = re.compile(r'^\s*([A-Za-z0-9,._+@-]+)\s*\{\s*$')
+          for line in source.splitlines():
+              match = node_re.match(line)
+              if match:
+                  name = match.group(1)
+                  if name == '/':
+                      stack = []
+                  else:
+                      stack.append(name)
+                      path = '/' + '/'.join(stack)
+                      if name.startswith('pixelvalve@'):
+                          found['pixelvalve'].append(path)
+                      elif name.startswith('hdmi@'):
+                          found['hdmi'].append(path)
+                      elif name.startswith('txp@'):
+                          found['txp'].append(path)
+                  continue
+              if line.strip() == '};' and stack:
+                  stack.pop()
+          if len(found['pixelvalve']) != 3:
+              raise SystemExit(f"expected three pixel valves, found {found}")
+          if len(found['hdmi']) != 1 or len(found['txp']) != 1:
+              raise SystemExit(f"expected one HDMI and TXP node, found {found}")
+          Path('/tmp/vc4-kms-stages-dtbs/paths.json').write_text(
+              json.dumps(found, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+
+          for stage in render crtc hdmi; do
+            cp "$DTB_DIR/full.dtb" "$DTB_DIR/$stage.dtb"
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import subprocess
+
+          directory = Path('/tmp/vc4-kms-stages-dtbs')
+          paths = json.loads((directory / 'paths.json').read_text())
+
+          def disable(stage: str, path: str) -> None:
+              subprocess.run(
+                  ['fdtput', '-t', 's', str(directory / f'{stage}.dtb'),
+                   path, 'status', 'disabled'],
+                  check=True,
+              )
+
+          # Render/writeback: HVS + V3D + TXP, no physical CRTCs or HDMI.
+          for path in paths['pixelvalve']:
+              disable('render', path)
+          disable('render', paths['hdmi'][0])
+
+          # CRTC stage: pixel valves and TXP, but no HDMI component.
+          disable('crtc', paths['hdmi'][0])
+
+          # HDMI stage: physical CRTCs and HDMI, without TXP writeback.
+          disable('hdmi', paths['txp'][0])
+          PY
+
+          for stage in render crtc hdmi full; do
+            dtc -q -I dtb -O dts \
+              -o "$DTB_DIR/$stage.check.dts" "$DTB_DIR/$stage.dtb"
+          done
+          sha256sum "$DTB_DIR"/*.dtb > "$EVIDENCE_DIR/DTB_SHA256SUMS"
+          cp "$DTB_DIR/paths.json" "$EVIDENCE_DIR/"
+
+      - name: Configure and build QEMU
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+      - name: Preserve architectural regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/power-domain.log"
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/clock-contract.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/msync.log"
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/v3d.log"
+          if test -f scripts/vc4/hdmi-ddc-smoke.py; then
+            set +e
+            python3 scripts/vc4/hdmi-ddc-smoke.py \
+              --qemu build/qemu-system-aarch64 \
+              2>&1 | tee "$EVIDENCE_DIR/hdmi-ddc.log"
+            printf '%s\n' "${PIPESTATUS[0]}" \
+              > "$EVIDENCE_DIR/hdmi-ddc.return-code"
+            set -e
+          fi
+
+      - name: Run staged Linux component probes
+        id: runtime
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          for stage in render crtc hdmi full; do
+            stage_out="$OUT_DIR/$stage"
+            mkdir -p "$stage_out"
+            set +e
+            python3 scripts/vc4/raspi3-linux-probe.py \
+              --mode linux-direct \
+              --qemu build/qemu-system-aarch64 \
+              --kernel "$OFFICIAL_DIR/kernel8.img" \
+              --dtb "$DTB_DIR/$stage.dtb" \
+              --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+              --out-dir "$stage_out" \
+              --seconds 55 --sample-interval 5 \
+              > "$stage_out/probe.stdout" 2>&1
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" > "$stage_out/return-code"
+          done
+
+      - name: Summarize the first component boundary
+        id: summarize
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/summarize-linux-kms-stages.py \
+            --stage "render=$OUT_DIR/render" \
+            --stage "crtc=$OUT_DIR/crtc" \
+            --stage "hdmi=$OUT_DIR/hdmi" \
+            --stage "full=$OUT_DIR/full" \
+            --json "$STATUS_JSON" \
+            --markdown "$STATUS_MD" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            | tee "$EVIDENCE_DIR/summary.log"
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/"
+          cp -a "$OUT_DIR" "$EVIDENCE_DIR/results"
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs"
+
+      - name: Upload staged evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-kms-stages-${{ github.run_attempt }}
+          path: vc4-linux-kms-stage-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the staged frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          passed=$(python3 -c \
+            'import json,sys; print("true" if json.load(open(sys.argv[1]))["passed"] else "false")' \
+            "$STATUS_JSON")
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if [ "$passed" = true ]; then
+            git rm -- .github/workflows/vc4-linux-kms-clock-contract-stages.yml
+          fi
+          if ! git diff --cached --quiet; then
+            git commit -m "test/vc4: record staged KMS component frontier [skip ci]"
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
+          test "$passed" = true
