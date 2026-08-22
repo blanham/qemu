@@ -1,0 +1,142 @@
+name: VC4 Linux modeset post-pixelvalve route
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-modeset-frontier
+    paths:
+      - .github/workflows/vc4-kms-post-pixelvalve-route.yml
+      - hw/display/bcm2835_pixelvalve.c
+      - scripts/vc4/pixelvalve-vblank-smoke.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-modeset-post-pixelvalve-route
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      BRANCH: agent/vc4-linux-kms-modeset-frontier
+      STATUS: VC4_LINUX_KMS_MODESET_STATUS.json
+      OLD_DIAG: VC4_LINUX_KMS_SETCRTC_DIAG.json
+      OUTPUT_JSON: VC4_LINUX_KMS_POST_PIXELVALVE.json
+      OUTPUT_MD: VC4_LINUX_KMS_POST_PIXELVALVE.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for the post-model full Linux gate
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BRANCH"
+          old_source=$(git show "origin/$BRANCH:$OLD_DIAG" 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("source_sha", ""))' \
+            || true)
+          printf '%s\n' "$old_source" > /tmp/old-source
+          for attempt in $(seq 1 120); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$STATUS" > /tmp/candidate.json 2>/dev/null; then
+              if python3 - "$old_source" <<'PY'
+          import json
+          import sys
+          status = json.load(open('/tmp/candidate.json'))
+          source = status.get('source_sha') or ''
+          outcomes = status.get('outcomes') or {}
+          good = source and source != sys.argv[1] and bool(outcomes)
+          raise SystemExit(0 if good else 1)
+          PY
+              then
+                cp /tmp/candidate.json /tmp/status.json
+                break
+              fi
+            fi
+            sleep 5
+          done
+          test -s /tmp/status.json
+          cp /tmp/status.json "$STATUS"
+
+      - name: Route the post-pixelvalve frontier
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/status.json'))
+          classification = str(status.get('classification') or 'unknown')
+          outcomes = status.get('outcomes') or {}
+          failed = [key for key, value in outcomes.items() if value != 'success']
+          markers = status.get('markers') or {}
+          failures = status.get('failures') or []
+
+          if failed or classification.startswith('workflow-'):
+              route = 'WORKFLOW_FAILED'
+          elif classification == 'linux-vc4-kms-modeset-clear':
+              route = 'CLEAR'
+          elif classification == 'modeset-setcrtc-timeout':
+              route = 'SETCRTC_TIMEOUT'
+          elif classification.startswith('modeset-setcrtc-errno-'):
+              route = 'SETCRTC_ERRNO'
+          elif classification == 'modeset-post-setcrtc-incomplete':
+              route = 'POST_SETCRTC_INCOMPLETE'
+          elif classification == 'kms-topology-regression':
+              route = 'TOPOLOGY_REGRESSION'
+          else:
+              route = 'OTHER'
+
+          for old in Path('.').glob('VC4_POST_PIXELVALVE_ROUTE_*'):
+              old.unlink()
+          record = {
+              'schema_version': 1,
+              'source_sha': status.get('source_sha'),
+              'run_id': status.get('run_id'),
+              'classification': classification,
+              'route': route,
+              'failed_workflow_steps': failed,
+              'markers': markers,
+              'last_failure': failures[-1] if failures else None,
+              'connector': status.get('connector'),
+              'dumb_buffer': status.get('dumb_buffer'),
+              'timeout_diagnostics': status.get('timeout_diagnostics') or {},
+          }
+          Path(f'VC4_POST_PIXELVALVE_ROUTE_{route}').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_LINUX_KMS_POST_PIXELVALVE.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_LINUX_KMS_POST_PIXELVALVE.md').write_text(
+              '# VC4 Linux modeset after pixel-valve vblank model\n\n'
+              f"- Source SHA: `{record['source_sha']}`\n"
+              f"- Frontier: **`{classification}`**\n"
+              f"- Route: **`{route}`**\n"
+              f"- Last failure: `{record['last_failure']}`\n"
+              f"- SETCRTC completed: "
+              f"`{markers.get('VC4_LINUX_KMS_MODESET_SETCRTC_OK')}`\n"
+              f"- Modeset completed: "
+              f"`{markers.get('VC4_LINUX_KMS_MODESET_OK')}`\n"
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish post-model route
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          cp /tmp/status.json "$STATUS"
+          git add -A -- \
+            "$STATUS" "$OUTPUT_JSON" "$OUTPUT_MD" \
+            VC4_POST_PIXELVALVE_ROUTE_*
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-post-pixelvalve-route.yml
+          git commit -m "test/vc4: route the post-pixelvalve modeset frontier"
+          git push origin "HEAD:$BRANCH"
