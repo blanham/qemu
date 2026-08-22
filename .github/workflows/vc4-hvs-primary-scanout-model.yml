@@ -1,0 +1,779 @@
+name: VC4 HVS primary scanout model
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-scanout-frontier
+    paths:
+      - .github/workflows/vc4-hvs-primary-scanout-model.yml
+      - VC4_SCANOUT_ROUTE_BLANK
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-primary-scanout-model
+  cancel-in-progress: true
+
+jobs:
+  implement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      BRANCH: agent/vc4-linux-kms-scanout-frontier
+      LINUX_COMMIT: 1efe5d048a391de3ead2804b2e7f86376c356cc5
+      REPORT_JSON: VC4_HVS_PRIMARY_SCANOUT_MODEL.json
+      REPORT_MD: VC4_HVS_PRIMARY_SCANOUT_MODEL.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Confirm blank scanout and fetch pinned HVS definitions
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BRANCH"
+          git show "origin/$BRANCH:VC4_SCANOUT_ROUTE_BLANK" \
+            > /tmp/blank-route.json
+          mkdir -p /tmp/vc4-hvs-linux
+          curl --fail --location --retry 5 \
+            --output /tmp/vc4-hvs-linux/vc4_regs.h \
+            "https://raw.githubusercontent.com/raspberrypi/linux/${LINUX_COMMIT}/drivers/gpu/drm/vc4/vc4_regs.h"
+          curl --fail --location --retry 5 \
+            --output /tmp/vc4-hvs-linux/bcm2835-common.dtsi \
+            "https://raw.githubusercontent.com/raspberrypi/linux/${LINUX_COMMIT}/arch/arm/boot/dts/broadcom/bcm2835-common.dtsi"
+
+      - name: Generate HVS register and primary-plane model
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import ast
+          import json
+          from pathlib import Path
+          import re
+
+          regs = Path('/tmp/vc4-hvs-linux/vc4_regs.h').read_text()
+          dtsi = Path('/tmp/vc4-hvs-linux/bcm2835-common.dtsi').read_text()
+
+          def safe_eval(expression: str, variables: dict[str, int] | None = None) -> int:
+              variables = variables or {}
+              expression = expression.split('/*', 1)[0].split('//', 1)[0].strip()
+              expression = re.sub(
+                  r'\bBIT(?:_ULL)?\s*\(\s*(\d+)\s*\)',
+                  lambda match: str(1 << int(match.group(1))),
+                  expression,
+              )
+              expression = re.sub(r'(?<=\d)([uUlL]+)\b', '', expression)
+              node = ast.parse(expression, mode='eval')
+
+              def evaluate(value: ast.AST) -> int:
+                  if isinstance(value, ast.Expression):
+                      return evaluate(value.body)
+                  if isinstance(value, ast.Constant) and isinstance(value.value, int):
+                      return value.value
+                  if isinstance(value, ast.Name) and value.id in variables:
+                      return variables[value.id]
+                  if isinstance(value, ast.UnaryOp):
+                      operand = evaluate(value.operand)
+                      if isinstance(value.op, ast.UAdd):
+                          return operand
+                      if isinstance(value.op, ast.USub):
+                          return -operand
+                      if isinstance(value.op, ast.Invert):
+                          return ~operand
+                  if isinstance(value, ast.BinOp):
+                      left = evaluate(value.left)
+                      right = evaluate(value.right)
+                      if isinstance(value.op, ast.Add):
+                          return left + right
+                      if isinstance(value.op, ast.Sub):
+                          return left - right
+                      if isinstance(value.op, ast.Mult):
+                          return left * right
+                      if isinstance(value.op, ast.FloorDiv):
+                          return left // right
+                      if isinstance(value.op, ast.LShift):
+                          return left << right
+                      if isinstance(value.op, ast.RShift):
+                          return left >> right
+                      if isinstance(value.op, ast.BitOr):
+                          return left | right
+                      if isinstance(value.op, ast.BitAnd):
+                          return left & right
+                  raise ValueError(f'unsupported expression: {expression!r}')
+
+              return evaluate(node)
+
+          def define(name: str) -> int:
+              match = re.search(
+                  rf'^\s*#define\s+{re.escape(name)}\s+(.+?)\s*$',
+                  regs,
+                  re.MULTILINE,
+              )
+              if not match:
+                  raise SystemExit(f'HVS definition {name} was not found')
+              return safe_eval(match.group(1))
+
+          def indexed_define(name: str, index: int) -> int:
+              try:
+                  return define(f'{name}{index}')
+              except SystemExit:
+                  pass
+              match = re.search(
+                  rf'^\s*#define\s+{re.escape(name)}X\s*\(\s*(\w+)\s*\)\s+(.+?)\s*$',
+                  regs,
+                  re.MULTILINE,
+              )
+              if not match:
+                  raise SystemExit(f'HVS indexed definition {name}X was not found')
+              return safe_eval(match.group(2), {match.group(1): index})
+
+          dlist_start = define('SCALER_DLIST_START')
+          displist = [indexed_define('SCALER_DISPLIST', index) for index in range(3)]
+          displact = []
+          for index in range(3):
+              try:
+                  displact.append(indexed_define('SCALER_DISPLACT', index))
+              except SystemExit:
+                  displact.append(displist[index])
+
+          hvs_match = re.search(
+              r'hvs\s*:\s*hvs@(?P<address>[0-9a-fA-F]+)\s*\{'
+              r'(?P<body>.*?)\n\s*\};',
+              dtsi,
+              re.DOTALL,
+          )
+          if not hvs_match:
+              hvs_match = re.search(
+                  r'hvs@(?P<address>[0-9a-fA-F]+)\s*\{'
+                  r'(?P<body>.*?)\n\s*\};',
+                  dtsi,
+                  re.DOTALL,
+              )
+          if not hvs_match:
+              raise SystemExit('HVS device-tree node was not found')
+          hvs_address = int(hvs_match.group('address'), 16)
+          reg_match = re.search(r'reg\s*=\s*<([^>]+)>', hvs_match.group('body'))
+          reg_cells = [
+              int(token, 0)
+              for token in re.findall(r'0x[0-9a-fA-F]+|\d+', reg_match.group(1))
+          ] if reg_match else []
+          hvs_size = reg_cells[-1] if reg_cells else 0x6000
+          if hvs_size < dlist_start + 0x1000:
+              hvs_size = 0x6000
+          hvs_offset = hvs_address - 0x7e000000
+
+          header = '''/*
+           * BCM2835 HVS primary-plane scanout model.
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+          #ifndef HW_DISPLAY_BCM2835_HVS_H
+          #define HW_DISPLAY_BCM2835_HVS_H
+
+          #include "hw/sysbus.h"
+
+          #define TYPE_BCM2835_HVS "bcm2835-hvs"
+          OBJECT_DECLARE_SIMPLE_TYPE(BCM2835HVSState, BCM2835_HVS)
+
+          #endif
+          '''
+          Path('include/hw/display/bcm2835_hvs.h').write_text(
+              '\n'.join(
+                  line[10:] if line.startswith('          ') else line
+                  for line in header.splitlines()
+              ) + '\n'
+          )
+
+          hvs_source = f'''/*
+           * BCM2835 HVS primary-plane scanout model.
+           *
+           * Linux writes a display-list word offset to SCALER_DISPLISTx.
+           * The full HVS supports scaling, multiple planes, tiling, CSC, and
+           * blending.  This first host-visible frontier retains the complete
+           * MMIO image and recognizes the linear 32-bit primary-plane layout
+           * emitted by the pinned VC4 driver.  It then hands the selected DMA
+           * buffer to the existing BCM2835 framebuffer console.
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "hw/display/bcm2835_hvs.h"
+          #include "hw/display/bcm2835_fb.h"
+          #include "hw/qdev-properties.h"
+          #include "migration/vmstate.h"
+          #include "qemu/log.h"
+          #include "qemu/module.h"
+          #include "system/address-spaces.h"
+
+          #define BCM2835_HVS_MMIO_SIZE 0x{hvs_size:x}
+          #define BCM2835_HVS_REG_COUNT (BCM2835_HVS_MMIO_SIZE / 4)
+          #define SCALER_DLIST_START_OFFSET 0x{dlist_start:x}
+          #define HVS_SCANOUT_MAX_WORDS 64
+          #define HVS_MAX_WIDTH 4096
+          #define HVS_MAX_HEIGHT 2160
+          #define HVS_MIN_PITCH 64
+          #define HVS_MAX_PITCH (HVS_MAX_WIDTH * 8)
+
+          struct BCM2835HVSState {{
+              SysBusDevice parent_obj;
+              MemoryRegion iomem;
+              BCM2835FBState *fbdev;
+              uint32_t regs[BCM2835_HVS_REG_COUNT];
+              uint32_t scanout_base;
+              uint32_t scanout_width;
+              uint32_t scanout_height;
+              uint32_t scanout_pitch;
+          }};
+
+          static const hwaddr hvs_displist_offsets[3] = {{
+              0x{displist[0]:x}, 0x{displist[1]:x}, 0x{displist[2]:x}
+          }};
+          static const hwaddr hvs_displact_offsets[3] = {{
+              0x{displact[0]:x}, 0x{displact[1]:x}, 0x{displact[2]:x}
+          }};
+
+          typedef struct HVSScanoutCandidate {{
+              uint32_t base;
+              uint32_t width;
+              uint32_t height;
+              uint32_t pitch;
+              unsigned int score;
+              unsigned int channel;
+              unsigned int list_word;
+              unsigned int pointer_word;
+              unsigned int pitch_word;
+          }} HVSScanoutCandidate;
+
+          static bool hvs_dimensions_from_word(uint32_t word, uint32_t pitch,
+                                                uint32_t *width,
+                                                uint32_t *height)
+          {{
+              const uint32_t pitch_width = pitch / 4;
+              const uint32_t candidates[][2] = {{
+                  {{ word & 0xffff, word >> 16 }},
+                  {{ word & 0xfff, (word >> 16) & 0xfff }},
+                  {{ word >> 16, word & 0xffff }},
+                  {{ (word >> 16) & 0xfff, word & 0xfff }},
+              }};
+              size_t index;
+
+              for (index = 0; index < ARRAY_SIZE(candidates); index++) {{
+                  uint32_t w = candidates[index][0];
+                  uint32_t h = candidates[index][1];
+
+                  if (w == pitch_width && w >= 16 && w <= HVS_MAX_WIDTH &&
+                      h >= 16 && h <= HVS_MAX_HEIGHT) {{
+                      *width = w;
+                      *height = h;
+                      return true;
+                  }}
+              }}
+              return false;
+          }}
+
+          static unsigned int hvs_memory_score(uint32_t base, uint32_t pitch,
+                                                uint32_t width,
+                                                uint32_t height)
+          {{
+              uint8_t sample[128];
+              MemTxResult result;
+              unsigned int nonzero = 0;
+              unsigned int changes = 0;
+              unsigned int index;
+              uint32_t physical = base & UINT32_C(0x3fffffff);
+
+              if (physical < 0x1000 || physical >= UINT32_C(0x40000000)) {{
+                  return 0;
+              }}
+              result = address_space_read(&address_space_memory, physical,
+                                          MEMTXATTRS_UNSPECIFIED,
+                                          sample, sizeof(sample));
+              if (result != MEMTX_OK) {{
+                  return 0;
+              }}
+              for (index = 0; index < sizeof(sample); index++) {{
+                  nonzero += sample[index] != 0;
+                  if (index && sample[index] != sample[index - 1]) {{
+                      changes++;
+                  }}
+              }}
+              return 10 + (nonzero > 8 ? 4 : 0) + (changes > 4 ? 4 : 0) +
+                     (pitch == width * 4 ? 4 : 0) +
+                     (height >= 240 ? 2 : 0);
+          }}
+
+          static bool hvs_parse_list(BCM2835HVSState *s, unsigned int channel,
+                                     unsigned int list_word,
+                                     HVSScanoutCandidate *best)
+          {{
+              unsigned int base_word = SCALER_DLIST_START_OFFSET / 4 + list_word;
+              unsigned int limit = MIN(base_word + HVS_SCANOUT_MAX_WORDS,
+                                       (unsigned int)BCM2835_HVS_REG_COUNT);
+              unsigned int pitch_index;
+
+              if (base_word >= BCM2835_HVS_REG_COUNT) {{
+                  return false;
+              }}
+
+              for (pitch_index = base_word + 1; pitch_index < limit;
+                   pitch_index++) {{
+                  uint32_t pitch = s->regs[pitch_index];
+                  unsigned int dimensions_index;
+                  uint32_t width = 0;
+                  uint32_t height = 0;
+
+                  if (pitch < HVS_MIN_PITCH || pitch > HVS_MAX_PITCH ||
+                      (pitch & 3)) {{
+                      continue;
+                  }}
+                  for (dimensions_index = base_word + 1;
+                       dimensions_index < MIN(pitch_index, base_word + 8);
+                       dimensions_index++) {{
+                      if (hvs_dimensions_from_word(s->regs[dimensions_index],
+                                                   pitch, &width, &height)) {{
+                          break;
+                      }}
+                  }}
+                  if (!width || !height) {{
+                      continue;
+                  }}
+
+                  for (unsigned int pointer_index = base_word + 1;
+                       pointer_index < pitch_index; pointer_index++) {{
+                      uint32_t pointer = s->regs[pointer_index];
+                      unsigned int score = hvs_memory_score(pointer, pitch,
+                                                            width, height);
+
+                      if (!score) {{
+                          continue;
+                      }}
+                      score += pointer_index < pitch_index ? 2 : 0;
+                      score += pitch_index - pointer_index <= 8 ? 2 : 0;
+                      if (score > best->score) {{
+                          *best = (HVSScanoutCandidate) {{
+                              .base = pointer & UINT32_C(0x3fffffff),
+                              .width = width,
+                              .height = height,
+                              .pitch = pitch,
+                              .score = score,
+                              .channel = channel,
+                              .list_word = list_word,
+                              .pointer_word = pointer_index - base_word,
+                              .pitch_word = pitch_index - base_word,
+                          }};
+                      }}
+                  }}
+              }}
+              return best->score != 0;
+          }}
+
+          static void bcm2835_hvs_update_scanout(BCM2835HVSState *s)
+          {{
+              HVSScanoutCandidate best = {{ 0 }};
+              unsigned int channel;
+
+              if (!s->fbdev) {{
+                  return;
+              }}
+              for (channel = 0; channel < 3; channel++) {{
+                  uint32_t list = s->regs[hvs_displact_offsets[channel] >> 2];
+
+                  if (!list) {{
+                      list = s->regs[hvs_displist_offsets[channel] >> 2];
+                  }}
+                  hvs_parse_list(s, channel, list, &best);
+                  if ((list & 3) == 0) {{
+                      hvs_parse_list(s, channel, list >> 2, &best);
+                  }}
+              }}
+              if (!best.score) {{
+                  return;
+              }}
+              if (best.base == s->scanout_base &&
+                  best.width == s->scanout_width &&
+                  best.height == s->scanout_height &&
+                  best.pitch == s->scanout_pitch) {{
+                  return;
+              }}
+
+              s->scanout_base = best.base;
+              s->scanout_width = best.width;
+              s->scanout_height = best.height;
+              s->scanout_pitch = best.pitch;
+              bcm2835_fb_set_scanout(s->fbdev, best.base, best.width,
+                                     best.height, best.pitch);
+              qemu_log_mask(LOG_UNIMP,
+                            "bcm2835_hvs: primary scanout channel=%u "
+                            "list=%u base=0x%08x %ux%u pitch=%u "
+                            "ptr_word=%u pitch_word=%u score=%u\n",
+                            best.channel, best.list_word, best.base,
+                            best.width, best.height, best.pitch,
+                            best.pointer_word, best.pitch_word, best.score);
+          }}
+
+          static uint64_t bcm2835_hvs_read(void *opaque, hwaddr offset,
+                                           unsigned size)
+          {{
+              BCM2835HVSState *s = opaque;
+
+              if (offset >= BCM2835_HVS_MMIO_SIZE || (offset & 3)) {{
+                  qemu_log_mask(LOG_GUEST_ERROR,
+                                "%s: invalid offset 0x%" HWADDR_PRIx "\n",
+                                __func__, offset);
+                  return 0;
+              }}
+              return s->regs[offset >> 2];
+          }}
+
+          static void bcm2835_hvs_write(void *opaque, hwaddr offset,
+                                        uint64_t value, unsigned size)
+          {{
+              BCM2835HVSState *s = opaque;
+              unsigned int channel;
+
+              if (offset >= BCM2835_HVS_MMIO_SIZE || (offset & 3)) {{
+                  qemu_log_mask(LOG_GUEST_ERROR,
+                                "%s: invalid offset 0x%" HWADDR_PRIx "\n",
+                                __func__, offset);
+                  return;
+              }}
+              s->regs[offset >> 2] = value;
+              for (channel = 0; channel < 3; channel++) {{
+                  if (offset == hvs_displist_offsets[channel] ||
+                      offset == hvs_displact_offsets[channel]) {{
+                      bcm2835_hvs_update_scanout(s);
+                      break;
+                  }}
+              }}
+          }}
+
+          static const MemoryRegionOps bcm2835_hvs_ops = {{
+              .read = bcm2835_hvs_read,
+              .write = bcm2835_hvs_write,
+              .endianness = DEVICE_LITTLE_ENDIAN,
+              .valid.min_access_size = 4,
+              .valid.max_access_size = 4,
+              .impl.min_access_size = 4,
+              .impl.max_access_size = 4,
+          }};
+
+          static const VMStateDescription vmstate_bcm2835_hvs = {{
+              .name = TYPE_BCM2835_HVS,
+              .version_id = 1,
+              .minimum_version_id = 1,
+              .fields = (const VMStateField[]) {{
+                  VMSTATE_UINT32_ARRAY(regs, BCM2835HVSState,
+                                       BCM2835_HVS_REG_COUNT),
+                  VMSTATE_UINT32(scanout_base, BCM2835HVSState),
+                  VMSTATE_UINT32(scanout_width, BCM2835HVSState),
+                  VMSTATE_UINT32(scanout_height, BCM2835HVSState),
+                  VMSTATE_UINT32(scanout_pitch, BCM2835HVSState),
+                  VMSTATE_END_OF_LIST()
+              }},
+          }};
+
+          static void bcm2835_hvs_reset(DeviceState *dev)
+          {{
+              BCM2835HVSState *s = BCM2835_HVS(dev);
+
+              memset(s->regs, 0, sizeof(s->regs));
+              s->scanout_base = 0;
+              s->scanout_width = 0;
+              s->scanout_height = 0;
+              s->scanout_pitch = 0;
+          }}
+
+          static void bcm2835_hvs_init(Object *obj)
+          {{
+              BCM2835HVSState *s = BCM2835_HVS(obj);
+
+              memory_region_init_io(&s->iomem, obj, &bcm2835_hvs_ops, s,
+                                    TYPE_BCM2835_HVS, BCM2835_HVS_MMIO_SIZE);
+              sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+          }}
+
+          static const Property bcm2835_hvs_properties[] = {{
+              DEFINE_PROP_LINK("fb", BCM2835HVSState, fbdev,
+                               TYPE_BCM2835_FB, BCM2835FBState *),
+          }};
+
+          static void bcm2835_hvs_class_init(ObjectClass *klass,
+                                              const void *data)
+          {{
+              DeviceClass *dc = DEVICE_CLASS(klass);
+
+              device_class_set_props(dc, bcm2835_hvs_properties);
+              device_class_set_legacy_reset(dc, bcm2835_hvs_reset);
+              dc->vmsd = &vmstate_bcm2835_hvs;
+          }}
+
+          static const TypeInfo bcm2835_hvs_info = {{
+              .name = TYPE_BCM2835_HVS,
+              .parent = TYPE_SYS_BUS_DEVICE,
+              .instance_size = sizeof(BCM2835HVSState),
+              .instance_init = bcm2835_hvs_init,
+              .class_init = bcm2835_hvs_class_init,
+          }};
+
+          static void bcm2835_hvs_register_types(void)
+          {{
+              type_register_static(&bcm2835_hvs_info);
+          }}
+
+          type_init(bcm2835_hvs_register_types)
+          '''
+          Path('hw/display/bcm2835_hvs.c').write_text(
+              '\n'.join(
+                  line[10:] if line.startswith('          ') else line
+                  for line in hvs_source.splitlines()
+              ) + '\n'
+          )
+
+          report = {
+              'schema_version': 1,
+              'linux_commit': '1efe5d048a391de3ead2804b2e7f86376c356cc5',
+              'hvs_offset': hvs_offset,
+              'hvs_size': hvs_size,
+              'dlist_start': dlist_start,
+              'displist_offsets': displist,
+              'displact_offsets': displact,
+          }
+          Path('VC4_HVS_PRIMARY_SCANOUT_MODEL.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_HVS_PRIMARY_SCANOUT_MODEL.md').write_text(
+              '# BCM2835 HVS primary scanout model\n\n'
+              f"- Linux commit: `{report['linux_commit']}`\n"
+              f"- MMIO: offset `0x{hvs_offset:x}`, size `0x{hvs_size:x}`\n"
+              f"- DLIST RAM: `0x{dlist_start:x}`\n"
+              f"- DISPLIST registers: `{displist}`\n"
+              f"- DISPLACT registers: `{displact}`\n"
+          )
+          Path('/tmp/hvs-contract.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+
+      - name: Expose dynamic scanout on the existing framebuffer console
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          header_path = Path('include/hw/display/bcm2835_fb.h')
+          header = header_path.read_text()
+          declaration = '''void bcm2835_fb_set_scanout(BCM2835FBState *s, uint32_t base,
+                                       uint32_t width, uint32_t height,
+                                       uint32_t pitch);
+          '''
+          if 'bcm2835_fb_set_scanout(' not in header:
+              closing = header.rfind('#endif')
+              if closing < 0:
+                  raise SystemExit('framebuffer header guard terminator missing')
+              header = header[:closing] + declaration + '\n' + header[closing:]
+              header_path.write_text(header)
+
+          source_path = Path('hw/display/bcm2835_fb.c')
+          source = source_path.read_text()
+          if 'void bcm2835_fb_set_scanout(' not in source:
+              anchor = 'static const MemoryRegionOps bcm2835_fb_ops = {'
+              if source.count(anchor) != 1:
+                  raise SystemExit('framebuffer ops anchor changed')
+              helper = '''void bcm2835_fb_set_scanout(BCM2835FBState *s,
+                                           uint32_t base, uint32_t width,
+                                           uint32_t height, uint32_t pitch)
+          {
+              BCM2835FBConfig config = s->config;
+
+              if (!width || !height || pitch < width * 4 || (pitch & 3)) {
+                  return;
+              }
+              config.base = base;
+              config.xres = width;
+              config.yres = height;
+              config.xres_virtual = pitch / 4;
+              config.yres_virtual = height;
+              config.xoffset = 0;
+              config.yoffset = 0;
+              config.bpp = 32;
+              config.pixo = 1;
+              bcm2835_fb_reconfigure(s, &config);
+          }
+
+          '''
+              source = source.replace(anchor, helper + anchor, 1)
+              source_path.write_text(source)
+          PY
+          git diff --check
+
+      - name: Replace the unimplemented HVS window and wire the framebuffer
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          contract = json.load(open('/tmp/hvs-contract.json'))
+          path = Path('hw/arm/bcm2835_peripherals.c')
+          source = path.read_text()
+          include = '#include "hw/display/bcm2835_hvs.h"\n'
+          if include not in source:
+              includes = list(re.finditer(r'^#include .*\n', source, re.MULTILINE))
+              if not includes:
+                  raise SystemExit('peripherals source has no include block')
+              position = includes[-1].end()
+              source = source[:position] + include + source[position:]
+
+          lines = source.splitlines(keepends=True)
+          output = []
+          index = 0
+          removed = []
+          tokens = ('hvs', '0x400000', 'HVS_OFFSET')
+          while index < len(lines):
+              line = lines[index]
+              if 'unimplemented' in line.lower() or 'create_unimplemented' in line:
+                  statement = [line]
+                  cursor = index + 1
+                  while ';' not in ''.join(statement) and cursor < len(lines):
+                      statement.append(lines[cursor])
+                      cursor += 1
+                  text = ''.join(statement)
+                  if any(token.lower() in text.lower() for token in tokens):
+                      removed.append(text.strip())
+                      index = cursor
+                      continue
+              output.append(line)
+              index += 1
+          source = ''.join(output)
+
+          marker = 'QEMU_RPI_HVS_PRIMARY_SCANOUT_MODEL'
+          if marker not in source:
+              match = re.search(
+                  r'static void bcm2835_peripherals_realize\s*\(', source
+              )
+              if not match:
+                  raise SystemExit('peripherals realize function missing')
+              helper = '''static bool bcm2835_peripherals_add_hvs(
+              BCM2835PeripheralState *s, hwaddr offset, Error **errp)
+          {
+              DeviceState *dev = qdev_new(TYPE_BCM2835_HVS);
+              SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+
+              object_property_add_child(OBJECT(s), "hvs", OBJECT(dev));
+              object_property_set_link(OBJECT(dev), "fb", OBJECT(&s->fb),
+                                       &error_abort);
+              if (!sysbus_realize(sbd, errp)) {
+                  object_unparent(OBJECT(dev));
+                  object_unref(dev);
+                  return false;
+              }
+              memory_region_add_subregion(&s->peri_mr, offset,
+                                          sysbus_mmio_get_region(sbd, 0));
+              object_unref(dev);
+              return true;
+          }
+
+          '''
+              source = source[:match.start()] + helper + source[match.start():]
+
+              function = re.search(
+                  r'\bbcm2835_peripherals_realize\s*\([^;]*?\)\s*\{',
+                  source,
+                  re.DOTALL,
+              )
+              opening = source.find('{', function.start())
+              depth = 0
+              closing = None
+              for position in range(opening, len(source)):
+                  if source[position] == '{':
+                      depth += 1
+                  elif source[position] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          closing = position
+                          break
+              if closing is None:
+                  raise SystemExit('peripherals realize braces unmatched')
+              call = (
+                  '\n    /* QEMU_RPI_HVS_PRIMARY_SCANOUT_MODEL */\n'
+                  '    if (!bcm2835_peripherals_add_hvs('
+                  f's, 0x{contract["hvs_offset"]:x}, errp)) {{\n'
+                  '        return;\n'
+                  '    }\n'
+              )
+              source = source[:closing] + call + source[closing:]
+          path.write_text(source)
+          Path('/tmp/removed-hvs.txt').write_text('\n\n'.join(removed) + '\n')
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          meson = Path('hw/display/meson.build')
+          text = meson.read_text()
+          line = "system_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2835_hvs.c'))\n"
+          if line not in text:
+              text += ('\n' if not text.endswith('\n') else '') + line
+          meson.write_text(text)
+
+          workflow = Path('.github/workflows/vc4-linux-kms-scanout-frontier.yml')
+          text = workflow.read_text()
+          additions = (
+              '      - hw/display/bcm2835_hvs.c\n'
+              '      - include/hw/display/bcm2835_hvs.h\n'
+          )
+          if 'hw/display/bcm2835_hvs.c' not in text:
+              anchor = '      - hw/display/bcm2835_fb.c\n'
+              if anchor not in text:
+                  raise SystemExit('framebuffer workflow path anchor changed')
+              text = text.replace(anchor, anchor + additions, 1)
+          workflow.write_text(text)
+          PY
+          git diff --check
+
+      - name: Build the primary scanout model
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/cprman-hsm-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/pixelvalve-vblank-smoke.py \
+            --qemu build/qemu-system-aarch64
+          git diff --check
+
+      - name: Publish the HVS model
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          cp /tmp/blank-route.json VC4_SCANOUT_ROUTE_BLANK
+          git add -A -- \
+            VC4_SCANOUT_ROUTE_BLANK \
+            "$REPORT_JSON" "$REPORT_MD" \
+            include/hw/display/bcm2835_hvs.h \
+            include/hw/display/bcm2835_fb.h \
+            hw/display/bcm2835_hvs.c \
+            hw/display/bcm2835_fb.c \
+            hw/display/meson.build \
+            hw/arm/bcm2835_peripherals.c \
+            .github/workflows/vc4-linux-kms-scanout-frontier.yml \
+            .github/workflows/vc4-hvs-primary-scanout-model.yml
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-hvs-primary-scanout-model.yml
+          git commit -m "hw/display: add BCM2835 HVS primary scanout"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
