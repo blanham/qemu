@@ -1,0 +1,753 @@
+name: VC4 pixel-valve vblank model
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-modeset-frontier
+    paths:
+      - .github/workflows/vc4-pixelvalve-vblank-model.yml
+      - VC4_PIXELVALVE_SOURCE_ROUTE_REPLACE_UNIMPLEMENTED_PV_REGIONS
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-pixelvalve-vblank-model
+  cancel-in-progress: true
+
+jobs:
+  implement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      BRANCH: agent/vc4-linux-kms-modeset-frontier
+      LINUX_COMMIT: 1efe5d048a391de3ead2804b2e7f86376c356cc5
+      REPORT_JSON: VC4_PIXELVALVE_VBLANK_MODEL.json
+      REPORT_MD: VC4_PIXELVALVE_VBLANK_MODEL.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Confirm source route and fetch pinned contracts
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BRANCH"
+          git show \
+            "origin/$BRANCH:VC4_PIXELVALVE_SOURCE_ROUTE_REPLACE_UNIMPLEMENTED_PV_REGIONS" \
+            > /tmp/source-route.json
+          mkdir -p /tmp/vc4-pv-linux
+          curl --fail --location --retry 5 \
+            --output /tmp/vc4-pv-linux/vc4_regs.h \
+            "https://raw.githubusercontent.com/raspberrypi/linux/${LINUX_COMMIT}/drivers/gpu/drm/vc4/vc4_regs.h"
+          curl --fail --location --retry 5 \
+            --output /tmp/vc4-pv-linux/bcm2835-common.dtsi \
+            "https://raw.githubusercontent.com/raspberrypi/linux/${LINUX_COMMIT}/arch/arm/boot/dts/broadcom/bcm2835-common.dtsi"
+
+      - name: Generate the pixel-valve model from the pinned Linux contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import ast
+          import json
+          from pathlib import Path
+          import re
+
+          regs_source = Path('/tmp/vc4-pv-linux/vc4_regs.h').read_text()
+          dtsi_source = Path('/tmp/vc4-pv-linux/bcm2835-common.dtsi').read_text()
+
+          def safe_eval(expression: str) -> int:
+              expression = expression.split('/*', 1)[0].split('//', 1)[0].strip()
+              expression = re.sub(
+                  r'\bBIT(?:_ULL)?\s*\(\s*(\d+)\s*\)',
+                  lambda match: str(1 << int(match.group(1))),
+                  expression,
+              )
+              expression = re.sub(r'(?<=\b0x[0-9a-fA-F])([uUlL]+)\b', '', expression)
+              expression = re.sub(r'(?<=\d)([uUlL]+)\b', '', expression)
+              node = ast.parse(expression, mode='eval')
+
+              def evaluate(value: ast.AST) -> int:
+                  if isinstance(value, ast.Expression):
+                      return evaluate(value.body)
+                  if isinstance(value, ast.Constant) and isinstance(value.value, int):
+                      return value.value
+                  if isinstance(value, ast.UnaryOp) and isinstance(
+                      value.op, (ast.UAdd, ast.USub, ast.Invert)
+                  ):
+                      operand = evaluate(value.operand)
+                      if isinstance(value.op, ast.UAdd):
+                          return operand
+                      if isinstance(value.op, ast.USub):
+                          return -operand
+                      return ~operand
+                  if isinstance(value, ast.BinOp) and isinstance(
+                      value.op,
+                      (
+                          ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod,
+                          ast.LShift, ast.RShift, ast.BitOr, ast.BitAnd,
+                          ast.BitXor,
+                      ),
+                  ):
+                      left = evaluate(value.left)
+                      right = evaluate(value.right)
+                      operations = {
+                          ast.Add: lambda: left + right,
+                          ast.Sub: lambda: left - right,
+                          ast.Mult: lambda: left * right,
+                          ast.FloorDiv: lambda: left // right,
+                          ast.Mod: lambda: left % right,
+                          ast.LShift: lambda: left << right,
+                          ast.RShift: lambda: left >> right,
+                          ast.BitOr: lambda: left | right,
+                          ast.BitAnd: lambda: left & right,
+                          ast.BitXor: lambda: left ^ right,
+                      }
+                      return operations[type(value.op)]()
+                  raise ValueError(f'unsupported expression: {expression!r}')
+
+              return evaluate(node)
+
+          def definition(name: str) -> int:
+              patterns = (
+                  rf'^\s*#define\s+{re.escape(name)}\s+(.+?)\s*$',
+                  rf'^\s*{re.escape(name)}\s*=\s*(.+?),?\s*$',
+              )
+              for pattern in patterns:
+                  match = re.search(pattern, regs_source, re.MULTILINE)
+                  if match:
+                      return safe_eval(match.group(1))
+              raise SystemExit(f'Linux register definition {name} was not found')
+
+          contract = {
+              'int_enable_offset': definition('PV_INTEN'),
+              'int_status_offset': definition('PV_INTSTAT'),
+              'status_offset': definition('PV_STAT'),
+              'vfp_start_bit': definition('PV_INT_VFP_START'),
+          }
+          for name, value in contract.items():
+              if value < 0 or value >= 0x100:
+                  if name != 'vfp_start_bit':
+                      raise SystemExit(f'invalid {name}: 0x{value:x}')
+          bit = contract['vfp_start_bit']
+          if bit == 0 or bit & (bit - 1):
+              raise SystemExit(f'VFP-start interrupt is not one bit: 0x{bit:x}')
+
+          node_re = re.compile(
+              r'(?P<label>pixelvalve(?P<index>[0-2]))\s*:\s*'
+              r'pixelvalve@(?P<address>[0-9a-fA-F]+)\s*\{'
+              r'(?P<body>.*?)\n\s*\};',
+              re.DOTALL,
+          )
+          valves = []
+          for match in node_re.finditer(dtsi_source):
+              body = match.group('body')
+              irq_match = re.search(r'interrupts\s*=\s*<([^>]+)>', body)
+              if not irq_match:
+                  raise SystemExit(f"{match.group('label')} has no interrupt")
+              cells = [
+                  int(token, 0)
+                  for token in re.findall(r'0x[0-9a-fA-F]+|\d+', irq_match.group(1))
+              ]
+              if len(cells) < 2:
+                  raise SystemExit(
+                      f"unexpected interrupt cells for {match.group('label')}: {cells}"
+                  )
+              address = int(match.group('address'), 16)
+              valves.append({
+                  'index': int(match.group('index')),
+                  'offset': address - 0x7e000000,
+                  'irq': cells[-1],
+              })
+          valves.sort(key=lambda item: item['index'])
+          if [item['index'] for item in valves] != [0, 1, 2]:
+              raise SystemExit(f'expected pixel valves 0,1,2, found {valves!r}')
+          if any(item['offset'] < 0 or item['offset'] >= 0x01000000 for item in valves):
+              raise SystemExit(f'pixel-valve offsets are invalid: {valves!r}')
+
+          header = '''/*
+           * BCM2835 pixel-valve timing and vblank interrupt model.
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+          #ifndef HW_DISPLAY_BCM2835_PIXELVALVE_H
+          #define HW_DISPLAY_BCM2835_PIXELVALVE_H
+
+          #include "hw/sysbus.h"
+
+          #define TYPE_BCM2835_PIXELVALVE "bcm2835-pixelvalve"
+          OBJECT_DECLARE_SIMPLE_TYPE(BCM2835PixelValveState,
+                                     BCM2835_PIXELVALVE)
+
+          #endif
+          '''
+          Path('include/hw/display/bcm2835_pixelvalve.h').write_text(
+              '\n'.join(
+                  line[10:] if line.startswith('          ') else line
+                  for line in header.splitlines()
+              ) + '\n'
+          )
+
+          c_source = f'''/*
+           * BCM2835 pixel-valve timing and vblank interrupt model.
+           *
+           * The VideoCore display pipeline raises a level interrupt at the
+           * start of vertical front porch.  Linux VC4 uses that interrupt as
+           * the CRTC vblank source and waits for it during synchronous atomic
+           * commits.  Rendering remains in the V3D model; this device models
+           * only pixel-valve register retention and frame timing.
+           *
+           * SPDX-License-Identifier: GPL-2.0-or-later
+           */
+
+          #include "qemu/osdep.h"
+          #include "hw/display/bcm2835_pixelvalve.h"
+          #include "migration/vmstate.h"
+          #include "qemu/log.h"
+          #include "qemu/module.h"
+          #include "qemu/timer.h"
+
+          #define BCM2835_PIXELVALVE_MMIO_SIZE 0x100
+          #define BCM2835_PIXELVALVE_REG_COUNT \\
+              (BCM2835_PIXELVALVE_MMIO_SIZE / sizeof(uint32_t))
+          #define BCM2835_PIXELVALVE_FRAME_NS UINT64_C(16666667)
+
+          #define PV_INTEN_OFFSET 0x{contract['int_enable_offset']:x}
+          #define PV_INTSTAT_OFFSET 0x{contract['int_status_offset']:x}
+          #define PV_STAT_OFFSET 0x{contract['status_offset']:x}
+          #define PV_INT_VFP_START UINT32_C(0x{contract['vfp_start_bit']:x})
+
+          struct BCM2835PixelValveState {{
+              SysBusDevice parent_obj;
+              MemoryRegion iomem;
+              qemu_irq irq;
+              QEMUTimer *frame_timer;
+              uint32_t regs[BCM2835_PIXELVALVE_REG_COUNT];
+          }};
+
+          static void bcm2835_pixelvalve_update_irq(
+              BCM2835PixelValveState *s)
+          {{
+              uint32_t enabled = s->regs[PV_INTEN_OFFSET >> 2];
+              uint32_t pending = s->regs[PV_INTSTAT_OFFSET >> 2];
+
+              qemu_set_irq(s->irq, !!(enabled & pending));
+          }}
+
+          static void bcm2835_pixelvalve_schedule(
+              BCM2835PixelValveState *s)
+          {{
+              timer_mod(s->frame_timer,
+                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                        BCM2835_PIXELVALVE_FRAME_NS);
+          }}
+
+          static void bcm2835_pixelvalve_frame(void *opaque)
+          {{
+              BCM2835PixelValveState *s = opaque;
+
+              s->regs[PV_INTSTAT_OFFSET >> 2] |= PV_INT_VFP_START;
+              bcm2835_pixelvalve_update_irq(s);
+              bcm2835_pixelvalve_schedule(s);
+          }}
+
+          static uint64_t bcm2835_pixelvalve_read(void *opaque, hwaddr offset,
+                                                   unsigned size)
+          {{
+              BCM2835PixelValveState *s = opaque;
+
+              if (offset >= BCM2835_PIXELVALVE_MMIO_SIZE || (offset & 3)) {{
+                  qemu_log_mask(LOG_GUEST_ERROR,
+                                "%s: invalid offset 0x%" HWADDR_PRIx "\n",
+                                __func__, offset);
+                  return 0;
+              }}
+              return s->regs[offset >> 2];
+          }}
+
+          static void bcm2835_pixelvalve_write(void *opaque, hwaddr offset,
+                                                uint64_t value, unsigned size)
+          {{
+              BCM2835PixelValveState *s = opaque;
+              uint32_t word = value;
+
+              if (offset >= BCM2835_PIXELVALVE_MMIO_SIZE || (offset & 3)) {{
+                  qemu_log_mask(LOG_GUEST_ERROR,
+                                "%s: invalid offset 0x%" HWADDR_PRIx "\n",
+                                __func__, offset);
+                  return;
+              }}
+
+              if (offset == PV_INTSTAT_OFFSET) {{
+                  s->regs[offset >> 2] &= ~word;
+              }} else {{
+                  s->regs[offset >> 2] = word;
+              }}
+              if (offset == PV_INTEN_OFFSET || offset == PV_INTSTAT_OFFSET) {{
+                  bcm2835_pixelvalve_update_irq(s);
+              }}
+          }}
+
+          static const MemoryRegionOps bcm2835_pixelvalve_ops = {{
+              .read = bcm2835_pixelvalve_read,
+              .write = bcm2835_pixelvalve_write,
+              .endianness = DEVICE_LITTLE_ENDIAN,
+              .valid.min_access_size = 4,
+              .valid.max_access_size = 4,
+              .impl.min_access_size = 4,
+              .impl.max_access_size = 4,
+          }};
+
+          static int bcm2835_pixelvalve_post_load(void *opaque, int version_id)
+          {{
+              BCM2835PixelValveState *s = opaque;
+
+              bcm2835_pixelvalve_update_irq(s);
+              bcm2835_pixelvalve_schedule(s);
+              return 0;
+          }}
+
+          static const VMStateDescription vmstate_bcm2835_pixelvalve = {{
+              .name = TYPE_BCM2835_PIXELVALVE,
+              .version_id = 1,
+              .minimum_version_id = 1,
+              .post_load = bcm2835_pixelvalve_post_load,
+              .fields = (const VMStateField[]) {{
+                  VMSTATE_UINT32_ARRAY(regs, BCM2835PixelValveState,
+                                       BCM2835_PIXELVALVE_REG_COUNT),
+                  VMSTATE_TIMER_PTR(frame_timer, BCM2835PixelValveState),
+                  VMSTATE_END_OF_LIST()
+              }},
+          }};
+
+          static void bcm2835_pixelvalve_reset(DeviceState *dev)
+          {{
+              BCM2835PixelValveState *s = BCM2835_PIXELVALVE(dev);
+
+              memset(s->regs, 0, sizeof(s->regs));
+              qemu_set_irq(s->irq, 0);
+              timer_del(s->frame_timer);
+              bcm2835_pixelvalve_schedule(s);
+          }}
+
+          static void bcm2835_pixelvalve_realize(DeviceState *dev,
+                                                  Error **errp)
+          {{
+              BCM2835PixelValveState *s = BCM2835_PIXELVALVE(dev);
+
+              s->frame_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                            bcm2835_pixelvalve_frame, s);
+          }}
+
+          static void bcm2835_pixelvalve_unrealize(DeviceState *dev)
+          {{
+              BCM2835PixelValveState *s = BCM2835_PIXELVALVE(dev);
+
+              timer_free(s->frame_timer);
+          }}
+
+          static void bcm2835_pixelvalve_init(Object *obj)
+          {{
+              BCM2835PixelValveState *s = BCM2835_PIXELVALVE(obj);
+
+              memory_region_init_io(&s->iomem, obj, &bcm2835_pixelvalve_ops, s,
+                                    TYPE_BCM2835_PIXELVALVE,
+                                    BCM2835_PIXELVALVE_MMIO_SIZE);
+              sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+              sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq);
+          }}
+
+          static void bcm2835_pixelvalve_class_init(ObjectClass *klass,
+                                                     const void *data)
+          {{
+              DeviceClass *dc = DEVICE_CLASS(klass);
+
+              dc->realize = bcm2835_pixelvalve_realize;
+              dc->unrealize = bcm2835_pixelvalve_unrealize;
+              dc->vmsd = &vmstate_bcm2835_pixelvalve;
+              device_class_set_legacy_reset(dc, bcm2835_pixelvalve_reset);
+          }}
+
+          static const TypeInfo bcm2835_pixelvalve_info = {{
+              .name = TYPE_BCM2835_PIXELVALVE,
+              .parent = TYPE_SYS_BUS_DEVICE,
+              .instance_size = sizeof(BCM2835PixelValveState),
+              .instance_init = bcm2835_pixelvalve_init,
+              .class_init = bcm2835_pixelvalve_class_init,
+          }};
+
+          static void bcm2835_pixelvalve_register_types(void)
+          {{
+              type_register_static(&bcm2835_pixelvalve_info);
+          }}
+
+          type_init(bcm2835_pixelvalve_register_types)
+          '''
+          Path('hw/display/bcm2835_pixelvalve.c').write_text(
+              '\n'.join(
+                  line[10:] if line.startswith('          ') else line
+                  for line in c_source.splitlines()
+              ) + '\n'
+          )
+
+          smoke = f'''#!/usr/bin/env python3
+          """Exercise BCM2835 pixel-valve VFP-start interrupt timing."""
+
+          from __future__ import annotations
+
+          import argparse
+          from pathlib import Path
+          import socket
+          import subprocess
+          import tempfile
+          import time
+
+          PERIPHERAL_BASE = 0x3F000000
+          VALVES = {[(item['offset'], item['irq']) for item in valves]!r}
+          PV_INTEN = 0x{contract['int_enable_offset']:x}
+          PV_INTSTAT = 0x{contract['int_status_offset']:x}
+          PV_INT_VFP_START = 0x{contract['vfp_start_bit']:x}
+
+
+          class QTest:
+              def __init__(self, path: Path) -> None:
+                  self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                  self.sock.connect(str(path))
+                  self.reader = self.sock.makefile('r', encoding='utf-8')
+
+              def close(self) -> None:
+                  self.reader.close()
+                  self.sock.close()
+
+              def command(self, command: str) -> list[str]:
+                  self.sock.sendall((command + '\\n').encode())
+                  while True:
+                      line = self.reader.readline()
+                      if not line:
+                          raise RuntimeError('qtest disconnected')
+                      words = line.strip().split()
+                      if not words or words[0] == 'IRQ':
+                          continue
+                      if words[0] != 'OK':
+                          raise RuntimeError(line.strip())
+                      return words[1:]
+
+              def writel(self, address: int, value: int) -> None:
+                  self.command(f'writel 0x{{address:x}} 0x{{value:x}}')
+
+              def readl(self, address: int) -> int:
+                  values = self.command(f'readl 0x{{address:x}}')
+                  return int(values[0], 0)
+
+
+          def connect(path: Path, process: subprocess.Popen[str]) -> QTest:
+              deadline = time.monotonic() + 10
+              while time.monotonic() < deadline:
+                  if process.poll() is not None:
+                      stderr = process.stderr.read() if process.stderr else ''
+                      raise RuntimeError(f'QEMU exited before qtest connected: {{stderr}}')
+                  try:
+                      return QTest(path)
+                  except (FileNotFoundError, ConnectionRefusedError):
+                      time.sleep(0.02)
+              raise RuntimeError('qtest connection timed out')
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser(description=__doc__)
+              parser.add_argument('--qemu', type=Path,
+                                  default=Path('build/qemu-system-aarch64'))
+              args = parser.parse_args()
+              qemu = args.qemu.resolve()
+              if not qemu.is_file():
+                  parser.error(f'QEMU binary does not exist: {{qemu}}')
+
+              with tempfile.TemporaryDirectory(prefix='vc4-pixelvalve-') as temp:
+                  qtest_path = Path(temp) / 'qtest.sock'
+                  process = subprocess.Popen(
+                      (
+                          str(qemu), '-M', 'raspi3b', '-accel', 'qtest', '-S',
+                          '-display', 'none', '-serial', 'none', '-monitor', 'none',
+                          '-qtest', f'unix:{{qtest_path}},server=on,wait=off',
+                      ),
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.PIPE,
+                      text=True,
+                  )
+                  qtest = None
+                  try:
+                      qtest = connect(qtest_path, process)
+                      for offset, _irq in VALVES:
+                          base = PERIPHERAL_BASE + offset
+                          qtest.writel(base + PV_INTSTAT, 0xFFFFFFFF)
+                          qtest.writel(base + PV_INTEN, PV_INT_VFP_START)
+                          qtest.command('clock_step 20000000')
+                          pending = qtest.readl(base + PV_INTSTAT)
+                          if not pending & PV_INT_VFP_START:
+                              raise RuntimeError(
+                                  f'pixel valve at 0x{{base:x}} did not raise VFP-start'
+                              )
+                          qtest.writel(base + PV_INTSTAT, PV_INT_VFP_START)
+                          if qtest.readl(base + PV_INTSTAT) & PV_INT_VFP_START:
+                              raise RuntimeError(
+                                  f'pixel valve at 0x{{base:x}} did not clear status'
+                              )
+                  finally:
+                      if qtest is not None:
+                          qtest.close()
+                      if process.poll() is None:
+                          process.terminate()
+                      try:
+                          process.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          process.kill()
+                          process.wait(timeout=5)
+              print('BCM2835 pixel-valve vblank smoke test passed')
+              return 0
+
+
+          if __name__ == '__main__':
+              raise SystemExit(main())
+          '''
+          Path('scripts/vc4/pixelvalve-vblank-smoke.py').write_text(
+              '\n'.join(
+                  line[10:] if line.startswith('          ') else line
+                  for line in smoke.splitlines()
+              ) + '\n'
+          )
+
+          report = {
+              'schema_version': 1,
+              'linux_commit': '1efe5d048a391de3ead2804b2e7f86376c356cc5',
+              'register_contract': contract,
+              'pixelvalves': valves,
+              'model_file': 'hw/display/bcm2835_pixelvalve.c',
+              'smoke_test': 'scripts/vc4/pixelvalve-vblank-smoke.py',
+          }
+          Path('VC4_PIXELVALVE_VBLANK_MODEL.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_PIXELVALVE_VBLANK_MODEL.md').write_text(
+              '# BCM2835 pixel-valve vblank model\n\n'
+              f"- Linux commit: `{report['linux_commit']}`\n"
+              f"- Register contract: `{contract}`\n"
+              f"- Pixel valves: `{valves}`\n"
+              '- Interrupt behavior: level-triggered VFP-start, W1C status\n'
+              '- Nominal frame period: 16,666,667 ns\n'
+          )
+          Path('/tmp/pixelvalve-contract.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+
+      - name: Replace the unimplemented pixel-valve regions
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          contract = json.load(open('/tmp/pixelvalve-contract.json'))
+          valves = contract['pixelvalves']
+          path = Path('hw/arm/bcm2835_peripherals.c')
+          source = path.read_text()
+
+          include = '#include "hw/display/bcm2835_pixelvalve.h"\n'
+          if include not in source:
+              includes = list(re.finditer(r'^#include .*\n', source, re.MULTILINE))
+              if not includes:
+                  raise SystemExit('peripherals source has no include block')
+              position = includes[-1].end()
+              source = source[:position] + include + source[position:]
+
+          # Remove only complete unimplemented-device statements naming a
+          # pixel valve or one of its three MMIO offsets.
+          lines = source.splitlines(keepends=True)
+          output: list[str] = []
+          index = 0
+          removed: list[str] = []
+          tokens = (
+              'pixelvalve', 'pixel-valve', 'pv0', 'pv1', 'pv2',
+              '0x206000', '0x207000', '0x807000',
+              'PIXELVALVE0', 'PIXELVALVE1', 'PIXELVALVE2',
+              'PV0_OFFSET', 'PV1_OFFSET', 'PV2_OFFSET',
+          )
+          while index < len(lines):
+              line = lines[index]
+              if 'unimplemented' in line.lower() or 'create_unimplemented' in line:
+                  statement = [line]
+                  cursor = index + 1
+                  while ';' not in ''.join(statement) and cursor < len(lines):
+                      statement.append(lines[cursor])
+                      cursor += 1
+                  text = ''.join(statement)
+                  if any(token.lower() in text.lower() for token in tokens):
+                      removed.append(text.strip())
+                      index = cursor
+                      continue
+              output.append(line)
+              index += 1
+          source = ''.join(output)
+
+          helper_marker = 'bcm2835_peripherals_add_pixelvalve('
+          if helper_marker not in source:
+              realize_match = re.search(
+                  r'static void bcm2835_peripherals_realize\s*\(', source
+              )
+              if not realize_match:
+                  raise SystemExit('peripherals realize function was not found')
+              helper = '''static bool bcm2835_peripherals_add_pixelvalve(
+              BCM2835PeripheralState *s, unsigned int index, hwaddr offset,
+              unsigned int irq, Error **errp)
+          {
+              g_autofree char *name = g_strdup_printf("pixelvalve%u", index);
+              DeviceState *dev = qdev_new(TYPE_BCM2835_PIXELVALVE);
+              SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+
+              object_property_add_child(OBJECT(s), name, OBJECT(dev));
+              if (!sysbus_realize(sbd, errp)) {
+                  object_unparent(OBJECT(dev));
+                  object_unref(dev);
+                  return false;
+              }
+              memory_region_add_subregion(&s->peri_mr, offset,
+                                          sysbus_mmio_get_region(sbd, 0));
+              sysbus_connect_irq(sbd, 0,
+                                 qdev_get_gpio_in(DEVICE(&s->ic), irq));
+              object_unref(dev);
+              return true;
+          }
+
+          '''
+              source = source[:realize_match.start()] + helper + source[realize_match.start():]
+
+          def function_bounds(text: str, name: str) -> tuple[int, int]:
+              match = re.search(rf'\b{name}\s*\([^;]*?\)\s*\{{', text, re.DOTALL)
+              if not match:
+                  raise SystemExit(f'function {name} was not found')
+              opening = text.find('{', match.start())
+              depth = 0
+              for position in range(opening, len(text)):
+                  if text[position] == '{':
+                      depth += 1
+                  elif text[position] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return opening, position
+              raise SystemExit(f'function {name} has unmatched braces')
+
+          calls_marker = 'QEMU_RPI_PIXELVALVE_VBLANK_MODEL'
+          if calls_marker not in source:
+              opening, closing = function_bounds(
+                  source, 'bcm2835_peripherals_realize'
+              )
+              calls = [
+                  '\n    /* QEMU_RPI_PIXELVALVE_VBLANK_MODEL */\n'
+              ]
+              for valve in valves:
+                  calls.append(
+                      '    if (!bcm2835_peripherals_add_pixelvalve('
+                      f's, {valve["index"]}, 0x{valve["offset"]:x}, '
+                      f'{valve["irq"]}, errp)) {{\n'
+                      '        return;\n'
+                      '    }\n'
+                  )
+              source = source[:closing] + ''.join(calls) + source[closing:]
+
+          path.write_text(source)
+          Path('/tmp/removed-pixelvalves.txt').write_text(
+              '\n\n'.join(removed) + '\n'
+          )
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          meson = Path('hw/display/meson.build')
+          text = meson.read_text()
+          line = "system_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2835_pixelvalve.c'))\n"
+          if line not in text:
+              text += ('\n' if not text.endswith('\n') else '') + line
+          meson.write_text(text)
+
+          workflow_path = Path('.github/workflows/vc4-linux-kms-modeset-frontier.yml')
+          workflow = workflow_path.read_text()
+          additions = (
+              '      - hw/display/bcm2835_pixelvalve.c\n'
+              '      - include/hw/display/bcm2835_pixelvalve.h\n'
+              '      - scripts/vc4/pixelvalve-vblank-smoke.py\n'
+          )
+          if 'hw/display/bcm2835_pixelvalve.c' not in workflow:
+              anchor = '      - hw/display/bcm2835_v3d.c\n'
+              if anchor not in workflow:
+                  raise SystemExit('V3D workflow path anchor changed')
+              workflow = workflow.replace(anchor, anchor + additions, 1)
+          compile_line = '            scripts/vc4/pixelvalve-vblank-smoke.py \\\n'
+          if compile_line not in workflow:
+              anchor = '          python3 -m py_compile \\\n'
+              if workflow.count(anchor) != 1:
+                  raise SystemExit('Python validation anchor changed')
+              workflow = workflow.replace(anchor, anchor + compile_line, 1)
+          if 'pixelvalve-vblank.log' not in workflow:
+              anchor = """          python3 scripts/vc4/msync-smoke.py \\
+          """
+              insertion = """          python3 scripts/vc4/pixelvalve-vblank-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/pixelvalve-vblank.log"
+          """
+              if anchor not in workflow:
+                  raise SystemExit('msync regression anchor changed')
+              workflow = workflow.replace(anchor, insertion + anchor, 1)
+          workflow_path.write_text(workflow)
+          PY
+
+          python3 -m py_compile scripts/vc4/pixelvalve-vblank-smoke.py
+          git diff --check
+
+      - name: Build and validate the model
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/pixelvalve-vblank-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/cprman-hsm-smoke.py \
+            --qemu build/qemu-system-aarch64
+          git diff --check
+
+      - name: Publish the pixel-valve model
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          cp /tmp/source-route.json \
+            VC4_PIXELVALVE_SOURCE_ROUTE_REPLACE_UNIMPLEMENTED_PV_REGIONS
+          git add -A -- \
+            VC4_PIXELVALVE_SOURCE_ROUTE_REPLACE_UNIMPLEMENTED_PV_REGIONS \
+            "$REPORT_JSON" "$REPORT_MD" \
+            include/hw/display/bcm2835_pixelvalve.h \
+            hw/display/bcm2835_pixelvalve.c \
+            hw/display/meson.build \
+            hw/arm/bcm2835_peripherals.c \
+            scripts/vc4/pixelvalve-vblank-smoke.py \
+            .github/workflows/vc4-linux-kms-modeset-frontier.yml \
+            .github/workflows/vc4-pixelvalve-vblank-model.yml
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-pixelvalve-vblank-model.yml
+          git commit -m "hw/display: model BCM2835 pixel-valve vblank interrupts"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
