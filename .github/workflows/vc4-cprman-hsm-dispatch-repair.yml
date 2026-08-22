@@ -1,0 +1,333 @@
+name: VC4 CPRMAN HSM MMIO-dispatch repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-cprman-hsm-dispatch-repair.yml
+      - VC4_LINUX_HSM_CLOCK_STATUS.json
+      - VC4_CPRMAN_HSM_SOURCE_REPORT.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-cprman-hsm-dispatch-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain isolation records
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BRANCH"
+          for file in \
+            VC4_LINUX_HSM_CLOCK_STATUS.json \
+            VC4_CPRMAN_HSM_SOURCE_REPORT.json; do
+            git show "origin/$BRANCH:$file" > "/tmp/$file"
+            cp "/tmp/$file" "$file"
+          done
+
+      - name: Install CPRMAN-local reset handoff
+        id: patch
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          hsm = json.load(open('/tmp/VC4_LINUX_HSM_CLOCK_STATUS.json'))
+          confirmed = bool(hsm.get('hsm_clock_handoff_confirmed'))
+          source_path = Path('hw/misc/bcm2835_cprman.c')
+          source = source_path.read_text()
+          marker = 'QEMU_RPI_HSM_MMIO_RESET_HANDOFF'
+          applied = marker in source
+          strategy = 'already-present' if applied else 'none'
+
+          if confirmed and not applied:
+              patterns = (
+                  re.compile(
+                      r"static void bcm2835_cprman_reset\(DeviceState \*dev\)\n"
+                      r"\{(?P<body>.*?)\n\}",
+                      re.DOTALL,
+                  ),
+                  re.compile(
+                      r"static void bcm2835_cprman_reset_hold\(Object \*obj, "
+                      r"ResetType type\)\n\{(?P<body>.*?)\n\}",
+                      re.DOTALL,
+                  ),
+              )
+              match = next(
+                  (candidate for pattern in patterns
+                   if (candidate := pattern.search(source))),
+                  None,
+              )
+              if match and 'BCM2835CprmanState *s' in match.group('body'):
+                  addition = """
+
+              /* QEMU_RPI_HSM_MMIO_RESET_HANDOFF
+               *
+               * VideoCore firmware programs the HDMI state-machine clock
+               * before ARM entry.  Direct-kernel boot has no firmware, so
+               * replay the same handoff through the CPRMAN device's MMIO
+               * interface after its reset state has been established.
+               * Source 6 is PLLD_PER and the 12.12 divider is 3.0.
+               */
+              memory_region_dispatch_write(&s->iomem, 0x08c,
+                                           UINT32_C(0x5a003000), MO_32,
+                                           MEMTXATTRS_UNSPECIFIED);
+              memory_region_dispatch_write(&s->iomem, 0x088,
+                                           UINT32_C(0x5a000016), MO_32,
+                                           MEMTXATTRS_UNSPECIFIED);"""
+                  body = match.group('body') + addition
+                  source = (
+                      source[:match.start('body')]
+                      + body
+                      + source[match.end('body'):]
+                  )
+                  source_path.write_text(source)
+                  applied = True
+                  strategy = 'memory-region-dispatch-in-reset'
+              else:
+                  strategy = 'no-supported-top-level-reset-hook'
+
+          report = {
+              'schema_version': 2,
+              'hsm_handoff_confirmed': confirmed,
+              'patch_applied': applied,
+              'patch_strategy': strategy,
+          }
+          Path('VC4_CPRMAN_HSM_DISPATCH_STATUS.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_CPRMAN_HSM_DISPATCH_STATUS.md').write_text(
+              '# VC4 CPRMAN HSM MMIO-dispatch repair\n\n'
+              f"- HSM handoff confirmed: `{confirmed}`\n"
+              f"- Patch applied: `{applied}`\n"
+              f"- Strategy: **`{strategy}`**\n"
+          )
+          PY
+          applied=$(python3 -c \
+            'import json; print("true" if json.load(open("VC4_CPRMAN_HSM_DISPATCH_STATUS.json"))["patch_applied"] else "false")')
+          echo "applied=$applied" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure a raw reset smoke test exists
+        if: steps.patch.outputs.applied == 'true'
+        run: |
+          set -euo pipefail
+          if ! test -f scripts/vc4/cprman-hsm-smoke.py; then
+            cat > scripts/vc4/cprman-hsm-smoke.py <<'PY'
+          #!/usr/bin/env python3
+          """Verify the Raspberry Pi CPRMAN HSM firmware-handoff reset image."""
+
+          from __future__ import annotations
+
+          import argparse
+          from pathlib import Path
+          import socket
+          import subprocess
+          import tempfile
+          import time
+
+          CPRMAN_BASE = 0x3F101000
+          CM_HSMCTL = CPRMAN_BASE + 0x088
+          CM_HSMDIV = CPRMAN_BASE + 0x08C
+
+
+          class QTest:
+              def __init__(self, path: Path) -> None:
+                  self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                  self.sock.connect(str(path))
+                  self.reader = self.sock.makefile("r", encoding="utf-8")
+
+              def close(self) -> None:
+                  self.reader.close()
+                  self.sock.close()
+
+              def readl(self, address: int) -> int:
+                  self.sock.sendall(f"readl 0x{address:x}\n".encode())
+                  while True:
+                      line = self.reader.readline()
+                      if not line:
+                          raise RuntimeError("qtest disconnected")
+                      words = line.strip().split()
+                      if not words or words[0] == "IRQ":
+                          continue
+                      if words[0] != "OK" or len(words) != 2:
+                          raise RuntimeError(line.strip())
+                      return int(words[1], 0)
+
+
+          def connect(path: Path, process: subprocess.Popen[str]) -> QTest:
+              deadline = time.monotonic() + 10
+              while time.monotonic() < deadline:
+                  if process.poll() is not None:
+                      raise RuntimeError("QEMU exited before qtest connected")
+                  try:
+                      return QTest(path)
+                  except (FileNotFoundError, ConnectionRefusedError):
+                      time.sleep(0.02)
+              raise RuntimeError("qtest connection timed out")
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser(description=__doc__)
+              parser.add_argument(
+                  "--qemu", type=Path,
+                  default=Path("build/qemu-system-aarch64")
+              )
+              args = parser.parse_args()
+              qemu = args.qemu.resolve()
+              if not qemu.is_file():
+                  parser.error(f"QEMU binary does not exist: {qemu}")
+              with tempfile.TemporaryDirectory(prefix="vc4-cprman-hsm-") as temp:
+                  path = Path(temp) / "qtest.sock"
+                  process = subprocess.Popen(
+                      (
+                          str(qemu), "-M", "raspi3b", "-accel", "qtest", "-S",
+                          "-display", "none", "-serial", "none", "-monitor", "none",
+                          "-qtest", f"unix:{path},server=on,wait=off",
+                      ),
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.PIPE,
+                      text=True,
+                  )
+                  qtest = None
+                  try:
+                      qtest = connect(path, process)
+                      control = qtest.readl(CM_HSMCTL)
+                      divider = qtest.readl(CM_HSMDIV)
+                      if control & 0x1F != 0x16:
+                          raise RuntimeError(
+                              f"unexpected HSM control 0x{control:08x}"
+                          )
+                      if divider & 0x00FFF000 != 0x00003000:
+                          raise RuntimeError(
+                              f"unexpected HSM divider 0x{divider:08x}"
+                          )
+                  finally:
+                      if qtest is not None:
+                          qtest.close()
+                      if process.poll() is None:
+                          process.terminate()
+                      try:
+                          process.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          process.kill()
+                          process.wait(timeout=5)
+              print("Raspberry Pi CPRMAN HSM handoff smoke test passed")
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          PY
+            chmod +x scripts/vc4/cprman-hsm-smoke.py
+          fi
+          python3 -m py_compile scripts/vc4/cprman-hsm-smoke.py
+          git diff --check
+
+      - name: Build and prove reset handoff
+        if: steps.patch.outputs.applied == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/cprman-hsm-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Remove diagnostic DT assignment after model proof
+        if: steps.patch.outputs.applied == 'true'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          for filename in (
+              '.github/workflows/vc4-linux-kms-clock-contract-v2.yml',
+              '.github/workflows/vc4-linux-kms-clock-contract-stages.yml',
+          ):
+              path = Path(filename)
+              if not path.is_file():
+                  continue
+              text = path.read_text()
+              text = re.sub(
+                  r"          python3 scripts/vc4/assign-vc4-hsm-clock\.py \\\n"
+                  r"            \"\$DTB_DIR/[^\n]+\.dtb\" \\\n"
+                  r"            --record \"\$EVIDENCE_DIR/[^\n]+\.json\"\n",
+                  "",
+                  text,
+              )
+              cprman_path = '      - hw/misc/bcm2835_cprman.c\n'
+              if cprman_path not in text:
+                  anchor = '      - hw/misc/bcm2835_property.c\n'
+                  if anchor in text:
+                      text = text.replace(anchor, anchor + cprman_path, 1)
+              smoke_path = '      - scripts/vc4/cprman-hsm-smoke.py\n'
+              if smoke_path not in text:
+                  anchor = '      - scripts/vc4/property-clock-smoke.py\n'
+                  if anchor in text:
+                      text = text.replace(anchor, anchor + smoke_path, 1)
+              if 'cprman-hsm.log' not in text:
+                  anchor = """          python3 scripts/vc4/msync-smoke.py \\
+          """
+                  insertion = """          python3 scripts/vc4/cprman-hsm-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/cprman-hsm.log"
+          """
+                  if anchor in text:
+                      text = text.replace(anchor, insertion + anchor, 1)
+              path.write_text(text)
+          PY
+          git diff --check
+
+      - name: Publish model repair
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          cp /tmp/VC4_LINUX_HSM_CLOCK_STATUS.json \
+            VC4_LINUX_HSM_CLOCK_STATUS.json
+          cp /tmp/VC4_CPRMAN_HSM_SOURCE_REPORT.json \
+            VC4_CPRMAN_HSM_SOURCE_REPORT.json
+          git add -A -- \
+            VC4_LINUX_HSM_CLOCK_STATUS.json \
+            VC4_CPRMAN_HSM_SOURCE_REPORT.json \
+            VC4_CPRMAN_HSM_DISPATCH_STATUS.json \
+            VC4_CPRMAN_HSM_DISPATCH_STATUS.md \
+            hw/misc/bcm2835_cprman.c \
+            scripts/vc4/cprman-hsm-smoke.py \
+            .github/workflows/vc4-linux-kms-clock-contract-v2.yml \
+            .github/workflows/vc4-linux-kms-clock-contract-stages.yml \
+            .github/workflows/vc4-cprman-hsm-dispatch-repair.yml
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-cprman-hsm-dispatch-repair.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "hw/misc: seed Raspberry Pi HDMI HSM clock on reset"
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
