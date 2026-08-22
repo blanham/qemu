@@ -1,0 +1,201 @@
+name: VC4 firmware clock enumeration repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-clock-enumeration.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-clock-enumeration-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Apply the complete ordered firmware clock ABI
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          defs_path = Path("include/hw/arm/raspberrypi-fw-defs.h")
+          defs = defs_path.read_text()
+          old_enum = (
+              "    RPI_FIRMWARE_PIXEL_BVB_CLK_ID,\n"
+              "    RPI_FIRMWARE_VEC_CLK_ID,\n"
+              "    RPI_FIRMWARE_NUM_CLK_ID,\n"
+          )
+          new_enum = (
+              "    RPI_FIRMWARE_PIXEL_BVB_CLK_ID,\n"
+              "    RPI_FIRMWARE_VEC_CLK_ID,\n"
+              "    RPI_FIRMWARE_DISP_CLK_ID,\n"
+              "    RPI_FIRMWARE_NUM_CLK_ID,\n"
+          )
+          if defs.count(old_enum) != 1:
+              raise SystemExit("firmware clock enum anchor changed")
+          defs_path.write_text(defs.replace(old_enum, new_enum, 1))
+
+          property_path = Path("hw/misc/bcm2835_property.c")
+          property_source = property_path.read_text()
+          array_start = property_source.index(
+              "static const uint32_t bcm2835_property_clock_ids[] = {"
+          )
+          array_end = property_source.index("};", array_start) + 3
+          ordered_array = """static const uint32_t bcm2835_property_clock_ids[] = {
+              RPI_FIRMWARE_EMMC_CLK_ID,
+              RPI_FIRMWARE_UART_CLK_ID,
+              RPI_FIRMWARE_ARM_CLK_ID,
+              RPI_FIRMWARE_CORE_CLK_ID,
+              RPI_FIRMWARE_V3D_CLK_ID,
+              RPI_FIRMWARE_H264_CLK_ID,
+              RPI_FIRMWARE_ISP_CLK_ID,
+              RPI_FIRMWARE_SDRAM_CLK_ID,
+              RPI_FIRMWARE_PIXEL_CLK_ID,
+              RPI_FIRMWARE_PWM_CLK_ID,
+              RPI_FIRMWARE_HEVC_CLK_ID,
+              RPI_FIRMWARE_EMMC2_CLK_ID,
+              RPI_FIRMWARE_M2MC_CLK_ID,
+              RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
+              RPI_FIRMWARE_VEC_CLK_ID,
+              RPI_FIRMWARE_DISP_CLK_ID,
+          };
+          """
+          property_source = (
+              property_source[:array_start]
+              + ordered_array
+              + property_source[array_end:]
+          )
+          old_comment = """/*
+           * The Linux firmware-clock provider sizes its onecell table from the
+           * IDs returned by GET_CLOCKS.  Advertise every clock that QEMU can
+           * service and that the upstream Raspberry Pi clock driver exports;
+           * otherwise display consumers such as HDMI fail before component
+           * binding when their clock index lies above the ARM clock.
+           */
+          """
+          new_comment = """/*
+           * GET_CLOCKS is an ordered firmware ABI, not a sparse capability
+           * list.  Linux advances the size of its onecell provider while
+           * walking the response, so return every defined clock ID in order.
+           * Otherwise later consumers such as the HDMI pixel clock (9) are
+           * left outside the provider even when that individual ID is listed.
+           */
+          """
+          if old_comment in property_source:
+              property_source = property_source.replace(
+                  old_comment, new_comment, 1
+              )
+          property_path.write_text(property_source)
+
+          smoke_path = Path("scripts/vc4/property-power-domain-smoke.py")
+          smoke = smoke_path.read_text()
+          constants_anchor = "RPI_FWREQ_GET_POWER_STATE = 0x00020001\n"
+          constants = (
+              "RPI_FWREQ_GET_CLOCKS = 0x00010007\n"
+              "EXPECTED_FIRMWARE_CLOCK_IDS = tuple(range(1, 17))\n\n"
+              + constants_anchor
+          )
+          if smoke.count(constants_anchor) != 1:
+              raise SystemExit("smoke clock constants anchor changed")
+          smoke = smoke.replace(constants_anchor, constants, 1)
+
+          helper_anchor = "\ndef expect_state(\n"
+          helper = '''
+
+          def firmware_clock_ids(qtest: QTestClient) -> tuple[int, ...]:
+              pair_count = len(EXPECTED_FIRMWARE_CLOCK_IDS)
+              response = property_words_request(
+                  qtest,
+                  RPI_FWREQ_GET_CLOCKS,
+                  tuple(0 for _ in range(pair_count * 2)),
+                  pair_count * 2 * 4,
+              )
+              parents = tuple(response[0::2])
+              if any(parent != 0 for parent in parents):
+                  raise RuntimeError(
+                      f"GET_CLOCKS returned unsupported parents: {parents!r}"
+                  )
+              return tuple(response[1::2])
+          '''
+          if smoke.count(helper_anchor) != 1:
+              raise SystemExit("smoke helper insertion anchor changed")
+          smoke = smoke.replace(helper_anchor, helper + helper_anchor, 1)
+
+          runtime_anchor = "            for offset in range(EXP_GPIO_COUNT):\n"
+          runtime = """            clock_ids = firmware_clock_ids(qtest)
+              if clock_ids != EXPECTED_FIRMWARE_CLOCK_IDS:
+                  raise RuntimeError(
+                      f"unexpected GET_CLOCKS response: {clock_ids!r}"
+                  )
+
+              for offset in range(EXP_GPIO_COUNT):
+          """
+          if smoke.count(runtime_anchor) != 1:
+              raise SystemExit("smoke runtime clock anchor changed")
+          smoke = smoke.replace(runtime_anchor, runtime, 1)
+          smoke = smoke.replace(
+              "Raspberry Pi firmware power-domain and expander GPIO smoke test passed",
+              "Raspberry Pi firmware state, clock, and expander GPIO smoke test passed",
+              1,
+          )
+          smoke_path.write_text(smoke)
+          PY
+
+          python3 -m py_compile scripts/vc4/property-power-domain-smoke.py
+          git diff --check
+          grep -Fq RPI_FIRMWARE_DISP_CLK_ID include/hw/arm/raspberrypi-fw-defs.h
+          grep -Fq EXPECTED_FIRMWARE_CLOCK_IDS scripts/vc4/property-power-domain-smoke.py
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path("hw/misc/bcm2835_property.c").read_text()
+          block = source.split(
+              "static const uint32_t bcm2835_property_clock_ids[] = {", 1
+          )[1].split("};", 1)[0]
+          ids = [line.strip().rstrip(",") for line in block.splitlines() if "CLK_ID" in line]
+          expected = [
+              "RPI_FIRMWARE_EMMC_CLK_ID",
+              "RPI_FIRMWARE_UART_CLK_ID",
+              "RPI_FIRMWARE_ARM_CLK_ID",
+              "RPI_FIRMWARE_CORE_CLK_ID",
+              "RPI_FIRMWARE_V3D_CLK_ID",
+              "RPI_FIRMWARE_H264_CLK_ID",
+              "RPI_FIRMWARE_ISP_CLK_ID",
+              "RPI_FIRMWARE_SDRAM_CLK_ID",
+              "RPI_FIRMWARE_PIXEL_CLK_ID",
+              "RPI_FIRMWARE_PWM_CLK_ID",
+              "RPI_FIRMWARE_HEVC_CLK_ID",
+              "RPI_FIRMWARE_EMMC2_CLK_ID",
+              "RPI_FIRMWARE_M2MC_CLK_ID",
+              "RPI_FIRMWARE_PIXEL_BVB_CLK_ID",
+              "RPI_FIRMWARE_VEC_CLK_ID",
+              "RPI_FIRMWARE_DISP_CLK_ID",
+          ]
+          if ids != expected:
+              raise SystemExit(f"unexpected ordered clock table: {ids!r}")
+          PY
+
+      - name: Publish the repair and remove this transient workflow
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            include/hw/arm/raspberrypi-fw-defs.h \
+            hw/misc/bcm2835_property.c \
+            scripts/vc4/property-power-domain-smoke.py
+          git rm -- .github/workflows/vc4-kms-clock-enumeration.yml
+          git commit -m "hw/misc: enumerate complete Raspberry Pi firmware clocks"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
