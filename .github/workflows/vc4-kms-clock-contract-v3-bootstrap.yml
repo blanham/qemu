@@ -1,0 +1,176 @@
+name: VC4 firmware clock contract bootstrap v3
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-kms-clock-contract-v3-bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-clock-contract-v3-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install the complete firmware-clock contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          feature_branch = "agent/vc4-linux-kms-clock-contract-v2"
+
+          header_path = Path("include/hw/arm/raspberrypi-fw-defs.h")
+          header = header_path.read_text()
+          if "RPI_FIRMWARE_DISP_CLK_ID" not in header:
+              header, count = re.subn(
+                  r"(\s+RPI_FIRMWARE_VEC_CLK_ID,\n)(\s+RPI_FIRMWARE_NUM_CLK_ID,)",
+                  r"\1    RPI_FIRMWARE_DISP_CLK_ID,\n\2",
+                  header,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("unable to add firmware display clock ID")
+              header_path.write_text(header)
+
+          property_path = Path("hw/misc/bcm2835_property.c")
+          source = property_path.read_text()
+          complete_array = """static const uint32_t bcm2835_property_clock_ids[] = {
+              RPI_FIRMWARE_EMMC_CLK_ID,
+              RPI_FIRMWARE_UART_CLK_ID,
+              RPI_FIRMWARE_ARM_CLK_ID,
+              RPI_FIRMWARE_CORE_CLK_ID,
+              RPI_FIRMWARE_V3D_CLK_ID,
+              RPI_FIRMWARE_H264_CLK_ID,
+              RPI_FIRMWARE_ISP_CLK_ID,
+              RPI_FIRMWARE_SDRAM_CLK_ID,
+              RPI_FIRMWARE_PIXEL_CLK_ID,
+              RPI_FIRMWARE_PWM_CLK_ID,
+              RPI_FIRMWARE_HEVC_CLK_ID,
+              RPI_FIRMWARE_EMMC2_CLK_ID,
+              RPI_FIRMWARE_M2MC_CLK_ID,
+              RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
+              RPI_FIRMWARE_VEC_CLK_ID,
+              RPI_FIRMWARE_DISP_CLK_ID,
+          };"""
+          source, count = re.subn(
+              r"static const uint32_t bcm2835_property_clock_ids\[\] = \{.*?\n\};",
+              complete_array,
+              source,
+              count=1,
+              flags=re.DOTALL,
+          )
+          if count != 1:
+              raise SystemExit("unable to replace firmware clock array")
+          property_path.write_text(source)
+
+          workflow_path = Path(".github/workflows/vc4-linux-kms-frontier.yml")
+          workflow = workflow_path.read_text()
+          branch_line = f"      - {feature_branch}\n"
+          if branch_line not in workflow:
+              anchor = "      - agent/vc4-linux-kms-frontier\n"
+              if workflow.count(anchor) != 1:
+                  raise SystemExit("unable to extend KMS workflow branch list")
+              workflow = workflow.replace(anchor, anchor + branch_line, 1)
+
+          clock_path_line = "      - scripts/vc4/property-clock-smoke.py\n"
+          if clock_path_line not in workflow:
+              anchor = "      - scripts/vc4/property-power-domain-smoke.py\n"
+              if workflow.count(anchor) != 1:
+                  raise SystemExit("unable to extend KMS workflow path list")
+              workflow = workflow.replace(anchor, anchor + clock_path_line, 1)
+
+          if "clock-contract.log" not in workflow:
+              anchor = """          python3 scripts/vc4/msync-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+          """
+              insertion = """          python3 scripts/vc4/property-clock-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/clock-contract.log"
+          """
+              if workflow.count(anchor) != 1:
+                  raise SystemExit("unable to add clock regression command")
+              workflow = workflow.replace(anchor, insertion + anchor, 1)
+
+          old_delete = """          if [ "$passed" = true ]; then
+                git rm -- .github/workflows/vc4-linux-kms-frontier.yml
+              fi
+          """
+          new_delete = """          if [ "$passed" = true ] && \\
+                 [ "$GITHUB_REF_NAME" = agent/vc4-linux-kms-frontier ]; then
+                git rm -- .github/workflows/vc4-linux-kms-frontier.yml
+              fi
+          """
+          if "GITHUB_REF_NAME" not in workflow:
+              if workflow.count(old_delete) != 1:
+                  raise SystemExit("unable to guard KMS workflow cleanup")
+              workflow = workflow.replace(old_delete, new_delete, 1)
+          workflow_path.write_text(workflow)
+          PY
+
+          test -f scripts/vc4/property-clock-smoke.py
+          python3 -m py_compile \
+            scripts/vc4/property-clock-smoke.py \
+            scripts/vc4/summarize-linux-kms.py
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          header = Path("include/hw/arm/raspberrypi-fw-defs.h").read_text()
+          source = Path("hw/misc/bcm2835_property.c").read_text()
+          workflow = Path(".github/workflows/vc4-linux-kms-frontier.yml").read_text()
+          expected = [
+              "RPI_FIRMWARE_EMMC_CLK_ID",
+              "RPI_FIRMWARE_UART_CLK_ID",
+              "RPI_FIRMWARE_ARM_CLK_ID",
+              "RPI_FIRMWARE_CORE_CLK_ID",
+              "RPI_FIRMWARE_V3D_CLK_ID",
+              "RPI_FIRMWARE_H264_CLK_ID",
+              "RPI_FIRMWARE_ISP_CLK_ID",
+              "RPI_FIRMWARE_SDRAM_CLK_ID",
+              "RPI_FIRMWARE_PIXEL_CLK_ID",
+              "RPI_FIRMWARE_PWM_CLK_ID",
+              "RPI_FIRMWARE_HEVC_CLK_ID",
+              "RPI_FIRMWARE_EMMC2_CLK_ID",
+              "RPI_FIRMWARE_M2MC_CLK_ID",
+              "RPI_FIRMWARE_PIXEL_BVB_CLK_ID",
+              "RPI_FIRMWARE_VEC_CLK_ID",
+              "RPI_FIRMWARE_DISP_CLK_ID",
+          ]
+          positions = [source.index(name) for name in expected]
+          if positions != sorted(positions):
+              raise SystemExit("firmware clock IDs are not ordered")
+          if "RPI_FIRMWARE_DISP_CLK_ID" not in header:
+              raise SystemExit("display clock ID is absent")
+          if "property-clock-smoke.py" not in workflow:
+              raise SystemExit("clock smoke is absent from KMS workflow")
+          PY
+
+      - name: Publish source and gate changes
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            include/hw/arm/raspberrypi-fw-defs.h \
+            hw/misc/bcm2835_property.c \
+            scripts/vc4/property-clock-smoke.py \
+            .github/workflows/vc4-linux-kms-frontier.yml
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-clock-contract-v2-bootstrap.yml \
+            .github/workflows/vc4-kms-clock-contract-v3-bootstrap.yml
+          git commit -m "hw/misc: complete Raspberry Pi firmware clock enumeration"
+          git pull --rebase origin agent/vc4-linux-kms-clock-contract-v2
+          git push origin HEAD:agent/vc4-linux-kms-clock-contract-v2
