@@ -1,0 +1,240 @@
+name: VC4 Linux SETCRTC stack diagnostics
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-modeset-frontier
+    paths:
+      - .github/workflows/vc4-kms-setcrtc-stack-diagnostics.yml
+      - VC4_MODESET_ROUTE_SETCRTC_TIMEOUT
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-setcrtc-stack-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  instrument:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      BRANCH: agent/vc4-linux-kms-modeset-frontier
+      ROUTE: VC4_MODESET_ROUTE_SETCRTC_TIMEOUT
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Confirm the blocked SETCRTC route
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BRANCH"
+          git show "origin/$BRANCH:$ROUTE" > /tmp/route.json
+          python3 - <<'PY'
+          import json
+          route = json.load(open('/tmp/route.json'))
+          if route.get('route') != 'SETCRTC_TIMEOUT':
+              raise SystemExit(f"unexpected route: {route!r}")
+          PY
+
+      - name: Add supervised kernel and DRM timeout evidence
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/vc4/linux-kms-modeset-probe.inc.c')
+          source = path.read_text()
+
+          include_anchor = '#include <sys/mman.h>\n'
+          includes = '#include <sys/mount.h>\n#include <sys/stat.h>\n'
+          if '#include <sys/mount.h>' not in source:
+              if source.count(include_anchor) != 1:
+                  raise SystemExit('mmap include anchor changed')
+              source = source.replace(include_anchor, include_anchor + includes, 1)
+
+          helper_marker = 'VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_BEGIN'
+          if helper_marker not in source:
+              anchor = 'static void vc4_kms_modeset_supervise(void)\n'
+              if source.count(anchor) != 1:
+                  raise SystemExit('modeset supervisor anchor changed')
+              helpers = r'''static void vc4_modeset_dump_path(const char *label,
+                                          const char *path, size_t limit)
+          {
+              char buffer[1024];
+              size_t total = 0;
+              ssize_t bytes;
+              int fd;
+
+              fd = open(path, O_RDONLY | O_CLOEXEC);
+              if (fd < 0) {
+                  printf("VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_UNAVAILABLE "
+                         "label=%s path=%s errno=%d\n", label, path, errno);
+                  fflush(stdout);
+                  return;
+              }
+
+              printf("VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_FILE_BEGIN "
+                     "label=%s path=%s\n", label, path);
+              fflush(stdout);
+              while (total < limit) {
+                  size_t request = sizeof(buffer);
+
+                  if (request > limit - total) {
+                      request = limit - total;
+                  }
+                  do {
+                      bytes = read(fd, buffer, request);
+                  } while (bytes < 0 && errno == EINTR);
+                  if (bytes <= 0) {
+                      break;
+                  }
+                  if (write(STDOUT_FILENO, buffer, (size_t)bytes) != bytes) {
+                      break;
+                  }
+                  total += (size_t)bytes;
+              }
+              if (total && buffer[0] != '\n') {
+                  write(STDOUT_FILENO, "\n", 1);
+              }
+              close(fd);
+              printf("VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_FILE_END "
+                     "label=%s bytes=%zu\n", label, total);
+              fflush(stdout);
+          }
+
+          static void vc4_modeset_dump_timeout_state(pid_t child)
+          {
+              static const struct {
+                  const char *label;
+                  const char *path;
+                  size_t limit;
+              } files[] = {
+                  { "interrupts", "/proc/interrupts", 32768 },
+                  { "drm-state", "/sys/kernel/debug/dri/0/state", 32768 },
+                  { "drm-clients", "/sys/kernel/debug/dri/0/clients", 16384 },
+                  { "hvs-regs", "/sys/kernel/debug/dri/0/hvs_regs", 32768 },
+                  { "hdmi-regs", "/sys/kernel/debug/dri/0/hdmi_regs", 32768 },
+                  { "crtc-0", "/sys/kernel/debug/dri/0/crtc-0", 32768 },
+                  { "clk-summary", "/sys/kernel/debug/clk/clk_summary", 65536 },
+              };
+              char path[96];
+              size_t index;
+
+              printf("VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_BEGIN child=%ld\n",
+                     (long)child);
+              fflush(stdout);
+              if (mkdir("/sys/kernel/debug", 0755) < 0 && errno != EEXIST) {
+                  printf("VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_MKDIR errno=%d\n",
+                         errno);
+              }
+              if (mount("debugfs", "/sys/kernel/debug", "debugfs", 0, NULL) < 0 &&
+                  errno != EBUSY) {
+                  printf("VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_MOUNT errno=%d\n",
+                         errno);
+              }
+
+              snprintf(path, sizeof(path), "/proc/%ld/stack", (long)child);
+              vc4_modeset_dump_path("child-stack", path, 16384);
+              snprintf(path, sizeof(path), "/proc/%ld/wchan", (long)child);
+              vc4_modeset_dump_path("child-wchan", path, 4096);
+              snprintf(path, sizeof(path), "/proc/%ld/syscall", (long)child);
+              vc4_modeset_dump_path("child-syscall", path, 4096);
+              snprintf(path, sizeof(path), "/proc/%ld/status", (long)child);
+              vc4_modeset_dump_path("child-status", path, 16384);
+
+              for (index = 0; index < sizeof(files) / sizeof(files[0]); index++) {
+                  vc4_modeset_dump_path(files[index].label, files[index].path,
+                                        files[index].limit);
+              }
+              printf("VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_END\n");
+              fflush(stdout);
+          }
+
+          '''
+              source = source.replace(anchor, helpers + anchor, 1)
+
+          old_timeout = '''    kill(child, SIGKILL);
+              waitpid(child, NULL, 0);
+              printf("VC4_LINUX_KMS_MODESET_TIMEOUT\\n");
+              printf("VC4_LINUX_KMS_MODESET_SUPERVISOR_DONE\\n");
+              fflush(stdout);
+          '''
+          new_timeout = '''    vc4_modeset_dump_timeout_state(child);
+              kill(child, SIGKILL);
+              for (iteration = 0; iteration < 20; iteration++) {
+                  pid_t result = waitpid(child, NULL, WNOHANG);
+
+                  if (result == child) {
+                      printf("VC4_LINUX_KMS_MODESET_TIMEOUT_CHILD_REAPED\\n");
+                      break;
+                  }
+                  nanosleep(&delay, NULL);
+              }
+              printf("VC4_LINUX_KMS_MODESET_TIMEOUT\\n");
+              printf("VC4_LINUX_KMS_MODESET_SUPERVISOR_DONE\\n");
+              fflush(stdout);
+          '''
+          if 'vc4_modeset_dump_timeout_state(child);' not in source:
+              if source.count(old_timeout) != 1:
+                  raise SystemExit('timeout cleanup anchor changed')
+              source = source.replace(old_timeout, new_timeout, 1)
+
+          path.write_text(source)
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('tests/vc4/linux-kms-modeset-probe.inc.c').read_text()
+          required = (
+              'VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_BEGIN',
+              '/proc/%ld/stack',
+              '/sys/kernel/debug/dri/0/hvs_regs',
+              'vc4_modeset_dump_timeout_state(child);',
+          )
+          missing = [item for item in required if item not in source]
+          if missing:
+              raise SystemExit(f'missing timeout diagnostics: {missing}')
+          PY
+          git diff --check
+
+      - name: Extend branch-local source validation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/vc4-linux-kms-modeset-frontier.yml')
+          workflow = path.read_text()
+          marker = 'VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_BEGIN'
+          if marker not in workflow:
+              anchor = '            VC4_LINUX_KMS_MODESET_TIMEOUT; do\n'
+              replacement = (
+                  '            VC4_LINUX_KMS_MODESET_TIMEOUT \\\n'
+                  '            VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_BEGIN \\\n'
+                  '            VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_END; do\n'
+              )
+              if workflow.count(anchor) != 1:
+                  raise SystemExit('modeset marker-list anchor changed')
+              workflow = workflow.replace(anchor, replacement, 1)
+          path.write_text(workflow)
+          PY
+          git diff --check
+
+      - name: Publish timeout diagnostics
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          cp /tmp/route.json "$ROUTE"
+          git add -- \
+            "$ROUTE" \
+            tests/vc4/linux-kms-modeset-probe.inc.c \
+            .github/workflows/vc4-linux-kms-modeset-frontier.yml
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-setcrtc-stack-diagnostics.yml
+          git commit -m "test/vc4: capture blocked SETCRTC kernel state"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
