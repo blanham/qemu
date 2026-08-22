@@ -127,6 +127,7 @@ if config_all_devices.has_key('CONFIG_VIRTIO_VGA')
     virtio_vga_gl_ss = ss.source_set()
     virtio_vga_gl_ss.add(when: ['CONFIG_VIRTIO_VGA', virgl, opengl],
                          if_true: [files('virtio-vga-gl.c'), pixman, virgl])
+    virtio_vga_gl_ss.add(when: 'CONFIG_ACPI', if_true: files('acpi-vga.c'))
     hw_display_modules += {'virtio-vga-gl': virtio_vga_gl_ss}
   endif
 
@@ -134,6 +135,7 @@ if config_all_devices.has_key('CONFIG_VIRTIO_VGA')
     virtio_vga_rutabaga_ss = ss.source_set()
     virtio_vga_rutabaga_ss.add(when: ['CONFIG_VIRTIO_VGA', rutabaga],
                                if_true: [files('virtio-vga-rutabaga.c'), pixman])
+    virtio_vga_rutabaga_ss.add(when: 'CONFIG_ACPI', if_true: files('acpi-vga.c'))
     hw_display_modules += {'virtio-vga-rutabaga': virtio_vga_rutabaga_ss}
   endif
 endif
