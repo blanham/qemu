@@ -1,0 +1,13 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target-path = "/soc/hdmi@7e902000";
+        __overlay__ {
+            /delete-property/ hpd-gpios;
+        };
+    };
+};
