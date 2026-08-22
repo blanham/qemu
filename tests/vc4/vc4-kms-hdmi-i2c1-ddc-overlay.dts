@@ -1,0 +1,26 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    /*
+     * Point HDMI at the other BCM2835 I2C adapter.  It intentionally has no
+     * EDID device: adapter registration is sufficient for vc4_hdmi_bind(),
+     * while connector detection may remain disconnected later.  Advancement
+     * isolates the native BSC2 DDC adapter as the silent defer source.
+     */
+    fragment@0 {
+        target = <&i2c1>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@1 {
+        target = <&hdmi>;
+        __overlay__ {
+            ddc = <&i2c1>;
+        };
+    };
+};
