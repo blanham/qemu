@@ -1,0 +1,72 @@
+name: VC4 Linux native KMS page-flip bootstrap
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-pageflip-frontier
+    paths:
+      - .github/workflows/vc4-kms-pageflip-bootstrap.yml
+      - tests/vc4/linux-kms-pageflip-probe.inc.c
+      - scripts/vc4/analyze-kms-pageflip.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BRANCH: agent/vc4-linux-kms-pageflip-frontier
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wire the supervised page-flip witness into PID 1
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/vc4/linux-v3d-modular-init.c')
+          source = path.read_text()
+          include = '#include "linux-kms-pageflip-probe.inc.c"\n'
+          if include not in source:
+              anchor = '#include "linux-kms-modeset-probe.inc.c"\n'
+              if source.count(anchor) != 1:
+                  raise SystemExit('modeset include anchor changed')
+              source = source.replace(anchor, anchor + include, 1)
+
+          call = 'vc4_kms_pageflip_supervise();'
+          if call not in source:
+              anchor = 'vc4_kms_modeset_supervise();'
+              if source.count(anchor) != 1:
+                  raise SystemExit('modeset supervisor call anchor changed')
+              source = source.replace(anchor, anchor + '\n    ' + call, 1)
+
+          if source.count(include) != 1 or source.count(call) != 1:
+              raise SystemExit('page-flip include or call is not unique')
+          path.write_text(source)
+          PY
+          python3 -m py_compile scripts/vc4/analyze-kms-pageflip.py
+          git diff --check
+          grep -Fq '#include "linux-kms-pageflip-probe.inc.c"' \
+            tests/vc4/linux-v3d-modular-init.c
+          grep -Fq 'vc4_kms_pageflip_supervise();' \
+            tests/vc4/linux-v3d-modular-init.c
+
+      - name: Publish page-flip witness
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            tests/vc4/linux-v3d-modular-init.c \
+            tests/vc4/linux-kms-pageflip-probe.inc.c \
+            scripts/vc4/analyze-kms-pageflip.py
+          git rm .github/workflows/vc4-kms-pageflip-bootstrap.yml
+          git commit -m "test/vc4: add supervised native KMS page-flip witness"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
