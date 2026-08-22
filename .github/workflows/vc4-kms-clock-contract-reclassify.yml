@@ -1,0 +1,167 @@
+name: VC4 KMS clock-contract reclassifier
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-kms-clock-contract-reclassify.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-clock-contract-reclassifier
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      STATUS: VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json
+      OLD_DIAG: VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.json
+      NEW_JSON: VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG2.json
+      NEW_MD: VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG2.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for a newer full-gate record
+        run: |
+          set -euo pipefail
+          old_source=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.json")
+          print(json.loads(path.read_text()).get("source_sha", "") if path.is_file() else "")
+          PY
+          )
+          printf '%s\n' "$old_source" > /tmp/old-source
+          rm -f /tmp/new-status.json
+          for attempt in $(seq 1 100); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$STATUS" > /tmp/candidate.json 2>/dev/null; then
+              new_source=$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/candidate.json')).get('source_sha', ''))
+          PY
+              )
+              if [ -n "$new_source" ] && [ "$new_source" != "$old_source" ]; then
+                cp /tmp/candidate.json /tmp/new-status.json
+                break
+              fi
+            fi
+            sleep 10
+          done
+          test -s /tmp/new-status.json
+
+      - name: Classify the new frontier
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          status = json.load(open('/tmp/new-status.json'))
+          serial_lines = [str(line) for line in status.get('serial_tail') or []]
+          serial = '\n'.join(serial_lines)
+          lower = serial.lower()
+          outcomes = status.get('outcomes') or {}
+          markers = status.get('markers') or {}
+          classification = str(status.get('classification') or 'unknown')
+          failed = [key for key, value in outcomes.items() if value != 'success']
+          render_ok = outcomes.get('render_regression') == 'success'
+          pixel_error = bool(re.search(
+              r'of_clk_hw_onecell_get: invalid index 9|Failed to get pixel clock',
+              serial,
+          ))
+
+          if failed:
+              next_action = 'workflow-' + '-'.join(failed) + '-failed'
+          elif not render_ok:
+              next_action = 'renderer-regression'
+          elif pixel_error:
+              next_action = 'firmware-clock-index-9-still-missing'
+          elif classification == 'linux-vc4-kms-topology-clear':
+              next_action = 'kms-topology-clear'
+          elif 'failed to find ddc node' in lower:
+              next_action = 'hdmi-ddc-phandle-missing'
+          elif 'failed to get ddc i2c adapter' in lower:
+              next_action = 'hdmi-ddc-adapter-unavailable'
+          elif 'hdmi state machine clock' in lower:
+              next_action = 'hdmi-state-machine-clock-unavailable'
+          elif classification == 'vc4-kms-physical-connector-disconnected':
+              next_action = 'hdmi-hotplug-detect-unavailable'
+          elif classification == 'vc4-kms-connected-without-modes':
+              next_action = 'hdmi-edid-unavailable'
+          elif classification == 'vc4-kms-physical-connector-unavailable':
+              next_action = 'hdmi-connector-registration-unavailable'
+          elif classification == 'vc4-kms-crtc-unavailable':
+              next_action = 'pixel-valve-crtc-unavailable'
+          else:
+              next_action = classification
+
+          interesting = [
+              line for line in serial_lines
+              if any(token in line.lower() for token in (
+                  'vc4-drm', 'clock', 'ddc', 'edid', 'hpd', 'failed',
+                  'error', 'connector', 'crtc', 'bound ', 'deferred',
+              ))
+          ][-120:]
+          record = {
+              'schema_version': 2,
+              'source_sha': status.get('source_sha'),
+              'kms_run_id': status.get('run_id'),
+              'kms_classification': classification,
+              'next_action': next_action,
+              'failed_workflow_steps': failed,
+              'render_submission_preserved': render_ok,
+              'firmware_clock_index_9_error': pixel_error,
+              'markers': markers,
+              'counts': status.get('counts') or {},
+              'components': status.get('components') or [],
+              'connectors': status.get('connectors') or [],
+              'interesting_serial': interesting,
+          }
+          Path('VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG2.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          lines = [
+              '# VC4 Linux KMS clock-contract diagnosis — second gate',
+              '',
+              f"- Source SHA: `{record['source_sha']}`",
+              f"- KMS frontier: **`{classification}`**",
+              f"- Next contract: **`{next_action}`**",
+              f"- Failed workflow steps: `{failed}`",
+              f"- Render submission preserved: `{render_ok}`",
+              f"- Pixel-clock index 9 failure remains: `{pixel_error}`",
+              '',
+              '## Relevant serial evidence',
+              '',
+          ]
+          lines.extend(f'- `{line}`' for line in interesting)
+          if not interesting:
+              lines.append('- None recorded')
+          Path('VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG2.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish the second diagnosis
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          cp /tmp/new-status.json "$STATUS"
+          git add -- "$STATUS" "$NEW_JSON" "$NEW_MD"
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-clock-contract-reclassify.yml
+          git commit -m "test/vc4: classify the post-monitor KMS frontier"
+          git push origin "HEAD:$BRANCH"
