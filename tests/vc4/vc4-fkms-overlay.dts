@@ -1,0 +1,39 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    /*
+     * Match the Raspberry Pi vc4-fkms-v3d topology: Linux owns a VC4 DRM
+     * master and V3D render node, while scanout is delegated to the firmware
+     * KMS component through mailbox property tags and the SMI callback IRQ.
+     */
+    fragment@0 {
+        target = <&fb>;
+        __overlay__ {
+            status = "disabled";
+        };
+    };
+
+    fragment@1 {
+        target = <&firmwarekms>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@2 {
+        target = <&v3d>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@3 {
+        target = <&vc4>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+};
