@@ -1,150 +1,145 @@
 #!/usr/bin/env python3
-"""Exercise the Raspberry Pi firmware GET_CLOCKS enumeration used by Pi 3 KMS."""
+"""Verify the Raspberry Pi firmware GET_CLOCKS discovery contract."""
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
-from typing import Any
+import time
+
+PERIPHERAL_BASE = 0x3F000000
+MAILBOX_READ = PERIPHERAL_BASE + 0x0000B880
+MAILBOX_WRITE = PERIPHERAL_BASE + 0x0000B8A0
+PROPERTY_CHANNEL = 8
+BUFFER = 0x00010000
+GET_CLOCKS = 0x00010007
+SUCCESS = 1 << 31
+EXPECTED = (3, 4, 5, 7, 9, 11, 13, 14, 15, 16)
 
 
-RPI_FWREQ_GET_CLOCKS = 0x00010007
-EXPECTED_CLOCK_IDS = (3, 4, 5, 7, 9, 11, 13, 14, 15)
+class QTest:
+    def __init__(self, path: Path) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(str(path))
+        self.reader = self.sock.makefile("r", encoding="utf-8")
+
+    def close(self) -> None:
+        self.reader.close()
+        self.sock.close()
+
+    def command(self, command: str) -> list[str]:
+        self.sock.sendall((command + "\n").encode())
+        while True:
+            line = self.reader.readline()
+            if not line:
+                raise RuntimeError(f"qtest closed during {command!r}")
+            words = line.strip().split()
+            if not words or words[0] == "IRQ":
+                continue
+            if words[0] != "OK":
+                raise RuntimeError(f"qtest error: {line.strip()}")
+            return words[1:]
+
+    def writel(self, address: int, value: int) -> None:
+        self.command(f"writel 0x{address:x} 0x{value & 0xffffffff:x}")
+
+    def readl(self, address: int) -> int:
+        values = self.command(f"readl 0x{address:x}")
+        if len(values) != 1:
+            raise RuntimeError(f"unexpected read response: {values!r}")
+        return int(values[0], 0)
 
 
-def load_property_support() -> Any:
-    support_path = Path(__file__).with_name("property-power-domain-smoke.py")
-    spec = importlib.util.spec_from_file_location(
-        "vc4_property_smoke_support", support_path
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load property smoke support: {support_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def get_clock_ids(support: Any, qtest: Any, pair_count: int) -> tuple[int, ...]:
-    response = support.property_words_request(
-        qtest,
-        RPI_FWREQ_GET_CLOCKS,
-        tuple(0 for _ in range(pair_count * 2)),
-        pair_count * 2 * 4,
-    )
-    parents = tuple(response[0::2])
-    if any(parent != 0 for parent in parents):
-        raise RuntimeError(f"GET_CLOCKS returned unsupported parents: {parents!r}")
-    return tuple(response[1::2])
+def connect(path: Path, process: subprocess.Popen[str]) -> QTest:
+    deadline = time.monotonic() + 10
+    last: OSError | None = None
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            stderr = process.stderr.read() if process.stderr else ""
+            raise RuntimeError(
+                f"QEMU exited with {process.returncode}:\n{stderr}"
+            )
+        try:
+            return QTest(path)
+        except (FileNotFoundError, ConnectionRefusedError) as error:
+            last = error
+            time.sleep(0.02)
+    raise RuntimeError(f"qtest connection timed out: {last}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--qemu",
-        type=Path,
-        default=Path("build/qemu-system-aarch64"),
-        help="path to qemu-system-aarch64",
-    )
+    parser.add_argument("--qemu", type=Path, required=True)
     args = parser.parse_args()
-
     qemu = args.qemu.resolve()
     if not qemu.is_file():
-        parser.error(f"QEMU binary does not exist: {qemu}")
+        parser.error(f"missing QEMU binary: {qemu}")
 
-    support = load_property_support()
-
-    with tempfile.TemporaryDirectory(prefix="vc4-property-clocks-") as temp_dir:
-        temp = Path(temp_dir)
-        qtest_path = temp / "qtest.sock"
-        qmp_path = temp / "qmp.sock"
+    with tempfile.TemporaryDirectory(prefix="vc4-clocks-") as temp:
+        qtest_path = Path(temp) / "qtest.sock"
         process = subprocess.Popen(
             (
-                str(qemu),
-                "-M",
-                "raspi3b",
-                "-accel",
-                "qtest",
-                "-S",
-                "-display",
-                "none",
-                "-serial",
-                "none",
-                "-monitor",
-                "none",
-                "-qtest",
-                f"unix:{qtest_path},server=on,wait=off",
-                "-qmp",
-                f"unix:{qmp_path},server=on,wait=off",
+                str(qemu), "-M", "raspi3b", "-accel", "qtest", "-S",
+                "-display", "none", "-serial", "none",
+                "-monitor", "none",
+                "-qtest", f"unix:{qtest_path},server=on,wait=off",
             ),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
         )
-        qtest = None
-        qmp = None
+        client: QTest | None = None
         try:
-            qtest = support.connect_when_ready(
-                qtest_path, process, support.QTestClient
+            client = connect(qtest_path, process)
+            pair_capacity = 17
+            payload_words = pair_capacity * 2
+            payload_bytes = payload_words * 4
+            words = (
+                24 + payload_bytes, 0, GET_CLOCKS,
+                payload_bytes, 0,
+                *(0 for _ in range(payload_words)), 0,
             )
-            qmp = support.connect_when_ready(qmp_path, process, support.QMPClient)
-
-            clock_ids = get_clock_ids(support, qtest, len(EXPECTED_CLOCK_IDS))
-            if clock_ids != EXPECTED_CLOCK_IDS:
+            for index, word in enumerate(words):
+                client.writel(BUFFER + index * 4, word)
+            client.writel(MAILBOX_WRITE, BUFFER | PROPERTY_CHANNEL)
+            returned = client.readl(MAILBOX_READ)
+            if returned != BUFFER | PROPERTY_CHANNEL:
+                raise RuntimeError(f"wrong mailbox response: {returned:#x}")
+            if client.readl(BUFFER + 4) != SUCCESS:
+                raise RuntimeError("property request was not successful")
+            length = client.readl(BUFFER + 16)
+            expected_length = SUCCESS | (len(EXPECTED) * 8)
+            if length != expected_length:
                 raise RuntimeError(
-                    f"unexpected GET_CLOCKS response: {clock_ids!r}; "
-                    f"expected {EXPECTED_CLOCK_IDS!r}"
+                    f"response length {length:#x} != {expected_length:#x}"
                 )
-
-            truncated_ids = get_clock_ids(support, qtest, 4)
-            if truncated_ids != EXPECTED_CLOCK_IDS[:4]:
-                raise RuntimeError(
-                    f"unexpected truncated GET_CLOCKS response: {truncated_ids!r}"
+            pairs = tuple(
+                (
+                    client.readl(BUFFER + 20 + index * 8),
+                    client.readl(BUFFER + 24 + index * 8),
                 )
-
-            if 9 not in clock_ids or 13 not in clock_ids:
+                for index in range(len(EXPECTED))
+            )
+            expected_pairs = tuple((0, clock) for clock in EXPECTED)
+            if pairs != expected_pairs:
                 raise RuntimeError(
-                    "GET_CLOCKS omitted the HDMI pixel or state-machine clock"
-                )
-
-            qmp.execute("system_reset")
-            reset_ids = get_clock_ids(support, qtest, len(EXPECTED_CLOCK_IDS))
-            if reset_ids != EXPECTED_CLOCK_IDS:
-                raise RuntimeError(
-                    f"GET_CLOCKS changed across reset: {reset_ids!r}"
+                    f"clock pairs {pairs!r} != {expected_pairs!r}"
                 )
         finally:
-            if qmp is not None:
-                try:
-                    qmp.execute("quit")
-                except (OSError, RuntimeError):
-                    pass
-            if qtest is not None:
-                qtest.close()
-            if qmp is not None:
-                qmp.close()
+            if client is not None:
+                client.close()
+            if process.poll() is None:
+                process.terminate()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                process.kill()
+                process.wait(timeout=5)
 
-        if process.returncode not in (0, None):
-            stderr = process.stderr.read() if process.stderr else ""
-            raise RuntimeError(
-                f"QEMU exited with status {process.returncode}:\n{stderr}"
-            )
-
-    print(
-        "Raspberry Pi firmware clock enumeration smoke test passed: "
-        + ",".join(str(clock_id) for clock_id in EXPECTED_CLOCK_IDS)
-    )
+    print("Raspberry Pi firmware clock enumeration smoke test passed")
     return 0
 
 
