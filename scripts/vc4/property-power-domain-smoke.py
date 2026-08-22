@@ -25,8 +25,15 @@ RPI_FWREQ_GET_POWER_STATE = 0x00020001
 RPI_FWREQ_SET_POWER_STATE = 0x00028001
 RPI_FWREQ_GET_DOMAIN_STATE = 0x00030030
 RPI_FWREQ_SET_DOMAIN_STATE = 0x00038030
+RPI_FWREQ_GET_GPIO_STATE = 0x00030041
+RPI_FWREQ_GET_GPIO_CONFIG = 0x00030043
+RPI_FWREQ_SET_GPIO_STATE = 0x00038041
+RPI_FWREQ_SET_GPIO_CONFIG = 0x00038043
 
 LEGACY_V3D_POWER_ID = 10
+EXP_GPIO_BASE = 128
+EXP_GPIO_COUNT = 8
+EXP_GPIO_HDMI_HPD = 4
 MODERN_V3D_DOMAIN_ID = 11
 
 
@@ -129,20 +136,23 @@ def connect_when_ready(
     raise RuntimeError(f"timed out connecting to {path}: {last_error}")
 
 
-def property_request(
+def property_words_request(
     qtest: QTestClient,
     tag: int,
-    resource_id: int,
-    state: int,
-) -> int:
+    payload: tuple[int, ...],
+    expected_response_size: int,
+) -> list[int]:
+    if expected_response_size % 4:
+        raise ValueError("property responses must contain whole words")
+
+    buffer_size = len(payload) * 4
     words = (
-        32,
+        24 + buffer_size,
         0,
         tag,
-        8,
+        buffer_size,
         0,
-        resource_id,
-        state,
+        *payload,
         0,
     )
     for index, word in enumerate(words):
@@ -166,19 +176,107 @@ def property_request(
             f"property request failed: response=0x{response_code:08x}"
         )
     response_length = qtest.readl(PROPERTY_BUFFER + 16)
-    if response_length != PROPERTY_RESPONSE_LENGTH:
+    expected_length = (1 << 31) | expected_response_size
+    if response_length != expected_length:
         raise RuntimeError(
             "property tag returned the wrong response length: "
-            f"0x{response_length:08x}"
+            f"0x{response_length:08x} != 0x{expected_length:08x}"
         )
-    returned_id = qtest.readl(PROPERTY_BUFFER + 20)
+
+    return [
+        qtest.readl(PROPERTY_BUFFER + 20 + index * 4)
+        for index in range(expected_response_size // 4)
+    ]
+
+
+def property_request(
+    qtest: QTestClient,
+    tag: int,
+    resource_id: int,
+    state: int,
+) -> int:
+    response = property_words_request(
+        qtest, tag, (resource_id, state), 8
+    )
+    returned_id, returned_state = response
     if returned_id != resource_id:
         raise RuntimeError(
             f"property tag changed resource id {resource_id} to {returned_id}"
         )
-    return qtest.readl(PROPERTY_BUFFER + 24)
+    return returned_state
 
 
+def exp_gpio_get_config(
+    qtest: QTestClient, offset: int
+) -> tuple[int, int, int, int]:
+    response = property_words_request(
+        qtest,
+        RPI_FWREQ_GET_GPIO_CONFIG,
+        (EXP_GPIO_BASE + offset, 0, 0, 0, 0),
+        20,
+    )
+    if response[0] != 0:
+        raise RuntimeError(
+            f"failed to read expander GPIO {offset} config: {response!r}"
+        )
+    return tuple(response[1:])
+
+
+def exp_gpio_set_config(
+    qtest: QTestClient,
+    offset: int,
+    direction: int,
+    polarity: int,
+    term_en: int,
+    term_pull_up: int,
+    state: int,
+) -> None:
+    response = property_words_request(
+        qtest,
+        RPI_FWREQ_SET_GPIO_CONFIG,
+        (
+            EXP_GPIO_BASE + offset,
+            direction,
+            polarity,
+            term_en,
+            term_pull_up,
+            state,
+        ),
+        24,
+    )
+    if response[0] != 0:
+        raise RuntimeError(
+            f"failed to write expander GPIO {offset} config: {response!r}"
+        )
+
+
+def exp_gpio_get_state(qtest: QTestClient, offset: int) -> int:
+    response = property_words_request(
+        qtest,
+        RPI_FWREQ_GET_GPIO_STATE,
+        (EXP_GPIO_BASE + offset, 0),
+        8,
+    )
+    if response[0] != 0:
+        raise RuntimeError(
+            f"failed to read expander GPIO {offset} state: {response!r}"
+        )
+    return response[1]
+
+
+def exp_gpio_set_state(
+    qtest: QTestClient, offset: int, state: int
+) -> None:
+    response = property_words_request(
+        qtest,
+        RPI_FWREQ_SET_GPIO_STATE,
+        (EXP_GPIO_BASE + offset, state),
+        8,
+    )
+    if response[0] != 0 or response[1] != state:
+        raise RuntimeError(
+            f"failed to write expander GPIO {offset} state: {response!r}"
+        )
 def expect_state(
     qtest: QTestClient,
     tag: int,
@@ -301,6 +399,51 @@ def main() -> int:
                 1,
                 0,
             )
+
+
+            for offset in range(EXP_GPIO_COUNT):
+                config = exp_gpio_get_config(qtest, offset)
+                if config != (0, 0, 0, 0):
+                    raise RuntimeError(
+                        f"expander GPIO {offset} reset config is {config!r}"
+                    )
+                if exp_gpio_get_state(qtest, offset) != 0:
+                    raise RuntimeError(
+                        f"expander GPIO {offset} reset state is not low"
+                    )
+
+            exp_gpio_set_config(
+                qtest,
+                EXP_GPIO_HDMI_HPD,
+                direction=1,
+                polarity=1,
+                term_en=1,
+                term_pull_up=0,
+                state=1,
+            )
+            if exp_gpio_get_config(qtest, EXP_GPIO_HDMI_HPD) != (1, 1, 1, 0):
+                raise RuntimeError("expander GPIO config did not persist")
+            if exp_gpio_get_state(qtest, EXP_GPIO_HDMI_HPD) != 1:
+                raise RuntimeError("expander GPIO configured state did not persist")
+
+            exp_gpio_set_state(qtest, EXP_GPIO_HDMI_HPD, 0)
+            if exp_gpio_get_state(qtest, EXP_GPIO_HDMI_HPD) != 0:
+                raise RuntimeError("expander GPIO state update did not persist")
+
+            invalid = property_words_request(
+                qtest,
+                RPI_FWREQ_GET_GPIO_CONFIG,
+                (EXP_GPIO_BASE - 1, 0, 0, 0, 0),
+                20,
+            )
+            if invalid[0] == 0:
+                raise RuntimeError("invalid expander GPIO was accepted")
+
+            qmp.execute("system_reset")
+            if exp_gpio_get_config(qtest, EXP_GPIO_HDMI_HPD) != (0, 0, 0, 0):
+                raise RuntimeError("expander GPIO config survived reset")
+            if exp_gpio_get_state(qtest, EXP_GPIO_HDMI_HPD) != 0:
+                raise RuntimeError("expander GPIO state survived reset")
         finally:
             if qmp is not None:
                 try:
@@ -327,7 +470,7 @@ def main() -> int:
                 f"QEMU exited with status {process.returncode}:\n{stderr}"
             )
 
-    print("Raspberry Pi firmware power-domain smoke test passed")
+    print("Raspberry Pi firmware power-domain and expander GPIO smoke test passed")
     return 0
 
 

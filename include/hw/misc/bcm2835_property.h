@@ -34,6 +34,11 @@ struct BCM2835PropertyState {
     uint32_t addr;
     uint32_t legacy_power_state;
     uint32_t power_domain_state;
+    uint32_t exp_gpio_direction;
+    uint32_t exp_gpio_polarity;
+    uint32_t exp_gpio_term_en;
+    uint32_t exp_gpio_term_pull_up;
+    uint32_t exp_gpio_state;
     char *command_line;
     bool pending;
 };
