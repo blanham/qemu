@@ -1,0 +1,270 @@
+name: VC4 Linux KMS bind diagnostics
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+      - hw/arm/bcm2835_peripherals.c
+      - hw/display/bcm2835_fb.c
+      - hw/display/bcm2835_v3d.c
+      - hw/misc/bcm2835_property.c
+      - include/hw/arm/bcm2835_peripherals.h
+      - include/hw/display/bcm2835_fb.h
+      - include/hw/display/bcm2835_v3d.h
+      - include/hw/misc/bcm2835_property.h
+      - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+      - scripts/vc4/build-v3d-linux-dtb.sh
+      - scripts/vc4/build-vc4-kms-linux-dtb.sh
+      - scripts/vc4/fetch-linux-vc4-modules.py
+      - scripts/vc4/property-clock-enumeration-smoke.py
+      - scripts/vc4/property-power-domain-smoke.py
+      - scripts/vc4/raspi3-linux-probe.py
+      - scripts/vc4/summarize-linux-kms.py
+      - scripts/vc4/msync-smoke.py
+      - scripts/vc4/v3d-smoke.py
+      - tests/vc4/linux-v3d-modular-init.c
+      - tests/vc4/linux-v3d-submit-init.c
+      - tests/vc4/linux-v3d-uapi-init.c
+      - tests/vc4/vc4-kms-frontier-overlay.dts
+      - tests/vc4/vc4-render-only-overlay.dts
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-kms-bind-diagnostics
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-kms-diag-official
+      MODULE_DIR: /tmp/vc4-kms-diag-modules
+      INITRAMFS_DIR: /tmp/vc4-kms-diag-initramfs
+      DTB_DIR: /tmp/vc4-kms-diag-dtbs
+      RENDER_OUT: /tmp/vc4-kms-diag-render
+      KMS_OUT: /tmp/vc4-kms-diag-native
+      EVIDENCE_DIR: vc4-linux-kms-bind-evidence
+      STATUS_JSON: VC4_LINUX_KMS_BIND_STATUS.json
+      STATUS_MD: VC4_LINUX_KMS_BIND_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" \
+            "$DTB_DIR" "$RENDER_OUT" "$KMS_OUT" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$RENDER_OUT" \
+            "$KMS_OUT" "$EVIDENCE_DIR"
+
+      - name: Validate diagnostic sources
+        id: source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/fetch-linux-vc4-modules.py \
+            scripts/vc4/property-clock-enumeration-smoke.py \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/raspi3-linux-probe.py \
+            scripts/vc4/summarize-linux-kms.py \
+            scripts/vc4/msync-smoke.py \
+            scripts/vc4/v3d-smoke.py
+          bash -n \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            scripts/vc4/build-v3d-linux-dtb.sh \
+            scripts/vc4/build-vc4-kms-linux-dtb.sh
+          git diff --check
+
+      - name: Fetch pinned kernel and base device tree
+        id: pinned
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* > "$EVIDENCE_DIR/OFFICIAL_SHA256SUMS"
+
+      - name: Build pinned VC4 module fixture
+        id: fixture
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" \
+            2>&1 | tee "$EVIDENCE_DIR/fixture.log"
+
+      - name: Build render and native-KMS device trees
+        id: dtb
+        run: |
+          set -euo pipefail
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/render-only.dtbo" \
+            tests/vc4/vc4-render-only-overlay.dts
+          bash scripts/vc4/build-v3d-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/render-only.dtbo" \
+            "$DTB_DIR/render-only.dtb"
+
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/native-kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/native-kms.dtbo" \
+            "$DTB_DIR/native-kms.dtb"
+          sha256sum "$DTB_DIR"/* > "$EVIDENCE_DIR/DTB_SHA256SUMS"
+          grep -A14 -B2 'hdmi@7e902000' \
+            "$DTB_DIR/native-kms.dtb.dts" \
+            > "$EVIDENCE_DIR/hdmi-device-tree.txt"
+
+      - name: Configure and build QEMU frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+      - name: Prove property and architectural regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/property-state.log"
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/property-clocks.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/msync.log"
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/v3d.log"
+
+      - name: Preserve completed Linux render submission
+        id: render_regression
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/render-only.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$RENDER_OUT" \
+            --seconds 45 --sample-interval 5
+          grep -Fq VC4_LINUX_MODULE_CLOSURE_OK "$RENDER_OUT/serial.log"
+          grep -Fq VC4_LINUX_DRM_SUBMIT_OK "$RENDER_OUT/serial.log"
+          grep -Fq VC4_LINUX_V3D_MODULAR_OK "$RENDER_OUT/serial.log"
+
+      - name: Probe native Linux KMS after clock enumeration
+        id: kms_runtime
+        run: |
+          set +e
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/native-kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$KMS_OUT" \
+            --seconds 75 --sample-interval 5 \
+            > "$KMS_OUT/probe.stdout" 2>&1
+          rc=$?
+          printf '%s\n' "$rc" > "$KMS_OUT/return-code"
+          cat "$KMS_OUT/probe.stdout"
+          exit 0
+
+      - name: Record exact bind frontier
+        id: record
+        if: always()
+        run: |
+          set +e
+          python3 scripts/vc4/summarize-linux-kms.py \
+            --result "$KMS_OUT/result.json" \
+            --serial "$KMS_OUT/serial.log" \
+            --json "$STATUS_JSON" \
+            --markdown "$STATUS_MD" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --outcome dependencies=${{ steps.dependencies.outcome }} \
+            --outcome source=${{ steps.source.outcome }} \
+            --outcome pinned=${{ steps.pinned.outcome }} \
+            --outcome fixture=${{ steps.fixture.outcome }} \
+            --outcome dtb=${{ steps.dtb.outcome }} \
+            --outcome build=${{ steps.build.outcome }} \
+            --outcome regressions=${{ steps.regressions.outcome }} \
+            --outcome render_regression=${{ steps.render_regression.outcome }} \
+            --outcome kms_runtime=${{ steps.kms_runtime.outcome }}
+          echo "summarizer_return_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect and upload evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cp -a "$RENDER_OUT" "$EVIDENCE_DIR/render-regression" || true
+          cp -a "$KMS_OUT" "$EVIDENCE_DIR/native-kms" || true
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs" || true
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/" || true
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-kms-bind-${{ github.run_attempt }}
+          path: vc4-linux-kms-bind-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish diagnostic frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m "test/vc4: record Linux KMS bind frontier [skip ci]"
+            git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+            git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
+          fi
