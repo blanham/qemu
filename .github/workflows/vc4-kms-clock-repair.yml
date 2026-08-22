@@ -1,0 +1,169 @@
+name: VC4 KMS firmware-clock repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-frontier
+    paths:
+      - .github/workflows/vc4-kms-clock-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-firmware-clock-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Apply the firmware-clock and classifier repair
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          prop_path = Path("hw/misc/bcm2835_property.c")
+          prop = prop_path.read_text()
+          define_anchor = (
+              "#define VCHI_BUSADDR_SIZE       sizeof(uint32_t)\n"
+              "#define BCM2835_PROPERTY_POWER_STATE_COUNT 32\n"
+          )
+          define_replacement = define_anchor + """
+
+          /*
+           * The Linux firmware-clock provider sizes its onecell table from the
+           * IDs returned by GET_CLOCKS.  Advertise every clock that QEMU can
+           * service and that the upstream Raspberry Pi clock driver exports;
+           * otherwise display consumers such as HDMI fail before component
+           * binding when their clock index lies above the ARM clock.
+           */
+          static const uint32_t bcm2835_property_clock_ids[] = {
+              RPI_FIRMWARE_ARM_CLK_ID,
+              RPI_FIRMWARE_CORE_CLK_ID,
+              RPI_FIRMWARE_V3D_CLK_ID,
+              RPI_FIRMWARE_ISP_CLK_ID,
+              RPI_FIRMWARE_PIXEL_CLK_ID,
+              RPI_FIRMWARE_HEVC_CLK_ID,
+              RPI_FIRMWARE_M2MC_CLK_ID,
+              RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
+              RPI_FIRMWARE_VEC_CLK_ID,
+          };
+          """
+          if "bcm2835_property_clock_ids" not in prop:
+              if prop.count(define_anchor) != 1:
+                  raise SystemExit("power-state define anchor changed")
+              prop = prop.replace(define_anchor, define_replacement, 1)
+
+          old_clock_case = """        case RPI_FWREQ_GET_CLOCKS:
+                      /* TODO: add more clock IDs if needed */
+                      stl_le_phys(&s->dma_as, value + 12, 0);
+                      stl_le_phys(&s->dma_as, value + 16, RPI_FIRMWARE_ARM_CLK_ID);
+                      resplen = 8;
+                      break;
+          """
+          new_clock_case = """        case RPI_FWREQ_GET_CLOCKS:
+                  {
+                      size_t clock_count = MIN(ARRAY_SIZE(bcm2835_property_clock_ids),
+                                               bufsize / (2 * sizeof(uint32_t)));
+
+                      for (size_t i = 0; i < clock_count; i++) {
+                          stl_le_phys(&s->dma_as,
+                                      value + 12 + i * 2 * sizeof(uint32_t), 0);
+                          stl_le_phys(&s->dma_as,
+                                      value + 16 + i * 2 * sizeof(uint32_t),
+                                      bcm2835_property_clock_ids[i]);
+                      }
+                      resplen = clock_count * 2 * sizeof(uint32_t);
+                      break;
+                  }
+          """
+          if old_clock_case not in prop:
+              raise SystemExit("GET_CLOCKS implementation anchor changed")
+          prop = prop.replace(old_clock_case, new_clock_case, 1)
+          prop_path.write_text(prop)
+
+          summary_path = Path("scripts/vc4/summarize-linux-kms.py")
+          summary = summary_path.read_text()
+          old_classifier = """def classify(markers: dict[str, bool], outcomes: dict[str, str]) -> str:
+              failed_steps = [key for key, value in outcomes.items() if value != \"success\"]
+              if failed_steps:
+                  return \"workflow-\" + \"-\".join(failed_steps) + \"-failed\"
+              if not markers[\"VC4_LINUX_MODULE_CLOSURE_OK\"]:
+                  return \"vc4-module-closure-unavailable\"
+              if not markers[\"VC4_LINUX_DRM_SUBMIT_OK\"]:
+                  return \"vc4-render-submit-regression\"
+              if not markers[\"VC4_LINUX_KMS_RESOURCES_OK\"]:
+                  return \"vc4-kms-resources-unavailable\"
+          """
+          new_classifier = """def classify(markers: dict[str, bool], outcomes: dict[str, str]) -> str:
+              failed_steps = [key for key, value in outcomes.items() if value != \"success\"]
+              if failed_steps:
+                  return \"workflow-\" + \"-\".join(failed_steps) + \"-failed\"
+
+              # The workflow proves module loading and SUBMIT_CL in a dedicated
+              # render-only boot.  Do not reinterpret absent render markers in
+              # the separate native-KMS boot as a renderer regression.
+              if \"render_regression\" not in outcomes:
+                  if not markers[\"VC4_LINUX_MODULE_CLOSURE_OK\"]:
+                      return \"vc4-module-closure-unavailable\"
+                  if not markers[\"VC4_LINUX_DRM_SUBMIT_OK\"]:
+                      return \"vc4-render-submit-regression\"
+              if not markers[\"VC4_LINUX_KMS_RESOURCES_OK\"]:
+                  return \"vc4-component-bind-frontier\"
+          """
+          if summary.count(old_classifier) != 1:
+              raise SystemExit("classifier anchor changed")
+          summary = summary.replace(old_classifier, new_classifier, 1)
+
+          old_main = """    classification = classify(markers, outcomes)
+              passed = classification == \"linux-vc4-kms-topology-clear\"
+          """
+          new_main = """    classification = classify(markers, outcomes)
+              passed = classification == \"linux-vc4-kms-topology-clear\"
+              render_submission_preserved = (
+                  outcomes[\"render_regression\"] == \"success\"
+                  if \"render_regression\" in outcomes
+                  else markers[\"VC4_LINUX_DRM_SUBMIT_OK\"]
+              )
+          """
+          if summary.count(old_main) != 1:
+              raise SystemExit("classification call anchor changed")
+          summary = summary.replace(old_main, new_main, 1)
+
+          old_markdown = (
+              "        f\"- Render submission preserved: "
+              "`{markers['VC4_LINUX_DRM_SUBMIT_OK']}`\",\n"
+          )
+          new_markdown = (
+              "        f\"- Render submission preserved: "
+              "`{render_submission_preserved}`\",\n"
+          )
+          if summary.count(old_markdown) != 1:
+              raise SystemExit("markdown render status anchor changed")
+          summary = summary.replace(old_markdown, new_markdown, 1)
+          summary_path.write_text(summary)
+          PY
+
+          python3 -m py_compile scripts/vc4/summarize-linux-kms.py
+          git diff --check
+          grep -Fq RPI_FIRMWARE_PIXEL_CLK_ID hw/misc/bcm2835_property.c
+          grep -Fq vc4-component-bind-frontier scripts/vc4/summarize-linux-kms.py
+
+      - name: Publish the repair and remove this transient workflow
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            hw/misc/bcm2835_property.c \
+            scripts/vc4/summarize-linux-kms.py
+          git rm -- .github/workflows/vc4-kms-clock-repair.yml
+          git commit -m "hw/misc: expose firmware clocks for VC4 KMS"
+          git pull --rebase origin agent/vc4-linux-kms-frontier
+          git push origin HEAD:agent/vc4-linux-kms-frontier
