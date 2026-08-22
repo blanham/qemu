@@ -1,0 +1,202 @@
+name: VC4 firmware clock contract bootstrap v4
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-kms-clock-contract-v4-bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-clock-contract-v4-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install source repair and branch-local KMS gate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          branch = "agent/vc4-linux-kms-clock-contract-v2"
+
+          header_path = Path("include/hw/arm/raspberrypi-fw-defs.h")
+          lines = header_path.read_text().splitlines(keepends=True)
+          if not any("RPI_FIRMWARE_DISP_CLK_ID" in line for line in lines):
+              vec_indices = [
+                  index for index, line in enumerate(lines)
+                  if "RPI_FIRMWARE_VEC_CLK_ID," in line
+              ]
+              if len(vec_indices) != 1:
+                  raise SystemExit(
+                      f"expected one VEC clock enum line, got {len(vec_indices)}"
+                  )
+              index = vec_indices[0]
+              indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+              lines.insert(index + 1, f"{indent}RPI_FIRMWARE_DISP_CLK_ID,\n")
+              header_path.write_text("".join(lines))
+
+          property_path = Path("hw/misc/bcm2835_property.c")
+          lines = property_path.read_text().splitlines(keepends=True)
+          starts = [
+              index for index, line in enumerate(lines)
+              if line.startswith(
+                  "static const uint32_t bcm2835_property_clock_ids[] = {"
+              )
+          ]
+          if len(starts) != 1:
+              raise SystemExit(
+                  f"expected one firmware clock array, got {len(starts)}"
+              )
+          start = starts[0]
+          end = next(
+              (
+                  index for index in range(start + 1, len(lines))
+                  if lines[index].strip() == "};"
+              ),
+              None,
+          )
+          if end is None:
+              raise SystemExit("firmware clock array has no terminator")
+          clock_ids = [
+              "RPI_FIRMWARE_EMMC_CLK_ID",
+              "RPI_FIRMWARE_UART_CLK_ID",
+              "RPI_FIRMWARE_ARM_CLK_ID",
+              "RPI_FIRMWARE_CORE_CLK_ID",
+              "RPI_FIRMWARE_V3D_CLK_ID",
+              "RPI_FIRMWARE_H264_CLK_ID",
+              "RPI_FIRMWARE_ISP_CLK_ID",
+              "RPI_FIRMWARE_SDRAM_CLK_ID",
+              "RPI_FIRMWARE_PIXEL_CLK_ID",
+              "RPI_FIRMWARE_PWM_CLK_ID",
+              "RPI_FIRMWARE_HEVC_CLK_ID",
+              "RPI_FIRMWARE_EMMC2_CLK_ID",
+              "RPI_FIRMWARE_M2MC_CLK_ID",
+              "RPI_FIRMWARE_PIXEL_BVB_CLK_ID",
+              "RPI_FIRMWARE_VEC_CLK_ID",
+              "RPI_FIRMWARE_DISP_CLK_ID",
+          ]
+          replacement = [lines[start]]
+          replacement.extend(f"    {clock_id},\n" for clock_id in clock_ids)
+          replacement.append("};\n")
+          lines[start : end + 1] = replacement
+          property_path.write_text("".join(lines))
+
+          source_workflow_path = Path(
+              ".github/workflows/vc4-linux-kms-frontier.yml"
+          )
+          branch_workflow_path = Path(
+              ".github/workflows/vc4-linux-kms-clock-contract-v2.yml"
+          )
+          workflow = source_workflow_path.read_text()
+          workflow = re.sub(
+              r"^name: .*$",
+              "name: VC4 Linux KMS clock contract v2",
+              workflow,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          workflow, count = re.subn(
+              r"(  push:\n    branches:\n)(?:      - [^\n]+\n)+(    paths:\n)",
+              rf"\1      - {branch}\n\2",
+              workflow,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("unable to replace branch-local push filter")
+          workflow = workflow.replace(
+              "vc4-linux-native-kms-frontier",
+              "vc4-linux-native-kms-clock-contract-v2",
+          )
+          workflow = workflow.replace(
+              ".github/workflows/vc4-linux-kms-frontier.yml",
+              ".github/workflows/vc4-linux-kms-clock-contract-v2.yml",
+          )
+          workflow = workflow.replace(
+              "EVIDENCE_DIR: vc4-linux-kms-evidence",
+              "EVIDENCE_DIR: vc4-linux-kms-clock-contract-evidence",
+          )
+          workflow = workflow.replace(
+              "STATUS_JSON: VC4_LINUX_KMS_STATUS.json",
+              "STATUS_JSON: VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json",
+          )
+          workflow = workflow.replace(
+              "STATUS_MD: VC4_LINUX_KMS_STATUS.md",
+              "STATUS_MD: VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.md",
+          )
+          workflow = workflow.replace(
+              "git pull --rebase origin agent/vc4-linux-kms-frontier",
+              f"git pull --rebase origin {branch}",
+          )
+          workflow = workflow.replace(
+              "git push origin HEAD:agent/vc4-linux-kms-frontier",
+              f"git push origin HEAD:{branch}",
+          )
+          clock_path = "      - scripts/vc4/property-clock-smoke.py\n"
+          if clock_path not in workflow:
+              anchor = "      - scripts/vc4/property-power-domain-smoke.py\n"
+              if anchor not in workflow:
+                  raise SystemExit("power-domain path anchor is absent")
+              workflow = workflow.replace(anchor, anchor + clock_path, 1)
+          if "clock-contract.log" not in workflow:
+              lines = workflow.splitlines(keepends=True)
+              indices = [
+                  index for index, line in enumerate(lines)
+                  if "python3 scripts/vc4/msync-smoke.py" in line
+              ]
+              if len(indices) != 1:
+                  raise SystemExit(
+                      f"expected one msync regression command, got {len(indices)}"
+                  )
+              index = indices[0]
+              lines[index:index] = [
+                  "          python3 scripts/vc4/property-clock-smoke.py \\\n",
+                  "            --qemu build/qemu-system-aarch64 \\\n",
+                  "            2>&1 | tee \"$EVIDENCE_DIR/clock-contract.log\"\n",
+              ]
+              workflow = "".join(lines)
+          branch_workflow_path.write_text(workflow)
+          PY
+
+          test -f scripts/vc4/property-clock-smoke.py
+          python3 -m py_compile \
+            scripts/vc4/property-clock-smoke.py \
+            scripts/vc4/summarize-linux-kms.py
+          git diff --check
+          grep -Fq RPI_FIRMWARE_DISP_CLK_ID \
+            include/hw/arm/raspberrypi-fw-defs.h
+          grep -Fq RPI_FIRMWARE_EMMC_CLK_ID hw/misc/bcm2835_property.c
+          grep -Fq RPI_FIRMWARE_DISP_CLK_ID hw/misc/bcm2835_property.c
+          grep -Fq property-clock-smoke.py \
+            .github/workflows/vc4-linux-kms-clock-contract-v2.yml
+
+      - name: Publish the branch-local gate
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            include/hw/arm/raspberrypi-fw-defs.h \
+            hw/misc/bcm2835_property.c \
+            scripts/vc4/property-clock-smoke.py \
+            .github/workflows/vc4-linux-kms-clock-contract-v2.yml
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-clock-contract-v2-bootstrap.yml \
+            .github/workflows/vc4-kms-clock-contract-v3-bootstrap.yml \
+            .github/workflows/vc4-kms-clock-contract-v4-bootstrap.yml
+          git commit -m "hw/misc: complete Raspberry Pi firmware clock enumeration"
+          git pull --rebase origin agent/vc4-linux-kms-clock-contract-v2
+          git push origin HEAD:agent/vc4-linux-kms-clock-contract-v2
