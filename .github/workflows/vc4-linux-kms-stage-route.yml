@@ -1,0 +1,177 @@
+name: VC4 Linux KMS staged frontier route
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-linux-kms-stage-route.yml
+      - VC4_LINUX_KMS_STAGE_STATUS.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      INPUT: VC4_LINUX_KMS_STAGE_STATUS.json
+      OUTPUT_JSON: VC4_LINUX_KMS_STAGE_ROUTE.json
+      OUTPUT_MD: VC4_LINUX_KMS_STAGE_ROUTE.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain staged status
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$INPUT" > /tmp/stages.json 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          test -s /tmp/stages.json
+          cp /tmp/stages.json "$INPUT"
+
+      - name: Identify the first component transition
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/stages.json'))
+          stages = {stage['name']: stage for stage in status.get('stages', [])}
+          comparison = status.get('comparison') or {}
+
+          def registered(name: str) -> bool:
+              return bool(
+                  stages.get(name, {}).get('markers', {}).get(
+                      'VC4_LINUX_KMS_RESOURCES_OK'
+                  )
+              )
+
+          def marker(name: str, key: str) -> bool:
+              return bool(stages.get(name, {}).get('markers', {}).get(key))
+
+          def evidence(name: str) -> str:
+              return '\n'.join(stages.get(name, {}).get('interesting_serial') or [])
+
+          full_clear = bool(status.get('passed'))
+          boundary = 'unknown'
+          next_action = 'inspect-staged-evidence'
+          errno = None
+          failed_component = None
+
+          if full_clear:
+              boundary = 'none'
+              next_action = 'kms-topology-clear'
+          elif not registered('render'):
+              boundary = 'base-to-render'
+              next_action = 'render-component-bind-unavailable'
+          elif not registered('crtc'):
+              boundary = 'render-to-crtc'
+              next_action = 'pixel-valve-crtc-bind-unavailable'
+          elif not registered('hdmi'):
+              boundary = 'crtc-to-hdmi'
+              failed = stages.get('hdmi', {}).get('failed_components') or []
+              if failed:
+                  failed_component = failed[-1]
+                  errno = failed_component.get('error')
+              text = evidence('hdmi').lower()
+              if 'invalid index 9' in text or 'failed to get pixel clock' in text:
+                  next_action = 'firmware-pixel-clock-unavailable'
+              elif 'failed to get hdmi state machine clock' in text:
+                  next_action = 'hdmi-state-machine-clock-unavailable'
+              elif 'failed to find ddc node' in text:
+                  next_action = 'hdmi-ddc-phandle-missing'
+              elif 'failed to get ddc i2c adapter' in text:
+                  next_action = 'hdmi-ddc-adapter-unavailable'
+              elif errno == -517:
+                  next_action = 'hdmi-supplier-deferred'
+              elif errno == -22:
+                  next_action = 'hdmi-runtime-clock-rate-zero'
+              elif errno == -2:
+                  next_action = 'hdmi-resource-enoent'
+              else:
+                  next_action = 'hdmi-component-bind-unavailable'
+          elif not registered('full'):
+              boundary = 'hdmi-to-full'
+              next_action = 'txp-full-graph-interaction'
+          elif not marker('full', 'VC4_LINUX_KMS_CRTC_OK'):
+              boundary = 'drm-to-crtc-resource'
+              next_action = 'kms-crtc-resource-unavailable'
+          elif not marker('full', 'VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK'):
+              boundary = 'crtc-to-connector'
+              next_action = 'kms-physical-connector-unavailable'
+          elif not marker('full', 'VC4_LINUX_KMS_CONNECTED_OK'):
+              boundary = 'connector-to-hpd'
+              next_action = 'hdmi-hotplug-detect-unavailable'
+          elif not marker('full', 'VC4_LINUX_KMS_MODE_OK'):
+              boundary = 'hpd-to-edid'
+              next_action = 'hdmi-edid-unavailable'
+          else:
+              boundary = 'mode-to-topology'
+              next_action = 'kms-topology-finalization-incomplete'
+
+          record = {
+              'schema_version': 1,
+              'source_sha': status.get('source_sha'),
+              'run_id': status.get('run_id'),
+              'boundary': boundary,
+              'next_action': next_action,
+              'failed_component': failed_component,
+              'errno': errno,
+              'comparison': comparison,
+              'stage_classifications': {
+                  name: stage.get('classification')
+                  for name, stage in stages.items()
+              },
+              'stage_components': {
+                  name: stage.get('components') or []
+                  for name, stage in stages.items()
+              },
+          }
+          Path('VC4_LINUX_KMS_STAGE_ROUTE.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          lines = [
+              '# VC4 Linux KMS staged route',
+              '',
+              f"- Source SHA: `{record['source_sha']}`",
+              f"- First transition: **`{boundary}`**",
+              f"- Next hardware contract: **`{next_action}`**",
+              f"- Failing component: `{failed_component}`",
+              f"- Error number: `{errno}`",
+              '',
+              '## Stage classifications',
+              '',
+          ]
+          lines.extend(
+              f"- `{name}`: `{classification}`"
+              for name, classification in record['stage_classifications'].items()
+          )
+          Path('VC4_LINUX_KMS_STAGE_ROUTE.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish staged route
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          cp /tmp/stages.json "$INPUT"
+          git add -- "$INPUT" "$OUTPUT_JSON" "$OUTPUT_MD"
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-linux-kms-stage-route.yml
+          git commit -m "test/vc4: identify first staged KMS boundary"
+          git push origin "HEAD:$BRANCH"
