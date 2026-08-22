@@ -1,0 +1,141 @@
+name: VC4 HSM diagnostic injector bootstrap
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-hsm-diagnostic-injector-bootstrap.yml
+      - scripts/vc4/assign-vc4-hsm-clock.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      HSM_STATUS: VC4_LINUX_HSM_CLOCK_STATUS.json
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install diagnostic assignment only after confirmation
+        id: install
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$HSM_STATUS" > /tmp/hsm.json 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          test -s /tmp/hsm.json
+          cp /tmp/hsm.json "$HSM_STATUS"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/hsm.json'))
+          confirmed = bool(status.get('hsm_clock_handoff_confirmed'))
+          result = {
+              'hsm_clock_handoff_confirmed': confirmed,
+              'diagnostic_assignment_installed': False,
+          }
+
+          if confirmed:
+              gate_path = Path(
+                  '.github/workflows/vc4-linux-kms-clock-contract-v2.yml'
+              )
+              gate = gate_path.read_text()
+              path_line = '      - scripts/vc4/assign-vc4-hsm-clock.py\n'
+              if path_line not in gate:
+                  anchor = '      - scripts/vc4/property-clock-smoke.py\n'
+                  if anchor not in gate:
+                      raise SystemExit('clock smoke path anchor absent from gate')
+                  gate = gate.replace(anchor, anchor + path_line, 1)
+              compile_line = '            scripts/vc4/assign-vc4-hsm-clock.py \\\n'
+              if compile_line not in gate:
+                  anchor = '            scripts/vc4/summarize-linux-kms.py \\\n'
+                  if anchor not in gate:
+                      raise SystemExit('summarizer compile anchor absent from gate')
+                  gate = gate.replace(anchor, anchor + compile_line, 1)
+              if 'hsm-assignment.json' not in gate:
+                  anchor = """          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \\
+                "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \\
+                "$DTB_DIR/native-kms.dtbo" \\
+                "$DTB_DIR/native-kms.dtb"
+          """
+                  insertion = anchor + """          python3 scripts/vc4/assign-vc4-hsm-clock.py \\
+                "$DTB_DIR/native-kms.dtb" \\
+                --record "$EVIDENCE_DIR/hsm-assignment.json"
+          """
+                  if anchor not in gate:
+                      raise SystemExit('native KMS DTB anchor absent from gate')
+                  gate = gate.replace(anchor, insertion, 1)
+              gate_path.write_text(gate)
+
+              stages_path = Path(
+                  '.github/workflows/vc4-linux-kms-clock-contract-stages.yml'
+              )
+              if stages_path.is_file():
+                  stages = stages_path.read_text()
+                  path_line = '      - scripts/vc4/assign-vc4-hsm-clock.py\n'
+                  if path_line not in stages:
+                      anchor = '      - scripts/vc4/summarize-linux-kms-stages.py\n'
+                      if anchor not in stages:
+                          raise SystemExit('stage summarizer path anchor absent')
+                      stages = stages.replace(anchor, anchor + path_line, 1)
+                  if 'stage-hsm-assignment.json' not in stages:
+                      anchor = """          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \\
+                "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \\
+                "$DTB_DIR/full.dtbo" \\
+                "$DTB_DIR/full.dtb"
+          """
+                      insertion = anchor + """          python3 scripts/vc4/assign-vc4-hsm-clock.py \\
+                "$DTB_DIR/full.dtb" \\
+                --record "$EVIDENCE_DIR/stage-hsm-assignment.json"
+          """
+                      if anchor not in stages:
+                          raise SystemExit('stage full DTB anchor absent')
+                      stages = stages.replace(anchor, insertion, 1)
+                  stages_path.write_text(stages)
+              result['diagnostic_assignment_installed'] = True
+
+          Path('VC4_HSM_DIAGNOSTIC_INJECTOR_STATUS.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_HSM_DIAGNOSTIC_INJECTOR_STATUS.md').write_text(
+              '# VC4 HSM diagnostic injector\n\n'
+              f"- HSM handoff confirmed: `{confirmed}`\n"
+              f"- Diagnostic DT assignment installed: "
+              f"`{result['diagnostic_assignment_installed']}`\n"
+          )
+          PY
+          python3 -m py_compile scripts/vc4/assign-vc4-hsm-clock.py
+          git diff --check
+
+      - name: Publish diagnostic injector
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          cp /tmp/hsm.json "$HSM_STATUS"
+          git add -A -- \
+            "$HSM_STATUS" \
+            VC4_HSM_DIAGNOSTIC_INJECTOR_STATUS.json \
+            VC4_HSM_DIAGNOSTIC_INJECTOR_STATUS.md \
+            scripts/vc4/assign-vc4-hsm-clock.py \
+            .github/workflows/vc4-linux-kms-clock-contract-v2.yml \
+            .github/workflows/vc4-linux-kms-clock-contract-stages.yml \
+            .github/workflows/vc4-hsm-diagnostic-injector-bootstrap.yml
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-hsm-diagnostic-injector-bootstrap.yml
+          git commit -m "test/vc4: install confirmed HSM diagnostic assignment"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
