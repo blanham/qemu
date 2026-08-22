@@ -31,48 +31,75 @@ jobs:
           from pathlib import Path
 
           path = Path(".github/workflows/vc4-linux-kms-bind-diagnostics.yml")
-          text = path.read_text()
+          lines = path.read_text().splitlines()
+          slash = chr(92)
 
-          def replace_once(old: str, new: str, label: str) -> None:
-              global text
-              count = text.count(old)
-              if count != 1:
+          def insert_after(exact: str, additions: list[str]) -> None:
+              if all(addition in lines for addition in additions):
+                  return
+              matches = [index for index, line in enumerate(lines) if line == exact]
+              if len(matches) != 1:
                   raise SystemExit(
-                      f"{label}: expected one workflow anchor, found {count}"
+                      f"expected one workflow line {exact!r}, found {len(matches)}"
                   )
-              text = text.replace(old, new, 1)
+              index = matches[0] + 1
+              lines[index:index] = additions
 
-          replace_once(
-              "      - hw/arm/bcm2835_peripherals.c\n",
-              "      - hw/arm/Kconfig\n"
-              "      - hw/arm/bcm2835_peripherals.c\n",
-              "Kconfig path filter",
+          insert_after(
+              "      - hw/arm/bcm2835_peripherals.c",
+              ["      - hw/arm/Kconfig"],
           )
-          replace_once(
-              "      - scripts/vc4/property-clock-enumeration-smoke.py\n",
-              "      - scripts/vc4/bcm2835-hdmi-ddc-smoke.py\n"
-              "      - scripts/vc4/property-clock-enumeration-smoke.py\n",
-              "DDC path filter",
+          insert_after(
+              "      - scripts/vc4/property-clock-enumeration-smoke.py",
+              ["      - scripts/vc4/bcm2835-hdmi-ddc-smoke.py"],
           )
-          replace_once(
-              "            scripts/vc4/fetch-linux-vc4-modules.py \\\n",
-              "            scripts/vc4/bcm2835-hdmi-ddc-smoke.py \\\n"
-              "            scripts/vc4/fetch-linux-vc4-modules.py \\\n",
-              "DDC source validation",
+
+          compile_line = (
+              "            scripts/vc4/fetch-linux-vc4-modules.py " + slash
           )
-          replace_once(
-              "          python3 scripts/vc4/property-clock-enumeration-smoke.py \\\n"
-              "            --qemu build/qemu-system-aarch64 \\\n"
-              "            2>&1 | tee \"$EVIDENCE_DIR/property-clocks.log\"\n",
-              "          python3 scripts/vc4/property-clock-enumeration-smoke.py \\\n"
-              "            --qemu build/qemu-system-aarch64 \\\n"
-              "            2>&1 | tee \"$EVIDENCE_DIR/property-clocks.log\"\n"
-              "          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \\\n"
-              "            --qemu build/qemu-system-aarch64 \\\n"
-              "            2>&1 | tee \"$EVIDENCE_DIR/hdmi-ddc.log\"\n",
-              "DDC regression execution",
+          ddc_compile = (
+              "            scripts/vc4/bcm2835-hdmi-ddc-smoke.py " + slash
           )
-          path.write_text(text)
+          if ddc_compile not in lines:
+              matches = [
+                  index for index, line in enumerate(lines)
+                  if line == compile_line
+              ]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"expected one py_compile anchor, found {len(matches)}"
+                  )
+              lines.insert(matches[0], ddc_compile)
+
+          runtime_marker = (
+              "          python3 scripts/vc4/property-clock-enumeration-smoke.py "
+              + slash
+          )
+          ddc_runtime_marker = (
+              "          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py " + slash
+          )
+          if ddc_runtime_marker not in lines:
+              matches = [
+                  index for index, line in enumerate(lines)
+                  if line == runtime_marker
+              ]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"expected one property-clock runtime anchor, found {len(matches)}"
+                  )
+              start = matches[0]
+              end = start
+              while end < len(lines) and "property-clocks.log" not in lines[end]:
+                  end += 1
+              if end == len(lines):
+                  raise SystemExit("property-clock runtime block has no log sink")
+              lines[end + 1:end + 1] = [
+                  ddc_runtime_marker,
+                  "            --qemu build/qemu-system-aarch64 " + slash,
+                  "            2>&1 | tee \"$EVIDENCE_DIR/hdmi-ddc.log\"",
+              ]
+
+          path.write_text("\n".join(lines) + "\n")
           PY
 
           python3 -m py_compile scripts/vc4/bcm2835-hdmi-ddc-smoke.py
