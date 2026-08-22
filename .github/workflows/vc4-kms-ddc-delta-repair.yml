@@ -1,0 +1,77 @@
+name: VC4 DDC delta gate repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-ddc-delta-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Regenerate target configuration after selecting DDC
+        run: |
+          set -euo pipefail
+          target=.github/workflows/vc4-kms-ddc-delta.yml
+          if test -e "$target"; then
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/vc4-kms-ddc-delta.yml")
+          source = path.read_text()
+          anchor = """          git diff --check
+              ninja -C build qemu-system-aarch64
+
+              - name: Capture the DDC delta
+          """
+          replacement = """          git diff --check
+              ./configure \\
+                --target-list=aarch64-softmmu \\
+                --disable-docs --disable-werror
+              ninja -C build qemu-system-aarch64
+
+              - name: Capture the DDC delta
+          """
+          if anchor not in source:
+              compact_anchor = """          git diff --check
+              ninja -C build qemu-system-aarch64
+          """
+              compact_replacement = """          git diff --check
+              ./configure \\
+                --target-list=aarch64-softmmu \\
+                --disable-docs --disable-werror
+              ninja -C build qemu-system-aarch64
+          """
+              if source.count(compact_anchor) != 1:
+                  raise SystemExit("DDC rebuild anchor changed")
+              source = source.replace(
+                  compact_anchor, compact_replacement, 1
+              )
+          else:
+              source = source.replace(anchor, replacement, 1)
+          path.write_text(source)
+          PY
+            git diff --check
+          fi
+
+      - name: Publish the repaired delta gate
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          if test -e .github/workflows/vc4-kms-ddc-delta.yml; then
+            git add -- .github/workflows/vc4-kms-ddc-delta.yml
+          fi
+          git rm -- .github/workflows/vc4-kms-ddc-delta-repair.yml
+          git commit -m "ci/vc4: regenerate target config for DDC delta"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
