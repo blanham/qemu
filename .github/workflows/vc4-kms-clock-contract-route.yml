@@ -1,0 +1,376 @@
+name: VC4 KMS clock-contract route
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-kms-clock-contract-route.yml
+      - VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-clock-contract-route
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      DIAG: VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.json
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain the compact diagnosis
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$DIAG" > /tmp/vc4-diag.json 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          test -s /tmp/vc4-diag.json
+          cp /tmp/vc4-diag.json "$DIAG"
+
+      - name: Route the next verified contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          diag = json.loads(Path("VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.json").read_text())
+          action = str(diag.get("next_action") or "unknown")
+          connector_actions = {
+              "hdmi-hotplug-detect-unavailable",
+              "hdmi-edid-unavailable",
+              "hdmi-ddc-adapter-unavailable",
+          }
+          apply_monitor = action in connector_actions
+
+          route = {
+              "schema_version": 1,
+              "source_sha": diag.get("source_sha"),
+              "kms_classification": diag.get("kms_classification"),
+              "next_action": action,
+              "deterministic_monitor_applied": apply_monitor,
+              "reason": (
+                  "The KMS card and connector path is present; provide the "
+                  "emulated HDMI sink contract (HPD plus EDID)."
+                  if apply_monitor
+                  else "No connector-sink change is justified by the current evidence."
+              ),
+          }
+          Path("VC4_LINUX_KMS_CLOCK_CONTRACT_ROUTE.json").write_text(
+              json.dumps(route, indent=2, sort_keys=True) + "\n"
+          )
+          Path("VC4_LINUX_KMS_CLOCK_CONTRACT_ROUTE.md").write_text(
+              "# VC4 KMS clock-contract route\n\n"
+              f"- Source SHA: `{route['source_sha']}`\n"
+              f"- KMS frontier: **`{route['kms_classification']}`**\n"
+              f"- Routed next contract: **`{action}`**\n"
+              f"- Deterministic HDMI monitor applied: `{apply_monitor}`\n\n"
+              f"{route['reason']}\n"
+          )
+
+          if not apply_monitor:
+              raise SystemExit(0)
+
+          kconfig_path = Path("hw/arm/Kconfig")
+          lines = kconfig_path.read_text().splitlines(keepends=True)
+          raspi = next(
+              index for index, line in enumerate(lines)
+              if line.strip() == "config RASPI"
+          )
+          end = next(
+              (
+                  index for index in range(raspi + 1, len(lines))
+                  if lines[index].startswith("config ")
+              ),
+              len(lines),
+          )
+          block = lines[raspi:end]
+          if not any(line.strip() == "select DDC" for line in block):
+              i2c = next(
+                  index for index in range(raspi, end)
+                  if lines[index].strip() == "select BCM2835_I2C"
+              )
+              indent = lines[i2c][: len(lines[i2c]) - len(lines[i2c].lstrip())]
+              lines.insert(i2c + 1, f"{indent}select DDC\n")
+          kconfig_path.write_text("".join(lines))
+
+          peripherals_path = Path("hw/arm/bcm2835_peripherals.c")
+          peripherals = peripherals_path.read_text()
+          include = '#include "hw/display/i2c-ddc.h"\n'
+          if include not in peripherals:
+              anchor = '#include "hw/arm/bcm2835_peripherals.h"\n'
+              if peripherals.count(anchor) != 1:
+                  raise SystemExit("BCM2835 peripherals include anchor changed")
+              peripherals = peripherals.replace(anchor, anchor + include, 1)
+          if "TYPE_I2CDDC" not in peripherals:
+              anchor = """    for (n = 0; n < 3; n++) {
+                  if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c[n]), errp)) {
+                      return;
+                  }
+              }
+
+          """
+              insertion = anchor + """    /* BSC2 is the HDMI DDC channel on BCM2835. */
+              i2c_slave_create_simple(s->i2c[2].bus, TYPE_I2CDDC, 0x50);
+
+          """
+              if peripherals.count(anchor) != 1:
+                  raise SystemExit("BCM2835 I2C realization anchor changed")
+              peripherals = peripherals.replace(anchor, insertion, 1)
+          peripherals_path.write_text(peripherals)
+
+          property_path = Path("hw/misc/bcm2835_property.c")
+          prop = property_path.read_text()
+          hpd_define = "#define BCM2835_PROPERTY_EXP_GPIO_HDMI_HPD 4\n"
+          if hpd_define not in prop:
+              anchor = "#define BCM2835_PROPERTY_EXP_GPIO_COUNT 8\n"
+              if prop.count(anchor) != 1:
+                  raise SystemExit("expander GPIO define anchor changed")
+              prop = prop.replace(anchor, anchor + hpd_define, 1)
+          reset_anchor = "    s->exp_gpio_state = 0;\n"
+          reset_value = (
+              "    s->exp_gpio_state =\n"
+              "        UINT32_C(1) << BCM2835_PROPERTY_EXP_GPIO_HDMI_HPD;\n"
+          )
+          if reset_value not in prop:
+              if prop.count(reset_anchor) != 1:
+                  raise SystemExit("expander GPIO reset anchor changed")
+              prop = prop.replace(reset_anchor, reset_value, 1)
+          property_path.write_text(prop)
+
+          smoke_path = Path("scripts/vc4/property-power-domain-smoke.py")
+          smoke = smoke_path.read_text()
+          loop_anchor = """                if exp_gpio_get_state(qtest, offset) != 0:
+                      raise RuntimeError(
+                          f"expander GPIO {offset} reset state is not low"
+                      )
+          """
+          loop_replacement = """                expected_state = 1 if offset == EXP_GPIO_HDMI_HPD else 0
+                  if exp_gpio_get_state(qtest, offset) != expected_state:
+                      raise RuntimeError(
+                          f"expander GPIO {offset} reset state is not {expected_state}"
+                      )
+          """
+          if loop_anchor in smoke:
+              smoke = smoke.replace(loop_anchor, loop_replacement, 1)
+          final_anchor = """            if exp_gpio_get_state(qtest, EXP_GPIO_HDMI_HPD) != 0:
+                  raise RuntimeError("expander GPIO state survived reset")
+          """
+          final_replacement = """            if exp_gpio_get_state(qtest, EXP_GPIO_HDMI_HPD) != 1:
+                  raise RuntimeError("HDMI HPD did not return high after reset")
+          """
+          if final_anchor in smoke:
+              smoke = smoke.replace(final_anchor, final_replacement, 1)
+          smoke_path.write_text(smoke)
+
+          ddc_smoke = '''#!/usr/bin/env python3
+          """Read a deterministic EDID from the Raspberry Pi HDMI DDC bus."""
+
+          from __future__ import annotations
+
+          import argparse
+          from pathlib import Path
+          import socket
+          import subprocess
+          import tempfile
+          import time
+
+          BASE = 0x3F000000 + 0x00805000
+          C = BASE + 0x00
+          S = BASE + 0x04
+          DLEN = BASE + 0x08
+          A = BASE + 0x0C
+          FIFO = BASE + 0x10
+          C_READ = 1 << 0
+          C_CLEAR = 1 << 4
+          C_ST = 1 << 7
+          C_I2CEN = 1 << 15
+          S_DONE = 1 << 1
+          S_ERR = 1 << 8
+          S_CLKT = 1 << 9
+          DDC_ADDRESS = 0x50
+          EDID_SIZE = 128
+          EDID_HEADER = bytes((0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00))
+
+
+          class QTest:
+              def __init__(self, path: Path) -> None:
+                  self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                  self.sock.connect(str(path))
+                  self.reader = self.sock.makefile("r", encoding="utf-8")
+
+              def close(self) -> None:
+                  self.reader.close()
+                  self.sock.close()
+
+              def command(self, command: str) -> list[str]:
+                  self.sock.sendall((command + "\\n").encode())
+                  while True:
+                      line = self.reader.readline()
+                      if not line:
+                          raise RuntimeError("qtest disconnected")
+                      words = line.strip().split()
+                      if not words or words[0] == "IRQ":
+                          continue
+                      if words[0] != "OK":
+                          raise RuntimeError(line.strip())
+                      return words[1:]
+
+              def writel(self, address: int, value: int) -> None:
+                  self.command(f"writel 0x{address:x} 0x{value:x}")
+
+              def readl(self, address: int) -> int:
+                  values = self.command(f"readl 0x{address:x}")
+                  return int(values[0], 0)
+
+
+          def connect(path: Path, process: subprocess.Popen[str]) -> QTest:
+              deadline = time.monotonic() + 10
+              while time.monotonic() < deadline:
+                  if process.poll() is not None:
+                      raise RuntimeError("QEMU exited before qtest connected")
+                  try:
+                      return QTest(path)
+                  except (FileNotFoundError, ConnectionRefusedError):
+                      time.sleep(0.02)
+              raise RuntimeError("qtest connection timed out")
+
+
+          def require_done(qtest: QTest, operation: str) -> None:
+              status = qtest.readl(S)
+              if status & (S_ERR | S_CLKT) or not status & S_DONE:
+                  raise RuntimeError(f"{operation} failed: status=0x{status:08x}")
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser(description=__doc__)
+              parser.add_argument("--qemu", type=Path, default=Path("build/qemu-system-aarch64"))
+              args = parser.parse_args()
+              qemu = args.qemu.resolve()
+              if not qemu.is_file():
+                  parser.error(f"QEMU binary does not exist: {qemu}")
+
+              with tempfile.TemporaryDirectory(prefix="vc4-ddc-") as temp:
+                  socket_path = Path(temp) / "qtest.sock"
+                  process = subprocess.Popen(
+                      (
+                          str(qemu), "-M", "raspi3b", "-accel", "qtest", "-S",
+                          "-display", "none", "-serial", "none", "-monitor", "none",
+                          "-qtest", f"unix:{socket_path},server=on,wait=off",
+                      ),
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.PIPE,
+                      text=True,
+                  )
+                  qtest = None
+                  try:
+                      qtest = connect(socket_path, process)
+                      qtest.writel(S, S_DONE | S_ERR | S_CLKT)
+                      qtest.writel(A, DDC_ADDRESS)
+                      qtest.writel(DLEN, 1)
+                      qtest.writel(FIFO, 0)
+                      qtest.writel(C, C_I2CEN | C_CLEAR | C_ST)
+                      require_done(qtest, "EDID offset write")
+
+                      qtest.writel(S, S_DONE | S_ERR | S_CLKT)
+                      qtest.writel(A, DDC_ADDRESS)
+                      qtest.writel(DLEN, EDID_SIZE)
+                      qtest.writel(C, C_I2CEN | C_CLEAR | C_ST | C_READ)
+                      edid = bytes(qtest.readl(FIFO) & 0xFF for _ in range(EDID_SIZE))
+                      require_done(qtest, "EDID read")
+                      if not edid.startswith(EDID_HEADER):
+                          raise RuntimeError(f"bad EDID header: {edid[:8].hex()}")
+                      if sum(edid) & 0xFF:
+                          raise RuntimeError("bad EDID checksum")
+                  finally:
+                      if qtest is not None:
+                          qtest.close()
+                      if process.poll() is None:
+                          process.terminate()
+                      try:
+                          process.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          process.kill()
+                          process.wait(timeout=5)
+              print("Raspberry Pi HDMI DDC smoke test passed")
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          '''
+          Path("scripts/vc4/hdmi-ddc-smoke.py").write_text(
+              "\n".join(
+                  line[10:] if line.startswith("          ") else line
+                  for line in ddc_smoke.splitlines()
+              ) + "\n"
+          )
+
+          gate_path = Path(".github/workflows/vc4-linux-kms-clock-contract-v2.yml")
+          gate = gate_path.read_text()
+          ddc_path = "      - scripts/vc4/hdmi-ddc-smoke.py\n"
+          if ddc_path not in gate:
+              anchor = "      - scripts/vc4/property-clock-smoke.py\n"
+              if anchor not in gate:
+                  raise SystemExit("clock smoke path anchor missing from gate")
+              gate = gate.replace(anchor, anchor + ddc_path, 1)
+          if "hdmi-ddc.log" not in gate:
+              anchor = """          python3 scripts/vc4/msync-smoke.py \\
+          """
+              insertion = """          python3 scripts/vc4/hdmi-ddc-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/hdmi-ddc.log"
+          """
+              if anchor not in gate:
+                  raise SystemExit("msync command anchor missing from gate")
+              gate = gate.replace(anchor, insertion + anchor, 1)
+          gate_path.write_text(gate)
+          PY
+
+          python3 -m py_compile \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/property-clock-smoke.py
+          if test -f scripts/vc4/hdmi-ddc-smoke.py; then
+            python3 -m py_compile scripts/vc4/hdmi-ddc-smoke.py
+          fi
+          git diff --check
+
+      - name: Publish the routed tranche
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          cp /tmp/vc4-diag.json "$DIAG"
+          git add -- \
+            "$DIAG" \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_ROUTE.json \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_ROUTE.md \
+            hw/arm/Kconfig \
+            hw/arm/bcm2835_peripherals.c \
+            hw/misc/bcm2835_property.c \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/hdmi-ddc-smoke.py \
+            .github/workflows/vc4-linux-kms-clock-contract-v2.yml
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-clock-contract-route.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "test/vc4: route the post-clock KMS frontier"
+            git push origin "HEAD:$BRANCH"
+          fi
