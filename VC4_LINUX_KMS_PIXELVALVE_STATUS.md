@@ -2,9 +2,9 @@
 
 Validation passed: **false**
 
-Frontier: **`workflow-pixelvalve-regressions-render_regression-failed`**
+Frontier: **`vc4-kms-topology-frontier`**
 
-- Pixel-valve QTest: `failure`
+- Pixel-valve QTest: `success`
 - KMS topology: `False`
 - SETCRTC completed: `False`
 - Modeset witness completed: `False`
