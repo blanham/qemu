@@ -22,6 +22,26 @@
 #define VCHI_BUSADDR_SIZE       sizeof(uint32_t)
 #define BCM2835_PROPERTY_POWER_STATE_COUNT 32
 
+
+/*
+ * The Linux firmware-clock provider sizes its onecell table from the
+ * IDs returned by GET_CLOCKS.  Advertise every clock that QEMU can
+ * service and that the upstream Raspberry Pi clock driver exports;
+ * otherwise display consumers such as HDMI fail before component
+ * binding when their clock index lies above the ARM clock.
+ */
+static const uint32_t bcm2835_property_clock_ids[] = {
+    RPI_FIRMWARE_ARM_CLK_ID,
+    RPI_FIRMWARE_CORE_CLK_ID,
+    RPI_FIRMWARE_V3D_CLK_ID,
+    RPI_FIRMWARE_ISP_CLK_ID,
+    RPI_FIRMWARE_PIXEL_CLK_ID,
+    RPI_FIRMWARE_HEVC_CLK_ID,
+    RPI_FIRMWARE_M2MC_CLK_ID,
+    RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
+    RPI_FIRMWARE_VEC_CLK_ID,
+};
+
 /* https://github.com/raspberrypi/firmware/wiki/Mailbox-property-interface */
 
 static uint32_t bcm2835_property_get_power_state(uint32_t states,
@@ -200,11 +220,20 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
             break;
 
         case RPI_FWREQ_GET_CLOCKS:
-            /* TODO: add more clock IDs if needed */
-            stl_le_phys(&s->dma_as, value + 12, 0);
-            stl_le_phys(&s->dma_as, value + 16, RPI_FIRMWARE_ARM_CLK_ID);
-            resplen = 8;
+        {
+            size_t clock_count = MIN(ARRAY_SIZE(bcm2835_property_clock_ids),
+                                     bufsize / (2 * sizeof(uint32_t)));
+
+            for (size_t i = 0; i < clock_count; i++) {
+                stl_le_phys(&s->dma_as,
+                            value + 12 + i * 2 * sizeof(uint32_t), 0);
+                stl_le_phys(&s->dma_as,
+                            value + 16 + i * 2 * sizeof(uint32_t),
+                            bcm2835_property_clock_ids[i]);
+            }
+            resplen = clock_count * 2 * sizeof(uint32_t);
             break;
+        }
 
         case RPI_FWREQ_SET_CLOCK_RATE:
         case RPI_FWREQ_SET_MAX_CLOCK_RATE:

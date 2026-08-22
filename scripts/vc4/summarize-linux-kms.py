@@ -70,12 +70,17 @@ def classify(markers: dict[str, bool], outcomes: dict[str, str]) -> str:
     failed_steps = [key for key, value in outcomes.items() if value != "success"]
     if failed_steps:
         return "workflow-" + "-".join(failed_steps) + "-failed"
-    if not markers["VC4_LINUX_MODULE_CLOSURE_OK"]:
-        return "vc4-module-closure-unavailable"
-    if not markers["VC4_LINUX_DRM_SUBMIT_OK"]:
-        return "vc4-render-submit-regression"
+
+    # The workflow proves module loading and SUBMIT_CL in a dedicated
+    # render-only boot.  Do not reinterpret absent render markers in
+    # the separate native-KMS boot as a renderer regression.
+    if "render_regression" not in outcomes:
+        if not markers["VC4_LINUX_MODULE_CLOSURE_OK"]:
+            return "vc4-module-closure-unavailable"
+        if not markers["VC4_LINUX_DRM_SUBMIT_OK"]:
+            return "vc4-render-submit-regression"
     if not markers["VC4_LINUX_KMS_RESOURCES_OK"]:
-        return "vc4-kms-resources-unavailable"
+        return "vc4-component-bind-frontier"
     if not markers["VC4_LINUX_KMS_CRTC_OK"]:
         return "vc4-kms-crtc-unavailable"
     if not markers["VC4_LINUX_KMS_CONNECTOR_OBJECT_OK"]:
@@ -118,6 +123,11 @@ def main() -> int:
     components = [match.groupdict() for match in BIND_RE.finditer(serial)]
     classification = classify(markers, outcomes)
     passed = classification == "linux-vc4-kms-topology-clear"
+    render_submission_preserved = (
+        outcomes["render_regression"] == "success"
+        if "render_regression" in outcomes
+        else markers["VC4_LINUX_DRM_SUBMIT_OK"]
+    )
 
     record = {
         "schema_version": 1,
@@ -144,7 +154,7 @@ def main() -> int:
         "",
         f"Frontier: **`{classification}`**",
         "",
-        f"- Render submission preserved: `{markers['VC4_LINUX_DRM_SUBMIT_OK']}`",
+        f"- Render submission preserved: `{render_submission_preserved}`",
         f"- CRTC discovered: `{markers['VC4_LINUX_KMS_CRTC_OK']}`",
         f"- Physical connector discovered: `{markers['VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK']}`",
         f"- Physical connector connected: `{markers['VC4_LINUX_KMS_CONNECTED_OK']}`",
