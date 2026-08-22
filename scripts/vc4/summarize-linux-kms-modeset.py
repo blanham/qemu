@@ -108,11 +108,56 @@ def classify(
     return "linux-vc4-kms-modeset-clear"
 
 
+def parse_timeout_diagnostics(serial: str) -> dict[str, dict[str, Any]]:
+    diagnostics: dict[str, dict[str, Any]] = {}
+    active_label: str | None = None
+    active_path: str | None = None
+    active_lines: list[str] = []
+
+    for line in serial.splitlines():
+        if line.startswith(
+            "VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_FILE_BEGIN "
+        ):
+            fields = dict(
+                field.split("=", 1)
+                for field in line.split()[1:]
+                if "=" in field
+            )
+            active_label = fields.get("label")
+            active_path = fields.get("path")
+            active_lines = []
+            continue
+        if line.startswith(
+            "VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_FILE_END "
+        ):
+            fields = dict(
+                field.split("=", 1)
+                for field in line.split()[1:]
+                if "=" in field
+            )
+            end_label = fields.get("label")
+            if active_label and end_label == active_label:
+                diagnostics[active_label] = {
+                    "path": active_path,
+                    "lines": active_lines[-512:],
+                    "reported_bytes": int(fields.get("bytes", "0")),
+                }
+            active_label = None
+            active_path = None
+            active_lines = []
+            continue
+        if active_label is not None:
+            active_lines.append(line)
+
+    return diagnostics
+
+
 def main() -> int:
     args = parse_args()
     outcomes = parse_outcomes(args.outcome)
     result = read_json(args.result)
     serial = args.serial.read_text(errors="replace") if args.serial.is_file() else ""
+    timeout_diagnostics = parse_timeout_diagnostics(serial)
     markers = {marker: marker in serial for marker in MARKERS}
     failures = [
         {
@@ -171,6 +216,7 @@ def main() -> int:
         "dumb_buffer": dumb,
         "probe_result": result,
         "interesting_serial": interesting,
+        "timeout_diagnostics": timeout_diagnostics,
         "serial_tail": serial.splitlines()[-360:],
     }
     args.json.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
