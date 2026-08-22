@@ -15,23 +15,6 @@
 
 #define VC4_MODULE_MANIFEST "/etc/vc4-modules.manifest"
 
-static void redirect_output_to_kmsg(void)
-{
-    int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
-
-    if (fd < 0) {
-        return;
-    }
-    for (int target = STDOUT_FILENO; target <= STDERR_FILENO; target++) {
-        if (fd != target) {
-            (void)dup2(fd, target);
-        }
-    }
-    if (fd > STDERR_FILENO) {
-        close(fd);
-    }
-}
-
 static int load_one_module(const char *path)
 {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -126,6 +109,46 @@ static int load_vc4_module_manifest(void)
     return 0;
 }
 
+/*
+ * Detailed report() records are best-effort diagnostics: a busy serial tty
+ * can reject a nonblocking write.  marker() has a /dev/kmsg fallback, so
+ * repeat every semantically important successful stage as a plain marker.
+ * These markers are emitted only after the corresponding aggregate helper
+ * has returned success; they do not weaken the witness.
+ */
+static void mark_module_success(void)
+{
+    marker("VC4_LINUX_MODULE_LOAD_DONE\n");
+    marker("VC4_LINUX_MODULE_CLOSURE_OK\n");
+}
+
+static void mark_node_success(const VC4DRMNode *node,
+                              const VC4DRMNode *card,
+                              const VC4DRMNode *render)
+{
+    if (node == render) {
+        marker("VC4_LINUX_DRM_RENDER128_OK\n");
+    } else if (node == card) {
+        marker("VC4_LINUX_DRM_CARD0_OK\n");
+    }
+}
+
+static void mark_uapi_success(void)
+{
+    marker("VC4_LINUX_DRM_IDENT_OK\n");
+    marker("VC4_LINUX_DRM_CREATE_BO_OK\n");
+    marker("VC4_LINUX_DRM_MMAP_BO_OK\n");
+    marker("VC4_LINUX_DRM_UAPI_OK\n");
+}
+
+static void mark_submit_success(void)
+{
+    marker("VC4_LINUX_DRM_SUBMIT_CL_OK\n");
+    marker("VC4_LINUX_DRM_SUBMIT_WAIT_OK\n");
+    marker("VC4_LINUX_DRM_SUBMIT_PIXELS_OK\n");
+    marker("VC4_LINUX_DRM_SUBMIT_OK\n");
+}
+
 int main(void)
 {
     struct timespec settle = {
@@ -140,10 +163,12 @@ int main(void)
     int framebuffer_result;
 
     prepare_filesystems();
-    redirect_output_to_kmsg();
     marker("VC4_LINUX_INIT_OK\n");
     marker("VC4_LINUX_V3D_MODULAR_START\n");
     module_result = load_vc4_module_manifest();
+    if (module_result == 0) {
+        mark_module_success();
+    }
     nanosleep(&settle, NULL);
     report_topology();
 
@@ -155,9 +180,14 @@ int main(void)
         selected = &card;
     }
     if (selected != NULL) {
+        mark_node_success(selected, &card, &render);
         uapi_result = probe_vc4_uapi(selected);
         if (uapi_result == 0) {
+            mark_uapi_success();
             submit_result = submit_clear_job(selected);
+            if (submit_result == 0) {
+                mark_submit_success();
+            }
         }
     } else {
         marker("VC4_LINUX_DRM_SUBMIT_SKIPPED no-vc4-node\n");
@@ -169,10 +199,14 @@ int main(void)
            card.fd >= 0 && card.vc4 ? 0 : -1,
            render.fd >= 0 && render.vc4 ? 0 : -1,
            uapi_result, submit_result, framebuffer_result);
+    marker("VC4_LINUX_V3D_MODULAR_DONE\n");
     if (module_result == 0 && submit_result == 0) {
         marker("VC4_LINUX_V3D_MODULAR_OK\n");
     } else {
         marker("VC4_LINUX_V3D_MODULAR_PARTIAL\n");
+    }
+    if (framebuffer_result == 0) {
+        marker("VC4_LINUX_FB_OK\n");
     }
 
     if (render.fd >= 0) {
