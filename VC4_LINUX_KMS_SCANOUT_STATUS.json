@@ -1,0 +1,17 @@
+{
+  "best_frame": null,
+  "capture_record": {},
+  "classification": "kms-modeset-regression",
+  "frame_count": 0,
+  "frames": [],
+  "generated_at": "2026-08-22T12:36:57.878477+00:00",
+  "matching_frame_count": 0,
+  "mode": null,
+  "modeset_ok": false,
+  "passed": false,
+  "run_id": "32573424171",
+  "schema_version": 1,
+  "serial_tail": [],
+  "source_sha": "4b8c8616b1972ed09b170c7e0141444745980501",
+  "valid_frame_count": 0
+}
