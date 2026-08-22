@@ -22,7 +22,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: vc4-linux-v3d-witness-cleanup
+  group: vc4-linux-v3d-witness-record
   cancel-in-progress: true
 
 jobs:
@@ -120,7 +120,7 @@ jobs:
             --disable-docs --disable-werror
           ninja -C build qemu-system-aarch64
 
-      - name: Boot Linux and accept the guest success marker
+      - name: Boot Linux through the complete DRM witness
         id: runtime
         run: |
           set -euo pipefail
@@ -131,7 +131,7 @@ jobs:
             --dtb "$DTB_DIR/render-only.dtb" \
             --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
             --out-dir "$OUT_DIR" \
-            --seconds 120 --sample-interval 5
+            --seconds 45 --sample-interval 5
 
       - name: Verify the complete DRM witness
         id: verification
@@ -144,11 +144,14 @@ jobs:
             VC4_LINUX_DRM_IDENT_OK \
             VC4_LINUX_DRM_CREATE_BO_OK \
             VC4_LINUX_DRM_MMAP_BO_OK \
+            VC4_LINUX_DRM_UAPI_OK \
             VC4_LINUX_DRM_SUBMIT_CL_OK \
             VC4_LINUX_DRM_SUBMIT_WAIT_OK \
             VC4_LINUX_DRM_SUBMIT_PIXELS_OK \
+            VC4_LINUX_DRM_SUBMIT_OK \
             VC4_LINUX_V3D_MODULAR_DONE \
-            VC4_LINUX_V3D_MODULAR_OK; do
+            VC4_LINUX_V3D_MODULAR_OK \
+            VC4_LINUX_FB_OK; do
             grep -Fq "$marker" "$serial"
           done
           grep -Eq 'VC4_LINUX_DRM_(CARD0|RENDER128)_OK' "$serial"
@@ -159,10 +162,11 @@ jobs:
           import sys
 
           result = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          assert result["passed"] is True, result
-          assert result["classification"] == "guest-success-marker", result
-          assert "VC4_LINUX_V3D_MODULAR_OK" in result["success_markers_seen"], result
-          assert result["elapsed_seconds"] < 45, result
+          assert result.get("passed") is True, result
+          assert result.get("init_seen") is True, result
+          assert result.get("framebuffer_marker_seen") is True, result
+          assert result.get("screenshot", {}).get("quadrants_match") is True, result
+          assert result.get("elapsed_seconds", 999) < 45, result
           print(json.dumps(result, indent=2))
           PY
 
@@ -205,11 +209,14 @@ jobs:
               "VC4_LINUX_DRM_IDENT_OK",
               "VC4_LINUX_DRM_CREATE_BO_OK",
               "VC4_LINUX_DRM_MMAP_BO_OK",
+              "VC4_LINUX_DRM_UAPI_OK",
               "VC4_LINUX_DRM_SUBMIT_CL_OK",
               "VC4_LINUX_DRM_SUBMIT_WAIT_OK",
               "VC4_LINUX_DRM_SUBMIT_PIXELS_OK",
+              "VC4_LINUX_DRM_SUBMIT_OK",
               "VC4_LINUX_V3D_MODULAR_DONE",
               "VC4_LINUX_V3D_MODULAR_OK",
+              "VC4_LINUX_FB_OK",
           ]
           outcomes = {
               "dependencies": os.environ.get("DEPENDENCIES_OUTCOME", "unknown"),
@@ -222,10 +229,15 @@ jobs:
               "verification": os.environ.get("VERIFICATION_OUTCOME", "unknown"),
           }
           markers = {marker: marker in serial for marker in expected_markers}
+          node_seen = (
+              "VC4_LINUX_DRM_CARD0_OK" in serial
+              or "VC4_LINUX_DRM_RENDER128_OK" in serial
+          )
           passed = (
               all(value == "success" for value in outcomes.values())
               and result.get("passed") is True
               and all(markers.values())
+              and node_seen
           )
           record = {
               "schema_version": 1,
@@ -236,6 +248,7 @@ jobs:
               "passed": passed,
               "outcomes": outcomes,
               "markers": markers,
+              "node_seen": node_seen,
               "result": result,
               "serial_tail": serial.splitlines()[-240:],
           }
@@ -247,21 +260,17 @@ jobs:
             'import json,sys; print("true" if json.load(open(sys.argv[1]))["passed"] else "false")' \
             "$STATUS_PATH")
           if [ "$passed" = true ]; then
-            rm -f \
-              .github/workflows/vc4-linux-v3d-witness-cleanup.yml \
-              .github/workflows/vc4-linux-v3d-witness-record.yml
+            rm -f .github/workflows/vc4-linux-v3d-witness-record.yml
           fi
 
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -- "$STATUS_PATH"
           if [ "$passed" = true ]; then
-            git add -u -- \
-              .github/workflows/vc4-linux-v3d-witness-cleanup.yml \
-              .github/workflows/vc4-linux-v3d-witness-record.yml
+            git add -u -- .github/workflows/vc4-linux-v3d-witness-record.yml
           fi
           if ! git diff --cached --quiet; then
-            git commit -m "test/vc4: record cleaned Linux DRM witness [skip ci]"
+            git commit -m "test/vc4: record Linux DRM witness [skip ci]"
             git push
           fi
           test "$passed" = true
