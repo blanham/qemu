@@ -1,0 +1,20 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    /*
+     * Restore the upstream BCM2835 topology for this diagnostic boot: IDs 9
+     * and 13 are PLLH_PIX and HSM in the CPRMAN provider.  If this advances
+     * while the normal downstream firmware-clock topology does not, the
+     * firmware provider rather than HDMI or DDC is the blocker.
+     */
+    fragment@0 {
+        target = <&hdmi>;
+        __overlay__ {
+            clocks = <&clocks 9>, <&clocks 13>;
+            clock-names = "pixel", "hdmi";
+        };
+    };
+};
