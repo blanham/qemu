@@ -1,0 +1,226 @@
+name: VC4 pixel-valve source census
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-modeset-frontier
+    paths:
+      - .github/workflows/vc4-pixelvalve-source-census.yml
+      - VC4_SETCRTC_DIAG_ROUTE_WAIT_VBLANK
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-pixelvalve-source-census
+  cancel-in-progress: true
+
+jobs:
+  census:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      BRANCH: agent/vc4-linux-kms-modeset-frontier
+      LINUX_COMMIT: 1efe5d048a391de3ead2804b2e7f86376c356cc5
+      REPORT_JSON: VC4_PIXELVALVE_SOURCE_CENSUS.json
+      REPORT_MD: VC4_PIXELVALVE_SOURCE_CENSUS.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Confirm vblank wait diagnosis
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BRANCH"
+          git show "origin/$BRANCH:VC4_SETCRTC_DIAG_ROUTE_WAIT_VBLANK" \
+            > /tmp/vblank-route.json
+
+      - name: Fetch the pinned Linux pixel-valve contract
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/linux-vc4
+          for file in \
+            drivers/gpu/drm/vc4/vc4_crtc.c \
+            drivers/gpu/drm/vc4/vc4_regs.h \
+            drivers/gpu/drm/vc4/vc4_hvs.c \
+            arch/arm/boot/dts/broadcom/bcm2835-common.dtsi \
+            arch/arm/boot/dts/broadcom/bcm283x.dtsi; do
+            output="/tmp/linux-vc4/$(basename "$file")"
+            curl --fail --location --retry 5 \
+              --output "$output" \
+              "https://raw.githubusercontent.com/raspberrypi/linux/${LINUX_COMMIT}/${file}" \
+              || true
+          done
+
+      - name: Classify the QEMU integration shape
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          repo = Path('.')
+          local_paths = [
+              Path('hw/display/bcm2835_v3d.c'),
+              Path('include/hw/display/bcm2835_v3d.h'),
+              Path('hw/arm/bcm2835_peripherals.c'),
+              Path('include/hw/arm/bcm2835_peripherals.h'),
+              Path('hw/display/meson.build'),
+              Path('hw/display/Kconfig'),
+          ]
+          local = {
+              str(path): path.read_text(errors='replace')
+              for path in local_paths if path.is_file()
+          }
+          combined = '\n'.join(local.values())
+          lower = combined.lower()
+          display_files = sorted(
+              str(path) for path in Path('hw/display').glob('*')
+              if any(token in path.name.lower() for token in (
+                  'bcm2835', 'pixel', 'hvs', 'vc4'
+              ))
+          )
+
+          existing_pv_files = [
+              path for path in display_files
+              if any(token in Path(path).name.lower() for token in (
+                  'pixelvalve', 'pixel_valve', 'bcm2835_pv'
+              ))
+          ]
+          v3d_text = local.get('hw/display/bcm2835_v3d.c', '')
+          periph_text = local.get('hw/arm/bcm2835_peripherals.c', '')
+          header_text = local.get('include/hw/display/bcm2835_v3d.h', '')
+
+          has_existing_pv_model = bool(existing_pv_files) or bool(
+              re.search(r'pixel.?valve|\bPV_INT(?:EN|STAT)\b', combined, re.I)
+          )
+          has_unimplemented_pv = bool(re.search(
+              r'unimplemented[^\n]*(?:pixel|pv0|pv1|pv2)|'
+              r'(?:PV0|PV1|PV2)[^\n]*unimplemented',
+              periph_text,
+              re.I,
+          ))
+          has_pv_offsets = all(
+              token in combined.lower()
+              for token in ('206000', '207000', '807000')
+          )
+          v3d_has_irq = 'qemu_irq' in header_text or 'sysbus_init_irq' in v3d_text
+          v3d_has_timer = any(
+              token in v3d_text
+              for token in ('QEMUTimer', 'timer_new_', 'timer_mod')
+          )
+
+          if has_existing_pv_model:
+              route = 'EXTEND_EXISTING_PV_MODEL'
+          elif has_unimplemented_pv or has_pv_offsets:
+              route = 'REPLACE_UNIMPLEMENTED_PV_REGIONS'
+          else:
+              route = 'ADD_NEW_PIXELVALVE_MODEL'
+
+          linux_dir = Path('/tmp/linux-vc4')
+          linux = {
+              path.name: path.read_text(errors='replace')
+              for path in linux_dir.glob('*') if path.is_file()
+          }
+          linux_combined = '\n'.join(linux.values())
+
+          def define(name: str) -> str | None:
+              match = re.search(
+                  rf'^\s*#define\s+{re.escape(name)}\s+(.+?)\s*$',
+                  linux_combined,
+                  re.MULTILINE,
+              )
+              return match.group(1) if match else None
+
+          contract_names = (
+              'PV_INTEN',
+              'PV_INTSTAT',
+              'PV_STAT',
+              'PV_INT_VFP_START',
+              'PV_INT_VFP_END',
+              'PV_INT_VACTIVE_START',
+              'PV_INT_VACTIVE_END',
+              'PV_CONTROL',
+              'PV_V_CONTROL',
+          )
+          definitions = {name: define(name) for name in contract_names}
+          relevant_linux = [
+              line
+              for line in linux_combined.splitlines()
+              if any(token in line for token in (
+                  'PV_INTEN', 'PV_INTSTAT', 'PV_INT_VFP_START',
+                  'drm_crtc_handle_vblank', 'vc4_crtc_irq_handler',
+                  'platform_get_irq', 'request_irq', 'pixelvalve@',
+              ))
+          ][:240]
+          relevant_local = []
+          for filename, text in local.items():
+              for number, line in enumerate(text.splitlines(), 1):
+                  if any(token in line.lower() for token in (
+                      'pixel', 'hvs', 'v3d', 'unimp', 'qemu_irq',
+                      'sysbus_init_irq', '206000', '207000', '807000',
+                  )):
+                      relevant_local.append(f'{filename}:{number}: {line}')
+          relevant_local = relevant_local[:400]
+
+          report = {
+              'schema_version': 1,
+              'route': route,
+              'display_files': display_files,
+              'existing_pixelvalve_files': existing_pv_files,
+              'has_existing_pixelvalve_model': has_existing_pv_model,
+              'has_unimplemented_pixelvalve_regions': has_unimplemented_pv,
+              'has_all_pixelvalve_offsets': has_pv_offsets,
+              'v3d_model_has_irq': v3d_has_irq,
+              'v3d_model_has_timer': v3d_has_timer,
+              'linux_definitions': definitions,
+              'linux_contract_lines': relevant_linux,
+              'qemu_source_lines': relevant_local,
+          }
+          for old in Path('.').glob('VC4_PIXELVALVE_SOURCE_ROUTE_*'):
+              old.unlink()
+          Path(f'VC4_PIXELVALVE_SOURCE_ROUTE_{route}').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_PIXELVALVE_SOURCE_CENSUS.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+          lines = [
+              '# VC4 pixel-valve source census',
+              '',
+              f"- Integration route: **`{route}`**",
+              f"- Existing PV model: `{has_existing_pv_model}`",
+              f"- Unimplemented PV regions: `{has_unimplemented_pv}`",
+              f"- V3D model has IRQs: `{v3d_has_irq}`",
+              f"- V3D model has timer: `{v3d_has_timer}`",
+              '',
+              '## Linux register contract',
+              '',
+          ]
+          lines.extend(f'- `{name} = {value}`' for name, value in definitions.items())
+          lines.extend(('', '## QEMU source references', ''))
+          lines.extend(f'- `{line}`' for line in relevant_local)
+          Path('VC4_PIXELVALVE_SOURCE_CENSUS.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish source census
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          git add -A -- \
+            "$REPORT_JSON" "$REPORT_MD" \
+            VC4_PIXELVALVE_SOURCE_ROUTE_*
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-pixelvalve-source-census.yml
+          git commit -m "test/vc4: classify the pixel-valve vblank integration shape"
+          git push origin "HEAD:$BRANCH"
