@@ -1,0 +1,70 @@
+name: VC4 monitor contract gate repair v3
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-monitor-contract-repair-v3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Make the standalone optional git-add conditional
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/vc4-kms-monitor-contract.yml")
+          source = path.read_text()
+          conditional = (
+              "if test -e scripts/vc4/property-expander-gpio-smoke.py; then"
+          )
+          if conditional not in source:
+              lines = source.splitlines()
+              needle = "scripts/vc4/property-expander-gpio-smoke.py"
+              matches = [
+                  index for index, line in enumerate(lines)
+                  if line.strip() == needle
+              ]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"expected one standalone optional path, got {matches!r}"
+                  )
+              index = matches[0]
+              if index == 0 or not lines[index - 1].rstrip().endswith("\\"):
+                  raise SystemExit("optional git-add continuation anchor changed")
+              lines[index - 1] = lines[index - 1].rstrip()[:-1].rstrip()
+              indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
+              command_indent = indent[:-2]
+              lines[index:index + 1] = [
+                  command_indent + conditional,
+                  indent + "git add -- " + needle,
+                  command_indent + "fi",
+              ]
+              path.write_text("\n".join(lines) + "\n")
+          PY
+          git diff --check
+
+      - name: Publish the final gate repair
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- .github/workflows/vc4-kms-monitor-contract.yml
+          git rm -f --ignore-unmatch -- \
+            .github/workflows/vc4-kms-monitor-contract-repair.yml \
+            .github/workflows/vc4-kms-monitor-contract-repair-v2.yml \
+            .github/workflows/vc4-kms-monitor-contract-repair-v3.yml
+          git commit -m "ci/vc4: finalize optional monitor witness handling"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
