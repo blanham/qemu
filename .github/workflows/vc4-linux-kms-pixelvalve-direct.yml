@@ -18,6 +18,7 @@ on:
       - scripts/vc4/pixelvalve-vblank-smoke.py
       - scripts/vc4/property-power-domain-smoke.py
       - scripts/vc4/raspi3-linux-probe.py
+      - scripts/vc4/summarize-linux-pixelvalve.py
       - scripts/vc4/v3d-smoke.py
       - tests/vc4/linux-kms-modeset-probe.inc.c
       - tests/vc4/linux-v3d-modular-init.c
@@ -28,7 +29,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: vc4-linux-pixelvalve-modeset
@@ -85,6 +86,7 @@ jobs:
             scripts/vc4/pixelvalve-vblank-smoke.py \
             scripts/vc4/property-power-domain-smoke.py \
             scripts/vc4/raspi3-linux-probe.py \
+            scripts/vc4/summarize-linux-pixelvalve.py \
             scripts/vc4/v3d-smoke.py
           bash -n \
             scripts/vc4/build-linux-v3d-modular-initramfs.sh \
@@ -232,144 +234,26 @@ jobs:
       - name: Classify exact pixel-valve frontier
         id: classify
         if: always()
-        env:
-          OUTCOME_DEPENDENCIES: ${{ steps.dependencies.outcome }}
-          OUTCOME_SOURCE: ${{ steps.source.outcome }}
-          OUTCOME_PINNED: ${{ steps.pinned.outcome }}
-          OUTCOME_FIXTURE: ${{ steps.fixture.outcome }}
-          OUTCOME_DTB: ${{ steps.dtb.outcome }}
-          OUTCOME_BUILD: ${{ steps.build.outcome }}
-          OUTCOME_PIXELVALVE: ${{ steps.pixelvalve.outcome }}
-          OUTCOME_REGRESSIONS: ${{ steps.regressions.outcome }}
-          OUTCOME_RENDER: ${{ steps.render_regression.outcome }}
-          OUTCOME_KMS: ${{ steps.kms_runtime.outcome }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import datetime as dt
-          import json
-          import os
-          from pathlib import Path
-          import re
-
-          serial_path = Path(os.environ["KMS_OUT"]) / "serial.log"
-          serial = serial_path.read_text(errors="replace") if serial_path.is_file() else ""
-          outcomes = {
-              "dependencies": os.environ.get("OUTCOME_DEPENDENCIES", "skipped"),
-              "source": os.environ.get("OUTCOME_SOURCE", "skipped"),
-              "pinned": os.environ.get("OUTCOME_PINNED", "skipped"),
-              "fixture": os.environ.get("OUTCOME_FIXTURE", "skipped"),
-              "dtb": os.environ.get("OUTCOME_DTB", "skipped"),
-              "build": os.environ.get("OUTCOME_BUILD", "skipped"),
-              "pixelvalve": os.environ.get("OUTCOME_PIXELVALVE", "skipped"),
-              "regressions": os.environ.get("OUTCOME_REGRESSIONS", "skipped"),
-              "render_regression": os.environ.get("OUTCOME_RENDER", "skipped"),
-              "kms_runtime": os.environ.get("OUTCOME_KMS", "skipped"),
-          }
-          expected = (
-              "VC4_LINUX_MODULE_CLOSURE_OK",
-              "VC4_LINUX_KMS_TOPOLOGY_OK",
-              "VC4_LINUX_KMS_MODESET_SUPERVISOR_START",
-              "VC4_LINUX_KMS_MODESET_CONNECTOR_OK",
-              "VC4_LINUX_KMS_MODESET_DUMB_OK",
-              "VC4_LINUX_KMS_MODESET_MAP_OK",
-              "VC4_LINUX_KMS_MODESET_FB_OK",
-              "VC4_LINUX_KMS_MODESET_SETCRTC_OK",
-              "VC4_LINUX_KMS_MODESET_OK",
-              "VC4_LINUX_DRM_SUBMIT_OK",
-          )
-          markers = {marker: marker in serial for marker in expected}
-          markers["VC4_LINUX_KMS_MODESET_TIMEOUT"] = (
-              "VC4_LINUX_KMS_MODESET_TIMEOUT" in serial
-          )
-          failure_match = re.search(
-              r"VC4_LINUX_KMS_MODESET_FAILED stage=([^ ]+) errno=(\d+)",
-              serial,
-          )
-          failure = (
-              {
-                  "stage": failure_match.group(1),
-                  "errno": int(failure_match.group(2)),
-              }
-              if failure_match else None
-          )
-
-          required_steps = (
-              "dependencies", "source", "pinned", "fixture", "dtb",
-              "build", "pixelvalve", "regressions", "render_regression",
-              "kms_runtime",
-          )
-          failed_steps = [
-              step for step in required_steps
-              if outcomes.get(step) != "success"
-          ]
-          if failed_steps:
-              classification = "workflow-" + "-".join(failed_steps) + "-failed"
-          elif not markers["VC4_LINUX_MODULE_CLOSURE_OK"]:
-              classification = "vc4-module-closure-unavailable"
-          elif not markers["VC4_LINUX_KMS_TOPOLOGY_OK"]:
-              classification = "vc4-kms-topology-frontier"
-          elif failure:
-              classification = f"vc4-kms-modeset-{failure['stage']}-failed"
-          elif markers["VC4_LINUX_KMS_MODESET_TIMEOUT"]:
-              classification = "vc4-kms-modeset-timeout"
-          elif not markers["VC4_LINUX_KMS_MODESET_SETCRTC_OK"]:
-              classification = "vc4-kms-setcrtc-unavailable"
-          elif not markers["VC4_LINUX_KMS_MODESET_OK"]:
-              classification = "vc4-kms-modeset-incomplete"
-          elif not markers["VC4_LINUX_DRM_SUBMIT_OK"]:
-              classification = "vc4-render-submit-regression-after-modeset"
-          else:
-              classification = "linux-vc4-pixelvalve-modeset-clear"
-
-          passed = classification == "linux-vc4-pixelvalve-modeset-clear"
-          return_code_path = Path(os.environ["KMS_OUT"]) / "return-code"
-          probe_return_code = (
-              int(return_code_path.read_text().strip())
-              if return_code_path.is_file() else None
-          )
-          record = {
-              "schema_version": 1,
-              "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-              "source_sha": os.environ.get("GITHUB_SHA"),
-              "run_id": os.environ.get("GITHUB_RUN_ID"),
-              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
-              "passed": passed,
-              "classification": classification,
-              "outcomes": outcomes,
-              "markers": markers,
-              "modeset_failure": failure,
-              "probe_return_code": probe_return_code,
-              "serial_tail": serial.splitlines()[-400:],
-          }
-          Path(os.environ["STATUS_JSON"]).write_text(
-              json.dumps(record, indent=2, sort_keys=True) + "\n"
-          )
-          lines = [
-              "# VC4 Linux pixel-valve modeset frontier",
-              "",
-              f"Validation passed: **{'true' if passed else 'false'}**",
-              "",
-              f"Frontier: **`{classification}`**",
-              "",
-              f"- Pixel-valve QTest: `{outcomes['pixelvalve']}`",
-              f"- KMS topology: `{markers['VC4_LINUX_KMS_TOPOLOGY_OK']}`",
-              f"- SETCRTC completed: `{markers['VC4_LINUX_KMS_MODESET_SETCRTC_OK']}`",
-              f"- Modeset witness completed: `{markers['VC4_LINUX_KMS_MODESET_OK']}`",
-              f"- Renderer submit preserved: `{markers['VC4_LINUX_DRM_SUBMIT_OK']}`",
-              f"- Probe return code: `{probe_return_code}`",
-          ]
-          if failure:
-              lines.extend((
-                  "",
-                  "## Modeset failure",
-                  "",
-                  f"- Stage: `{failure['stage']}`",
-                  f"- Errno: `{failure['errno']}`",
-              ))
-          Path(os.environ["STATUS_MD"]).write_text("\n".join(lines) + "\n")
-          print(json.dumps(record, indent=2, sort_keys=True))
-          PY
+          python3 scripts/vc4/summarize-linux-pixelvalve.py \
+            --serial "$KMS_OUT/serial.log" \
+            --return-code "$KMS_OUT/return-code" \
+            --json "$STATUS_JSON" \
+            --markdown "$STATUS_MD" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --outcome dependencies=${{ steps.dependencies.outcome }} \
+            --outcome source=${{ steps.source.outcome }} \
+            --outcome pinned=${{ steps.pinned.outcome }} \
+            --outcome fixture=${{ steps.fixture.outcome }} \
+            --outcome dtb=${{ steps.dtb.outcome }} \
+            --outcome build=${{ steps.build.outcome }} \
+            --outcome pixelvalve=${{ steps.pixelvalve.outcome }} \
+            --outcome regressions=${{ steps.regressions.outcome }} \
+            --outcome render_regression=${{ steps.render_regression.outcome }} \
+            --outcome kms_runtime=${{ steps.kms_runtime.outcome }}
 
       - name: Collect evidence
         if: always()
@@ -388,6 +272,22 @@ jobs:
           path: vc4-pixelvalve-evidence
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Publish exact frontier status
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "test/vc4: record pixel-valve modeset frontier [skip ci]"
+            git pull --rebase origin agent/vc4-linux-kms-pixelvalve-direct
+            git push origin HEAD:agent/vc4-linux-kms-pixelvalve-direct
+          fi
 
       - name: Require complete native KMS modeset
         if: always()
