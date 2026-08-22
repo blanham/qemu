@@ -1,0 +1,288 @@
+name: VC4 clock and monitor contract final gate
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-contract-final.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-contract-final
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-contract-official
+      MODULE_DIR: /tmp/vc4-contract-modules
+      INITRAMFS_DIR: /tmp/vc4-contract-initramfs
+      DTB_DIR: /tmp/vc4-contract-dtbs
+      RENDER_DIR: /tmp/vc4-contract-render
+      KMS_DIR: /tmp/vc4-contract-kms
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for controlled deltas and adopt their branch head
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 180); do
+            git fetch origin "$BRANCH"
+            if git cat-file -e \
+                 "origin/$BRANCH:scripts/vc4/property-clock-enumeration-smoke.py" \
+                 2>/dev/null && \
+               git cat-file -e \
+                 "origin/$BRANCH:VC4_LINUX_KMS_DDC_DELTA.json" \
+                 2>/dev/null && \
+               git cat-file -e \
+                 "origin/$BRANCH:VC4_LINUX_KMS_MONITOR_DELTA.json" \
+                 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          test "$ready" = true
+          git reset --hard "origin/$BRANCH"
+          for transient in \
+            vc4-kms-clock-contract-apply.yml \
+            vc4-kms-clock-contract-apply-v2.yml \
+            vc4-kms-ddc-delta.yml \
+            vc4-kms-monitor-contract.yml \
+            vc4-kms-monitor-contract-repair.yml \
+            vc4-kms-monitor-contract-repair-v2.yml; do
+            test ! -e ".github/workflows/$transient"
+          done
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" "$DTB_DIR" \
+            "$RENDER_DIR" "$KMS_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$RENDER_DIR" "$KMS_DIR"
+
+      - name: Validate sources and build QEMU
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/property-clock-enumeration-smoke.py \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/raspi3-linux-probe.py
+          if test -e scripts/vc4/property-expander-gpio-smoke.py; then
+            python3 -m py_compile \
+              scripts/vc4/property-expander-gpio-smoke.py
+          fi
+          git diff --check
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          if test -e scripts/vc4/property-expander-gpio-smoke.py; then
+            python3 scripts/vc4/property-expander-gpio-smoke.py \
+              --qemu build/qemu-system-aarch64
+          fi
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Build pinned Linux fixtures
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" --target vc4
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR"
+
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/render.dtbo" \
+            tests/vc4/vc4-render-only-overlay.dts
+          bash scripts/vc4/build-v3d-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/render.dtbo" \
+            "$DTB_DIR/render.dtb"
+
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/kms.dtbo" \
+            "$DTB_DIR/kms.dtb"
+
+      - name: Preserve the completed renderer gate
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/render.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$RENDER_DIR" \
+            --seconds 50 --sample-interval 5
+          grep -Fq VC4_LINUX_MODULE_CLOSURE_OK "$RENDER_DIR/serial.log"
+          grep -Fq VC4_LINUX_DRM_SUBMIT_OK "$RENDER_DIR/serial.log"
+
+      - name: Probe the resulting native KMS frontier
+        run: |
+          set +e
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$KMS_DIR" \
+            --seconds 75 --sample-interval 5 \
+            > "$KMS_DIR/probe.stdout" 2>&1
+          printf '%s\n' "$?" > "$KMS_DIR/return-code"
+          cat "$KMS_DIR/probe.stdout"
+          exit 0
+
+      - name: Record the exact post-contract frontier
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          render = Path("/tmp/vc4-contract-render/serial.log").read_text(
+              errors="replace"
+          )
+          kms = Path("/tmp/vc4-contract-kms/serial.log").read_text(
+              errors="replace"
+          )
+          markers = (
+              "VC4_LINUX_MODULE_CLOSURE_OK",
+              "VC4_LINUX_DRM_SUBMIT_OK",
+              "VC4_LINUX_KMS_RESOURCES_OK",
+              "VC4_LINUX_KMS_CRTC_OK",
+              "VC4_LINUX_KMS_CONNECTOR_OBJECT_OK",
+              "VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK",
+              "VC4_LINUX_KMS_CONNECTED_OK",
+              "VC4_LINUX_KMS_MODE_OK",
+              "VC4_LINUX_KMS_TOPOLOGY_OK",
+          )
+          render_markers = {marker: marker in render for marker in markers}
+          kms_markers = {marker: marker in kms for marker in markers}
+          bind_re = re.compile(
+              r"vc4-drm soc:gpu: bound (\S+) \(ops (\S+) \[vc4\]\)"
+          )
+          components = [
+              {"device": device, "ops": ops}
+              for device, ops in dict.fromkeys(bind_re.findall(kms))
+          ]
+          error_lines = [
+              line for line in kms.splitlines()
+              if "error" in line.lower() or "failed" in line.lower()
+              or "defer" in line.lower() or "supplier" in line.lower()
+              or "invalid index" in line.lower()
+          ][-240:]
+          render_preserved = (
+              render_markers["VC4_LINUX_MODULE_CLOSURE_OK"]
+              and render_markers["VC4_LINUX_DRM_SUBMIT_OK"]
+          )
+          topology_clear = kms_markers["VC4_LINUX_KMS_TOPOLOGY_OK"]
+          if topology_clear:
+              classification = "linux-vc4-kms-topology-clear"
+          elif not kms_markers["VC4_LINUX_KMS_RESOURCES_OK"]:
+              classification = "vc4-component-bind-frontier"
+          elif not kms_markers["VC4_LINUX_KMS_CRTC_OK"]:
+              classification = "vc4-kms-crtc-unavailable"
+          elif not kms_markers["VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK"]:
+              classification = "vc4-kms-physical-connector-unavailable"
+          elif not kms_markers["VC4_LINUX_KMS_CONNECTED_OK"]:
+              classification = "vc4-kms-physical-connector-disconnected"
+          elif not kms_markers["VC4_LINUX_KMS_MODE_OK"]:
+              classification = "vc4-kms-connected-without-modes"
+          else:
+              classification = "vc4-kms-topology-incomplete"
+
+          record = {
+              "schema_version": 1,
+              "render_submission_preserved": render_preserved,
+              "native_kms_topology_clear": topology_clear,
+              "classification": classification,
+              "render_markers": render_markers,
+              "kms_markers": kms_markers,
+              "components": components,
+              "errors": error_lines,
+              "kms_relevant_tail": [
+                  line for line in kms.splitlines()
+                  if "vc4" in line.lower() or "drm" in line.lower()
+                  or "hdmi" in line.lower() or "clock" in line.lower()
+                  or "gpio" in line.lower() or "ddc" in line.lower()
+              ][-320:],
+          }
+          Path("VC4_LINUX_KMS_CONTRACT_STATUS.json").write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+          lines = [
+              "# VC4 Linux KMS clock and monitor contract",
+              "",
+              f"Renderer submission preserved: **{'true' if render_preserved else 'false'}**",
+              "",
+              f"Native KMS topology clear: **{'true' if topology_clear else 'false'}**",
+              "",
+              f"Current frontier: **`{classification}`**",
+              "",
+              f"- Bound VC4 components: `{len(components)}`",
+              f"- KMS resources: `{kms_markers['VC4_LINUX_KMS_RESOURCES_OK']}`",
+              f"- CRTC: `{kms_markers['VC4_LINUX_KMS_CRTC_OK']}`",
+              f"- Physical connector: `{kms_markers['VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK']}`",
+              f"- Connected: `{kms_markers['VC4_LINUX_KMS_CONNECTED_OK']}`",
+              f"- Mode: `{kms_markers['VC4_LINUX_KMS_MODE_OK']}`",
+          ]
+          Path("VC4_LINUX_KMS_CONTRACT_STATUS.md").write_text(
+              "\n".join(lines) + "\n"
+          )
+          if not render_preserved:
+              Path("/tmp/render-regressed").touch()
+          PY
+
+      - name: Publish the post-contract frontier
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            VC4_LINUX_KMS_CONTRACT_STATUS.json \
+            VC4_LINUX_KMS_CONTRACT_STATUS.md
+          git rm -- .github/workflows/vc4-kms-contract-final.yml
+          git commit -m "test/vc4: record clock and monitor KMS frontier"
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
+          test ! -e /tmp/render-regressed
