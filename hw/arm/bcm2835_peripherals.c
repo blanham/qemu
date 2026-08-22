@@ -13,6 +13,7 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "hw/arm/bcm2835_peripherals.h"
+#include "hw/display/i2c-ddc.h"
 #include "hw/misc/bcm2835_mbox_defs.h"
 #include "hw/raspi/raspi_platform.h"
 #include "system/system.h"
@@ -32,6 +33,8 @@
 
 /* All three I2C controllers share the same IRQ */
 #define ORGATED_I2C_IRQ_COUNT 3
+
+#define BCM2835_HDMI_DDC_ADDRESS 0x50
 
 void create_unimp(BCMSocPeripheralBaseState *ps,
                   UnimplementedDeviceState *uds,
@@ -567,6 +570,15 @@ void bcm_soc_peripherals_common_realize(DeviceState *dev, Error **errp)
             return;
         }
     }
+
+    /*
+     * BSC2 is the HDMI DDC controller on BCM2835.  Model a
+     * connected monitor with deterministic EDID so native VC4
+     * KMS can probe physical display modes without host display
+     * dependencies.
+     */
+    i2c_slave_create_simple(s->i2c[2].bus, TYPE_I2CDDC,
+                            BCM2835_HDMI_DDC_ADDRESS);
 
     memory_region_add_subregion(&s->peri_mr, BSC0_OFFSET,
             sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->i2c[0]), 0));

@@ -367,6 +367,7 @@ config RASPI
     select USB_DWC2
     select BCM2835_SPI
     select BCM2835_I2C
+    select DDC
 
 config STM32F100_SOC
     bool
