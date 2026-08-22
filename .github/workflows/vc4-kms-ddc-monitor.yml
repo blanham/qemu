@@ -41,13 +41,11 @@ jobs:
 
           replace_once(
               Path("hw/arm/Kconfig"),
-              """    select BCM2835_SPI
-              select BCM2835_I2C
-          """,
-              """    select BCM2835_SPI
-              select BCM2835_I2C
-              select DDC
-          """,
+              "    select BCM2835_SPI\n"
+              "    select BCM2835_I2C\n",
+              "    select BCM2835_SPI\n"
+              "    select BCM2835_I2C\n"
+              "    select DDC\n",
               "RASPI DDC Kconfig",
           )
 
@@ -66,35 +64,35 @@ jobs:
               "#define BCM2835_HDMI_DDC_ADDRESS 0x50\n",
               "DDC address",
           )
-          replace_once(
-              peripherals,
-              """    for (n = 0; n < 3; n++) {
-                      if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c[n]), errp)) {
-                          return;
-                      }
-                  }
 
-                  memory_region_add_subregion(&s->peri_mr, BSC0_OFFSET,
-          """,
-              """    for (n = 0; n < 3; n++) {
-                      if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c[n]), errp)) {
-                          return;
-                      }
-                  }
-
-                  /*
-                   * BSC2 is the HDMI DDC controller on BCM2835.  Model a
-                   * connected monitor with deterministic EDID so native VC4
-                   * KMS can probe physical display modes without host display
-                   * dependencies.
-                   */
-                  i2c_slave_create_simple(s->i2c[2].bus, TYPE_I2CDDC,
-                                          BCM2835_HDMI_DDC_ADDRESS);
-
-                  memory_region_add_subregion(&s->peri_mr, BSC0_OFFSET,
-          """,
-              "BSC2 DDC attachment",
+          old_i2c = (
+              "    for (n = 0; n < 3; n++) {\n"
+              "        if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c[n]), errp)) {\n"
+              "            return;\n"
+              "        }\n"
+              "    }\n"
+              "\n"
+              "    memory_region_add_subregion(&s->peri_mr, BSC0_OFFSET,\n"
           )
+          new_i2c = (
+              "    for (n = 0; n < 3; n++) {\n"
+              "        if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c[n]), errp)) {\n"
+              "            return;\n"
+              "        }\n"
+              "    }\n"
+              "\n"
+              "    /*\n"
+              "     * BSC2 is the HDMI DDC controller on BCM2835.  Model a\n"
+              "     * connected monitor with deterministic EDID so native VC4\n"
+              "     * KMS can probe physical display modes without host display\n"
+              "     * dependencies.\n"
+              "     */\n"
+              "    i2c_slave_create_simple(s->i2c[2].bus, TYPE_I2CDDC,\n"
+              "                            BCM2835_HDMI_DDC_ADDRESS);\n"
+              "\n"
+              "    memory_region_add_subregion(&s->peri_mr, BSC0_OFFSET,\n"
+          )
+          replace_once(peripherals, old_i2c, new_i2c, "BSC2 DDC attachment")
           PY
 
           python3 -m py_compile \
