@@ -1,0 +1,127 @@
+name: VC4 continuation endpoint audit
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-continuation-audit.yml
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for the selected post-contract frontier
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 300); do
+            git fetch origin agent/vc4-linux-kms-bind-diagnostics
+            if git cat-file -e \
+                 "origin/agent/vc4-linux-kms-bind-diagnostics:VC4_LINUX_KMS_MODESET_STATUS.json" \
+                 2>/dev/null || \
+               git cat-file -e \
+                 "origin/agent/vc4-linux-kms-bind-diagnostics:VC4_LINUX_KMS_NEXT_CONTRACT.json" \
+                 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          test "$ready" = true
+          git reset --hard origin/agent/vc4-linux-kms-bind-diagnostics
+
+      - name: Validate permanent witnesses and write the endpoint summary
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/property-clock-enumeration-smoke.py \
+            scripts/vc4/property-power-domain-smoke.py
+          if test -e scripts/vc4/property-expander-gpio-smoke.py; then
+            python3 -m py_compile scripts/vc4/property-expander-gpio-smoke.py
+          fi
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import subprocess
+
+          contract = json.loads(
+              Path("VC4_LINUX_KMS_CONTRACT_STATUS.json").read_text()
+          )
+          modeset_path = Path("VC4_LINUX_KMS_MODESET_STATUS.json")
+          next_path = Path("VC4_LINUX_KMS_NEXT_CONTRACT.json")
+          selected = (
+              json.loads(modeset_path.read_text())
+              if modeset_path.is_file()
+              else json.loads(next_path.read_text())
+          )
+          log = subprocess.check_output(
+              ["git", "log", "--oneline", "-20"], text=True
+          ).splitlines()
+          lines = [
+              "# VC4/AArch64/Raspberry Pi continuation endpoint",
+              "",
+              f"Renderer submission preserved: **{str(contract['render_submission_preserved']).lower()}**",
+              "",
+              f"Native topology clear: **{str(contract['native_kms_topology_clear']).lower()}**",
+              "",
+              f"Topology frontier: **`{contract['classification']}`**",
+              "",
+          ]
+          if modeset_path.is_file():
+              lines.extend((
+                  f"Modeset passed: **{str(selected['passed']).lower()}**",
+                  "",
+                  f"Modeset frontier: **`{selected['classification']}`**",
+                  "",
+              ))
+          else:
+              lines.extend((
+                  f"Next hardware contract: **`{selected['classification']}`**",
+                  "",
+              ))
+          lines.extend((
+              "## Permanent focused witnesses",
+              "",
+              "- `scripts/vc4/property-clock-enumeration-smoke.py`",
+          ))
+          if Path("scripts/vc4/property-expander-gpio-smoke.py").is_file():
+              lines.append("- `scripts/vc4/property-expander-gpio-smoke.py`")
+          lines.extend(("", "## Recent branch history", ""))
+          lines.extend(f"- `{entry}`" for entry in log)
+          Path("VC4_LINUX_KMS_CONTINUATION_SUMMARY.md").write_text(
+              "\n".join(lines) + "\n"
+          )
+          PY
+
+      - name: Remove obsolete transient gates and publish the endpoint
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- VC4_LINUX_KMS_CONTINUATION_SUMMARY.md
+          git rm -f --ignore-unmatch -- \
+            .github/workflows/vc4-kms-clock-contract-apply.yml \
+            .github/workflows/vc4-kms-clock-contract-apply-v2.yml \
+            .github/workflows/vc4-kms-ddc-delta.yml \
+            .github/workflows/vc4-kms-ddc-delta-repair.yml \
+            .github/workflows/vc4-kms-monitor-contract.yml \
+            .github/workflows/vc4-kms-monitor-contract-repair.yml \
+            .github/workflows/vc4-kms-monitor-contract-repair-v2.yml \
+            .github/workflows/vc4-kms-monitor-contract-repair-v3.yml \
+            .github/workflows/vc4-kms-transient-cleanup.yml \
+            .github/workflows/vc4-kms-contract-final.yml \
+            .github/workflows/vc4-kms-next-frontier.yml \
+            .github/workflows/vc4-kms-continuation-audit.yml
+          git commit -m "test/vc4: record continuation endpoint"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
