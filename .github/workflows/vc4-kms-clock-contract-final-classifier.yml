@@ -1,0 +1,171 @@
+name: VC4 KMS clock-contract final classifier
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-kms-clock-contract-final-classifier.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  classify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      STATUS: VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json
+      OUTPUT_JSON: VC4_LINUX_KMS_CLOCK_CONTRACT_FINAL.json
+      OUTPUT_MD: VC4_LINUX_KMS_CLOCK_CONTRACT_FINAL.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain latest branch status
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$STATUS" > /tmp/status.json 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          test -s /tmp/status.json
+          cp /tmp/status.json "$STATUS"
+          for optional in \
+            VC4_LINUX_KMS_STAGE_STATUS.json \
+            VC4_LINUX_KMS_STAGE_ROUTE.json \
+            VC4_LINUX_HSM_CLOCK_STATUS.json \
+            VC4_CPRMAN_HSM_SOURCE_REPORT.json \
+            VC4_HSM_DIAGNOSTIC_INJECTOR_STATUS.json; do
+            git show "origin/$BRANCH:$optional" > "/tmp/$optional" 2>/dev/null || true
+          done
+
+      - name: Classify the current frontier
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          def optional(name):
+              path = Path('/tmp') / name
+              if not path.is_file() or not path.stat().st_size:
+                  return {}
+              try:
+                  value = json.loads(path.read_text())
+              except json.JSONDecodeError:
+                  return {}
+              return value if isinstance(value, dict) else {}
+
+          status = json.load(open('/tmp/status.json'))
+          serial_lines = [str(line) for line in status.get('serial_tail') or []]
+          serial = '\n'.join(serial_lines)
+          lower = serial.lower()
+          outcomes = status.get('outcomes') or {}
+          markers = status.get('markers') or {}
+          classification = str(status.get('classification') or 'unknown')
+          failed = [key for key, value in outcomes.items() if value != 'success']
+
+          if failed:
+              next_action = 'workflow-' + '-'.join(failed) + '-failed'
+          elif classification == 'linux-vc4-kms-topology-clear':
+              next_action = 'ready-to-consolidate'
+          elif 'invalid index 9' in lower or 'failed to get pixel clock' in lower:
+              next_action = 'firmware-pixel-clock-unavailable'
+          elif 'failed to get hdmi state machine clock' in lower:
+              next_action = 'hdmi-state-machine-clock-unavailable'
+          elif 'failed to bind' in lower and ': -22' in lower:
+              next_action = 'component-bind-einval'
+          elif classification == 'vc4-kms-crtc-unavailable':
+              next_action = 'kms-crtc-unavailable'
+          elif classification == 'vc4-kms-physical-connector-unavailable':
+              next_action = 'kms-physical-connector-unavailable'
+          elif classification == 'vc4-kms-physical-connector-disconnected':
+              next_action = 'hdmi-hotplug-detect-unavailable'
+          elif classification == 'vc4-kms-connected-without-modes':
+              next_action = 'hdmi-edid-unavailable'
+          elif classification == 'vc4-component-bind-frontier':
+              next_action = 'component-bind-frontier'
+          else:
+              next_action = classification
+
+          stage = optional('VC4_LINUX_KMS_STAGE_STATUS.json')
+          stage_route = optional('VC4_LINUX_KMS_STAGE_ROUTE.json')
+          hsm = optional('VC4_LINUX_HSM_CLOCK_STATUS.json')
+          cprman = optional('VC4_CPRMAN_HSM_SOURCE_REPORT.json')
+          injector = optional('VC4_HSM_DIAGNOSTIC_INJECTOR_STATUS.json')
+          record = {
+              'schema_version': 1,
+              'source_sha': status.get('source_sha'),
+              'run_id': status.get('run_id'),
+              'passed': classification == 'linux-vc4-kms-topology-clear',
+              'classification': classification,
+              'next_action': next_action,
+              'failed_workflow_steps': failed,
+              'markers': markers,
+              'counts': status.get('counts') or {},
+              'components': status.get('components') or [],
+              'connectors': status.get('connectors') or [],
+              'stage_comparison': stage.get('comparison') or {},
+              'staged_boundary': stage_route.get('boundary'),
+              'staged_next_action': stage_route.get('next_action'),
+              'hsm_handoff_confirmed': hsm.get('hsm_clock_handoff_confirmed'),
+              'cprman_patch_strategy': cprman.get('patch_strategy'),
+              'cprman_patch_applied': cprman.get('patch_applied'),
+              'diagnostic_hsm_assignment': injector.get(
+                  'diagnostic_assignment_installed'
+              ),
+              'relevant_serial': [
+                  line for line in serial_lines
+                  if any(token in line.lower() for token in (
+                      'vc4-drm', 'clock', 'ddc', 'edid', 'hpd', 'connector',
+                      'crtc', 'failed', 'error', 'bound ', 'deferred',
+                  ))
+              ][-160:],
+          }
+          Path('VC4_LINUX_KMS_CLOCK_CONTRACT_FINAL.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          lines = [
+              '# VC4 Linux KMS clock-contract final snapshot',
+              '',
+              f"- Source SHA: `{record['source_sha']}`",
+              f"- Validation passed: **`{record['passed']}`**",
+              f"- Frontier: **`{classification}`**",
+              f"- Next action: **`{next_action}`**",
+              f"- Staged boundary: `{record['staged_boundary']}`",
+              f"- Staged next action: `{record['staged_next_action']}`",
+              f"- HSM handoff confirmed: `{record['hsm_handoff_confirmed']}`",
+              f"- CPRMAN strategy: `{record['cprman_patch_strategy']}`",
+              f"- CPRMAN patch applied: `{record['cprman_patch_applied']}`",
+              f"- Diagnostic HSM assignment: `{record['diagnostic_hsm_assignment']}`",
+              '',
+              '## Relevant serial evidence',
+              '',
+          ]
+          lines.extend(f'- `{line}`' for line in record['relevant_serial'])
+          Path('VC4_LINUX_KMS_CLOCK_CONTRACT_FINAL.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish current snapshot
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          cp /tmp/status.json "$STATUS"
+          git add -- "$STATUS" "$OUTPUT_JSON" "$OUTPUT_MD"
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-clock-contract-final-classifier.yml
+          git commit -m "test/vc4: snapshot the current KMS clock frontier"
+          git push origin "HEAD:$BRANCH"
