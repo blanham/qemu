@@ -1,0 +1,17 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    /*
+     * Remove HDMI from the component graph entirely.  If the DRM master then
+     * advances beyond HVS, the first silent defer is inside vc4_hdmi_bind().
+     */
+    fragment@0 {
+        target = <&hdmi>;
+        __overlay__ {
+            status = "disabled";
+        };
+    };
+};
