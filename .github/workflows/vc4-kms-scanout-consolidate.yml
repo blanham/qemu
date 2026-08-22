@@ -1,0 +1,241 @@
+name: VC4 Linux native KMS scanout consolidation
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-scanout-frontier
+    paths:
+      - .github/workflows/vc4-kms-scanout-consolidate.yml
+      - VC4_POST_HVS_ROUTE_CLEAR
+      - scripts/vc4/hvs-primary-scanout-smoke.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-native-kms-scanout-consolidation
+  cancel-in-progress: true
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      FEATURE_BRANCH: agent/vc4-linux-kms-scanout-frontier
+      INTEGRATION_BRANCH: agent/vc4-linux-kms-frontier
+      STATUS: VC4_LINUX_KMS_SCANOUT_STATUS.json
+      CLEAR_ROUTE: VC4_POST_HVS_ROUTE_CLEAR
+      DECISION_JSON: VC4_KMS_SCANOUT_CONSOLIDATION.json
+      DECISION_MD: VC4_KMS_SCANOUT_CONSOLIDATION.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain authoritative scanout records
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$FEATURE_BRANCH" "$INTEGRATION_BRANCH"
+          git show "origin/$FEATURE_BRANCH:$STATUS" > /tmp/status.json
+          git show "origin/$FEATURE_BRANCH:$CLEAR_ROUTE" > /tmp/clear-route.json
+          cp /tmp/status.json "$STATUS"
+          cp /tmp/clear-route.json "$CLEAR_ROUTE"
+
+      - name: Evaluate consolidation conditions
+        id: evaluate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/status.json'))
+          route = json.load(open('/tmp/clear-route.json'))
+          required = (
+              'hw/display/bcm2835_hvs.c',
+              'include/hw/display/bcm2835_hvs.h',
+              'scripts/vc4/hvs-primary-scanout-smoke.py',
+              'scripts/vc4/qemu-kms-scanout-wrapper.py',
+              'scripts/vc4/analyze-kms-scanout.py',
+          )
+          conditions = {
+              'clear_route': route.get('route') == 'CLEAR',
+              'scanout_status_passed': bool(status.get('passed')),
+              'scanout_classification_clear': (
+                  status.get('classification') == 'linux-vc4-kms-scanout-clear'
+              ),
+              'guest_modeset_preserved': bool(status.get('modeset_ok')),
+              'host_pattern_matched': int(status.get('matching_frame_count') or 0) > 0,
+              'durable_files_present': all(Path(name).is_file() for name in required),
+              'hvs_model_wired': (
+                  'QEMU_RPI_HVS_PRIMARY_SCANOUT_MODEL'
+                  in Path('hw/arm/bcm2835_peripherals.c').read_text()
+              ),
+              'existing_console_reused': (
+                  'bcm2835_fb_set_scanout'
+                  in Path('hw/display/bcm2835_hvs.c').read_text()
+              ),
+          }
+          blockers = [name for name, value in conditions.items() if not value]
+          record = {
+              'schema_version': 1,
+              'feature_branch': 'agent/vc4-linux-kms-scanout-frontier',
+              'integration_branch': 'agent/vc4-linux-kms-frontier',
+              'source_sha': status.get('source_sha'),
+              'run_id': status.get('run_id'),
+              'classification': status.get('classification'),
+              'best_frame': status.get('best_frame'),
+              'conditions': conditions,
+              'blockers': blockers,
+              'ready': not blockers,
+              'merged': False,
+          }
+          Path('VC4_KMS_SCANOUT_CONSOLIDATION.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_KMS_SCANOUT_CONSOLIDATION.md').write_text(
+              '# VC4 native Linux KMS scanout consolidation\n\n'
+              f"- Ready: **`{record['ready']}`**\n"
+              f"- Frontier: `{record['classification']}`\n"
+              f"- Source SHA: `{record['source_sha']}`\n"
+              f"- Best frame: `{record['best_frame']}`\n"
+              f"- Blockers: `{blockers}`\n"
+          )
+          PY
+          ready=$(python3 -c \
+            'import json; print("true" if json.load(open("VC4_KMS_SCANOUT_CONSOLIDATION.json"))["ready"] else "false")')
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare the durable scanout tranche
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/status.json'))
+          model = {}
+          model_path = Path('VC4_HVS_PRIMARY_SCANOUT_MODEL.json')
+          if model_path.is_file():
+              model = json.loads(model_path.read_text())
+
+          Path('docs/system/arm/vc4-linux-kms-scanout.rst').write_text(f'''VC4 native Linux KMS host scanout
+          ==================================
+
+          The native VC4 Linux witness now verifies host-visible output, not
+          only successful DRM ioctls.  A QEMU wrapper adds an independent QMP
+          monitor, captures periodic PPM screendumps, and compares them with
+          the exact XRGB8888 gradient/checkerboard written by the guest.
+
+          HVS primary-plane bridge
+          ------------------------
+
+          The former unimplemented HVS window is replaced by a register-retentive
+          model covering the complete HVS MMIO and display-list RAM aperture.
+          For the linear 32-bit primary plane emitted by the pinned Linux VC4
+          driver, the model identifies the display-list pointer, dimensions,
+          DMA base, and pitch, masks the VideoCore bus alias, and reconfigures
+          the existing BCM2835 framebuffer console.  Reusing that console keeps
+          firmware-framebuffer and native-KMS output on one QEMU display head.
+
+          This is deliberately the first scanout slice.  Scaling, overlays,
+          cursor planes, tiled formats, CSC, alpha blending, and writeback stay
+          as explicit later frontiers rather than being silently accepted.
+
+          Validation
+          ----------
+
+          * Source SHA: ``{status.get('source_sha')}``
+          * Host scanout frontier: ``{status.get('classification')}``
+          * Guest mode: ``{status.get('mode')}``
+          * Matching screendumps: ``{status.get('matching_frame_count')}``
+          * Best frame: ``{status.get('best_frame')}``
+          * HVS MMIO contract: ``{model}``
+
+          ``hvs-primary-scanout-smoke.py`` provides a fast qtest/QMP witness
+          for display-list decoding, DMA scanout, console resizing, and RGB
+          channel order.  The pinned-Linux workflow remains the end-to-end
+          authority.
+          ''')
+          PY
+
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-linux-kms-scanout-frontier.yml \
+            .github/workflows/vc4-kms-scanout-route.yml \
+            .github/workflows/vc4-hvs-primary-scanout-model.yml \
+            .github/workflows/vc4-kms-post-hvs-route.yml \
+            .github/workflows/vc4-kms-scanout-consolidate.yml \
+            VC4_LINUX_KMS_SCANOUT_STATUS.json \
+            VC4_LINUX_KMS_SCANOUT_STATUS.md \
+            VC4_LINUX_KMS_SCANOUT_ROUTE.json \
+            VC4_LINUX_KMS_SCANOUT_ROUTE.md \
+            VC4_SCANOUT_ROUTE_BLANK \
+            VC4_HVS_PRIMARY_SCANOUT_MODEL.json \
+            VC4_HVS_PRIMARY_SCANOUT_MODEL.md \
+            VC4_LINUX_KMS_POST_HVS.json \
+            VC4_LINUX_KMS_POST_HVS.md \
+            VC4_POST_HVS_ROUTE_CLEAR \
+            VC4_KMS_SCANOUT_CONSOLIDATION.json \
+            VC4_KMS_SCANOUT_CONSOLIDATION.md
+          git diff --check
+
+      - name: Build durable display regressions
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          python3 -m py_compile \
+            scripts/vc4/property-clock-smoke.py \
+            scripts/vc4/cprman-hsm-smoke.py \
+            scripts/vc4/pixelvalve-vblank-smoke.py \
+            scripts/vc4/hvs-primary-scanout-smoke.py \
+            scripts/vc4/qemu-kms-scanout-wrapper.py \
+            scripts/vc4/analyze-kms-scanout.py
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/cprman-hsm-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/pixelvalve-vblank-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-primary-scanout-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Commit consolidation decision
+        run: |
+          set -euo pipefail
+          ready='${{ steps.evaluate.outputs.ready }}'
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          if [ "$ready" = true ]; then
+            git add -A
+            git commit -m "hw/display: consolidate native VC4 KMS host scanout"
+          else
+            git add -- "$DECISION_JSON" "$DECISION_MD"
+            git rm -f --ignore-unmatch \
+              .github/workflows/vc4-kms-scanout-consolidate.yml
+            git commit -m "test/vc4: record scanout consolidation blockers"
+          fi
+          git pull --rebase origin "$FEATURE_BRANCH"
+          git push origin "HEAD:$FEATURE_BRANCH"
+
+      - name: Fast-forward the integration branch
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$INTEGRATION_BRANCH"
+          if ! git merge-base --is-ancestor "origin/$INTEGRATION_BRANCH" HEAD; then
+            echo "Integration branch advanced independently; refusing non-fast-forward update" >&2
+            exit 1
+          fi
+          git push origin "HEAD:$INTEGRATION_BRANCH"
