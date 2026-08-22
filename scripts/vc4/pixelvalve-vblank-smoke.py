@@ -74,8 +74,11 @@ class QTestClient:
             raise RuntimeError(f"unexpected qtest readl response: {values!r}")
         return int(values[0], 0)
 
-    def clock_step(self, nanoseconds: int) -> None:
-        self.command(f"clock_step {nanoseconds}")
+    def clock_step(self, nanoseconds: int) -> int:
+        values = self.command(f"clock_step {nanoseconds}")
+        if len(values) != 1:
+            raise RuntimeError(f"unexpected qtest clock_step response: {values!r}")
+        return int(values[0], 0)
 
 
 class QMPClient:
@@ -144,6 +147,16 @@ def expect_bit(value: int, bit: int, expected: bool, what: str) -> None:
         )
 
 
+def expect_register(
+    qtest: QTestClient, address: int, expected: int, what: str
+) -> None:
+    actual = qtest.readl(address)
+    if actual != expected:
+        raise RuntimeError(
+            f"{what}: value 0x{actual:08x}, expected 0x{expected:08x}"
+        )
+
+
 def exercise_pixel_valve(
     qtest: QTestClient, name: str, base: int, gpu_irq: int
 ) -> None:
@@ -156,8 +169,10 @@ def exercise_pixel_valve(
     qtest.writel(IRQ_DISABLE_2, irq_bit)
 
     qtest.writel(base + PV_HORZA, 0x12345678)
-    if qtest.readl(base + PV_HORZA) != 0x12345678:
-        raise RuntimeError(f"{name}: timing register did not retain its value")
+    expect_register(
+        qtest, base + PV_HORZA, 0x12345678,
+        f"{name} timing register",
+    )
 
     qtest.writel(IRQ_ENABLE_2, irq_bit)
     qtest.writel(base + PV_INTEN, PV_INT_VFP_START)
@@ -165,11 +180,25 @@ def exercise_pixel_valve(
         base + PV_CONTROL,
         PV_CONTROL_EN | PV_CONTROL_FIFO_CLR,
     )
-    if qtest.readl(base + PV_CONTROL) != PV_CONTROL_EN:
-        raise RuntimeError(f"{name}: FIFO clear pulse did not self-clear")
+    expect_register(
+        qtest, base + PV_CONTROL, PV_CONTROL_EN,
+        f"{name} FIFO clear pulse",
+    )
     qtest.writel(base + PV_V_CONTROL, PV_VCONTROL_VIDEN)
+    expect_register(
+        qtest, base + PV_V_CONTROL, PV_VCONTROL_VIDEN,
+        f"{name} video enable",
+    )
+    expect_register(
+        qtest, base + PV_INTEN, PV_INT_VFP_START,
+        f"{name} vblank interrupt enable",
+    )
 
-    qtest.clock_step(FRAME_STEP_NS)
+    advanced_to = qtest.clock_step(FRAME_STEP_NS)
+    if advanced_to <= 0:
+        raise RuntimeError(
+            f"{name}: virtual clock did not advance: {advanced_to}"
+        )
 
     expect_bit(
         qtest.readl(base + PV_INTSTAT),
@@ -240,7 +269,6 @@ def main() -> int:
             str(qemu),
             "-M", "raspi3b",
             "-accel", "qtest",
-            "-S",
             "-display", "none",
             "-serial", "none",
             "-monitor", "none",
@@ -270,14 +298,22 @@ def main() -> int:
 
             qmp.execute("system_reset")
             for name, base, gpu_irq in PIXEL_VALVES:
-                if qtest.readl(base + PV_CONTROL) != 0:
-                    raise RuntimeError(f"{name}: control survived reset")
-                if qtest.readl(base + PV_V_CONTROL) != 0:
-                    raise RuntimeError(f"{name}: video control survived reset")
-                if qtest.readl(base + PV_INTEN) != 0:
-                    raise RuntimeError(f"{name}: interrupt enable survived reset")
-                if qtest.readl(base + PV_INTSTAT) != 0:
-                    raise RuntimeError(f"{name}: interrupt status survived reset")
+                expect_register(
+                    qtest, base + PV_CONTROL, 0,
+                    f"{name} reset control",
+                )
+                expect_register(
+                    qtest, base + PV_V_CONTROL, 0,
+                    f"{name} reset video control",
+                )
+                expect_register(
+                    qtest, base + PV_INTEN, 0,
+                    f"{name} reset interrupt enable",
+                )
+                expect_register(
+                    qtest, base + PV_INTSTAT, 0,
+                    f"{name} reset interrupt status",
+                )
                 irq_bit = 1 << (gpu_irq - 32)
                 expect_bit(
                     qtest.readl(IRQ_PENDING_2), irq_bit, False,
