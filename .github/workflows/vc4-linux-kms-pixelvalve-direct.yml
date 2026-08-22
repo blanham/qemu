@@ -1,0 +1,407 @@
+name: VC4 Linux pixel-valve modeset gate
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-pixelvalve-direct
+    paths:
+      - .github/workflows/vc4-linux-kms-pixelvalve-direct.yml
+      - hw/arm/bcm2836.c
+      - hw/display/bcm2835_pixelvalve.c
+      - hw/display/meson.build
+      - include/hw/display/bcm2835_pixelvalve.h
+      - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+      - scripts/vc4/build-v3d-linux-dtb.sh
+      - scripts/vc4/build-vc4-kms-linux-dtb.sh
+      - scripts/vc4/fetch-linux-vc4-modules.py
+      - scripts/vc4/msync-smoke.py
+      - scripts/vc4/pixelvalve-vblank-smoke.py
+      - scripts/vc4/property-power-domain-smoke.py
+      - scripts/vc4/raspi3-linux-probe.py
+      - scripts/vc4/v3d-smoke.py
+      - tests/vc4/linux-kms-modeset-probe.inc.c
+      - tests/vc4/linux-v3d-modular-init.c
+      - tests/vc4/linux-v3d-submit-init.c
+      - tests/vc4/linux-v3d-uapi-init.c
+      - tests/vc4/vc4-kms-frontier-overlay.dts
+      - tests/vc4/vc4-render-only-overlay.dts
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vc4-linux-pixelvalve-modeset
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-pixelvalve-official
+      MODULE_DIR: /tmp/vc4-pixelvalve-modules
+      INITRAMFS_DIR: /tmp/vc4-pixelvalve-initramfs
+      DTB_DIR: /tmp/vc4-pixelvalve-dtbs
+      RENDER_OUT: /tmp/vc4-pixelvalve-render
+      KMS_OUT: /tmp/vc4-pixelvalve-kms
+      EVIDENCE_DIR: vc4-pixelvalve-evidence
+      STATUS_JSON: VC4_LINUX_KMS_PIXELVALVE_STATUS.json
+      STATUS_MD: VC4_LINUX_KMS_PIXELVALVE_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" \
+            "$DTB_DIR" "$RENDER_OUT" "$KMS_OUT" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$RENDER_OUT" \
+            "$KMS_OUT" "$EVIDENCE_DIR"
+
+      - name: Validate source inputs
+        id: source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/fetch-linux-vc4-modules.py \
+            scripts/vc4/msync-smoke.py \
+            scripts/vc4/pixelvalve-vblank-smoke.py \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/raspi3-linux-probe.py \
+            scripts/vc4/v3d-smoke.py
+          bash -n \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            scripts/vc4/build-v3d-linux-dtb.sh \
+            scripts/vc4/build-vc4-kms-linux-dtb.sh
+          grep -Fq bcm2835_pixelvalve.c hw/display/meson.build
+          grep -Fq INTERRUPT_PWA0 hw/arm/bcm2836.c
+          grep -Fq INTERRUPT_PWA1 hw/arm/bcm2836.c
+          grep -Fq INTERRUPT_PIXELVALVE1 hw/arm/bcm2836.c
+          git diff --check
+
+      - name: Fetch pinned kernel and base device tree
+        id: pinned
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* \
+            > "$EVIDENCE_DIR/OFFICIAL_SHA256SUMS"
+
+      - name: Build pinned VC4 module and modeset fixture
+        id: fixture
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+          VC4_MODESET_PROBE=1 \
+            bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+              "$INITRAMFS_DIR" "$MODULE_DIR" \
+              2>&1 | tee "$EVIDENCE_DIR/fixture.log"
+          cp "$INITRAMFS_DIR/init.strings" "$EVIDENCE_DIR/"
+          for marker in \
+            VC4_LINUX_KMS_TOPOLOGY_OK \
+            VC4_LINUX_KMS_MODESET_SUPERVISOR_START \
+            VC4_LINUX_KMS_MODESET_SETCRTC_OK \
+            VC4_LINUX_KMS_MODESET_OK \
+            VC4_LINUX_DRM_SUBMIT_OK; do
+            grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"
+          done
+
+      - name: Build render and native-KMS device trees
+        id: dtb
+        run: |
+          set -euo pipefail
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/render-only.dtbo" \
+            tests/vc4/vc4-render-only-overlay.dts
+          bash scripts/vc4/build-v3d-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/render-only.dtbo" \
+            "$DTB_DIR/render-only.dtb"
+
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/native-kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/native-kms.dtbo" \
+            "$DTB_DIR/native-kms.dtb"
+          sha256sum "$DTB_DIR"/* > "$EVIDENCE_DIR/DTB_SHA256SUMS"
+
+      - name: Configure and build QEMU frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+      - name: Exercise pixel-valve vblank and IRQ routing
+        id: pixelvalve
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/pixelvalve-vblank-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/pixelvalve.log"
+
+      - name: Preserve architectural regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/power-domain.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/msync.log"
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/v3d.log"
+
+      - name: Preserve completed render-submit frontier
+        id: render_regression
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/render-only.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$RENDER_OUT" \
+            --seconds 55 --sample-interval 5
+          grep -Fq VC4_LINUX_MODULE_CLOSURE_OK "$RENDER_OUT/serial.log"
+          grep -Fq VC4_LINUX_DRM_SUBMIT_OK "$RENDER_OUT/serial.log"
+          grep -Fq VC4_LINUX_V3D_MODULAR_OK "$RENDER_OUT/serial.log"
+
+      - name: Probe native KMS modeset frontier
+        id: kms_runtime
+        if: >-
+          always() &&
+          steps.build.outcome == 'success' &&
+          steps.fixture.outcome == 'success' &&
+          steps.dtb.outcome == 'success'
+        run: |
+          set +e
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/native-kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$KMS_OUT" \
+            --seconds 95 --sample-interval 5 \
+            > "$KMS_OUT/probe.stdout" 2>&1
+          rc=$?
+          printf '%s\n' "$rc" > "$KMS_OUT/return-code"
+          cat "$KMS_OUT/probe.stdout"
+          exit 0
+
+      - name: Classify exact pixel-valve frontier
+        id: classify
+        if: always()
+        env:
+          OUTCOME_DEPENDENCIES: ${{ steps.dependencies.outcome }}
+          OUTCOME_SOURCE: ${{ steps.source.outcome }}
+          OUTCOME_PINNED: ${{ steps.pinned.outcome }}
+          OUTCOME_FIXTURE: ${{ steps.fixture.outcome }}
+          OUTCOME_DTB: ${{ steps.dtb.outcome }}
+          OUTCOME_BUILD: ${{ steps.build.outcome }}
+          OUTCOME_PIXELVALVE: ${{ steps.pixelvalve.outcome }}
+          OUTCOME_REGRESSIONS: ${{ steps.regressions.outcome }}
+          OUTCOME_RENDER: ${{ steps.render_regression.outcome }}
+          OUTCOME_KMS: ${{ steps.kms_runtime.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime as dt
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          serial_path = Path(os.environ["KMS_OUT"]) / "serial.log"
+          serial = serial_path.read_text(errors="replace") if serial_path.is_file() else ""
+          outcomes = {
+              "dependencies": os.environ.get("OUTCOME_DEPENDENCIES", "skipped"),
+              "source": os.environ.get("OUTCOME_SOURCE", "skipped"),
+              "pinned": os.environ.get("OUTCOME_PINNED", "skipped"),
+              "fixture": os.environ.get("OUTCOME_FIXTURE", "skipped"),
+              "dtb": os.environ.get("OUTCOME_DTB", "skipped"),
+              "build": os.environ.get("OUTCOME_BUILD", "skipped"),
+              "pixelvalve": os.environ.get("OUTCOME_PIXELVALVE", "skipped"),
+              "regressions": os.environ.get("OUTCOME_REGRESSIONS", "skipped"),
+              "render_regression": os.environ.get("OUTCOME_RENDER", "skipped"),
+              "kms_runtime": os.environ.get("OUTCOME_KMS", "skipped"),
+          }
+          expected = (
+              "VC4_LINUX_MODULE_CLOSURE_OK",
+              "VC4_LINUX_KMS_TOPOLOGY_OK",
+              "VC4_LINUX_KMS_MODESET_SUPERVISOR_START",
+              "VC4_LINUX_KMS_MODESET_CONNECTOR_OK",
+              "VC4_LINUX_KMS_MODESET_DUMB_OK",
+              "VC4_LINUX_KMS_MODESET_MAP_OK",
+              "VC4_LINUX_KMS_MODESET_FB_OK",
+              "VC4_LINUX_KMS_MODESET_SETCRTC_OK",
+              "VC4_LINUX_KMS_MODESET_OK",
+              "VC4_LINUX_DRM_SUBMIT_OK",
+          )
+          markers = {marker: marker in serial for marker in expected}
+          markers["VC4_LINUX_KMS_MODESET_TIMEOUT"] = (
+              "VC4_LINUX_KMS_MODESET_TIMEOUT" in serial
+          )
+          failure_match = re.search(
+              r"VC4_LINUX_KMS_MODESET_FAILED stage=([^ ]+) errno=(\d+)",
+              serial,
+          )
+          failure = (
+              {
+                  "stage": failure_match.group(1),
+                  "errno": int(failure_match.group(2)),
+              }
+              if failure_match else None
+          )
+
+          required_steps = (
+              "dependencies", "source", "pinned", "fixture", "dtb",
+              "build", "pixelvalve", "regressions", "render_regression",
+              "kms_runtime",
+          )
+          failed_steps = [
+              step for step in required_steps
+              if outcomes.get(step) != "success"
+          ]
+          if failed_steps:
+              classification = "workflow-" + "-".join(failed_steps) + "-failed"
+          elif not markers["VC4_LINUX_MODULE_CLOSURE_OK"]:
+              classification = "vc4-module-closure-unavailable"
+          elif not markers["VC4_LINUX_KMS_TOPOLOGY_OK"]:
+              classification = "vc4-kms-topology-frontier"
+          elif failure:
+              classification = f"vc4-kms-modeset-{failure['stage']}-failed"
+          elif markers["VC4_LINUX_KMS_MODESET_TIMEOUT"]:
+              classification = "vc4-kms-modeset-timeout"
+          elif not markers["VC4_LINUX_KMS_MODESET_SETCRTC_OK"]:
+              classification = "vc4-kms-setcrtc-unavailable"
+          elif not markers["VC4_LINUX_KMS_MODESET_OK"]:
+              classification = "vc4-kms-modeset-incomplete"
+          elif not markers["VC4_LINUX_DRM_SUBMIT_OK"]:
+              classification = "vc4-render-submit-regression-after-modeset"
+          else:
+              classification = "linux-vc4-pixelvalve-modeset-clear"
+
+          passed = classification == "linux-vc4-pixelvalve-modeset-clear"
+          return_code_path = Path(os.environ["KMS_OUT"]) / "return-code"
+          probe_return_code = (
+              int(return_code_path.read_text().strip())
+              if return_code_path.is_file() else None
+          )
+          record = {
+              "schema_version": 1,
+              "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+              "source_sha": os.environ.get("GITHUB_SHA"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "passed": passed,
+              "classification": classification,
+              "outcomes": outcomes,
+              "markers": markers,
+              "modeset_failure": failure,
+              "probe_return_code": probe_return_code,
+              "serial_tail": serial.splitlines()[-400:],
+          }
+          Path(os.environ["STATUS_JSON"]).write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+          lines = [
+              "# VC4 Linux pixel-valve modeset frontier",
+              "",
+              f"Validation passed: **{'true' if passed else 'false'}**",
+              "",
+              f"Frontier: **`{classification}`**",
+              "",
+              f"- Pixel-valve QTest: `{outcomes['pixelvalve']}`",
+              f"- KMS topology: `{markers['VC4_LINUX_KMS_TOPOLOGY_OK']}`",
+              f"- SETCRTC completed: `{markers['VC4_LINUX_KMS_MODESET_SETCRTC_OK']}`",
+              f"- Modeset witness completed: `{markers['VC4_LINUX_KMS_MODESET_OK']}`",
+              f"- Renderer submit preserved: `{markers['VC4_LINUX_DRM_SUBMIT_OK']}`",
+              f"- Probe return code: `{probe_return_code}`",
+          ]
+          if failure:
+              lines.extend((
+                  "",
+                  "## Modeset failure",
+                  "",
+                  f"- Stage: `{failure['stage']}`",
+                  f"- Errno: `{failure['errno']}`",
+              ))
+          Path(os.environ["STATUS_MD"]).write_text("\n".join(lines) + "\n")
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cp -a "$RENDER_OUT" "$EVIDENCE_DIR/render-regression" || true
+          cp -a "$KMS_OUT" "$EVIDENCE_DIR/native-kms" || true
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs" || true
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/" || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-pixelvalve-modeset-${{ github.run_attempt }}
+          path: vc4-pixelvalve-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Require complete native KMS modeset
+        if: always()
+        run: |
+          set -euo pipefail
+          cat "$STATUS_MD"
+          python3 - "$STATUS_JSON" <<'PY'
+          import json
+          import sys
+
+          status = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not status["passed"]:
+              raise SystemExit(
+                  "VC4 pixel-valve modeset gate failed at "
+                  + status["classification"]
+              )
+          PY
