@@ -1,0 +1,27 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    /*
+     * Replace both silent-defer candidates together.  This distinguishes a
+     * compound clock/DDC ordering problem from later CEC or HDMI-internal
+     * initialization when neither single substitution is sufficient.
+     */
+    fragment@0 {
+        target = <&i2c1>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@1 {
+        target = <&hdmi>;
+        __overlay__ {
+            ddc = <&i2c1>;
+            clocks = <&firmware_clocks 4>, <&firmware_clocks 4>;
+            clock-names = "pixel", "hdmi";
+        };
+    };
+};
