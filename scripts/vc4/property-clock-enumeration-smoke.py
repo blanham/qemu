@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the Raspberry Pi firmware GET_CLOCKS enumeration."""
+"""Exercise the Raspberry Pi firmware GET_CLOCKS enumeration used by Pi 3 KMS."""
 
 from __future__ import annotations
 
