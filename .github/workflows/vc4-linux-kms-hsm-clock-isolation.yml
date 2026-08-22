@@ -1,0 +1,301 @@
+name: VC4 Linux KMS HSM clock isolation
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-linux-kms-hsm-clock-isolation.yml
+      - VC4_LINUX_KMS_STAGE_ROUTE.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-kms-hsm-clock-isolation
+  cancel-in-progress: true
+
+jobs:
+  isolate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      ROUTE: VC4_LINUX_KMS_STAGE_ROUTE.json
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-hsm-official
+      MODULE_DIR: /tmp/vc4-hsm-modules
+      INITRAMFS_DIR: /tmp/vc4-hsm-initramfs
+      DTB_DIR: /tmp/vc4-hsm-dtbs
+      OUT_DIR: /tmp/vc4-hsm-results
+      EVIDENCE_DIR: vc4-linux-hsm-clock-evidence
+      STATUS_JSON: VC4_LINUX_HSM_CLOCK_STATUS.json
+      STATUS_MD: VC4_LINUX_HSM_CLOCK_STATUS.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain staged route
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$ROUTE" > /tmp/route.json 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          test -s /tmp/route.json
+          cp /tmp/route.json "$ROUTE"
+          python3 - <<'PY'
+          import json
+          route = json.load(open('/tmp/route.json'))
+          print(route.get('next_action'))
+          PY
+
+      - name: Install dependencies
+        if: always()
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" \
+            "$DTB_DIR" "$OUT_DIR" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$OUT_DIR" "$EVIDENCE_DIR"
+
+      - name: Build pinned fixture and QEMU
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" \
+            2>&1 | tee "$EVIDENCE_DIR/fixture.log"
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/full.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/full.dtbo" \
+            "$DTB_DIR/baseline.dtb"
+          cp "$DTB_DIR/baseline.dtb" "$DTB_DIR/assigned.dtb"
+
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/clock-contract.log"
+
+      - name: Assign only the HDMI HSM clock
+        run: |
+          set -euo pipefail
+          dtc -q -I dtb -O dts \
+            -o "$DTB_DIR/baseline.dts" "$DTB_DIR/baseline.dtb"
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+          import subprocess
+
+          directory = Path('/tmp/vc4-hsm-dtbs')
+          source = (directory / 'baseline.dts').read_text()
+          stack: list[str] = []
+          hdmi_path = None
+          node_re = re.compile(r'^\s*([A-Za-z0-9,._+@-]+)\s*\{\s*$')
+          for line in source.splitlines():
+              match = node_re.match(line)
+              if match:
+                  name = match.group(1)
+                  if name == '/':
+                      stack = []
+                  else:
+                      stack.append(name)
+                      if name.startswith('hdmi@'):
+                          hdmi_path = '/' + '/'.join(stack)
+                  continue
+              if line.strip() == '};' and stack:
+                  stack.pop()
+          if not hdmi_path:
+              raise SystemExit('HDMI node was not found')
+
+          names = subprocess.check_output(
+              ['fdtget', '-t', 's', str(directory / 'assigned.dtb'),
+               hdmi_path, 'clock-names'],
+              text=True,
+          ).strip().split()
+          cells = subprocess.check_output(
+              ['fdtget', '-t', 'x', str(directory / 'assigned.dtb'),
+               hdmi_path, 'clocks'],
+              text=True,
+          ).strip().split()
+          if len(cells) != len(names) * 2:
+              raise SystemExit(
+                  f'unexpected HDMI clock layout: names={names!r} cells={cells!r}'
+              )
+          try:
+              index = names.index('hdmi')
+          except ValueError as error:
+              raise SystemExit(f'HDMI clock name is absent: {names!r}') from error
+          specifier = cells[index * 2:index * 2 + 2]
+          subprocess.run(
+              ['fdtput', '-t', 'x', str(directory / 'assigned.dtb'),
+               hdmi_path, 'assigned-clocks', *specifier],
+              check=True,
+          )
+          subprocess.run(
+              ['fdtput', '-t', 'x', str(directory / 'assigned.dtb'),
+               hdmi_path, 'assigned-clock-rates', '250000000'],
+              check=True,
+          )
+          (directory / 'hsm-clock.json').write_text(json.dumps({
+              'hdmi_path': hdmi_path,
+              'clock_names': names,
+              'clock_cells': cells,
+              'assigned_specifier': specifier,
+              'assigned_rate': 250000000,
+          }, indent=2, sort_keys=True) + '\n')
+          PY
+          dtc -q -I dtb -O dts \
+            -o "$DTB_DIR/assigned.dts" "$DTB_DIR/assigned.dtb"
+          cp "$DTB_DIR/hsm-clock.json" "$EVIDENCE_DIR/"
+
+      - name: Probe baseline and assigned-clock topologies
+        run: |
+          set -euo pipefail
+          for variant in baseline assigned; do
+            result="$OUT_DIR/$variant"
+            mkdir -p "$result"
+            set +e
+            python3 scripts/vc4/raspi3-linux-probe.py \
+              --mode linux-direct \
+              --qemu build/qemu-system-aarch64 \
+              --kernel "$OFFICIAL_DIR/kernel8.img" \
+              --dtb "$DTB_DIR/$variant.dtb" \
+              --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+              --out-dir "$result" \
+              --seconds 60 --sample-interval 5 \
+              > "$result/probe.stdout" 2>&1
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" > "$result/return-code"
+          done
+
+      - name: Record the HSM-clock result
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          out = Path('/tmp/vc4-hsm-results')
+          route = json.load(open('/tmp/route.json'))
+
+          def summarize(name):
+              directory = out / name
+              serial_path = directory / 'serial.log'
+              serial = serial_path.read_text(errors='replace') if serial_path.is_file() else ''
+              return {
+                  'drm_registered': 'VC4_LINUX_KMS_RESOURCES_OK' in serial,
+                  'topology_clear': 'VC4_LINUX_KMS_TOPOLOGY_OK' in serial,
+                  'pixel_clock_error': bool(re.search(
+                      r'invalid index 9|Failed to get pixel clock', serial
+                  )),
+                  'failed_bind_lines': [
+                      line for line in serial.splitlines()
+                      if 'failed to bind' in line or 'adev bind failed' in line
+                  ][-20:],
+                  'relevant_serial': [
+                      line for line in serial.splitlines()
+                      if any(token in line.lower() for token in (
+                          'vc4-drm', 'clock', 'ddc', 'failed', 'error', 'bound '
+                      ))
+                  ][-100:],
+              }
+
+          baseline = summarize('baseline')
+          assigned = summarize('assigned')
+          confirmed = (
+              not baseline['drm_registered'] and assigned['drm_registered']
+          )
+          record = {
+              'schema_version': 1,
+              'source_sha': '${{ github.sha }}',
+              'run_id': '${{ github.run_id }}',
+              'routed_action': route.get('next_action'),
+              'baseline': baseline,
+              'assigned_hsm_clock': assigned,
+              'hsm_clock_handoff_confirmed': confirmed,
+          }
+          Path('VC4_LINUX_HSM_CLOCK_STATUS.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          lines = [
+              '# VC4 Linux HDMI HSM-clock isolation',
+              '',
+              f"- Routed action: `{record['routed_action']}`",
+              f"- Baseline DRM registered: `{baseline['drm_registered']}`",
+              f"- Assigned-clock DRM registered: `{assigned['drm_registered']}`",
+              f"- HSM handoff confirmed: **`{confirmed}`**",
+              '',
+              '## Baseline evidence',
+              '',
+          ]
+          lines.extend(f'- `{line}`' for line in baseline['relevant_serial'])
+          lines.extend(('', '## Assigned-clock evidence', ''))
+          lines.extend(f'- `{line}`' for line in assigned['relevant_serial'])
+          Path('VC4_LINUX_HSM_CLOCK_STATUS.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/"
+          cp -a "$OUT_DIR" "$EVIDENCE_DIR/results"
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs"
+
+      - name: Upload HSM-clock evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-hsm-clock-${{ github.run_attempt }}
+          path: vc4-linux-hsm-clock-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish HSM-clock status
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD" "$ROUTE"
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-linux-kms-hsm-clock-isolation.yml
+          git commit -m "test/vc4: isolate the HDMI HSM clock handoff"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
