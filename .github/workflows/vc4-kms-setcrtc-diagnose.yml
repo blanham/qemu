@@ -1,0 +1,195 @@
+name: VC4 Linux SETCRTC diagnosis
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-modeset-frontier
+    paths:
+      - .github/workflows/vc4-kms-setcrtc-diagnose.yml
+      - scripts/vc4/summarize-linux-kms-modeset.py
+      - tests/vc4/linux-kms-modeset-probe.inc.c
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-setcrtc-diagnosis
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      BRANCH: agent/vc4-linux-kms-modeset-frontier
+      STATUS: VC4_LINUX_KMS_MODESET_STATUS.json
+      ROUTE: VC4_LINUX_KMS_MODESET_ROUTE.json
+      DIAG_JSON: VC4_LINUX_KMS_SETCRTC_DIAG.json
+      DIAG_MD: VC4_LINUX_KMS_SETCRTC_DIAG.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for structured timeout evidence
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BRANCH"
+          git show "origin/$BRANCH:$ROUTE" > /tmp/old-route.json
+          old_source=$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/old-route.json')).get('source_sha', ''))
+          PY
+          )
+          for attempt in $(seq 1 120); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$STATUS" > /tmp/candidate.json 2>/dev/null; then
+              if python3 - "$old_source" <<'PY'
+          import json
+          import sys
+          status = json.load(open('/tmp/candidate.json'))
+          diagnostics = status.get('timeout_diagnostics') or {}
+          current = status.get('source_sha') or ''
+          good = current and current != sys.argv[1] and bool(diagnostics)
+          raise SystemExit(0 if good else 1)
+          PY
+              then
+                cp /tmp/candidate.json /tmp/status.json
+                break
+              fi
+            fi
+            sleep 5
+          done
+          test -s /tmp/status.json
+          cp /tmp/status.json "$STATUS"
+          cp /tmp/old-route.json "$ROUTE"
+
+      - name: Classify the blocked kernel path
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/status.json'))
+          diagnostics = status.get('timeout_diagnostics') or {}
+          classification = str(status.get('classification') or 'unknown')
+
+          def lines(label: str) -> list[str]:
+              value = diagnostics.get(label) or {}
+              return [str(line) for line in value.get('lines') or []]
+
+          stack_lines = lines('child-stack')
+          wchan_lines = lines('child-wchan')
+          syscall_lines = lines('child-syscall')
+          interrupt_lines = lines('interrupts')
+          drm_lines = lines('drm-state')
+          hvs_lines = lines('hvs-regs')
+          hdmi_lines = lines('hdmi-regs')
+          clock_lines = lines('clk-summary')
+          combined = '\n'.join(stack_lines + wchan_lines).lower()
+
+          if classification == 'linux-vc4-kms-modeset-clear':
+              route = 'CLEAR'
+          elif classification != 'modeset-setcrtc-timeout':
+              route = 'SETCRTC_RETURNED'
+          elif not stack_lines and not wchan_lines:
+              route = 'STACK_UNAVAILABLE'
+          elif any(token in combined for token in (
+              'drm_atomic_helper_wait_for_vblanks',
+              'drm_crtc_vblank',
+              'wait_for_vblank',
+              'vblank',
+          )):
+              route = 'WAIT_VBLANK'
+          elif any(token in combined for token in (
+              'drm_crtc_commit_wait',
+              'vc4_atomic_complete_commit',
+              'drm_atomic_helper_commit_tail',
+              'wait_for_completion',
+          )):
+              route = 'WAIT_COMMIT_COMPLETION'
+          elif any(token in combined for token in (
+              'dma_fence',
+              'reservation_object',
+              'drm_gem_plane_helper_prepare_fb',
+          )):
+              route = 'WAIT_FENCE'
+          elif any(token in combined for token in (
+              'drm_send_event',
+              'drm_event',
+              'poll_schedule_timeout',
+          )):
+              route = 'WAIT_EVENT'
+          elif any(token in combined for token in (
+              'drm_mode_setcrtc',
+              'drm_ioctl',
+              'vc4_crtc',
+              'vc4_hvs',
+          )):
+              route = 'DRM_COMMIT_PATH'
+          else:
+              route = 'OTHER'
+
+          for old in Path('.').glob('VC4_SETCRTC_DIAG_ROUTE_*'):
+              old.unlink()
+          payload = {
+              'schema_version': 1,
+              'source_sha': status.get('source_sha'),
+              'run_id': status.get('run_id'),
+              'classification': classification,
+              'route': route,
+              'child_stack': stack_lines,
+              'child_wchan': wchan_lines,
+              'child_syscall': syscall_lines,
+              'interrupts': interrupt_lines,
+              'drm_state': drm_lines,
+              'hvs_regs': hvs_lines,
+              'hdmi_regs': hdmi_lines,
+              'clock_summary': clock_lines,
+          }
+          Path(f'VC4_SETCRTC_DIAG_ROUTE_{route}').write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_LINUX_KMS_SETCRTC_DIAG.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + '\n'
+          )
+          report = [
+              '# VC4 Linux blocked SETCRTC diagnosis',
+              '',
+              f"- Source SHA: `{payload['source_sha']}`",
+              f"- Frontier: `{classification}`",
+              f"- Kernel wait route: **`{route}`**",
+              '',
+              '## Child kernel stack',
+              '',
+          ]
+          report.extend(f'- `{line}`' for line in stack_lines)
+          report.extend(('', '## Child wait channel', ''))
+          report.extend(f'- `{line}`' for line in wchan_lines)
+          report.extend(('', '## Interrupt counters', ''))
+          report.extend(f'- `{line}`' for line in interrupt_lines)
+          Path('VC4_LINUX_KMS_SETCRTC_DIAG.md').write_text(
+              '\n'.join(report) + '\n'
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish diagnosis
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          cp /tmp/status.json "$STATUS"
+          cp /tmp/old-route.json "$ROUTE"
+          git add -A -- \
+            "$STATUS" "$ROUTE" "$DIAG_JSON" "$DIAG_MD" \
+            VC4_SETCRTC_DIAG_ROUTE_*
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-setcrtc-diagnose.yml
+          git commit -m "test/vc4: classify the blocked SETCRTC kernel path"
+          git push origin "HEAD:$BRANCH"
