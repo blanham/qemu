@@ -22,6 +22,9 @@ BCM2835_I2C_FIFO = BSC2_BASE + 0x10
 
 BCM2835_I2C_C_READ = 1 << 0
 BCM2835_I2C_C_ST = 1 << 7
+BCM2835_I2C_C_INTD = 1 << 8
+BCM2835_I2C_C_INTT = 1 << 9
+BCM2835_I2C_C_INTR = 1 << 10
 BCM2835_I2C_C_I2CEN = 1 << 15
 
 BCM2835_I2C_S_DONE = 1 << 1
@@ -96,6 +99,43 @@ def read_ddc(qtest: Any, length: int) -> bytes:
     return data
 
 
+def read_ddc_linux_sequence(
+    qtest: Any, offset: int, length: int
+) -> bytes:
+    """Issue the two-message write/read sequence used by i2c-bcm2835.
+
+    The Linux driver starts the read from its TXW interrupt without clearing
+    DONE from the pointer write. This exercises QEMU's transfer handoff rather
+    than relying only on two fully separated controller transactions.
+    """
+    clear_status(qtest)
+    qtest.writel(BCM2835_I2C_A, HDMI_DDC_ADDRESS)
+    qtest.writel(BCM2835_I2C_DLEN, 1)
+    qtest.writel(
+        BCM2835_I2C_C,
+        BCM2835_I2C_C_I2CEN | BCM2835_I2C_C_ST | BCM2835_I2C_C_INTT,
+    )
+    qtest.writel(BCM2835_I2C_FIFO, offset & 0xFF)
+
+    # Match bcm2835_i2c_start_transfer() for the final read message. Do not
+    # clear the first transfer's status before issuing the second ST request.
+    qtest.writel(BCM2835_I2C_A, HDMI_DDC_ADDRESS)
+    qtest.writel(BCM2835_I2C_DLEN, length)
+    qtest.writel(
+        BCM2835_I2C_C,
+        BCM2835_I2C_C_I2CEN
+        | BCM2835_I2C_C_ST
+        | BCM2835_I2C_C_READ
+        | BCM2835_I2C_C_INTR
+        | BCM2835_I2C_C_INTD,
+    )
+    data = bytes(
+        qtest.readl(BCM2835_I2C_FIFO) & 0xFF for _ in range(length)
+    )
+    require_transfer_success(qtest, "Linux-style DDC write/read")
+    return data
+
+
 def validate_edid(edid: bytes) -> None:
     if len(edid) != EDID_BLOCK_SIZE:
         raise RuntimeError(f"unexpected EDID length: {len(edid)}")
@@ -166,11 +206,25 @@ def main() -> int:
             edid = read_ddc(qtest, EDID_BLOCK_SIZE)
             validate_edid(edid)
 
+            combined_edid = read_ddc_linux_sequence(
+                qtest, 0, EDID_BLOCK_SIZE
+            )
+            if combined_edid != edid:
+                raise RuntimeError(
+                    "Linux-style DDC sequence returned different EDID data"
+                )
+
             set_ddc_pointer(qtest, 8)
             identity = read_ddc(qtest, 16)
             if identity != edid[8:24]:
                 raise RuntimeError(
                     "DDC pointer write did not select the requested EDID range"
+                )
+
+            combined_identity = read_ddc_linux_sequence(qtest, 8, 16)
+            if combined_identity != edid[8:24]:
+                raise RuntimeError(
+                    "Linux-style DDC pointer/read selected the wrong range"
                 )
 
             qmp.execute("system_reset")
@@ -207,7 +261,8 @@ def main() -> int:
 
     print(
         "Raspberry Pi HDMI DDC smoke test passed: "
-        f"EDID {edid[18]}.{edid[19]}, checksum=0x{sum(edid) & 0xff:02x}"
+        f"EDID {edid[18]}.{edid[19]}, checksum=0x{sum(edid) & 0xff:02x}, "
+        "Linux-style write/read verified"
     )
     return 0
 
