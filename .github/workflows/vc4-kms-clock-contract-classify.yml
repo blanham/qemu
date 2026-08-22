@@ -1,0 +1,192 @@
+name: VC4 KMS clock-contract classifier
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-kms-clock-contract-classify.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-clock-contract-classifier
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      INPUT_STATUS: VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json
+      OUTPUT_JSON: VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.json
+      OUTPUT_MD: VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for the branch-local KMS record
+        run: |
+          set -euo pipefail
+          rm -f /tmp/vc4-clock-contract-status.json
+          for attempt in $(seq 1 90); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$INPUT_STATUS" \
+                 > /tmp/vc4-clock-contract-status.json 2>/dev/null; then
+              python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('/tmp/vc4-clock-contract-status.json')
+          data = json.loads(path.read_text())
+          if data.get('source_sha'):
+              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+              if [ $? -eq 0 ]; then
+                break
+              fi
+            fi
+            sleep 10
+          done
+          test -s /tmp/vc4-clock-contract-status.json
+
+      - name: Classify the first remaining hardware contract
+        run: |
+          set -euo pipefail
+          cp /tmp/vc4-clock-contract-status.json "$INPUT_STATUS"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          source = Path("VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json")
+          status = json.loads(source.read_text())
+          serial_lines = status.get("serial_tail") or []
+          serial = "\n".join(str(line) for line in serial_lines)
+          outcomes = status.get("outcomes") or {}
+          markers = status.get("markers") or {}
+          classification = str(status.get("classification") or "unknown")
+
+          render_preserved = outcomes.get("render_regression") == "success"
+          clock_index_error = bool(
+              re.search(
+                  r"of_clk_hw_onecell_get: invalid index 9|"
+                  r"Failed to get pixel clock",
+                  serial,
+              )
+          )
+
+          interesting = []
+          patterns = (
+              "vc4-drm",
+              "of_clk_hw_onecell_get",
+              "Failed to get",
+              "failed to bind",
+              "probe with driver vc4-drm failed",
+              "ddc",
+              "clock",
+              "deferred probe",
+              "waiting for supplier",
+          )
+          for line in serial_lines:
+              text = str(line)
+              if any(pattern.lower() in text.lower() for pattern in patterns):
+                  interesting.append(text)
+          interesting = interesting[-80:]
+          lower = serial.lower()
+
+          if not render_preserved:
+              next_action = "renderer-regression"
+          elif clock_index_error:
+              next_action = "firmware-clock-index-9-still-missing"
+          elif classification == "linux-vc4-kms-topology-clear":
+              next_action = "kms-topology-clear"
+          elif "failed to find ddc node" in lower:
+              next_action = "hdmi-ddc-phandle-missing"
+          elif "failed to get ddc i2c adapter" in lower:
+              next_action = "hdmi-ddc-adapter-unavailable"
+          elif "hdmi state machine clock" in lower:
+              next_action = "hdmi-state-machine-clock-unavailable"
+          elif "clock rate" in lower and "hdmi" in lower:
+              next_action = "hdmi-clock-rate-unavailable"
+          elif classification == "vc4-kms-physical-connector-disconnected":
+              next_action = "hdmi-hotplug-detect-unavailable"
+          elif classification == "vc4-kms-connected-without-modes":
+              next_action = "hdmi-edid-unavailable"
+          elif classification == "vc4-kms-physical-connector-unavailable":
+              next_action = "hdmi-connector-registration-unavailable"
+          elif classification == "vc4-kms-crtc-unavailable":
+              next_action = "pixel-valve-crtc-unavailable"
+          elif classification == "vc4-component-bind-frontier":
+              next_action = "component-bind-frontier"
+          else:
+              next_action = classification
+
+          record = {
+              "schema_version": 1,
+              "source_sha": status.get("source_sha"),
+              "kms_run_id": status.get("run_id"),
+              "kms_classification": classification,
+              "next_action": next_action,
+              "render_submission_preserved": render_preserved,
+              "firmware_clock_index_9_error": clock_index_error,
+              "markers": markers,
+              "components": status.get("components") or [],
+              "counts": status.get("counts") or {},
+              "interesting_serial": interesting,
+          }
+          Path("VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.json").write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+
+          lines = [
+              "# VC4 Linux KMS clock-contract diagnosis",
+              "",
+              f"- Source SHA: `{record['source_sha']}`",
+              f"- KMS frontier: **`{classification}`**",
+              f"- Next hardware contract: **`{next_action}`**",
+              f"- Render submission preserved: `{render_preserved}`",
+              f"- Firmware pixel-clock index failure remains: `{clock_index_error}`",
+              "",
+              "## Bound components",
+              "",
+          ]
+          components = record["components"]
+          if components:
+              lines.extend(
+                  f"- `{component.get('device')}` via `{component.get('ops')}`"
+                  for component in components
+              )
+          else:
+              lines.append("- None recorded")
+          lines.extend(("", "## Relevant serial evidence", ""))
+          if interesting:
+              lines.extend(f"- `{line}`" for line in interesting)
+          else:
+              lines.append("- No matching diagnostic lines were recorded")
+          Path("VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.md").write_text(
+              "\n".join(lines) + "\n"
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish the compact diagnosis
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          cp /tmp/vc4-clock-contract-status.json "$INPUT_STATUS"
+          git add -- "$INPUT_STATUS" "$OUTPUT_JSON" "$OUTPUT_MD"
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-clock-contract-classify.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "test/vc4: classify the KMS clock-contract frontier"
+            git push origin "HEAD:$BRANCH"
+          fi
