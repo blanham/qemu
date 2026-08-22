@@ -1,0 +1,251 @@
+name: VC4 Linux native KMS host scanout frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-scanout-frontier
+    paths:
+      - .github/workflows/vc4-linux-kms-scanout-frontier.yml
+      - hw/arm/bcm2835_peripherals.c
+      - hw/display/bcm2835_fb.c
+      - hw/display/bcm2835_pixelvalve.c
+      - hw/display/bcm2835_v3d.c
+      - hw/misc/bcm2835_cprman.c
+      - hw/misc/bcm2835_property.c
+      - include/hw/display/bcm2835_fb.h
+      - include/hw/display/bcm2835_pixelvalve.h
+      - include/hw/display/bcm2835_v3d.h
+      - scripts/vc4/analyze-kms-scanout.py
+      - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+      - scripts/vc4/build-vc4-kms-linux-dtb.sh
+      - scripts/vc4/cprman-hsm-smoke.py
+      - scripts/vc4/fetch-linux-vc4-modules.py
+      - scripts/vc4/pixelvalve-vblank-smoke.py
+      - scripts/vc4/property-clock-smoke.py
+      - scripts/vc4/property-power-domain-smoke.py
+      - scripts/vc4/qemu-kms-scanout-wrapper.py
+      - scripts/vc4/raspi3-linux-probe.py
+      - tests/vc4/linux-kms-modeset-probe.inc.c
+      - tests/vc4/linux-v3d-modular-init.c
+      - tests/vc4/vc4-kms-frontier-overlay.dts
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-native-kms-host-scanout
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      BRANCH: agent/vc4-linux-kms-scanout-frontier
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-kms-scanout-official
+      MODULE_DIR: /tmp/vc4-kms-scanout-modules
+      INITRAMFS_DIR: /tmp/vc4-kms-scanout-initramfs
+      DTB_DIR: /tmp/vc4-kms-scanout-dtbs
+      PROBE_OUT: /tmp/vc4-kms-scanout-probe
+      FRAME_DIR: /tmp/vc4-kms-scanout-frames
+      EVIDENCE_DIR: vc4-linux-kms-scanout-evidence
+      STATUS_JSON: VC4_LINUX_KMS_SCANOUT_STATUS.json
+      STATUS_MD: VC4_LINUX_KMS_SCANOUT_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" \
+            "$DTB_DIR" "$PROBE_OUT" "$FRAME_DIR" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$PROBE_OUT" \
+            "$FRAME_DIR" "$EVIDENCE_DIR"
+
+      - name: Validate scanout sources
+        id: source
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/analyze-kms-scanout.py \
+            scripts/vc4/fetch-linux-vc4-modules.py \
+            scripts/vc4/qemu-kms-scanout-wrapper.py \
+            scripts/vc4/raspi3-linux-probe.py \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/property-clock-smoke.py \
+            scripts/vc4/cprman-hsm-smoke.py \
+            scripts/vc4/pixelvalve-vblank-smoke.py
+          bash -n \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            scripts/vc4/build-vc4-kms-linux-dtb.sh
+          git diff --check
+
+      - name: Fetch pinned Linux fixture
+        id: pinned
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" \
+            2>&1 | tee "$EVIDENCE_DIR/fixture.log"
+          strings "$INITRAMFS_DIR/root/init" > "$EVIDENCE_DIR/init.strings"
+          for marker in \
+            VC4_LINUX_KMS_TOPOLOGY_OK \
+            VC4_LINUX_KMS_MODESET_DUMB_OK \
+            VC4_LINUX_KMS_MODESET_FB_OK \
+            VC4_LINUX_KMS_MODESET_SETCRTC_OK \
+            VC4_LINUX_KMS_MODESET_OK; do
+            grep -Fq "$marker" "$EVIDENCE_DIR/init.strings"
+          done
+
+      - name: Build native-KMS device tree
+        id: dtb
+        run: |
+          set -euo pipefail
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/native-kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/native-kms.dtbo" \
+            "$DTB_DIR/native-kms.dtb"
+          sha256sum "$DTB_DIR"/* > "$EVIDENCE_DIR/DTB_SHA256SUMS"
+
+      - name: Configure and build QEMU
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+      - name: Preserve architectural and display regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/power-domain.log"
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/clock-contract.log"
+          python3 scripts/vc4/cprman-hsm-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/cprman-hsm.log"
+          python3 scripts/vc4/pixelvalve-vblank-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/pixelvalve-vblank.log"
+
+      - name: Run native KMS with host screendump capture
+        id: runtime
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          set +e
+          chmod +x scripts/vc4/qemu-kms-scanout-wrapper.py
+          export VC4_REAL_QEMU="$PWD/build/qemu-system-aarch64"
+          export VC4_SCANOUT_DIR="$FRAME_DIR"
+          export VC4_SCANOUT_INTERVAL=2
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu scripts/vc4/qemu-kms-scanout-wrapper.py \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/native-kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$PROBE_OUT" \
+            --seconds 70 --sample-interval 5 \
+            > "$PROBE_OUT/probe.stdout" 2>&1
+          rc=$?
+          printf '%s\n' "$rc" > "$PROBE_OUT/return-code"
+          cat "$PROBE_OUT/probe.stdout"
+          exit 0
+
+      - name: Classify host-visible scanout
+        id: classify
+        if: always()
+        run: |
+          set +e
+          python3 scripts/vc4/analyze-kms-scanout.py \
+            --serial "$PROBE_OUT/serial.log" \
+            --frames-dir "$FRAME_DIR" \
+            --json "$STATUS_JSON" \
+            --markdown "$STATUS_MD" \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            | tee "$EVIDENCE_DIR/analysis.log"
+          rc=${PIPESTATUS[0]}
+          echo "return_code=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cp -a "$PROBE_OUT" "$EVIDENCE_DIR/probe" || true
+          cp -a "$FRAME_DIR" "$EVIDENCE_DIR/frames" || true
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs" || true
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/" || true
+
+      - name: Upload scanout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-kms-scanout-${{ github.run_attempt }}
+          path: vc4-linux-kms-scanout-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the host scanout frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          passed=$(python3 -c \
+            'import json,sys; print("true" if json.load(open(sys.argv[1]))["passed"] else "false")' \
+            "$STATUS_JSON")
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if [ "$passed" = true ]; then
+            git rm -- .github/workflows/vc4-linux-kms-scanout-frontier.yml
+          fi
+          if ! git diff --cached --quiet; then
+            git commit -m "test/vc4: record native Linux KMS host scanout [skip ci]"
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
+          test "$passed" = true
