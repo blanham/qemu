@@ -1,0 +1,298 @@
+name: VC4 display timing integration
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-display-timing-integration.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-display-timing-integration
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Wire display timing devices into the Raspberry Pi SoC
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"{path}: expected one integration anchor, found {count}"
+                  )
+              file_path.write_text(text.replace(old, new, 1))
+
+
+          replace_once(
+              "hw/display/meson.build",
+              "system_ss.add(when: 'CONFIG_RASPI', if_true: files('bcm2835_fb.c', 'bcm2835_v3d.c'))",
+              """system_ss.add(when: 'CONFIG_RASPI',
+                        if_true: files('bcm2835_fb.c',
+                                       'bcm2835_hdmi.c',
+                                       'bcm2835_pixelvalve.c',
+                                       'bcm2835_v3d.c'))""",
+          )
+
+          replace_once(
+              "include/hw/arm/bcm2835_peripherals.h",
+              """#include "hw/display/bcm2835_fb.h"
+          #include "hw/display/bcm2835_v3d.h"
+          """,
+              """#include "hw/display/bcm2835_fb.h"
+          #include "hw/display/bcm2835_hdmi.h"
+          #include "hw/display/bcm2835_pixelvalve.h"
+          #include "hw/display/bcm2835_v3d.h"
+          """,
+          )
+          replace_once(
+              "include/hw/arm/bcm2835_peripherals.h",
+              """    BCM2835FBState fb;
+              BCM2835DMAState dma;
+          """,
+              """    BCM2835FBState fb;
+              BCM2835HDMIState hdmi;
+              BCM2835PixelValveState pixelvalve[3];
+              BCM2835DMAState dma;
+          """,
+          )
+
+          replace_once(
+              "include/hw/raspi/raspi_platform.h",
+              """#define DBUS_OFFSET             0x900000
+          #define AVE0_OFFSET             0x910000
+          """,
+              """#define DBUS_OFFSET             0x900000
+          #define HDMI_CORE_OFFSET        0x902000
+          #define AVE0_OFFSET             0x910000
+          """,
+          )
+
+          replace_once(
+              "hw/arm/bcm2835_peripherals.c",
+              """    object_property_add_const_link(OBJECT(&s->fb), "dma-mr",
+                                                 OBJECT(&s->gpu_bus_mr));
+
+              /* VideoCore IV 3D accelerator */
+          """,
+              """    object_property_add_const_link(OBJECT(&s->fb), "dma-mr",
+                                                 OBJECT(&s->gpu_bus_mr));
+
+              /* Native HDMI and pixel-valve display timing. */
+              object_initialize_child(obj, "hdmi", &s->hdmi,
+                                      TYPE_BCM2835_HDMI);
+              object_initialize_child(obj, "pixelvalve0", &s->pixelvalve[0],
+                                      TYPE_BCM2835_PIXELVALVE);
+              object_initialize_child(obj, "pixelvalve1", &s->pixelvalve[1],
+                                      TYPE_BCM2835_PIXELVALVE);
+              object_initialize_child(obj, "pixelvalve2", &s->pixelvalve[2],
+                                      TYPE_BCM2835_PIXELVALVE);
+
+              /* VideoCore IV 3D accelerator */
+          """,
+          )
+
+          replace_once(
+              "hw/arm/bcm2835_peripherals.c",
+              """    qdev_connect_gpio_out(DEVICE(&s->orgated_i2c_irq_splitter), 0,
+                                        qdev_get_gpio_in_named(DEVICE(&s->ic),
+                                                               BCM2835_IC_GPU_IRQ,
+                                                               INTERRUPT_I2C));
+
+              /* VideoCore IV 3D accelerator */
+          """,
+              """    qdev_connect_gpio_out(DEVICE(&s->orgated_i2c_irq_splitter), 0,
+                                        qdev_get_gpio_in_named(DEVICE(&s->ic),
+                                                               BCM2835_IC_GPU_IRQ,
+                                                               INTERRUPT_I2C));
+
+              /* HDMI core and HD register windows. */
+              if (!sysbus_realize(SYS_BUS_DEVICE(&s->hdmi), errp)) {
+                  return;
+              }
+              memory_region_add_subregion(
+                  &s->peri_mr, HDMI_CORE_OFFSET,
+                  sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->hdmi), 0));
+              memory_region_add_subregion(
+                  &s->peri_mr, HDMI_OFFSET,
+                  sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->hdmi), 1));
+              sysbus_connect_irq(
+                  SYS_BUS_DEVICE(&s->hdmi), 0,
+                  qdev_get_gpio_in_named(DEVICE(&s->ic), BCM2835_IC_GPU_IRQ,
+                                         INTERRUPT_HDMI0));
+              sysbus_connect_irq(
+                  SYS_BUS_DEVICE(&s->hdmi), 1,
+                  qdev_get_gpio_in_named(DEVICE(&s->ic), BCM2835_IC_GPU_IRQ,
+                                         INTERRUPT_HDMI1));
+
+              /* Pixel valves 0, 1, and 2 drive the three VC4 CRTCs. */
+              for (n = 0; n < 3; n++) {
+                  if (!sysbus_realize(SYS_BUS_DEVICE(&s->pixelvalve[n]), errp)) {
+                      return;
+                  }
+              }
+              memory_region_add_subregion(
+                  &s->peri_mr, PIXV0_OFFSET,
+                  sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->pixelvalve[0]), 0));
+              memory_region_add_subregion(
+                  &s->peri_mr, PIXV1_OFFSET,
+                  sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->pixelvalve[1]), 0));
+              memory_region_add_subregion(
+                  &s->peri_mr, PIXV2_OFFSET,
+                  sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->pixelvalve[2]), 0));
+              sysbus_connect_irq(
+                  SYS_BUS_DEVICE(&s->pixelvalve[0]), 0,
+                  qdev_get_gpio_in_named(DEVICE(&s->ic), BCM2835_IC_GPU_IRQ,
+                                         INTERRUPT_PWA0));
+              sysbus_connect_irq(
+                  SYS_BUS_DEVICE(&s->pixelvalve[1]), 0,
+                  qdev_get_gpio_in_named(DEVICE(&s->ic), BCM2835_IC_GPU_IRQ,
+                                         INTERRUPT_PWA1));
+              sysbus_connect_irq(
+                  SYS_BUS_DEVICE(&s->pixelvalve[2]), 0,
+                  qdev_get_gpio_in_named(DEVICE(&s->ic), BCM2835_IC_GPU_IRQ,
+                                         INTERRUPT_PIXELVALVE1));
+
+              /* VideoCore IV 3D accelerator */
+          """,
+          )
+
+          workflow = ".github/workflows/vc4-linux-kms-bind-diagnostics.yml"
+          replace_once(
+              workflow,
+              """      - hw/arm/bcm2835_peripherals.c
+                - hw/display/bcm2835_fb.c
+                - hw/display/bcm2835_v3d.c
+          """,
+              """      - hw/arm/bcm2835_peripherals.c
+                - hw/display/bcm2835_fb.c
+                - hw/display/bcm2835_hdmi.c
+                - hw/display/bcm2835_pixelvalve.c
+                - hw/display/bcm2835_v3d.c
+                - hw/display/meson.build
+          """,
+          )
+          replace_once(
+              workflow,
+              """      - include/hw/arm/bcm2835_peripherals.h
+                - include/hw/display/bcm2835_fb.h
+                - include/hw/display/bcm2835_v3d.h
+          """,
+              """      - include/hw/arm/bcm2835_peripherals.h
+                - include/hw/display/bcm2835_fb.h
+                - include/hw/display/bcm2835_hdmi.h
+                - include/hw/display/bcm2835_pixelvalve.h
+                - include/hw/display/bcm2835_v3d.h
+                - include/hw/raspi/raspi_platform.h
+          """,
+          )
+          replace_once(
+              workflow,
+              """      - scripts/vc4/bcm2835-hdmi-ddc-smoke.py
+                - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+          """,
+              """      - scripts/vc4/bcm2835-hdmi-ddc-smoke.py
+                - scripts/vc4/display-timing-smoke.py
+                - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+          """,
+          )
+          replace_once(
+              workflow,
+              """            scripts/vc4/bcm2835-hdmi-ddc-smoke.py \\
+                      scripts/vc4/fetch-linux-vc4-modules.py \\
+          """,
+              """            scripts/vc4/bcm2835-hdmi-ddc-smoke.py \\
+                      scripts/vc4/display-timing-smoke.py \\
+                      scripts/vc4/fetch-linux-vc4-modules.py \\
+          """,
+          )
+          replace_once(
+              workflow,
+              """          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \\
+                      --qemu build/qemu-system-aarch64 \\
+                      2>&1 | tee "$EVIDENCE_DIR/hdmi-ddc.log"
+                    python3 scripts/vc4/msync-smoke.py \\
+          """,
+              """          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \\
+                      --qemu build/qemu-system-aarch64 \\
+                      2>&1 | tee "$EVIDENCE_DIR/hdmi-ddc.log"
+                    python3 scripts/vc4/display-timing-smoke.py \\
+                      --qemu build/qemu-system-aarch64 \\
+                      2>&1 | tee "$EVIDENCE_DIR/display-timing.log"
+                    python3 scripts/vc4/msync-smoke.py \\
+          """,
+          )
+          PY
+
+          python3 -m py_compile scripts/vc4/display-timing-smoke.py
+          git diff --check
+          grep -Fq bcm2835_hdmi.c hw/display/meson.build
+          grep -Fq TYPE_BCM2835_PIXELVALVE include/hw/arm/bcm2835_peripherals.h
+          grep -Fq HDMI_CORE_OFFSET include/hw/raspi/raspi_platform.h
+          grep -Fq INTERRUPT_PIXELVALVE1 hw/arm/bcm2835_peripherals.c
+          grep -Fq display-timing-smoke.py \
+            .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+
+      - name: Configure and build QEMU frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+
+      - name: Prove display timing and retained architectural witnesses
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish integrated display timing model
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            .github/workflows/vc4-linux-kms-bind-diagnostics.yml \
+            hw/arm/bcm2835_peripherals.c \
+            hw/display/meson.build \
+            include/hw/arm/bcm2835_peripherals.h \
+            include/hw/raspi/raspi_platform.h
+          git rm -- .github/workflows/vc4-display-timing-integration.yml
+          git commit -m "hw/display: complete BCM2835 HDMI and pixel timing"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
