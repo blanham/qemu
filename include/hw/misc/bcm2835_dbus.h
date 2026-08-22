@@ -12,7 +12,8 @@
 #define TYPE_BCM2835_DBUS "bcm2835-dbus"
 OBJECT_DECLARE_SIMPLE_TYPE(BCM2835DbusState, BCM2835_DBUS)
 
-#define BCM2835_DBUS_WINDOW_SIZE 0x8000
+/* HDMI core begins at DBUS_OFFSET + 0x2000. */
+#define BCM2835_DBUS_WINDOW_SIZE 0x2000
 
 struct BCM2835DbusState {
     SysBusDevice parent_obj;
