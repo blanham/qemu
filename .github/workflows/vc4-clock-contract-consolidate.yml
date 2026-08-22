@@ -1,0 +1,312 @@
+name: VC4 clock-contract consolidation
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-clock-contract-consolidate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-clock-contract-consolidation
+  cancel-in-progress: true
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      FEATURE_BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      INTEGRATION_BRANCH: agent/vc4-linux-kms-frontier
+      KMS_STATUS: VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json
+      CPRMAN_STATUS: VC4_CPRMAN_HSM_DISPATCH_STATUS.json
+      CONSOLIDATION_JSON: VC4_CLOCK_CONTRACT_CONSOLIDATION.json
+      CONSOLIDATION_MD: VC4_CLOCK_CONTRACT_CONSOLIDATION.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain authoritative branch records
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin \
+            "$FEATURE_BRANCH" "$INTEGRATION_BRANCH"
+          for file in "$KMS_STATUS" "$CPRMAN_STATUS"; do
+            git show "origin/$FEATURE_BRANCH:$file" > "/tmp/$file" 2>/dev/null || true
+          done
+
+      - name: Evaluate consolidation conditions
+        id: evaluate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          def load(path):
+              path = Path(path)
+              if not path.is_file() or not path.stat().st_size:
+                  return {}
+              try:
+                  value = json.loads(path.read_text())
+              except json.JSONDecodeError:
+                  return {}
+              return value if isinstance(value, dict) else {}
+
+          kms = load('/tmp/VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json')
+          cprman = load('/tmp/VC4_CPRMAN_HSM_DISPATCH_STATUS.json')
+          gate_path = Path('.github/workflows/vc4-linux-kms-clock-contract-v2.yml')
+          gate = gate_path.read_text() if gate_path.is_file() else ''
+          diagnostic_invocation = bool(re.search(
+              r'python3 scripts/vc4/assign-vc4-hsm-clock\.py\s+\\', gate
+          ))
+          outcomes = kms.get('outcomes') or {}
+          failed_steps = [key for key, value in outcomes.items() if value != 'success']
+          conditions = {
+              'kms_status_present': bool(kms),
+              'kms_topology_clear': (
+                  kms.get('classification') == 'linux-vc4-kms-topology-clear'
+                  and bool(kms.get('passed'))
+              ),
+              'all_kms_workflow_steps_passed': not failed_steps,
+              'cprman_status_present': bool(cprman),
+              'cprman_reset_patch_applied': bool(cprman.get('patch_applied')),
+              'diagnostic_hsm_assignment_removed': not diagnostic_invocation,
+          }
+          blockers = [name for name, passed in conditions.items() if not passed]
+          ready = not blockers
+          record = {
+              'schema_version': 1,
+              'feature_branch': 'agent/vc4-linux-kms-clock-contract-v2',
+              'integration_branch': 'agent/vc4-linux-kms-frontier',
+              'source_sha': kms.get('source_sha'),
+              'kms_classification': kms.get('classification'),
+              'failed_kms_steps': failed_steps,
+              'cprman_strategy': cprman.get('patch_strategy'),
+              'conditions': conditions,
+              'blockers': blockers,
+              'ready': ready,
+              'merged': False,
+          }
+          Path('VC4_CLOCK_CONTRACT_CONSOLIDATION.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_CLOCK_CONTRACT_CONSOLIDATION.md').write_text(
+              '# VC4 clock-contract consolidation\n\n'
+              f"- Ready: **`{ready}`**\n"
+              f"- KMS frontier: `{record['kms_classification']}`\n"
+              f"- CPRMAN strategy: `{record['cprman_strategy']}`\n"
+              f"- Blockers: `{blockers}`\n\n"
+              'The integration branch is updated only when every condition is true.\n'
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+          ready=$(python3 -c \
+            'import json; print("true" if json.load(open("VC4_CLOCK_CONTRACT_CONSOLIDATION.json"))["ready"] else "false")')
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare durable source and workflow tranche
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow_path = Path('.github/workflows/vc4-linux-kms-frontier.yml')
+          workflow = workflow_path.read_text()
+
+          def insert_after(text, anchor, addition, label):
+              if addition in text:
+                  return text
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'{label} anchor changed')
+              return text.replace(anchor, anchor + addition, 1)
+
+          workflow = insert_after(
+              workflow,
+              '      - hw/misc/bcm2835_property.c\n',
+              '      - hw/misc/bcm2835_cprman.c\n',
+              'CPRMAN source path',
+          )
+          workflow = insert_after(
+              workflow,
+              '      - scripts/vc4/property-power-domain-smoke.py\n',
+              '      - scripts/vc4/property-clock-smoke.py\n'
+              '      - scripts/vc4/cprman-hsm-smoke.py\n'
+              '      - scripts/vc4/hdmi-ddc-smoke.py\n',
+              'clock smoke paths',
+          )
+          compile_anchor = '            scripts/vc4/summarize-linux-kms.py \\\n'
+          compile_addition = (
+              '            scripts/vc4/property-clock-smoke.py \\\n'
+              '            scripts/vc4/cprman-hsm-smoke.py \\\n'
+          )
+          workflow = insert_after(
+              workflow, compile_anchor, compile_addition, 'compile paths'
+          )
+          if 'clock-contract.log' not in workflow:
+              anchor = """          python3 scripts/vc4/msync-smoke.py \\
+          """
+              addition = """          python3 scripts/vc4/property-clock-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/clock-contract.log"
+              python3 scripts/vc4/cprman-hsm-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/cprman-hsm.log"
+              set +e
+              python3 scripts/vc4/hdmi-ddc-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/hdmi-ddc.log"
+              printf '%s\\n' "${PIPESTATUS[0]}" \\
+                > "$EVIDENCE_DIR/hdmi-ddc.return-code"
+              set -e
+          """
+              if workflow.count(anchor) != 1:
+                  raise SystemExit('regression command anchor changed')
+              workflow = workflow.replace(anchor, addition + anchor, 1)
+          workflow_path.write_text(workflow)
+
+          kms = __import__('json').load(
+              open('/tmp/VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json')
+          )
+          cprman = __import__('json').load(
+              open('/tmp/VC4_CPRMAN_HSM_DISPATCH_STATUS.json')
+          )
+          doc = Path('docs/system/arm/vc4-linux-kms-clock-contract.rst')
+          doc.write_text(f'''VC4 Linux KMS clock and connector contract
+          ===========================================
+
+          The Raspberry Pi direct-kernel path must reproduce two pieces of
+          VideoCore firmware handoff before the upstream Linux VC4 driver can
+          register native KMS:
+
+          * the property mailbox must enumerate the complete firmware clock ID
+            range, including pixel clock 9 and display clock 16; and
+          * CPRMAN must leave the HDMI state-machine clock enabled at a nonzero
+            rate when no VideoCore firmware ran before ARM entry.
+
+          The property-clock and CPRMAN-HSM qtests are mandatory regressions in
+          the pinned Linux KMS gate.  HDMI DDC is retained as separately
+          recorded evidence because the end-to-end Linux connector and mode
+          markers are the stronger contract.
+
+          Validated source
+          ----------------
+
+          * Source SHA: ``{kms.get('source_sha')}``
+          * Linux KMS frontier: ``{kms.get('classification')}``
+          * CPRMAN reset strategy: ``{cprman.get('patch_strategy')}``
+          * Render submission preserved: ``{(kms.get('outcomes') or {}).get('render_regression') == 'success'}``
+          * Complete KMS topology: ``{(kms.get('markers') or {}).get('VC4_LINUX_KMS_TOPOLOGY_OK')}``
+
+          Diagnostic HSM DT assignments must not be present in a consolidated
+          branch.  They were used only to prove causality before the CPRMAN
+          model repair.
+          ''')
+          PY
+
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-linux-kms-clock-contract-v2.yml \
+            .github/workflows/vc4-linux-kms-clock-contract-stages.yml \
+            .github/workflows/vc4-kms-clock-contract-v2-bootstrap.yml \
+            .github/workflows/vc4-kms-clock-contract-v3-bootstrap.yml \
+            .github/workflows/vc4-kms-clock-contract-v4-bootstrap.yml \
+            .github/workflows/vc4-kms-clock-contract-classify.yml \
+            .github/workflows/vc4-kms-clock-contract-route.yml \
+            .github/workflows/vc4-kms-clock-contract-reclassify.yml \
+            .github/workflows/vc4-kms-clock-contract-regression-repair.yml \
+            .github/workflows/vc4-linux-kms-stage-route.yml \
+            .github/workflows/vc4-linux-kms-post-cprman-resolver.yml \
+            .github/workflows/vc4-kms-clock-contract-final-classifier.yml \
+            .github/workflows/vc4-clock-contract-consolidate.yml \
+            VC4_CLOCK_ACTIONS_PING \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.md \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.json \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG.md \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG2.json \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_DIAG2.md \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_FINAL.json \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_FINAL.md \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_ROUTE.json \
+            VC4_LINUX_KMS_CLOCK_CONTRACT_ROUTE.md \
+            VC4_LINUX_KMS_POST_CPRMAN_STATUS.json \
+            VC4_LINUX_KMS_POST_CPRMAN_STATUS.md \
+            VC4_LINUX_KMS_STAGE_STATUS.json \
+            VC4_LINUX_KMS_STAGE_STATUS.md \
+            VC4_LINUX_KMS_STAGE_ROUTE.json \
+            VC4_LINUX_KMS_STAGE_ROUTE.md \
+            VC4_LINUX_HSM_CLOCK_STATUS.json \
+            VC4_LINUX_HSM_CLOCK_STATUS.md \
+            VC4_CPRMAN_HSM_SOURCE_REPORT.json \
+            VC4_CPRMAN_HSM_SOURCE_REPORT.md \
+            VC4_CPRMAN_HSM_DISPATCH_STATUS.json \
+            VC4_CPRMAN_HSM_DISPATCH_STATUS.md \
+            VC4_HSM_DIAGNOSTIC_INJECTOR_STATUS.json \
+            VC4_HSM_DIAGNOSTIC_INJECTOR_STATUS.md
+          git diff --check
+
+      - name: Build durable qtests
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          python3 -m py_compile \
+            scripts/vc4/property-clock-smoke.py \
+            scripts/vc4/cprman-hsm-smoke.py
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/cprman-hsm-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Commit consolidation decision
+        run: |
+          set -euo pipefail
+          ready='${{ steps.evaluate.outputs.ready }}'
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          if [ "$ready" = true ]; then
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('VC4_CLOCK_CONTRACT_CONSOLIDATION.json')
+          data = json.loads(path.read_text())
+          data['merged'] = True
+          path.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+          PY
+            git add -A
+            git commit -m "hw/arm: consolidate VC4 Linux KMS clock contract"
+          else
+            git add -- "$CONSOLIDATION_JSON" "$CONSOLIDATION_MD"
+            git rm -f --ignore-unmatch \
+              .github/workflows/vc4-clock-contract-consolidate.yml
+            git commit -m "test/vc4: record clock-contract consolidation blockers"
+          fi
+          git pull --rebase origin "$FEATURE_BRANCH"
+          git push origin "HEAD:$FEATURE_BRANCH"
+
+      - name: Fast-forward the integration branch
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$INTEGRATION_BRANCH"
+          if ! git merge-base --is-ancestor "origin/$INTEGRATION_BRANCH" HEAD; then
+            echo "Integration branch advanced independently; refusing non-fast-forward update" >&2
+            exit 1
+          fi
+          git push origin "HEAD:$INTEGRATION_BRANCH"
