@@ -1,0 +1,263 @@
+name: VC4 Linux native KMS modeset consolidation
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-modeset-frontier
+    paths:
+      - .github/workflows/vc4-kms-modeset-consolidate.yml
+      - VC4_POST_PIXELVALVE_ROUTE_CLEAR
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-native-kms-modeset-consolidation
+  cancel-in-progress: true
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      FEATURE_BRANCH: agent/vc4-linux-kms-modeset-frontier
+      INTEGRATION_BRANCH: agent/vc4-linux-kms-frontier
+      STATUS: VC4_LINUX_KMS_MODESET_STATUS.json
+      CLEAR_ROUTE: VC4_POST_PIXELVALVE_ROUTE_CLEAR
+      DECISION_JSON: VC4_KMS_MODESET_CONSOLIDATION.json
+      DECISION_MD: VC4_KMS_MODESET_CONSOLIDATION.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain authoritative passing records
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$FEATURE_BRANCH" "$INTEGRATION_BRANCH"
+          git show "origin/$FEATURE_BRANCH:$STATUS" > /tmp/status.json
+          git show "origin/$FEATURE_BRANCH:$CLEAR_ROUTE" > /tmp/clear-route.json
+          cp /tmp/status.json "$STATUS"
+          cp /tmp/clear-route.json "$CLEAR_ROUTE"
+
+      - name: Evaluate consolidation conditions
+        id: evaluate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/status.json'))
+          route = json.load(open('/tmp/clear-route.json'))
+          outcomes = status.get('outcomes') or {}
+          failed = [key for key, value in outcomes.items() if value != 'success']
+          markers = status.get('markers') or {}
+          required_files = (
+              'hw/display/bcm2835_pixelvalve.c',
+              'include/hw/display/bcm2835_pixelvalve.h',
+              'scripts/vc4/pixelvalve-vblank-smoke.py',
+              'tests/vc4/linux-kms-modeset-probe.inc.c',
+              'scripts/vc4/summarize-linux-kms-modeset.py',
+          )
+          conditions = {
+              'clear_route': route.get('route') == 'CLEAR',
+              'modeset_status_passed': bool(status.get('passed')),
+              'modeset_classification_clear': (
+                  status.get('classification') == 'linux-vc4-kms-modeset-clear'
+              ),
+              'all_workflow_steps_passed': not failed,
+              'topology_preserved': bool(
+                  markers.get('VC4_LINUX_KMS_TOPOLOGY_OK')
+              ),
+              'setcrtc_completed': bool(
+                  markers.get('VC4_LINUX_KMS_MODESET_SETCRTC_OK')
+              ),
+              'modeset_completed': bool(
+                  markers.get('VC4_LINUX_KMS_MODESET_OK')
+              ),
+              'durable_files_present': all(
+                  Path(name).is_file() for name in required_files
+              ),
+              'pixelvalve_model_is_not_unimplemented': (
+                  'QEMU_RPI_PIXELVALVE_VBLANK_MODEL'
+                  in Path('hw/arm/bcm2835_peripherals.c').read_text()
+              ),
+          }
+          blockers = [name for name, value in conditions.items() if not value]
+          record = {
+              'schema_version': 1,
+              'feature_branch': 'agent/vc4-linux-kms-modeset-frontier',
+              'integration_branch': 'agent/vc4-linux-kms-frontier',
+              'source_sha': status.get('source_sha'),
+              'run_id': status.get('run_id'),
+              'classification': status.get('classification'),
+              'conditions': conditions,
+              'failed_workflow_steps': failed,
+              'blockers': blockers,
+              'ready': not blockers,
+              'merged': False,
+          }
+          Path('VC4_KMS_MODESET_CONSOLIDATION.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_KMS_MODESET_CONSOLIDATION.md').write_text(
+              '# VC4 native Linux KMS modeset consolidation\n\n'
+              f"- Ready: **`{record['ready']}`**\n"
+              f"- Frontier: `{record['classification']}`\n"
+              f"- Source SHA: `{record['source_sha']}`\n"
+              f"- Blockers: `{blockers}`\n"
+          )
+          PY
+          ready=$(python3 -c \
+            'import json; print("true" if json.load(open("VC4_KMS_MODESET_CONSOLIDATION.json"))["ready"] else "false")')
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare the durable tranche
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/status.json'))
+          model = {}
+          model_path = Path('VC4_PIXELVALVE_VBLANK_MODEL.json')
+          if model_path.is_file():
+              model = json.loads(model_path.read_text())
+
+          doc = Path('docs/system/arm/vc4-linux-kms-modeset.rst')
+          doc.write_text(f'''VC4 native Linux KMS modeset frontier
+          ======================================
+
+          The pinned Raspberry Pi Linux witness now exercises the complete
+          native VC4 modeset path rather than stopping at resource enumeration.
+          It selects a connected physical connector and CRTC, creates and maps
+          a dumb XRGB8888 buffer, writes a deterministic pattern, creates a DRM
+          framebuffer, and submits ``DRM_IOCTL_MODE_SETCRTC`` from a supervised
+          child process.
+
+          Pixel-valve vblank contract
+          ---------------------------
+
+          Linux completes a synchronous VC4 atomic commit only after the pixel
+          valve raises the VFP-start interrupt used as the DRM vblank source.
+          QEMU therefore models each of the three BCM2835 pixel valves as a
+          0x100-byte register bank with:
+
+          * retained register state;
+          * a level-triggered VFP-start status bit;
+          * interrupt-enable masking and write-one-to-clear status;
+          * a nominal 60 Hz virtual-clock timer; and
+          * reset and migration state.
+
+          The model replaces the former unimplemented PV0/PV1/PV2 regions and
+          connects their interrupts to the BCM2835 interrupt controller using
+          the interrupt numbers from the pinned Raspberry Pi device tree.
+
+          Validation
+          ----------
+
+          * Source SHA: ``{status.get('source_sha')}``
+          * Linux modeset frontier: ``{status.get('classification')}``
+          * SETCRTC completed: ``{(status.get('markers') or {}).get('VC4_LINUX_KMS_MODESET_SETCRTC_OK')}``
+          * Full modeset witness: ``{(status.get('markers') or {}).get('VC4_LINUX_KMS_MODESET_OK')}``
+          * Register contract: ``{model.get('register_contract')}``
+          * Pixel-valve wiring: ``{model.get('pixelvalves')}``
+
+          The modeset child is bounded and emits its kernel stack, wait channel,
+          interrupt counters, DRM state, HVS registers, HDMI registers, and
+          clock tree if a future regression blocks inside an ioctl.
+          ''')
+          PY
+
+          # Remove transient workflows, branch-local status records, route
+          # markers, and source-census evidence.  Keep the source model, qtest,
+          # supervised Linux witness, summarizer, and documentation.
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-linux-kms-modeset-frontier.yml \
+            .github/workflows/vc4-kms-modeset-bootstrap.yml \
+            .github/workflows/vc4-kms-modeset-route.yml \
+            .github/workflows/vc4-kms-setcrtc-stack-diagnostics.yml \
+            .github/workflows/vc4-kms-timeout-summarizer-repair.yml \
+            .github/workflows/vc4-kms-setcrtc-diagnose.yml \
+            .github/workflows/vc4-pixelvalve-source-census.yml \
+            .github/workflows/vc4-pixelvalve-vblank-model.yml \
+            .github/workflows/vc4-kms-post-pixelvalve-route.yml \
+            .github/workflows/vc4-kms-modeset-consolidate.yml \
+            VC4_LINUX_KMS_MODESET_STATUS.json \
+            VC4_LINUX_KMS_MODESET_STATUS.md \
+            VC4_LINUX_KMS_MODESET_ROUTE.json \
+            VC4_LINUX_KMS_MODESET_ROUTE.md \
+            VC4_MODESET_ROUTE_SETCRTC_TIMEOUT \
+            VC4_LINUX_KMS_SETCRTC_DIAG.json \
+            VC4_LINUX_KMS_SETCRTC_DIAG.md \
+            VC4_SETCRTC_DIAG_ROUTE_WAIT_VBLANK \
+            VC4_PIXELVALVE_SOURCE_CENSUS.json \
+            VC4_PIXELVALVE_SOURCE_CENSUS.md \
+            VC4_PIXELVALVE_SOURCE_ROUTE_REPLACE_UNIMPLEMENTED_PV_REGIONS \
+            VC4_PIXELVALVE_VBLANK_MODEL.json \
+            VC4_PIXELVALVE_VBLANK_MODEL.md \
+            VC4_LINUX_KMS_POST_PIXELVALVE.json \
+            VC4_LINUX_KMS_POST_PIXELVALVE.md \
+            VC4_POST_PIXELVALVE_ROUTE_CLEAR \
+            VC4_KMS_MODESET_CONSOLIDATION.json \
+            VC4_KMS_MODESET_CONSOLIDATION.md
+          git diff --check
+
+      - name: Build durable model regressions
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          python3 -m py_compile \
+            scripts/vc4/property-clock-smoke.py \
+            scripts/vc4/cprman-hsm-smoke.py \
+            scripts/vc4/pixelvalve-vblank-smoke.py \
+            scripts/vc4/summarize-linux-kms-modeset.py
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/cprman-hsm-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/pixelvalve-vblank-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Commit consolidation decision
+        run: |
+          set -euo pipefail
+          ready='${{ steps.evaluate.outputs.ready }}'
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          if [ "$ready" = true ]; then
+            git add -A
+            git commit -m "hw/display: consolidate native VC4 KMS modesetting"
+          else
+            git add -- "$DECISION_JSON" "$DECISION_MD"
+            git rm -f --ignore-unmatch \
+              .github/workflows/vc4-kms-modeset-consolidate.yml
+            git commit -m "test/vc4: record modeset consolidation blockers"
+          fi
+          git pull --rebase origin "$FEATURE_BRANCH"
+          git push origin "HEAD:$FEATURE_BRANCH"
+
+      - name: Fast-forward the integration branch
+        if: steps.evaluate.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$INTEGRATION_BRANCH"
+          if ! git merge-base --is-ancestor "origin/$INTEGRATION_BRANCH" HEAD; then
+            echo "Integration branch advanced independently; refusing non-fast-forward update" >&2
+            exit 1
+          fi
+          git push origin "HEAD:$INTEGRATION_BRANCH"
