@@ -1,0 +1,203 @@
+name: VC4 Linux KMS post-CPRMAN resolver
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-linux-kms-post-cprman-resolver.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-kms-post-cprman-resolver
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      BRANCH: agent/vc4-linux-kms-clock-contract-v2
+      STATUS: VC4_LINUX_KMS_CLOCK_CONTRACT_STATUS.json
+      OUTPUT_JSON: VC4_LINUX_KMS_POST_CPRMAN_STATUS.json
+      OUTPUT_MD: VC4_LINUX_KMS_POST_CPRMAN_STATUS.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain the latest full Linux gate
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$STATUS" > /tmp/status.json 2>/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+          test -s /tmp/status.json
+          cp /tmp/status.json "$STATUS"
+
+      - name: Resolve only a proven connector-sink frontier
+        id: resolve
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          import re
+
+          status = json.load(open('/tmp/status.json'))
+          classification = str(status.get('classification') or 'unknown')
+          serial_lines = [str(line) for line in status.get('serial_tail') or []]
+          serial = '\n'.join(serial_lines)
+          lower = serial.lower()
+          outcomes = status.get('outcomes') or {}
+          markers = status.get('markers') or {}
+          failed_steps = [key for key, value in outcomes.items() if value != 'success']
+
+          if failed_steps:
+              action = 'workflow-' + '-'.join(failed_steps) + '-failed'
+          elif classification == 'linux-vc4-kms-topology-clear':
+              action = 'kms-topology-clear'
+          elif classification == 'vc4-kms-physical-connector-disconnected':
+              action = 'add-explicit-hpd-and-ddc-suppliers'
+          elif classification == 'vc4-kms-connected-without-modes':
+              action = 'enable-explicit-ddc-supplier'
+          elif 'failed to get ddc i2c adapter' in lower:
+              action = 'enable-explicit-ddc-supplier'
+          elif 'invalid index 9' in lower or 'failed to get pixel clock' in lower:
+              action = 'firmware-pixel-clock-still-unavailable'
+          elif 'failed to bind' in lower and ': -22' in lower:
+              action = 'component-bind-einval-remains'
+          else:
+              action = classification
+
+          patch_overlay = action in {
+              'add-explicit-hpd-and-ddc-suppliers',
+              'enable-explicit-ddc-supplier',
+          }
+          add_hpd = action == 'add-explicit-hpd-and-ddc-suppliers'
+          record = {
+              'schema_version': 1,
+              'source_sha': status.get('source_sha'),
+              'run_id': status.get('run_id'),
+              'classification': classification,
+              'next_action': action,
+              'overlay_patched': patch_overlay,
+              'explicit_hpd_added': add_hpd,
+              'failed_workflow_steps': failed_steps,
+              'markers': markers,
+              'components': status.get('components') or [],
+              'connectors': status.get('connectors') or [],
+              'relevant_serial': [
+                  line for line in serial_lines
+                  if any(token in line.lower() for token in (
+                      'vc4-drm', 'clock', 'ddc', 'edid', 'hpd', 'connector',
+                      'failed', 'error', 'bound ', 'deferred',
+                  ))
+              ][-120:],
+          }
+          Path('VC4_LINUX_KMS_POST_CPRMAN_STATUS.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          lines = [
+              '# VC4 Linux KMS post-CPRMAN status',
+              '',
+              f"- Source SHA: `{record['source_sha']}`",
+              f"- Frontier: **`{classification}`**",
+              f"- Next action: **`{action}`**",
+              f"- Explicit supplier overlay applied: `{patch_overlay}`",
+              f"- Explicit HPD GPIO applied: `{add_hpd}`",
+              '',
+              '## Relevant serial evidence',
+              '',
+          ]
+          lines.extend(f'- `{line}`' for line in record['relevant_serial'])
+          Path('VC4_LINUX_KMS_POST_CPRMAN_STATUS.md').write_text(
+              '\n'.join(lines) + '\n'
+          )
+
+          if not patch_overlay:
+              raise SystemExit(0)
+
+          overlay_path = Path('tests/vc4/vc4-kms-frontier-overlay.dts')
+          overlay = overlay_path.read_text()
+          fragments = [int(value) for value in re.findall(r'fragment@(\d+)', overlay)]
+          number = max(fragments, default=-1) + 1
+          additions = []
+          if 'VC4_QEMU_EXPLICIT_DDC_SUPPLIER' not in overlay:
+              additions.append(f'''\n    /* VC4_QEMU_EXPLICIT_DDC_SUPPLIER */
+              fragment@{number} {{
+                  target = <&i2c2>;
+                  __overlay__ {{
+                      status = "okay";
+                  }};
+              }};
+          ''')
+              number += 1
+          if add_hpd and 'VC4_QEMU_EXPLICIT_HDMI_HPD' not in overlay:
+              additions.append(f'''\n    /* VC4_QEMU_EXPLICIT_HDMI_HPD */
+              fragment@{number} {{
+                  target = <&hdmi>;
+                  __overlay__ {{
+                      hpd-gpios = <&expgpio 4 0>;
+                  }};
+              }};
+          ''')
+          if additions:
+              closing = overlay.rfind('\n};')
+              if closing < 0:
+                  raise SystemExit('overlay root terminator was not found')
+              overlay = overlay[:closing] + ''.join(additions) + overlay[closing:]
+              overlay_path.write_text(overlay)
+          PY
+          patched=$(python3 -c \
+            'import json; print("true" if json.load(open("VC4_LINUX_KMS_POST_CPRMAN_STATUS.json"))["overlay_patched"] else "false")')
+          echo "patched=$patched" >> "$GITHUB_OUTPUT"
+
+      - name: Validate supplier overlay against the pinned DTB
+        if: steps.resolve.outputs.patched == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl device-tree-compiler
+          curl --fail --location --retry 5 \
+            --output /tmp/bcm2710-rpi-3-b.dtb \
+            https://raw.githubusercontent.com/raspberrypi/firmware/3d301dd924bcd758a4c8cb19fe8531031f033f43/boot/bcm2710-rpi-3-b.dtb
+          dtc -q -@ -I dts -O dtb \
+            -o /tmp/vc4-kms-frontier.dtbo \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          fdtoverlay -i /tmp/bcm2710-rpi-3-b.dtb \
+            -o /tmp/vc4-kms-frontier.dtb \
+            /tmp/vc4-kms-frontier.dtbo
+          dtc -q -I dtb -O dts \
+            -o /tmp/vc4-kms-frontier.dts \
+            /tmp/vc4-kms-frontier.dtb
+          grep -Fq 'VC4_QEMU_EXPLICIT_DDC_SUPPLIER' \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          git diff --check
+
+      - name: Publish post-CPRMAN resolution
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          cp /tmp/status.json "$STATUS"
+          git add -- \
+            "$STATUS" "$OUTPUT_JSON" "$OUTPUT_MD" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-linux-kms-post-cprman-resolver.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "test/vc4: resolve the post-CPRMAN KMS frontier"
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
