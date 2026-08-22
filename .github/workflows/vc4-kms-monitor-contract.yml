@@ -1,0 +1,710 @@
+name: VC4 deterministic HDMI monitor contract
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-monitor-contract.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-native-kms-monitor-contract
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-monitor-official
+      MODULE_DIR: /tmp/vc4-monitor-modules
+      INITRAMFS_DIR: /tmp/vc4-monitor-initramfs
+      DTB_DIR: /tmp/vc4-monitor-dtbs
+      BASE_DIR: /tmp/vc4-monitor-base
+      LOW_DIR: /tmp/vc4-monitor-low
+      HIGH_DIR: /tmp/vc4-monitor-high
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for the clock and DDC controlled experiments
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 120); do
+            git fetch origin "$BRANCH"
+            if git cat-file -e \
+                 "origin/$BRANCH:scripts/vc4/property-clock-enumeration-smoke.py" \
+                 2>/dev/null && \
+               git cat-file -e \
+                 "origin/$BRANCH:VC4_LINUX_KMS_DDC_DELTA.json" \
+                 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          test "$ready" = true
+          git reset --hard "origin/$BRANCH"
+          test ! -e .github/workflows/vc4-kms-clock-contract-apply.yml
+          test ! -e .github/workflows/vc4-kms-clock-contract-apply-v2.yml
+          test ! -e .github/workflows/vc4-kms-ddc-delta.yml
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" "$DTB_DIR" \
+            "$BASE_DIR" "$LOW_DIR" "$HIGH_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" \
+            "$BASE_DIR" "$LOW_DIR" "$HIGH_DIR"
+
+      - name: Build the pinned Linux fixture and current QEMU baseline
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" --target vc4
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR"
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/native-kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/native-kms.dtbo" \
+            "$DTB_DIR/native-kms.dtb"
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/native-kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$BASE_DIR" \
+            --seconds 60 --sample-interval 5 || true
+          test -f "$BASE_DIR/serial.log"
+          grep -Fq VC4_LINUX_MODULE_CLOSURE_OK "$BASE_DIR/serial.log"
+
+      - name: Implement deterministic DDC and firmware expander GPIOs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          kconfig_path = Path("hw/arm/Kconfig")
+          kconfig = kconfig_path.read_text()
+          start = kconfig.index("config RASPI\n")
+          end = kconfig.index("\nconfig ", start + 1)
+          block = kconfig[start:end]
+          if "    select DDC\n" not in block:
+              anchor = "    select BCM2835_I2C\n"
+              if block.count(anchor) != 1:
+                  raise SystemExit("RASPI I2C anchor changed")
+              block = block.replace(anchor, anchor + "    select DDC\n", 1)
+              kconfig_path.write_text(kconfig[:start] + block + kconfig[end:])
+
+          peripherals_path = Path("hw/arm/bcm2835_peripherals.c")
+          peripherals = peripherals_path.read_text()
+          include = '#include "hw/display/i2c-ddc.h"\n'
+          if include not in peripherals:
+              anchor = '#include "hw/arm/bcm2835_peripherals.h"\n'
+              if peripherals.count(anchor) != 1:
+                  raise SystemExit("peripherals include anchor changed")
+              peripherals = peripherals.replace(anchor, anchor + include, 1)
+          if "#define BCM2835_HDMI_DDC_ADDRESS 0x50\n" not in peripherals:
+              anchor = "#define ORGATED_I2C_IRQ_COUNT 3\n"
+              if peripherals.count(anchor) != 1:
+                  raise SystemExit("peripherals define anchor changed")
+              peripherals = peripherals.replace(
+                  anchor,
+                  anchor + "\n#define BCM2835_HDMI_DDC_ADDRESS 0x50\n",
+                  1,
+              )
+          if "i2c_slave_create_simple(s->i2c[2].bus, TYPE_I2CDDC" not in peripherals:
+              anchor = """    for (n = 0; n < 3; n++) {
+                  if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c[n]), errp)) {
+                      return;
+                  }
+              }
+
+          """
+              creation = """    /* BSC2 is the HDMI DDC bus on BCM2835. */
+              i2c_slave_create_simple(s->i2c[2].bus, TYPE_I2CDDC,
+                                      BCM2835_HDMI_DDC_ADDRESS);
+
+          """
+              if peripherals.count(anchor) != 1:
+                  raise SystemExit("I2C realization anchor changed")
+              peripherals = peripherals.replace(anchor, anchor + creation, 1)
+          peripherals_path.write_text(peripherals)
+
+          header_path = Path("include/hw/misc/bcm2835_property.h")
+          header = header_path.read_text()
+          if "exp_gpio_state" not in header:
+              anchor = "    uint32_t power_domain_state;\n"
+              fields = """    uint32_t exp_gpio_direction;
+              uint32_t exp_gpio_polarity;
+              uint32_t exp_gpio_term_en;
+              uint32_t exp_gpio_term_pull_up;
+              uint32_t exp_gpio_state;
+          """
+              if header.count(anchor) != 1:
+                  raise SystemExit("property state anchor changed")
+              header_path.write_text(header.replace(anchor, anchor + fields, 1))
+
+          path = Path("hw/misc/bcm2835_property.c")
+          source = path.read_text()
+          if "BCM2835_PROPERTY_EXP_GPIO_BASE" not in source:
+              anchor = "#define BCM2835_PROPERTY_POWER_STATE_COUNT 32\n"
+              defines = """#define BCM2835_PROPERTY_EXP_GPIO_BASE 128
+          #define BCM2835_PROPERTY_EXP_GPIO_COUNT 8
+          #define BCM2835_PROPERTY_EXP_GPIO_HDMI_HPD 4
+          #define BCM2835_PROPERTY_EXP_GPIO_RESET_STATE 0
+          """
+              if source.count(anchor) != 1:
+                  raise SystemExit("property define anchor changed")
+              source = source.replace(anchor, anchor + defines, 1)
+
+          if "bcm2835_property_exp_gpio_index" not in source:
+              anchor = "static void bcm2835_property_mbox_push"
+              position = source.find(anchor)
+              if position < 0:
+                  raise SystemExit("property mailbox function anchor changed")
+              helpers = """static bool bcm2835_property_exp_gpio_index(uint32_t id,
+                                                       uint32_t *index)
+          {
+              if (id < BCM2835_PROPERTY_EXP_GPIO_BASE ||
+                  id >= BCM2835_PROPERTY_EXP_GPIO_BASE +
+                        BCM2835_PROPERTY_EXP_GPIO_COUNT) {
+                  return false;
+              }
+
+              *index = id - BCM2835_PROPERTY_EXP_GPIO_BASE;
+              return true;
+          }
+
+          static uint32_t bcm2835_property_exp_gpio_get(uint32_t states,
+                                                        uint32_t index)
+          {
+              return !!(states & (UINT32_C(1) << index));
+          }
+
+          static uint32_t bcm2835_property_exp_gpio_set(uint32_t *states,
+                                                        uint32_t index,
+                                                        uint32_t value)
+          {
+              uint32_t mask = UINT32_C(1) << index;
+
+              if (value & 1) {
+                  *states |= mask;
+              } else {
+                  *states &= ~mask;
+              }
+              return !!(*states & mask);
+          }
+
+          """
+              source = source[:position] + helpers + source[position:]
+
+          if "case RPI_FWREQ_GET_GPIO_CONFIG:" not in source:
+              anchor = "        /* Clocks */\n"
+              cases = """        /* Firmware-controlled expander GPIOs */
+
+              case RPI_FWREQ_GET_GPIO_CONFIG:
+              {
+                  uint32_t id = ldl_le_phys(&s->dma_as, value + 12);
+                  uint32_t index;
+
+                  resplen = 5 * sizeof(uint32_t);
+                  if (!bcm2835_property_exp_gpio_index(id, &index)) {
+                      qemu_log_mask(LOG_GUEST_ERROR,
+                                    "bcm2835_property: invalid expander GPIO id %u\\n",
+                                    id);
+                      break;
+                  }
+                  stl_le_phys(&s->dma_as, value + 12, 0);
+                  stl_le_phys(&s->dma_as, value + 16,
+                              bcm2835_property_exp_gpio_get(
+                                  s->exp_gpio_direction, index));
+                  stl_le_phys(&s->dma_as, value + 20,
+                              bcm2835_property_exp_gpio_get(
+                                  s->exp_gpio_polarity, index));
+                  stl_le_phys(&s->dma_as, value + 24,
+                              bcm2835_property_exp_gpio_get(
+                                  s->exp_gpio_term_en, index));
+                  stl_le_phys(&s->dma_as, value + 28,
+                              bcm2835_property_exp_gpio_get(
+                                  s->exp_gpio_term_pull_up, index));
+                  break;
+              }
+              case RPI_FWREQ_SET_GPIO_CONFIG:
+              {
+                  uint32_t id = ldl_le_phys(&s->dma_as, value + 12);
+                  uint32_t index;
+
+                  resplen = 6 * sizeof(uint32_t);
+                  if (!bcm2835_property_exp_gpio_index(id, &index)) {
+                      qemu_log_mask(LOG_GUEST_ERROR,
+                                    "bcm2835_property: invalid expander GPIO id %u\\n",
+                                    id);
+                      break;
+                  }
+                  bcm2835_property_exp_gpio_set(
+                      &s->exp_gpio_direction, index,
+                      ldl_le_phys(&s->dma_as, value + 16));
+                  bcm2835_property_exp_gpio_set(
+                      &s->exp_gpio_polarity, index,
+                      ldl_le_phys(&s->dma_as, value + 20));
+                  bcm2835_property_exp_gpio_set(
+                      &s->exp_gpio_term_en, index,
+                      ldl_le_phys(&s->dma_as, value + 24));
+                  bcm2835_property_exp_gpio_set(
+                      &s->exp_gpio_term_pull_up, index,
+                      ldl_le_phys(&s->dma_as, value + 28));
+                  if (bcm2835_property_exp_gpio_get(
+                          s->exp_gpio_direction, index)) {
+                      bcm2835_property_exp_gpio_set(
+                          &s->exp_gpio_state, index,
+                          ldl_le_phys(&s->dma_as, value + 32));
+                  }
+                  stl_le_phys(&s->dma_as, value + 12, 0);
+                  break;
+              }
+              case RPI_FWREQ_GET_GPIO_STATE:
+              {
+                  uint32_t id = ldl_le_phys(&s->dma_as, value + 12);
+                  uint32_t index;
+
+                  resplen = 2 * sizeof(uint32_t);
+                  if (!bcm2835_property_exp_gpio_index(id, &index)) {
+                      qemu_log_mask(LOG_GUEST_ERROR,
+                                    "bcm2835_property: invalid expander GPIO id %u\\n",
+                                    id);
+                      break;
+                  }
+                  stl_le_phys(&s->dma_as, value + 12, 0);
+                  stl_le_phys(&s->dma_as, value + 16,
+                              bcm2835_property_exp_gpio_get(
+                                  s->exp_gpio_state, index));
+                  break;
+              }
+              case RPI_FWREQ_SET_GPIO_STATE:
+              {
+                  uint32_t id = ldl_le_phys(&s->dma_as, value + 12);
+                  uint32_t requested = ldl_le_phys(&s->dma_as, value + 16);
+                  uint32_t index;
+
+                  resplen = 2 * sizeof(uint32_t);
+                  if (!bcm2835_property_exp_gpio_index(id, &index)) {
+                      qemu_log_mask(LOG_GUEST_ERROR,
+                                    "bcm2835_property: invalid expander GPIO id %u\\n",
+                                    id);
+                      break;
+                  }
+                  stl_le_phys(&s->dma_as, value + 12, 0);
+                  stl_le_phys(&s->dma_as, value + 16,
+                              bcm2835_property_exp_gpio_set(
+                                  &s->exp_gpio_state, index, requested));
+                  break;
+              }
+
+          """
+              if source.count(anchor) != 1:
+                  raise SystemExit("clock section anchor changed")
+              source = source.replace(anchor, cases + anchor, 1)
+
+          vm_start = source.index(
+              "static const VMStateDescription vmstate_bcm2835_property"
+          )
+          vm_end = source.index("};", vm_start)
+          vm = source[vm_start:vm_end]
+          version = re.search(r"\.version_id = (\d+),", vm)
+          if not version:
+              raise SystemExit("property VMState version missing")
+          if int(version.group(1)) < 3:
+              vm = vm[:version.start(1)] + "3" + vm[version.end(1):]
+          if "VMSTATE_UINT32_V(exp_gpio_state" not in vm:
+              anchor = "        VMSTATE_BOOL(pending, BCM2835PropertyState),\n"
+              fields = """        VMSTATE_UINT32_V(exp_gpio_direction, BCM2835PropertyState, 3),
+              VMSTATE_UINT32_V(exp_gpio_polarity, BCM2835PropertyState, 3),
+              VMSTATE_UINT32_V(exp_gpio_term_en, BCM2835PropertyState, 3),
+              VMSTATE_UINT32_V(exp_gpio_term_pull_up, BCM2835PropertyState, 3),
+              VMSTATE_UINT32_V(exp_gpio_state, BCM2835PropertyState, 3),
+          """
+              if vm.count(anchor) != 1:
+                  raise SystemExit("property VMState field anchor changed")
+              vm = vm.replace(anchor, fields + anchor, 1)
+          source = source[:vm_start] + vm + source[vm_end:]
+
+          reset_start = source.index("static void bcm2835_property_reset")
+          reset_end = source.index("}\n", reset_start)
+          reset = source[reset_start:reset_end]
+          if "s->exp_gpio_state" not in reset:
+              anchor = "    s->power_domain_state = 0;\n"
+              fields = """    s->exp_gpio_direction = 0;
+              s->exp_gpio_polarity = 0;
+              s->exp_gpio_term_en = 0;
+              s->exp_gpio_term_pull_up = 0;
+              s->exp_gpio_state = BCM2835_PROPERTY_EXP_GPIO_RESET_STATE;
+          """
+              if reset.count(anchor) != 1:
+                  raise SystemExit("property reset anchor changed")
+              reset = reset.replace(anchor, anchor + fields, 1)
+              source = source[:reset_start] + reset + source[reset_end:]
+          path.write_text(source)
+          PY
+          git diff --check
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Test active-low HPD raw state
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/native-kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$LOW_DIR" \
+            --seconds 60 --sample-interval 5 || true
+          test -f "$LOW_DIR/serial.log"
+          grep -Fq VC4_LINUX_MODULE_CLOSURE_OK "$LOW_DIR/serial.log"
+
+      - name: Test active-high HPD raw state
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("hw/misc/bcm2835_property.c")
+          source = path.read_text()
+          old = "#define BCM2835_PROPERTY_EXP_GPIO_RESET_STATE 0\n"
+          new = (
+              "#define BCM2835_PROPERTY_EXP_GPIO_RESET_STATE "
+              "(UINT32_C(1) << BCM2835_PROPERTY_EXP_GPIO_HDMI_HPD)\n"
+          )
+          if source.count(old) != 1:
+              raise SystemExit("HPD reset-state anchor changed")
+          path.write_text(source.replace(old, new, 1))
+          PY
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/native-kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$HIGH_DIR" \
+            --seconds 60 --sample-interval 5 || true
+          test -f "$HIGH_DIR/serial.log"
+          grep -Fq VC4_LINUX_MODULE_CLOSURE_OK "$HIGH_DIR/serial.log"
+
+      - name: Select only an objectively advancing monitor model
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          logs = {
+              "baseline": Path("/tmp/vc4-monitor-base/serial.log").read_text(
+                  errors="replace"
+              ),
+              "hpd_raw_low": Path("/tmp/vc4-monitor-low/serial.log").read_text(
+                  errors="replace"
+              ),
+              "hpd_raw_high": Path("/tmp/vc4-monitor-high/serial.log").read_text(
+                  errors="replace"
+              ),
+          }
+          markers = (
+              "VC4_LINUX_KMS_RESOURCES_OK",
+              "VC4_LINUX_KMS_CRTC_OK",
+              "VC4_LINUX_KMS_CONNECTOR_OBJECT_OK",
+              "VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK",
+              "VC4_LINUX_KMS_CONNECTED_OK",
+              "VC4_LINUX_KMS_MODE_OK",
+              "VC4_LINUX_KMS_TOPOLOGY_OK",
+          )
+          bind_re = re.compile(
+              r"vc4-drm soc:gpu: bound (\S+) \(ops (\S+) \[vc4\]\)"
+          )
+          results = {}
+          for name, serial in logs.items():
+              found = {marker: marker in serial for marker in markers}
+              components = sorted(set(bind_re.findall(serial)))
+              results[name] = {
+                  "marker_score": sum(found.values()),
+                  "markers": found,
+                  "components": components,
+                  "component_score": len(components),
+                  "relevant_tail": [
+                      line for line in serial.splitlines()
+                      if "vc4" in line.lower() or "drm" in line.lower()
+                      or "hdmi" in line.lower() or "ddc" in line.lower()
+                      or "gpio" in line.lower() or "clock" in line.lower()
+                  ][-180:],
+              }
+
+          def score(name: str) -> tuple[int, int]:
+              item = results[name]
+              return item["marker_score"], item["component_score"]
+
+          candidates = ("hpd_raw_low", "hpd_raw_high")
+          selected = max(candidates, key=score)
+          improved = score(selected) > score("baseline")
+          results["selected"] = selected if improved else None
+          results["improved"] = improved
+          Path("VC4_LINUX_KMS_MONITOR_DELTA.json").write_text(
+              json.dumps(results, indent=2, sort_keys=True) + "\n"
+          )
+          Path("VC4_LINUX_KMS_MONITOR_DELTA.md").write_text(
+              "\n".join((
+                  "# VC4 Linux KMS deterministic monitor delta",
+                  "",
+                  f"Monitor model advances the frontier: **{'true' if improved else 'false'}**",
+                  "",
+                  f"- Selected HPD raw state: `{results['selected']}`",
+                  f"- Baseline score: `{score('baseline')}`",
+                  f"- HPD-low score: `{score('hpd_raw_low')}`",
+                  f"- HPD-high score: `{score('hpd_raw_high')}`",
+                  "",
+                  "The retained model, when any, is the better of two otherwise "
+                  "identical Linux boots that differ only in the raw firmware "
+                  "expander state presented for HDMI HPD.",
+              )) + "\n"
+          )
+          if not improved:
+              Path("/tmp/monitor-no-improvement").touch()
+          elif selected == "hpd_raw_low":
+              path = Path("hw/misc/bcm2835_property.c")
+              source = path.read_text()
+              high = (
+                  "#define BCM2835_PROPERTY_EXP_GPIO_RESET_STATE "
+                  "(UINT32_C(1) << BCM2835_PROPERTY_EXP_GPIO_HDMI_HPD)\n"
+              )
+              low = "#define BCM2835_PROPERTY_EXP_GPIO_RESET_STATE 0\n"
+              if source.count(high) != 1:
+                  raise SystemExit("selected-low HPD anchor changed")
+              path.write_text(source.replace(high, low, 1))
+          PY
+
+          if test -e /tmp/monitor-no-improvement; then
+            git restore -- \
+              hw/arm/Kconfig \
+              hw/arm/bcm2835_peripherals.c \
+              hw/misc/bcm2835_property.c \
+              include/hw/misc/bcm2835_property.h
+          fi
+          git diff --check
+
+      - name: Add and run the focused firmware-GPIO witness when retained
+        run: |
+          set -euo pipefail
+          if test -e /tmp/monitor-no-improvement; then
+            exit 0
+          fi
+          cat > scripts/vc4/property-expander-gpio-smoke.py <<'PY'
+          #!/usr/bin/env python3
+          """Exercise firmware expander GPIO configuration, state, and reset."""
+
+          from __future__ import annotations
+
+          import argparse
+          from pathlib import Path
+          import socket
+          import subprocess
+          import tempfile
+          import time
+
+          BASE = 0x3F000000
+          MBOX_READ = BASE + 0xB880
+          MBOX_WRITE = BASE + 0xB8A0
+          BUFFER = 0x10000
+          CHANNEL = 8
+          SUCCESS = 1 << 31
+          GET_CONFIG = 0x00030043
+          SET_CONFIG = 0x00038043
+          GET_STATE = 0x00030041
+          SET_STATE = 0x00038041
+          GPIO_BASE = 128
+          GPIO_COUNT = 8
+
+
+          class QTest:
+              def __init__(self, path: Path) -> None:
+                  self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                  self.sock.connect(str(path))
+                  self.reader = self.sock.makefile("r", encoding="utf-8")
+
+              def close(self) -> None:
+                  self.reader.close()
+                  self.sock.close()
+
+              def command(self, command: str) -> list[str]:
+                  self.sock.sendall((command + "\n").encode())
+                  while True:
+                      line = self.reader.readline()
+                      if not line:
+                          raise RuntimeError(f"qtest closed during {command!r}")
+                      words = line.strip().split()
+                      if not words or words[0] == "IRQ":
+                          continue
+                      if words[0] != "OK":
+                          raise RuntimeError(f"qtest error: {line.strip()}")
+                      return words[1:]
+
+              def writel(self, address: int, value: int) -> None:
+                  self.command(f"writel 0x{address:x} 0x{value & 0xffffffff:x}")
+
+              def readl(self, address: int) -> int:
+                  values = self.command(f"readl 0x{address:x}")
+                  if len(values) != 1:
+                      raise RuntimeError(f"unexpected read response: {values!r}")
+                  return int(values[0], 0)
+
+
+          def connect(path: Path, process: subprocess.Popen[str]) -> QTest:
+              deadline = time.monotonic() + 10
+              while time.monotonic() < deadline:
+                  if process.poll() is not None:
+                      raise RuntimeError(f"QEMU exited with {process.returncode}")
+                  try:
+                      return QTest(path)
+                  except (FileNotFoundError, ConnectionRefusedError):
+                      time.sleep(0.02)
+              raise RuntimeError("qtest connection timed out")
+
+
+          def request(client: QTest, tag: int, words: tuple[int, ...]) -> list[int]:
+              size = len(words) * 4
+              packet = (24 + size, 0, tag, size, 0, *words, 0)
+              for index, word in enumerate(packet):
+                  client.writel(BUFFER + index * 4, word)
+              client.writel(MBOX_WRITE, BUFFER | CHANNEL)
+              if client.readl(MBOX_READ) != BUFFER | CHANNEL:
+                  raise RuntimeError("wrong mailbox response")
+              if client.readl(BUFFER + 4) != SUCCESS:
+                  raise RuntimeError("property request failed")
+              response_size = client.readl(BUFFER + 16) & ~SUCCESS
+              return [
+                  client.readl(BUFFER + 20 + index * 4)
+                  for index in range(response_size // 4)
+              ]
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser(description=__doc__)
+              parser.add_argument("--qemu", type=Path, required=True)
+              args = parser.parse_args()
+              with tempfile.TemporaryDirectory(prefix="vc4-expgpio-") as temp:
+                  path = Path(temp) / "qtest.sock"
+                  process = subprocess.Popen(
+                      (
+                          str(args.qemu.resolve()), "-M", "raspi3b",
+                          "-accel", "qtest", "-S", "-display", "none",
+                          "-serial", "none", "-monitor", "none",
+                          "-qtest", f"unix:{path},server=on,wait=off",
+                      ),
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.PIPE,
+                      text=True,
+                  )
+                  client: QTest | None = None
+                  try:
+                      client = connect(path, process)
+                      for offset in range(GPIO_COUNT):
+                          config = request(
+                              client, GET_CONFIG,
+                              (GPIO_BASE + offset, 0, 0, 0, 0),
+                          )
+                          if len(config) != 5 or config[0] != 0:
+                              raise RuntimeError(f"bad config response: {config!r}")
+                          state = request(
+                              client, GET_STATE, (GPIO_BASE + offset, 0)
+                          )
+                          if len(state) != 2 or state[0] != 0:
+                              raise RuntimeError(f"bad state response: {state!r}")
+                      result = request(
+                          client, SET_CONFIG,
+                          (GPIO_BASE + 4, 1, 1, 1, 0, 1),
+                      )
+                      if not result or result[0] != 0:
+                          raise RuntimeError(f"config write failed: {result!r}")
+                      state = request(client, GET_STATE, (GPIO_BASE + 4, 0))
+                      if state != [0, 1]:
+                          raise RuntimeError(f"state did not persist: {state!r}")
+                      state = request(client, SET_STATE, (GPIO_BASE + 4, 0))
+                      if state != [0, 0]:
+                          raise RuntimeError(f"state write failed: {state!r}")
+                  finally:
+                      if client is not None:
+                          client.close()
+                      if process.poll() is None:
+                          process.terminate()
+                      try:
+                          process.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          process.kill()
+                          process.wait(timeout=5)
+              print("Raspberry Pi firmware expander GPIO smoke test passed")
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          PY
+          chmod +x scripts/vc4/property-expander-gpio-smoke.py
+          python3 -m py_compile scripts/vc4/property-expander-gpio-smoke.py
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/property-expander-gpio-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the measured monitor contract
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            VC4_LINUX_KMS_MONITOR_DELTA.json \
+            VC4_LINUX_KMS_MONITOR_DELTA.md \
+            hw/arm/Kconfig \
+            hw/arm/bcm2835_peripherals.c \
+            hw/misc/bcm2835_property.c \
+            include/hw/misc/bcm2835_property.h \
+            scripts/vc4/property-expander-gpio-smoke.py
+          git rm -- .github/workflows/vc4-kms-monitor-contract.yml
+          git commit -m "test/vc4: measure deterministic HDMI monitor contract"
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
