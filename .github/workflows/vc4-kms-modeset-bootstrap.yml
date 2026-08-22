@@ -1,0 +1,266 @@
+name: VC4 Linux native KMS modeset bootstrap
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-modeset-frontier
+    paths:
+      - .github/workflows/vc4-kms-modeset-bootstrap.yml
+      - tests/vc4/linux-kms-modeset-probe.inc.c
+      - scripts/vc4/summarize-linux-kms-modeset.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-native-kms-modeset-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      BRANCH: agent/vc4-linux-kms-modeset-frontier
+      BRANCH_WORKFLOW: .github/workflows/vc4-linux-kms-modeset-frontier.yml
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wire the supervised modeset witness into PID 1
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path("tests/vc4/linux-v3d-modular-init.c")
+          source = source_path.read_text()
+          include = '#include "linux-kms-modeset-probe.inc.c"\n'
+          if include not in source:
+              lines = source.splitlines(keepends=True)
+              includes = [
+                  index for index, line in enumerate(lines)
+                  if line.startswith("#include ")
+              ]
+              if not includes:
+                  raise SystemExit("linux init source has no include block")
+              lines.insert(includes[-1] + 1, include)
+              source = "".join(lines)
+
+          call = "vc4_kms_modeset_supervise();"
+          if call not in source:
+              marker = "VC4_LINUX_KMS_TOPOLOGY_OK"
+              occurrences = []
+              start = 0
+              while True:
+                  index = source.find(marker, start)
+                  if index < 0:
+                      break
+                  occurrences.append(index)
+                  start = index + len(marker)
+              if not occurrences:
+                  raise SystemExit("KMS topology success marker is absent")
+
+              # The emitted runtime marker is the final occurrence in this
+              # source; earlier occurrences, if any, are declarations or
+              # diagnostic tables.
+              marker_index = occurrences[-1]
+              semicolon = source.find(";", marker_index)
+              if semicolon < 0:
+                  raise SystemExit("KMS topology marker statement has no terminator")
+              line_start = source.rfind("\n", 0, marker_index) + 1
+              statement_line = source[line_start:marker_index]
+              indent = statement_line[: len(statement_line) - len(statement_line.lstrip())]
+              source = (
+                  source[:semicolon + 1]
+                  + "\n"
+                  + indent
+                  + call
+                  + source[semicolon + 1:]
+              )
+
+          if source.count(include) != 1:
+              raise SystemExit("modeset include is not unique")
+          if source.count(call) != 1:
+              raise SystemExit("modeset supervisor call is not unique")
+          source_path.write_text(source)
+          PY
+
+          grep -Fq '#include "linux-kms-modeset-probe.inc.c"' \
+            tests/vc4/linux-v3d-modular-init.c
+          grep -Fq 'vc4_kms_modeset_supervise();' \
+            tests/vc4/linux-v3d-modular-init.c
+          git diff --check
+
+      - name: Derive a branch-local full Linux modeset gate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          branch = "agent/vc4-linux-kms-modeset-frontier"
+          shared_path = Path(".github/workflows/vc4-linux-kms-frontier.yml")
+          branch_path = Path(".github/workflows/vc4-linux-kms-modeset-frontier.yml")
+          workflow = shared_path.read_text()
+
+          workflow, count = re.subn(
+              r"^name:.*$",
+              "name: VC4 Linux native KMS modeset frontier",
+              workflow,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit("unable to rename the shared KMS workflow")
+
+          workflow, count = re.subn(
+              r"(  push:\n    branches:\n)(?:      - [^\n]+\n)+(    paths:\n)",
+              rf"\1      - {branch}\n\2",
+              workflow,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("unable to replace the KMS push branch")
+
+          workflow = workflow.replace(
+              ".github/workflows/vc4-linux-kms-frontier.yml",
+              ".github/workflows/vc4-linux-kms-modeset-frontier.yml",
+          )
+          workflow = workflow.replace(
+              "vc4-linux-native-kms-frontier",
+              "vc4-linux-native-kms-modeset-frontier",
+          )
+          workflow = workflow.replace(
+              "EVIDENCE_DIR: vc4-linux-kms-evidence",
+              "EVIDENCE_DIR: vc4-linux-kms-modeset-evidence",
+          )
+          workflow = workflow.replace(
+              "STATUS_JSON: VC4_LINUX_KMS_STATUS.json",
+              "STATUS_JSON: VC4_LINUX_KMS_MODESET_STATUS.json",
+          )
+          workflow = workflow.replace(
+              "STATUS_MD: VC4_LINUX_KMS_STATUS.md",
+              "STATUS_MD: VC4_LINUX_KMS_MODESET_STATUS.md",
+          )
+          workflow = workflow.replace(
+              "scripts/vc4/summarize-linux-kms.py",
+              "scripts/vc4/summarize-linux-kms-modeset.py",
+          )
+          workflow = workflow.replace(
+              "Record exact KMS frontier",
+              "Record exact native-KMS modeset frontier",
+          )
+          workflow = workflow.replace(
+              "Publish the native-KMS frontier",
+              "Publish the native-KMS modeset frontier",
+          )
+          workflow = workflow.replace(
+              "test/vc4: record native Linux KMS frontier [skip ci]",
+              "test/vc4: record native Linux KMS modeset frontier [skip ci]",
+          )
+          workflow = workflow.replace(
+              "vc4-linux-native-kms-${{ github.run_attempt }}",
+              "vc4-linux-native-kms-modeset-${{ github.run_attempt }}",
+          )
+          workflow = workflow.replace(
+              "git pull --rebase origin agent/vc4-linux-kms-frontier",
+              f"git pull --rebase origin {branch}",
+          )
+          workflow = workflow.replace(
+              "git push origin HEAD:agent/vc4-linux-kms-frontier",
+              f"git push origin HEAD:{branch}",
+          )
+
+          def insert_after(anchor: str, addition: str, label: str) -> None:
+              nonlocal_workflow[0]
+              text = nonlocal_workflow[0]
+              if addition in text:
+                  return
+              if text.count(anchor) != 1:
+                  raise SystemExit(f"{label} anchor changed")
+              nonlocal_workflow[0] = text.replace(anchor, anchor + addition, 1)
+
+          nonlocal_workflow = [workflow]
+          insert_after(
+              "      - scripts/vc4/summarize-linux-kms-modeset.py\n",
+              "      - tests/vc4/linux-kms-modeset-probe.inc.c\n"
+              "      - scripts/vc4/summarize-linux-kms-modeset.py\n"
+              if False else "      - tests/vc4/linux-kms-modeset-probe.inc.c\n",
+              "modeset source path",
+          )
+          workflow = nonlocal_workflow[0]
+
+          init_path = "      - tests/vc4/linux-v3d-modular-init.c\n"
+          probe_path = "      - tests/vc4/linux-kms-modeset-probe.inc.c\n"
+          if probe_path not in workflow:
+              if workflow.count(init_path) != 1:
+                  raise SystemExit("Linux init workflow path anchor changed")
+              workflow = workflow.replace(init_path, init_path + probe_path, 1)
+
+          compile_path = "            scripts/vc4/summarize-linux-kms-modeset.py \\\n"
+          if compile_path not in workflow:
+              anchor = "          python3 -m py_compile \\\n"
+              if workflow.count(anchor) != 1:
+                  raise SystemExit("Python validation command anchor changed")
+              workflow = workflow.replace(anchor, anchor + compile_path, 1)
+
+          marker_anchor = "            VC4_LINUX_KMS_TOPOLOGY_OK; do\n"
+          marker_replacement = (
+              "            VC4_LINUX_KMS_TOPOLOGY_OK \\\n"
+              "            VC4_LINUX_KMS_MODESET_SUPERVISOR_START \\\n"
+              "            VC4_LINUX_KMS_MODESET_START \\\n"
+              "            VC4_LINUX_KMS_MODESET_CONNECTOR_OK \\\n"
+              "            VC4_LINUX_KMS_MODESET_DUMB_OK \\\n"
+              "            VC4_LINUX_KMS_MODESET_MAP_OK \\\n"
+              "            VC4_LINUX_KMS_MODESET_FB_OK \\\n"
+              "            VC4_LINUX_KMS_MODESET_SETCRTC_OK \\\n"
+              "            VC4_LINUX_KMS_MODESET_OK \\\n"
+              "            VC4_LINUX_KMS_MODESET_TIMEOUT; do\n"
+          )
+          if "VC4_LINUX_KMS_MODESET_DUMB_OK" not in workflow:
+              if workflow.count(marker_anchor) != 1:
+                  raise SystemExit("initramfs marker-list anchor changed")
+              workflow = workflow.replace(marker_anchor, marker_replacement, 1)
+
+          # The branch-local gate may delete only itself after a complete
+          # modeset witness; the shared integration workflow is never touched.
+          shared_delete = "git rm -- .github/workflows/vc4-linux-kms-frontier.yml"
+          branch_delete = "git rm -- .github/workflows/vc4-linux-kms-modeset-frontier.yml"
+          workflow = workflow.replace(shared_delete, branch_delete)
+
+          required = (
+              branch,
+              "VC4_LINUX_KMS_MODESET_STATUS.json",
+              "summarize-linux-kms-modeset.py",
+              "linux-kms-modeset-probe.inc.c",
+              "VC4_LINUX_KMS_MODESET_SETCRTC_OK",
+          )
+          missing = [item for item in required if item not in workflow]
+          if missing:
+              raise SystemExit(f"branch-local modeset gate is incomplete: {missing}")
+          branch_path.write_text(workflow)
+          PY
+
+          python3 -m py_compile scripts/vc4/summarize-linux-kms-modeset.py
+          git diff --check
+          grep -Fq 'agent/vc4-linux-kms-modeset-frontier' "$BRANCH_WORKFLOW"
+          grep -Fq 'VC4_LINUX_KMS_MODESET_STATUS.json' "$BRANCH_WORKFLOW"
+          grep -Fq 'VC4_LINUX_KMS_MODESET_SETCRTC_OK' "$BRANCH_WORKFLOW"
+
+      - name: Publish the modeset witness and gate
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            tests/vc4/linux-v3d-modular-init.c \
+            tests/vc4/linux-kms-modeset-probe.inc.c \
+            scripts/vc4/summarize-linux-kms-modeset.py \
+            "$BRANCH_WORKFLOW"
+          git rm -- .github/workflows/vc4-kms-modeset-bootstrap.yml
+          git commit -m "test/vc4: add supervised native Linux KMS modeset frontier"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
