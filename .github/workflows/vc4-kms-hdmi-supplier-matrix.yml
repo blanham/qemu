@@ -1,0 +1,271 @@
+name: VC4 Linux HDMI supplier matrix
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-hdmi-supplier-matrix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-hdmi-supplier-matrix
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-hdmi-matrix-official
+      MODULE_DIR: /tmp/vc4-hdmi-matrix-modules
+      INITRAMFS_DIR: /tmp/vc4-hdmi-matrix-initramfs
+      DTB_DIR: /tmp/vc4-hdmi-matrix-dtbs
+      RESULT_DIR: vc4-hdmi-supplier-matrix-evidence
+      STATUS_JSON: VC4_LINUX_KMS_HDMI_SUPPLIER_MATRIX.json
+      STATUS_MD: VC4_LINUX_KMS_HDMI_SUPPLIER_MATRIX.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" \
+            "$DTB_DIR" "$RESULT_DIR"
+          mkdir -p "$OFFICIAL_DIR" "$DTB_DIR" "$RESULT_DIR"
+
+      - name: Validate matrix sources
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/fetch-linux-vc4-modules.py \
+            scripts/vc4/raspi3-linux-probe.py
+          bash -n \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            scripts/vc4/build-vc4-kms-linux-dtb.sh
+          for source in \
+            tests/vc4/vc4-kms-frontier-overlay.dts \
+            tests/vc4/vc4-kms-hdmi-no-hpd-overlay.dts \
+            tests/vc4/vc4-kms-hdmi-no-audio-dma-overlay.dts \
+            tests/vc4/vc4-kms-hdmi-minimal-suppliers-overlay.dts; do
+            dtc -q -@ -I dts -O dtb -o /tmp/overlay.dtbo "$source"
+          done
+          git diff --check
+
+      - name: Fetch pinned Linux fixture
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target vc4 \
+            2>&1 | tee "$RESULT_DIR/modules.log"
+          grep -Fq snd-soc-hdmi-codec "$MODULE_DIR/MANIFEST"
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" \
+            2>&1 | tee "$RESULT_DIR/fixture.log"
+
+      - name: Build supplier-matrix device trees
+        run: |
+          set -euo pipefail
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/native-kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/native-kms.dtbo" \
+            "$DTB_DIR/baseline.dtb"
+
+          for variant in no-hpd no-audio-dma minimal-suppliers; do
+            source="tests/vc4/vc4-kms-hdmi-${variant}-overlay.dts"
+            if [ "$variant" = minimal-suppliers ]; then
+              source=tests/vc4/vc4-kms-hdmi-minimal-suppliers-overlay.dts
+            fi
+            dtc -q -@ -I dts -O dtb \
+              -o "$DTB_DIR/$variant.dtbo" "$source"
+            fdtoverlay \
+              -i "$DTB_DIR/baseline.dtb" \
+              -o "$DTB_DIR/$variant.dtb" \
+              "$DTB_DIR/$variant.dtbo"
+            dtc -q -I dtb -O dts \
+              -o "$DTB_DIR/$variant.dtb.dts" \
+              "$DTB_DIR/$variant.dtb"
+          done
+          cp "$DTB_DIR/baseline.dtb.dts" "$RESULT_DIR/"
+          cp "$DTB_DIR"/*.dtb.dts "$RESULT_DIR/"
+
+      - name: Build QEMU
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/build.log"
+
+      - name: Run HDMI supplier matrix
+        run: |
+          set -euo pipefail
+          for variant in baseline no-hpd no-audio-dma minimal-suppliers; do
+            out="$RESULT_DIR/$variant"
+            mkdir -p "$out"
+            set +e
+            python3 scripts/vc4/raspi3-linux-probe.py \
+              --mode linux-direct \
+              --qemu build/qemu-system-aarch64 \
+              --kernel "$OFFICIAL_DIR/kernel8.img" \
+              --dtb "$DTB_DIR/$variant.dtb" \
+              --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+              --out-dir "$out" \
+              --seconds 42 --sample-interval 6 \
+              > "$out/probe.stdout" 2>&1
+            printf '%s\n' "$?" > "$out/return-code"
+            set -e
+            grep -E \
+              'vc4-drm soc:gpu: bound|VC4_LINUX_KMS_|deferred probe|Failed to get|failed to bind' \
+              "$out/serial.log" > "$out/frontier.log" || true
+            cat "$out/frontier.log"
+          done
+
+      - name: Classify first deferring HDMI supplier
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import datetime as dt
+          import json
+          from pathlib import Path
+
+          root = Path("vc4-hdmi-supplier-matrix-evidence")
+          variants = (
+              "baseline",
+              "no-hpd",
+              "no-audio-dma",
+              "minimal-suppliers",
+          )
+          results = {}
+          for name in variants:
+              serial = (root / name / "serial.log").read_text(errors="replace")
+              lines = serial.splitlines()
+              results[name] = {
+                  "hvs_bind_count": serial.count("bound 3f400000.hvs"),
+                  "hdmi_bind_count": serial.count("bound 3f902000.hdmi"),
+                  "crtc_seen": "VC4_LINUX_KMS_CRTC_OK" in serial,
+                  "resources_seen": "VC4_LINUX_KMS_RESOURCES_OK" in serial,
+                  "card_seen": "VC4_LINUX_DRM_CARD0_OK" in serial,
+                  "deferred_gpu": "platform soc:gpu: deferred probe pending" in serial,
+                  "frontier": [
+                      line for line in lines
+                      if (
+                          "vc4-drm soc:gpu:" in line
+                          or "VC4_LINUX_KMS_" in line
+                          or "deferred probe" in line
+                          or "Failed to get" in line
+                          or "failed to bind" in line
+                      )
+                  ][-80:],
+              }
+
+          advanced = {
+              name: result["hdmi_bind_count"] > 0 or result["resources_seen"]
+              for name, result in results.items()
+          }
+          if advanced["baseline"]:
+              classification = "baseline-advanced"
+          elif advanced["no-hpd"] and not advanced["no-audio-dma"]:
+              classification = "hpd-gpio-supplier-defer"
+          elif advanced["no-audio-dma"] and not advanced["no-hpd"]:
+              classification = "audio-dma-supplier-defer"
+          elif advanced["no-hpd"] and advanced["no-audio-dma"]:
+              classification = "independent-hpd-and-audio-suppliers"
+          elif advanced["minimal-suppliers"]:
+              classification = "compound-hpd-audio-supplier-defer"
+          else:
+              classification = "ddc-clock-cec-or-hdmi-internal-defer"
+
+          record = {
+              "schema_version": 1,
+              "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+              "source_sha": "${{ github.sha }}",
+              "run_id": "${{ github.run_id }}",
+              "classification": classification,
+              "results": results,
+          }
+          Path("VC4_LINUX_KMS_HDMI_SUPPLIER_MATRIX.json").write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+
+          lines = [
+              "# VC4 Linux HDMI supplier matrix",
+              "",
+              f"Classification: **`{classification}`**",
+              "",
+              "| Variant | HVS binds | HDMI binds | DRM resources | CRTC | Card | GPU deferred |",
+              "|---|---:|---:|---:|---:|---:|---:|",
+          ]
+          for name in variants:
+              result = results[name]
+              lines.append(
+                  f"| `{name}` | {result['hvs_bind_count']} | "
+                  f"{result['hdmi_bind_count']} | {result['resources_seen']} | "
+                  f"{result['crtc_seen']} | {result['card_seen']} | "
+                  f"{result['deferred_gpu']} |"
+              )
+          Path("VC4_LINUX_KMS_HDMI_SUPPLIER_MATRIX.md").write_text(
+              "\n".join(lines) + "\n"
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-hdmi-supplier-matrix-${{ github.run_attempt }}
+          path: vc4-hdmi-supplier-matrix-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish supplier-matrix frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "test/vc4: record HDMI supplier matrix [skip ci]"
+            git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+            git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
+          fi
