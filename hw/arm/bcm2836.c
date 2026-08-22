@@ -15,6 +15,7 @@
 #include "hw/arm/bcm2836.h"
 #include "hw/arm/raspi_platform.h"
 #include "hw/core/sysbus.h"
+#include "hw/display/bcm2835_pixelvalve.h"
 #include "target/arm/cpu-qom.h"
 #include "target/arm/gtimer.h"
 
@@ -53,6 +54,28 @@ static void bcm283x_init(Object *obj)
                               "vcram-base");
 }
 
+static bool bcm283x_create_pixelvalve(BCMSocPeripheralBaseState *ps,
+                                      const char *name, hwaddr offset,
+                                      unsigned int irq, Error **errp)
+{
+    DeviceState *dev = qdev_new(TYPE_BCM2835_PIXELVALVE);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+
+    object_property_add_child(OBJECT(ps), name, OBJECT(dev));
+    if (!sysbus_realize(sbd, errp)) {
+        object_unparent(OBJECT(dev));
+        object_unref(OBJECT(dev));
+        return false;
+    }
+
+    memory_region_add_subregion(&ps->peri_mr, offset,
+                                sysbus_mmio_get_region(sbd, 0));
+    sysbus_connect_irq(sbd, 0,
+        qdev_get_gpio_in_named(DEVICE(&ps->ic), BCM2835_IC_GPU_IRQ, irq));
+    object_unref(OBJECT(dev));
+    return true;
+}
+
 bool bcm283x_common_realize(DeviceState *dev, BCMSocPeripheralBaseState *ps,
                             Error **errp)
 {
@@ -72,6 +95,20 @@ bool bcm283x_common_realize(DeviceState *dev, BCMSocPeripheralBaseState *ps,
     object_property_add_const_link(OBJECT(ps), "ram", obj);
 
     if (!sysbus_realize(SYS_BUS_DEVICE(ps), errp)) {
+        return false;
+    }
+
+    /*
+     * The device tree encodes these as GPU interrupt-bank 2 lines
+     * 13, 14, and 10.  bcm2835-ic exposes a flat 0..63 GPU namespace,
+     * so those lines must be translated to 45, 46, and 42.
+     */
+    if (!bcm283x_create_pixelvalve(ps, "pixelvalve0", PIXV0_OFFSET,
+                                   INTERRUPT_PWA0, errp) ||
+        !bcm283x_create_pixelvalve(ps, "pixelvalve1", PIXV1_OFFSET,
+                                   INTERRUPT_PWA1, errp) ||
+        !bcm283x_create_pixelvalve(ps, "pixelvalve2", PIXV2_OFFSET,
+                                   INTERRUPT_PIXELVALVE1, errp)) {
         return false;
     }
 
