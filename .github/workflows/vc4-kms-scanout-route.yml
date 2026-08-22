@@ -1,0 +1,120 @@
+name: VC4 Linux native KMS scanout route
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-scanout-frontier
+    paths:
+      - .github/workflows/vc4-kms-scanout-route.yml
+      - VC4_LINUX_KMS_SCANOUT_STATUS.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-native-kms-scanout-route
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      BRANCH: agent/vc4-linux-kms-scanout-frontier
+      STATUS: VC4_LINUX_KMS_SCANOUT_STATUS.json
+      ROUTE_JSON: VC4_LINUX_KMS_SCANOUT_ROUTE.json
+      ROUTE_MD: VC4_LINUX_KMS_SCANOUT_ROUTE.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Obtain authoritative scanout status
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            git fetch --quiet origin "$BRANCH"
+            if git show "origin/$BRANCH:$STATUS" > /tmp/status.json 2>/dev/null; then
+              python3 - <<'PY'
+          import json
+          status = json.load(open('/tmp/status.json'))
+          raise SystemExit(0 if status.get('source_sha') else 1)
+          PY
+              if [ $? -eq 0 ]; then
+                break
+              fi
+            fi
+            sleep 5
+          done
+          test -s /tmp/status.json
+          cp /tmp/status.json "$STATUS"
+
+      - name: Route the first missing host-visible contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.load(open('/tmp/status.json'))
+          classification = str(status.get('classification') or 'unknown')
+          routes = {
+              'linux-vc4-kms-scanout-clear': 'CLEAR',
+              'kms-modeset-regression': 'MODESET_REGRESSION',
+              'kms-mode-marker-unavailable': 'MODE_MARKER_UNAVAILABLE',
+              'qmp-screendump-unavailable': 'NO_SCREENSHOT',
+              'kms-scanout-blank': 'BLANK',
+              'kms-scanout-dimensions-mismatch': 'DIMENSIONS_MISMATCH',
+              'kms-scanout-pattern-mismatch': 'PATTERN_MISMATCH',
+          }
+          route = routes.get(classification, 'OTHER')
+          for old in Path('.').glob('VC4_SCANOUT_ROUTE_*'):
+              old.unlink()
+          record = {
+              'schema_version': 1,
+              'source_sha': status.get('source_sha'),
+              'run_id': status.get('run_id'),
+              'classification': classification,
+              'route': route,
+              'modeset_ok': status.get('modeset_ok'),
+              'mode': status.get('mode'),
+              'frame_count': status.get('frame_count'),
+              'valid_frame_count': status.get('valid_frame_count'),
+              'matching_frame_count': status.get('matching_frame_count'),
+              'best_frame': status.get('best_frame'),
+              'capture_errors': (status.get('capture_record') or {}).get('errors'),
+          }
+          Path(f'VC4_SCANOUT_ROUTE_{route}').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_LINUX_KMS_SCANOUT_ROUTE.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_LINUX_KMS_SCANOUT_ROUTE.md').write_text(
+              '# VC4 Linux native KMS host scanout route\n\n'
+              f"- Source SHA: `{record['source_sha']}`\n"
+              f"- Frontier: **`{classification}`**\n"
+              f"- Route: **`{route}`**\n"
+              f"- Guest mode: `{record['mode']}`\n"
+              f"- Frames: `{record['frame_count']}` valid, "
+              f"`{record['valid_frame_count']}` parsed\n"
+              f"- Best frame: `{record['best_frame']}`\n"
+              f"- QMP errors: `{record['capture_errors']}`\n"
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish scanout route
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git pull --rebase origin "$BRANCH"
+          cp /tmp/status.json "$STATUS"
+          git add -A -- \
+            "$STATUS" "$ROUTE_JSON" "$ROUTE_MD" VC4_SCANOUT_ROUTE_*
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-kms-scanout-route.yml
+          git commit -m "test/vc4: route the host-visible KMS scanout frontier"
+          git push origin "HEAD:$BRANCH"
