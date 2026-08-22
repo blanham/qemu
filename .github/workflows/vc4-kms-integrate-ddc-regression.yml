@@ -1,0 +1,94 @@
+name: VC4 integrate HDMI DDC regression
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-integrate-ddc-regression.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-integrate-hdmi-ddc-regression
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Add the DDC witness to the persistent KMS gate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/vc4-linux-kms-bind-diagnostics.yml")
+          text = path.read_text()
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"{label}: expected one workflow anchor, found {count}"
+                  )
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "      - hw/arm/bcm2835_peripherals.c\n",
+              "      - hw/arm/Kconfig\n"
+              "      - hw/arm/bcm2835_peripherals.c\n",
+              "Kconfig path filter",
+          )
+          replace_once(
+              "      - scripts/vc4/property-clock-enumeration-smoke.py\n",
+              "      - scripts/vc4/bcm2835-hdmi-ddc-smoke.py\n"
+              "      - scripts/vc4/property-clock-enumeration-smoke.py\n",
+              "DDC path filter",
+          )
+          replace_once(
+              "            scripts/vc4/fetch-linux-vc4-modules.py \\\n",
+              "            scripts/vc4/bcm2835-hdmi-ddc-smoke.py \\\n"
+              "            scripts/vc4/fetch-linux-vc4-modules.py \\\n",
+              "DDC source validation",
+          )
+          replace_once(
+              "          python3 scripts/vc4/property-clock-enumeration-smoke.py \\\n"
+              "            --qemu build/qemu-system-aarch64 \\\n"
+              "            2>&1 | tee \"$EVIDENCE_DIR/property-clocks.log\"\n",
+              "          python3 scripts/vc4/property-clock-enumeration-smoke.py \\\n"
+              "            --qemu build/qemu-system-aarch64 \\\n"
+              "            2>&1 | tee \"$EVIDENCE_DIR/property-clocks.log\"\n"
+              "          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \\\n"
+              "            --qemu build/qemu-system-aarch64 \\\n"
+              "            2>&1 | tee \"$EVIDENCE_DIR/hdmi-ddc.log\"\n",
+              "DDC regression execution",
+          )
+          path.write_text(text)
+          PY
+
+          python3 -m py_compile scripts/vc4/bcm2835-hdmi-ddc-smoke.py
+          git diff --check
+          grep -Fq bcm2835-hdmi-ddc-smoke.py \
+            .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+          grep -Fq hdmi-ddc.log \
+            .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+
+      - name: Publish the persistent gate update
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+          git rm -- .github/workflows/vc4-kms-integrate-ddc-regression.yml
+          git commit -m "ci/vc4: preserve Raspberry Pi HDMI DDC behavior"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
