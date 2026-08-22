@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Fetch a dependency-closed VC4 module bundle from pinned Pi firmware.
+"""Fetch a dependency-closed Raspberry Pi module fixture.
 
 The Raspberry Pi firmware repository stores the module tree matching each
-published kernel image. Resolve vc4.ko through modules.dep and modules.softdep,
-download only the transitive hard and soft dependencies, decompress them
-without altering module signatures, and emit a deterministic dependency-first
-manifest for the guest initramfs loader.
+published kernel image. Resolve one or more module roots through modules.dep
+and modules.softdep, download only their transitive hard and soft dependencies,
+decompress them without altering module signatures, and emit one deterministic
+dependency-first manifest for the guest initramfs loader.
 """
 
 from __future__ import annotations
@@ -144,11 +144,14 @@ def find_target(dependencies: dict[str, list[str]], target: str) -> str:
         ) from error
 
 
-def dependency_order(
+def dependency_order_many(
     dependencies: dict[str, list[str]],
-    target: str,
+    targets: list[str],
     soft_dependencies: dict[str, ModuleSoftDependencies] | None = None,
 ) -> list[str]:
+    if not targets:
+        raise ValueError("at least one module target is required")
+
     soft_dependencies = soft_dependencies or {}
     path_by_name = module_path_index(dependencies)
     visiting: set[str] = set()
@@ -177,7 +180,7 @@ def dependency_order(
         visiting.add(path)
         module = normalize_module_name(path)
 
-        # Preserve the existing hard-dependency order, then insert soft
+        # Preserve the kernel's hard-dependency order, then insert soft
         # predependencies immediately before the module that requested them.
         for dependency in dependencies[path]:
             visit(dependency)
@@ -196,8 +199,20 @@ def dependency_order(
         ).post:
             visit(resolve_soft_dependency(module, dependency))
 
-    visit(target)
+    for target in targets:
+        visit(target)
     return ordered
+
+
+def dependency_order(
+    dependencies: dict[str, list[str]],
+    target: str,
+    soft_dependencies: dict[str, ModuleSoftDependencies] | None = None,
+) -> list[str]:
+    """Compatibility wrapper for callers with one module root."""
+    return dependency_order_many(
+        dependencies, [target], soft_dependencies
+    )
 
 
 def decompress_zstd(data: bytes) -> bytes:
@@ -239,9 +254,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--out-dir", required=True, type=Path)
-    parser.add_argument("--target", default="vc4")
+    parser.add_argument(
+        "--target",
+        action="append",
+        dest="targets",
+        help=(
+            "module root to include; repeat for DT supplier drivers and the "
+            "VC4 consumer (default: vc4)"
+        ),
+    )
     args = parser.parse_args()
 
+    target_names = args.targets or ["vc4"]
     modules_dep_url = join_url(args.base_url, "modules.dep")
     modules_softdep_url = join_url(args.base_url, "modules.softdep")
     modules_dep_data = fetch(modules_dep_url)
@@ -252,9 +276,11 @@ def main() -> int:
     soft_dependencies = parse_modules_softdep(
         modules_softdep_data.decode("utf-8", errors="strict")
     )
-    target_path = find_target(dependencies, args.target)
-    ordered = dependency_order(
-        dependencies, target_path, soft_dependencies
+    target_paths = [
+        find_target(dependencies, target) for target in target_names
+    ]
+    ordered = dependency_order_many(
+        dependencies, target_paths, soft_dependencies
     )
 
     out_dir = args.out_dir.resolve()
@@ -263,6 +289,9 @@ def main() -> int:
     out_dir.mkdir(parents=True)
     (out_dir / "modules.dep.source").write_bytes(modules_dep_data)
     (out_dir / "modules.softdep.source").write_bytes(modules_softdep_data)
+    (out_dir / "ROOTS").write_text(
+        "\n".join(target_paths) + "\n", encoding="utf-8"
+    )
 
     manifest: list[str] = []
     provenance: list[str] = []
@@ -288,7 +317,10 @@ def main() -> int:
         + "\n",
         encoding="utf-8",
     )
-    print(f"Fetched {len(ordered)} modules for {target_path}")
+    print(
+        f"Fetched {len(ordered)} modules for roots: "
+        + ", ".join(target_paths)
+    )
     for line in provenance:
         print(line)
     return 0
