@@ -1,0 +1,74 @@
+{
+  "classification": "ddc-clock-cec-or-hdmi-internal-defer",
+  "generated_at": "2026-08-22T09:49:26.090737+00:00",
+  "results": {
+    "baseline": {
+      "card_seen": false,
+      "crtc_seen": false,
+      "deferred_gpu": true,
+      "frontier": [
+        "[    5.817943] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[    8.796914] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[   16.130547] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[   16.132174] platform leds: deferred probe pending: leds-gpio: Failed to get GPIO '/leds/led-act'",
+        "[   16.132748] platform soc:gpu: deferred probe pending: (reason unknown)",
+        "[   29.025916] VC4_LINUX_KMS_FAILED stage=no-vc4-card"
+      ],
+      "hdmi_bind_count": 0,
+      "hvs_bind_count": 3,
+      "resources_seen": false
+    },
+    "minimal-suppliers": {
+      "card_seen": false,
+      "crtc_seen": false,
+      "deferred_gpu": true,
+      "frontier": [
+        "[    5.695696] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[    8.764169] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[   15.928305] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[   15.929845] platform leds: deferred probe pending: leds-gpio: Failed to get GPIO '/leds/led-act'",
+        "[   15.930133] platform soc:gpu: deferred probe pending: (reason unknown)",
+        "[   27.948071] VC4_LINUX_KMS_FAILED stage=no-vc4-card"
+      ],
+      "hdmi_bind_count": 0,
+      "hvs_bind_count": 3,
+      "resources_seen": false
+    },
+    "no-audio-dma": {
+      "card_seen": false,
+      "crtc_seen": false,
+      "deferred_gpu": true,
+      "frontier": [
+        "[    5.146598] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[    7.147503] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[   15.183456] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[   15.185006] platform leds: deferred probe pending: leds-gpio: Failed to get GPIO '/leds/led-act'",
+        "[   15.185594] platform soc:gpu: deferred probe pending: (reason unknown)",
+        "[   27.730802] VC4_LINUX_KMS_FAILED stage=no-vc4-card"
+      ],
+      "hdmi_bind_count": 0,
+      "hvs_bind_count": 3,
+      "resources_seen": false
+    },
+    "no-hpd": {
+      "card_seen": false,
+      "crtc_seen": false,
+      "deferred_gpu": true,
+      "frontier": [
+        "[    4.765610] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[    7.910880] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[    7.917658] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[   15.013134] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+        "[   15.014818] platform leds: deferred probe pending: leds-gpio: Failed to get GPIO '/leds/led-act'",
+        "[   15.015080] platform soc:gpu: deferred probe pending: (reason unknown)",
+        "[   27.072064] VC4_LINUX_KMS_FAILED stage=no-vc4-card"
+      ],
+      "hdmi_bind_count": 0,
+      "hvs_bind_count": 4,
+      "resources_seen": false
+    }
+  },
+  "run_id": "32565582644",
+  "schema_version": 1,
+  "source_sha": "211a7af1747430a0de2d9ba34c027d496cd6fd58"
+}
