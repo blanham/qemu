@@ -23,5 +23,3 @@ Frontier: **`vc4-component-bind-frontier`**
 
 - `3f400000.hvs` via `vc4_hvs_ops`
 - `3f400000.hvs` via `vc4_hvs_ops`
-- `3f400000.hvs` via `vc4_hvs_ops`
-- `3f400000.hvs` via `vc4_hvs_ops`
