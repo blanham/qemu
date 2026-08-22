@@ -1,0 +1,189 @@
+name: VC4 firmware clock contract bootstrap v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-clock-contract-v2
+    paths:
+      - .github/workflows/vc4-kms-clock-contract-v2-bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-clock-contract-v2-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Repair the firmware clock contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          branch = "agent/vc4-linux-kms-clock-contract-v2"
+
+          header_path = Path("include/hw/arm/raspberrypi-fw-defs.h")
+          header = header_path.read_text()
+          enum_pattern = re.compile(
+              r"(enum rpi_firmware_clk_id \{\n)(.*?)(\n\};)",
+              re.DOTALL,
+          )
+          match = enum_pattern.search(header)
+          if not match:
+              raise SystemExit("firmware clock enum was not found")
+          enum_body = match.group(2)
+          if "RPI_FIRMWARE_DISP_CLK_ID" not in enum_body:
+              anchor = "    RPI_FIRMWARE_VEC_CLK_ID,\n    RPI_FIRMWARE_NUM_CLK_ID,"
+              replacement = (
+                  "    RPI_FIRMWARE_VEC_CLK_ID,\n"
+                  "    RPI_FIRMWARE_DISP_CLK_ID,\n"
+                  "    RPI_FIRMWARE_NUM_CLK_ID,"
+              )
+              if enum_body.count(anchor) != 1:
+                  raise SystemExit("firmware clock enum anchor changed")
+              enum_body = enum_body.replace(anchor, replacement, 1)
+              header = header[:match.start(2)] + enum_body + header[match.end(2):]
+              header_path.write_text(header)
+
+          property_path = Path("hw/misc/bcm2835_property.c")
+          source = property_path.read_text()
+          array_pattern = re.compile(
+              r"static const uint32_t bcm2835_property_clock_ids\[\] = \{\n"
+              r".*?\n\};",
+              re.DOTALL,
+          )
+          clock_array = """static const uint32_t bcm2835_property_clock_ids[] = {
+              RPI_FIRMWARE_EMMC_CLK_ID,
+              RPI_FIRMWARE_UART_CLK_ID,
+              RPI_FIRMWARE_ARM_CLK_ID,
+              RPI_FIRMWARE_CORE_CLK_ID,
+              RPI_FIRMWARE_V3D_CLK_ID,
+              RPI_FIRMWARE_H264_CLK_ID,
+              RPI_FIRMWARE_ISP_CLK_ID,
+              RPI_FIRMWARE_SDRAM_CLK_ID,
+              RPI_FIRMWARE_PIXEL_CLK_ID,
+              RPI_FIRMWARE_PWM_CLK_ID,
+              RPI_FIRMWARE_HEVC_CLK_ID,
+              RPI_FIRMWARE_EMMC2_CLK_ID,
+              RPI_FIRMWARE_M2MC_CLK_ID,
+              RPI_FIRMWARE_PIXEL_BVB_CLK_ID,
+              RPI_FIRMWARE_VEC_CLK_ID,
+              RPI_FIRMWARE_DISP_CLK_ID,
+          };"""
+          source, count = array_pattern.subn(clock_array, source, count=1)
+          if count != 1:
+              raise SystemExit("firmware clock array was not found exactly once")
+          property_path.write_text(source)
+
+          workflow_path = Path(".github/workflows/vc4-linux-kms-frontier.yml")
+          workflow = workflow_path.read_text()
+          branch_anchor = """    branches:
+              - agent/vc4-linux-kms-frontier
+          """
+          if f"      - {branch}\n" not in workflow:
+              branch_replacement = branch_anchor + f"      - {branch}\n"
+              if workflow.count(branch_anchor) != 1:
+                  raise SystemExit("KMS workflow branch anchor changed")
+              workflow = workflow.replace(
+                  branch_anchor, branch_replacement, 1
+              )
+
+          path_anchor = """      - scripts/vc4/property-power-domain-smoke.py
+          """
+          clock_path = "      - scripts/vc4/property-clock-smoke.py\n"
+          if clock_path not in workflow:
+              if workflow.count(path_anchor) != 1:
+                  raise SystemExit("KMS workflow path anchor changed")
+              workflow = workflow.replace(
+                  path_anchor, path_anchor + clock_path, 1
+              )
+
+          regression_anchor = """          python3 scripts/vc4/property-power-domain-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/power-domain.log"
+              python3 scripts/vc4/msync-smoke.py \\
+          """
+          regression_replacement = """          python3 scripts/vc4/property-power-domain-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/power-domain.log"
+              python3 scripts/vc4/property-clock-smoke.py \\
+                --qemu build/qemu-system-aarch64 \\
+                2>&1 | tee "$EVIDENCE_DIR/clock-contract.log"
+              python3 scripts/vc4/msync-smoke.py \\
+          """
+          if "clock-contract.log" not in workflow:
+              if workflow.count(regression_anchor) != 1:
+                  raise SystemExit("KMS workflow regression anchor changed")
+              workflow = workflow.replace(
+                  regression_anchor, regression_replacement, 1
+              )
+
+          deletion_anchor = """          if [ "$passed" = true ]; then
+                git rm -- .github/workflows/vc4-linux-kms-frontier.yml
+              fi
+          """
+          deletion_replacement = """          if [ "$passed" = true ] && \\
+                 [ "$GITHUB_REF_NAME" = agent/vc4-linux-kms-frontier ]; then
+                git rm -- .github/workflows/vc4-linux-kms-frontier.yml
+              fi
+          """
+          if "GITHUB_REF_NAME" not in workflow:
+              if workflow.count(deletion_anchor) != 1:
+                  raise SystemExit("KMS workflow deletion anchor changed")
+              workflow = workflow.replace(
+                  deletion_anchor, deletion_replacement, 1
+              )
+          workflow_path.write_text(workflow)
+          PY
+
+          python3 -m py_compile \
+            scripts/vc4/property-clock-smoke.py \
+            scripts/vc4/summarize-linux-kms.py
+          git diff --check
+          grep -Fq RPI_FIRMWARE_DISP_CLK_ID \
+            include/hw/arm/raspberrypi-fw-defs.h
+          grep -Fq RPI_FIRMWARE_DISP_CLK_ID hw/misc/bcm2835_property.c
+          grep -Fq property-clock-smoke.py \
+            .github/workflows/vc4-linux-kms-frontier.yml
+
+      - name: Build and validate the mailbox contract
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the repaired contract
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            include/hw/arm/raspberrypi-fw-defs.h \
+            hw/misc/bcm2835_property.c \
+            scripts/vc4/property-clock-smoke.py \
+            .github/workflows/vc4-linux-kms-frontier.yml
+          git rm -- .github/workflows/vc4-kms-clock-contract-v2-bootstrap.yml
+          git commit -m "hw/misc: complete Raspberry Pi firmware clock enumeration"
+          git pull --rebase origin agent/vc4-linux-kms-clock-contract-v2
+          git push origin HEAD:agent/vc4-linux-kms-clock-contract-v2
