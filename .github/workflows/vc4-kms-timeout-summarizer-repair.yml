@@ -1,0 +1,123 @@
+name: VC4 KMS timeout summarizer repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-modeset-frontier
+    paths:
+      - .github/workflows/vc4-kms-timeout-summarizer-repair.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BRANCH: agent/vc4-linux-kms-modeset-frontier
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Preserve structured timeout diagnostics
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/summarize-linux-kms-modeset.py')
+          source = path.read_text()
+          helper_marker = 'def parse_timeout_diagnostics('
+          if helper_marker not in source:
+              anchor = 'def main() -> int:\n'
+              if source.count(anchor) != 1:
+                  raise SystemExit('modeset summarizer main anchor changed')
+              helper = '''def parse_timeout_diagnostics(serial: str) -> dict[str, dict[str, Any]]:
+              diagnostics: dict[str, dict[str, Any]] = {}
+              active_label: str | None = None
+              active_path: str | None = None
+              active_lines: list[str] = []
+
+              for line in serial.splitlines():
+                  if line.startswith(
+                      "VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_FILE_BEGIN "
+                  ):
+                      fields = dict(
+                          field.split("=", 1)
+                          for field in line.split()[1:]
+                          if "=" in field
+                      )
+                      active_label = fields.get("label")
+                      active_path = fields.get("path")
+                      active_lines = []
+                      continue
+                  if line.startswith(
+                      "VC4_LINUX_KMS_MODESET_TIMEOUT_DIAG_FILE_END "
+                  ):
+                      fields = dict(
+                          field.split("=", 1)
+                          for field in line.split()[1:]
+                          if "=" in field
+                      )
+                      end_label = fields.get("label")
+                      if active_label and end_label == active_label:
+                          diagnostics[active_label] = {
+                              "path": active_path,
+                              "lines": active_lines[-512:],
+                              "reported_bytes": int(fields.get("bytes", "0")),
+                          }
+                      active_label = None
+                      active_path = None
+                      active_lines = []
+                      continue
+                  if active_label is not None:
+                      active_lines.append(line)
+
+              return diagnostics
+
+
+          '''
+              source = source.replace(anchor, helper + anchor, 1)
+
+          serial_anchor = '''    serial = args.serial.read_text(errors="replace") if args.serial.is_file() else ""
+              markers = {marker: marker in serial for marker in MARKERS}
+          '''
+          serial_replacement = '''    serial = args.serial.read_text(errors="replace") if args.serial.is_file() else ""
+              timeout_diagnostics = parse_timeout_diagnostics(serial)
+              markers = {marker: marker in serial for marker in MARKERS}
+          '''
+          if 'timeout_diagnostics = parse_timeout_diagnostics(serial)' not in source:
+              if source.count(serial_anchor) != 1:
+                  raise SystemExit('serial parsing anchor changed')
+              source = source.replace(serial_anchor, serial_replacement, 1)
+
+          record_anchor = '        "interesting_serial": interesting,\n'
+          record_addition = '        "timeout_diagnostics": timeout_diagnostics,\n'
+          if record_addition not in source:
+              if source.count(record_anchor) != 1:
+                  raise SystemExit('record anchor changed')
+              source = source.replace(
+                  record_anchor, record_anchor + record_addition, 1
+              )
+
+          path.write_text(source)
+          PY
+
+          python3 -m py_compile scripts/vc4/summarize-linux-kms-modeset.py
+          git diff --check
+          grep -Fq 'timeout_diagnostics' \
+            scripts/vc4/summarize-linux-kms-modeset.py
+
+      - name: Publish structured timeout capture
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add scripts/vc4/summarize-linux-kms-modeset.py
+          git rm .github/workflows/vc4-kms-timeout-summarizer-repair.yml
+          git commit -m "test/vc4: retain structured SETCRTC timeout diagnostics"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
