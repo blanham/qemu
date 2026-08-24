@@ -451,6 +451,11 @@
 #define DST_RASTER_STALL                        0x00010000
 #define DST_POLY_EDGE                           0x00040000
 
+/* DP_CNTL_XDIR_YDIR_YMAJOR bit constants */
+#define DST_LINE_Y_MAJOR                        0x00000004
+#define DST_LINE_Y_TOP_TO_BOTTOM                0x00008000
+#define DST_LINE_X_LEFT_TO_RIGHT                0x80000000
+
 /* DP_MIX bit constants */
 #define DP_SRC_RECT                             0x00000200
 #define DP_SRC_HOST                             0x00000300
