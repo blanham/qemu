@@ -1,0 +1,19 @@
+{
+  "classification": "display-handshake-finalize-tests-failed",
+  "failed_steps": [
+    "tests",
+    "publish"
+  ],
+  "outcomes": {
+    "build": "success",
+    "dependencies": "success",
+    "generate": "success",
+    "publish": "skipped",
+    "tests": "failure"
+  },
+  "passed": false,
+  "run_attempt": "1",
+  "run_id": "32727051272",
+  "schema_version": 1,
+  "source_sha": "d38785aaee0cf01140be6cd8e42294392513e9e0"
+}
