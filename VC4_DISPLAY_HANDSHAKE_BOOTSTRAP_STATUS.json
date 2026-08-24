@@ -1,0 +1,19 @@
+{
+  "classification": "display-handshake-bootstrap-install-failed",
+  "failed_steps": [
+    "install",
+    "build",
+    "tests"
+  ],
+  "outcomes": {
+    "build": "skipped",
+    "dependencies": "success",
+    "install": "failure",
+    "tests": "skipped"
+  },
+  "passed": false,
+  "run_attempt": "1",
+  "run_id": "32723586027",
+  "schema_version": 1,
+  "source_sha": "ad4ea76f94cc30b914a490513a1d7154599381f5"
+}
