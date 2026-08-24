@@ -48,8 +48,13 @@ jobs:
           set -euo pipefail
           python3 scripts/vc4/apply-display-handshake.py
           python3 -m py_compile scripts/vc4/display-timing-smoke.py
+          test -s hw/display/bcm2835_hdmi.c
+          test -s hw/display/bcm2835_hvs.c
+          test -s hw/display/bcm2835_pixelvalve.c
+          test -s include/hw/display/bcm2835_hvs.h
           grep -Fq bcm2835_hvs.c hw/display/meson.build
-          grep -Fq TYPE_BCM2835_HVS include/hw/arm/bcm2835_peripherals.h
+          grep -Fq 'hw/display/bcm2835_hvs.h' \
+            include/hw/arm/bcm2835_peripherals.h
           grep -Fq HDMI_CORE_OFFSET include/hw/raspi/raspi_platform.h
           grep -Fq INTERRUPT_PIXELVALVE1 hw/arm/bcm2835_peripherals.c
           git diff --check
