@@ -155,6 +155,37 @@ jobs:
           steps.tests.outcome == 'success'
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          gate = Path('.github/workflows/vc4-display-handshake-gate.yml')
+          text = gate.read_text()
+          old = (
+              '          grep -Fq bcm2835_hvs.c hw/display/meson.build\n'
+              '          grep -Fq TYPE_BCM2835_HVS '
+              'include/hw/arm/bcm2835_peripherals.h\n'
+              '          grep -Fq INTERRUPT_PIXELVALVE1 '
+              'hw/arm/bcm2835_peripherals.c\n'
+              '          grep -Fq HDMI_CORE_OFFSET '
+              'include/hw/raspi/raspi_platform.h\n'
+          )
+          new = (
+              '          test -s hw/display/bcm2835_hdmi.c\n'
+              '          test -s hw/display/bcm2835_hvs.c\n'
+              '          test -s hw/display/bcm2835_pixelvalve.c\n'
+              '          test -s include/hw/display/bcm2835_hvs.h\n'
+              '          grep -Fq bcm2835_hvs.c hw/display/meson.build\n'
+              "          grep -Fq 'hw/display/bcm2835_hvs.h' \\\n"
+              '            include/hw/arm/bcm2835_peripherals.h\n'
+              '          grep -Fq INTERRUPT_PIXELVALVE1 '
+              'hw/arm/bcm2835_peripherals.c\n'
+              '          grep -Fq HDMI_CORE_OFFSET '
+              'include/hw/raspi/raspi_platform.h\n'
+          )
+          if text.count(old) != 1:
+              raise SystemExit('full display gate source assertion changed')
+          gate.write_text(text.replace(old, new, 1))
+          PY
           git config user.name "VC4 CI"
           git config user.email "vc4-ci@users.noreply.github.com"
           git rm -f --ignore-unmatch \
@@ -163,6 +194,7 @@ jobs:
             scripts/vc4/apply-display-handshake.py \
             "$STATUS_JSON" "$STATUS_MD"
           git add -A
+          git diff --check
           git commit -m "hw/display: model BCM2835 display handshakes"
           git push origin "HEAD:$BRANCH"
 
