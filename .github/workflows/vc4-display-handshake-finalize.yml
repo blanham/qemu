@@ -1,0 +1,222 @@
+name: VC4 display handshake auditable finalizer
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-display-handshake-direct
+    paths:
+      - .github/workflows/vc4-display-handshake-finalize.yml
+      - scripts/vc4/repair-display-handshake-gate.py
+      - scripts/vc4/repair-display-timing-smoke.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-display-handshake-deadline-aware-retry
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BRANCH: agent/vc4-linux-kms-display-handshake-direct
+      STATUS_JSON: VC4_DISPLAY_HANDSHAKE_FINALIZE_STATUS.json
+      STATUS_MD: VC4_DISPLAY_HANDSHAKE_FINALIZE_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        id: dependencies
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Generate and validate the durable tranche
+        id: generate
+        if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/apply-display-handshake.py
+          python3 scripts/vc4/repair-display-timing-smoke.py
+          python3 scripts/vc4/repair-display-handshake-gate.py
+          python3 -m py_compile \
+            scripts/vc4/display-timing-smoke.py \
+            scripts/vc4/repair-display-timing-smoke.py \
+            scripts/vc4/repair-display-handshake-gate.py
+          test -s hw/display/bcm2835_hdmi.c
+          test -s hw/display/bcm2835_hvs.c
+          test -s hw/display/bcm2835_pixelvalve.c
+          test -s include/hw/display/bcm2835_hdmi.h
+          test -s include/hw/display/bcm2835_hvs.h
+          test -s include/hw/display/bcm2835_pixelvalve.h
+          grep -Fq bcm2835_hvs.c hw/display/meson.build
+          grep -Fq 'hw/display/bcm2835_hvs.h' \
+            include/hw/arm/bcm2835_peripherals.h
+          grep -Fq HDMI_CORE_OFFSET include/hw/raspi/raspi_platform.h
+          grep -Fq INTERRUPT_PIXELVALVE1 hw/arm/bcm2835_peripherals.c
+          grep -Fq 'def advance_clock' scripts/vc4/display-timing-smoke.py
+          if grep -Fq 'qtest.command(f"clock_step {FRAME_STEP_NS}")' \
+              scripts/vc4/display-timing-smoke.py; then
+            echo 'display timing smoke still contains one-shot frame steps' >&2
+            exit 1
+          fi
+          if grep -Fq 'grep -Fq TYPE_BCM2835_HVS' \
+              .github/workflows/vc4-display-handshake-gate.yml; then
+            echo 'display gate still has stale generated-source assertion' >&2
+            exit 1
+          fi
+          git diff --check
+
+      - name: Configure and build QEMU frontends
+        id: build
+        if: steps.generate.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+
+      - name: Prove display and architectural contracts
+        id: tests
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the checked-in implementation
+        id: publish
+        if: >-
+          steps.dependencies.outcome == 'success' &&
+          steps.generate.outcome == 'success' &&
+          steps.build.outcome == 'success' &&
+          steps.tests.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-display-handshake-bootstrap.yml \
+            .github/workflows/vc4-display-handshake-finalize.yml \
+            .github/workflows/vc4-display-handshake-timing-retry.yml \
+            .github/workflows/vc4-display-timing-integration.yml \
+            scripts/vc4/apply-display-handshake.py \
+            scripts/vc4/repair-display-handshake-gate.py \
+            scripts/vc4/repair-display-timing-smoke.py \
+            VC4_DISPLAY_HANDSHAKE_BOOTSTRAP_STATUS.json \
+            VC4_DISPLAY_HANDSHAKE_BOOTSTRAP_STATUS.md \
+            VC4_DISPLAY_HANDSHAKE_TIMING_RETRY_STATUS.json \
+            VC4_DISPLAY_HANDSHAKE_TIMING_RETRY_STATUS.md \
+            "$STATUS_JSON" "$STATUS_MD"
+          git add -A
+          git diff --check
+          git commit -m 'hw/display: model BCM2835 display handshakes'
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
+
+      - name: Publish exact finalizer failure
+        if: >-
+          always() &&
+          (steps.dependencies.outcome != 'success' ||
+           steps.generate.outcome != 'success' ||
+           steps.build.outcome != 'success' ||
+           steps.tests.outcome != 'success' ||
+           steps.publish.outcome != 'success')
+        env:
+          OUTCOME_DEPENDENCIES: ${{ steps.dependencies.outcome }}
+          OUTCOME_GENERATE: ${{ steps.generate.outcome }}
+          OUTCOME_BUILD: ${{ steps.build.outcome }}
+          OUTCOME_TESTS: ${{ steps.tests.outcome }}
+          OUTCOME_PUBLISH: ${{ steps.publish.outcome }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BRANCH"
+          git reset --hard "origin/$BRANCH"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          outcomes = {
+              'dependencies': os.environ['OUTCOME_DEPENDENCIES'],
+              'generate': os.environ['OUTCOME_GENERATE'],
+              'build': os.environ['OUTCOME_BUILD'],
+              'tests': os.environ['OUTCOME_TESTS'],
+              'publish': os.environ['OUTCOME_PUBLISH'],
+          }
+          failed = [name for name, value in outcomes.items()
+                    if value != 'success']
+          classification = (
+              'display-handshake-finalize-' + failed[0] + '-failed'
+              if failed else 'display-handshake-finalize-clear'
+          )
+          record = {
+              'schema_version': 1,
+              'source_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'passed': not failed,
+              'classification': classification,
+              'outcomes': outcomes,
+              'failed_steps': failed,
+          }
+          Path(os.environ['STATUS_JSON']).write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n'
+          )
+          Path(os.environ['STATUS_MD']).write_text(
+              '# VC4 display-handshake auditable finalizer\n\n'
+              f"- Passed: **`{record['passed']}`**\n"
+              f"- Classification: **`{classification}`**\n"
+              f"- Source SHA: `{record['source_sha']}`\n"
+              f"- Run ID: `{record['run_id']}`\n"
+              f"- Outcomes: `{outcomes}`\n"
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          git commit -m 'test/vc4: record display finalizer failure [skip ci]'
+          git push origin "HEAD:$BRANCH"
+
+      - name: Require a clean finalizer
+        if: always()
+        env:
+          OUTCOME_DEPENDENCIES: ${{ steps.dependencies.outcome }}
+          OUTCOME_GENERATE: ${{ steps.generate.outcome }}
+          OUTCOME_BUILD: ${{ steps.build.outcome }}
+          OUTCOME_TESTS: ${{ steps.tests.outcome }}
+          OUTCOME_PUBLISH: ${{ steps.publish.outcome }}
+        run: |
+          set -euo pipefail
+          for outcome in \
+            "$OUTCOME_DEPENDENCIES" \
+            "$OUTCOME_GENERATE" \
+            "$OUTCOME_BUILD" \
+            "$OUTCOME_TESTS" \
+            "$OUTCOME_PUBLISH"; do
+            test "$outcome" = success
+          done
