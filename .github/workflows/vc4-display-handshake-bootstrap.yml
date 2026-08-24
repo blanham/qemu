@@ -175,8 +175,8 @@ jobs:
               '          test -s hw/display/bcm2835_pixelvalve.c\n'
               '          test -s include/hw/display/bcm2835_hvs.h\n'
               '          grep -Fq bcm2835_hvs.c hw/display/meson.build\n'
-              "          grep -Fq 'hw/display/bcm2835_hvs.h' \\\n"
-              '            include/hw/arm/bcm2835_peripherals.h\n'
+              "          grep -Fq 'hw/display/bcm2835_hvs.h' "
+              'include/hw/arm/bcm2835_peripherals.h\n'
               '          grep -Fq INTERRUPT_PIXELVALVE1 '
               'hw/arm/bcm2835_peripherals.c\n'
               '          grep -Fq HDMI_CORE_OFFSET '
