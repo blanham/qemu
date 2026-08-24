@@ -1,0 +1,81 @@
+name: VC4 display handshake bootstrap
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-display-handshake-direct
+    paths:
+      - .github/workflows/vc4-display-handshake-bootstrap.yml
+      - scripts/vc4/apply-display-handshake.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-display-handshake-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+
+      - name: Install the display handshake models
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/apply-display-handshake.py
+          python3 -m py_compile scripts/vc4/display-timing-smoke.py
+          grep -Fq bcm2835_hvs.c hw/display/meson.build
+          grep -Fq TYPE_BCM2835_HVS include/hw/arm/bcm2835_peripherals.h
+          grep -Fq HDMI_CORE_OFFSET include/hw/raspi/raspi_platform.h
+          grep -Fq INTERRUPT_PIXELVALVE1 hw/arm/bcm2835_peripherals.c
+          git diff --check
+
+      - name: Configure and build QEMU frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+
+      - name: Prove focused display and architecture contracts
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the checked-in implementation
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -f --ignore-unmatch \
+            .github/workflows/vc4-display-handshake-bootstrap.yml \
+            .github/workflows/vc4-display-timing-integration.yml \
+            scripts/vc4/apply-display-handshake.py
+          git add -A
+          git commit -m "hw/display: model BCM2835 display handshakes"
+          git pull --rebase origin agent/vc4-linux-kms-display-handshake-direct
+          git push origin HEAD:agent/vc4-linux-kms-display-handshake-direct
