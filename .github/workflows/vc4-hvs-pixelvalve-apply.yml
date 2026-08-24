@@ -1,5 +1,7 @@
 name: VC4 HVS and pixel-valve tranche
 
+# Keep this one-shot workflow explicit so connector-authored staging commits
+# can be retriggered without modifying the payload itself.
 on:
   push:
     branches:
