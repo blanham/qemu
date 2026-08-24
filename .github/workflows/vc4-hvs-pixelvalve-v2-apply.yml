@@ -1,0 +1,76 @@
+name: VC4 HVS and pixel-valve v2 tranche
+
+on:
+  push:
+    branches:
+      - agent/vc4-hvs-pixelvalve-v2
+    paths:
+      - .github/workflows/vc4-hvs-pixelvalve-v2-apply.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-pixelvalve-v2-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-hvs-pixelvalve-v2
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 unzip zlib1g-dev
+
+      - name: Reassemble and verify the tranche
+        run: |
+          set -euo pipefail
+          cat .github/vc4-hvs-pixelvalve-v2-parts/* | \
+            base64 --decode > /tmp/vc4-hvs-pixelvalve-v2.zip
+          test "$(sha256sum /tmp/vc4-hvs-pixelvalve-v2.zip | cut -d' ' -f1)" = \
+            639b554f98fa5c28e848e3a7bc840bd10af3d38d08cf843df1735183f59dfd8d
+          rm -rf /tmp/vc4-hvs-pixelvalve-v2
+          mkdir -p /tmp/vc4-hvs-pixelvalve-v2
+          unzip -q /tmp/vc4-hvs-pixelvalve-v2.zip \
+            -d /tmp/vc4-hvs-pixelvalve-v2
+          chmod +x \
+            /tmp/vc4-hvs-pixelvalve-v2/tranche/apply.py \
+            /tmp/vc4-hvs-pixelvalve-v2/tranche/validate.sh
+
+      - name: Apply and fully validate the display contract
+        run: |
+          set -euo pipefail
+          python3 /tmp/vc4-hvs-pixelvalve-v2/tranche/apply.py \
+            --repo "$GITHUB_WORKSPACE" --apply
+          VC4_FULL_BUILD=1 bash \
+            /tmp/vc4-hvs-pixelvalve-v2/tranche/validate.sh \
+            "$GITHUB_WORKSPACE"
+
+      - name: Publish the validated model
+        run: |
+          set -euo pipefail
+          rm -rf \
+            .github/vc4-hvs-pixelvalve-parts \
+            .github/vc4-hvs-pixelvalve-v2-parts
+          rm -f \
+            .github/workflows/vc4-hvs-pixelvalve-apply.yml \
+            .github/workflows/vc4-hvs-pixelvalve-v2-apply.yml
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git diff --cached --name-status
+          git commit -m "hw/display: model VC4 HVS and HDMI completion"
+          git pull --rebase origin agent/vc4-hvs-pixelvalve-v2
+          git push origin HEAD:agent/vc4-hvs-pixelvalve-v2
