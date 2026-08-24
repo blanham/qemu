@@ -1,3 +1,4 @@
+# Retriggered after recovering the live display-handshake frontier.
 name: VC4 display handshake bootstrap
 
 on:
