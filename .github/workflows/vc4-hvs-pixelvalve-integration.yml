@@ -1,0 +1,169 @@
+name: VC4 HVS and pixel-valve integration
+
+on:
+  push:
+    branches:
+      - agent/vc4-hvs-pixelvalve-integration
+    paths:
+      - .github/workflows/vc4-hvs-pixelvalve-integration.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-pixelvalve-integration
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      EVIDENCE_DIR: vc4-hvs-pixelvalve-evidence
+      BUNDLE_SHA256: a7724b48cc7476abe93f610b4e0d0195b70a094f206ec26962d1e8e92fe52c00
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev
+          mkdir -p "$EVIDENCE_DIR"
+
+      - name: Reassemble and apply the audited tranche
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/vc4-hvs-tranche /tmp/vc4-hvs-tranche.tgz
+          mkdir -p /tmp/vc4-hvs-tranche
+          cat \
+            .github/vc4-hvs-bundle/part-00.b64 \
+            .github/vc4-hvs-bundle/part-01.b64 \
+            .github/vc4-hvs-bundle/part-02.b64 \
+            .github/vc4-hvs-bundle/part-03.b64 \
+            .github/vc4-hvs-bundle/part-04.b64 \
+            .github/vc4-hvs-bundle/part-05.b64 \
+            .github/vc4-hvs-bundle/part-05z.b64 \
+            .github/vc4-hvs-bundle/part-06.b64 \
+            | base64 --decode > /tmp/vc4-hvs-tranche.tgz
+          actual=$(sha256sum /tmp/vc4-hvs-tranche.tgz | awk '{print $1}')
+          test "$actual" = "$BUNDLE_SHA256"
+          printf '%s  %s\n' "$actual" /tmp/vc4-hvs-tranche.tgz \
+            | tee "$EVIDENCE_DIR/BUNDLE_SHA256SUM"
+          tar -xzf /tmp/vc4-hvs-tranche.tgz -C /tmp/vc4-hvs-tranche
+          python3 /tmp/vc4-hvs-tranche/apply.py \
+            --repo "$GITHUB_WORKSPACE" --allow-other-branch \
+            | tee "$EVIDENCE_DIR/apply-dry-run.log"
+          python3 /tmp/vc4-hvs-tranche/apply.py \
+            --repo "$GITHUB_WORKSPACE" --allow-other-branch --apply \
+            | tee "$EVIDENCE_DIR/apply.log"
+
+      - name: Validate source and integration anchors
+        run: |
+          set -euo pipefail
+          required=(
+            hw/display/bcm2835_hdmi.c
+            hw/display/bcm2835_hvs.c
+            hw/display/bcm2835_pixelvalve.c
+            include/hw/display/bcm2835_hdmi.h
+            include/hw/display/bcm2835_hvs.h
+            include/hw/display/bcm2835_pixelvalve.h
+            scripts/vc4/display-timing-smoke.py
+            scripts/vc4/hvs-dlist-smoke.py
+            scripts/vc4/summarize-linux-kms.py
+            .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+          )
+          for path in "${required[@]}"; do
+            test -s "$path"
+          done
+          python3 -m py_compile \
+            scripts/vc4/display-timing-smoke.py \
+            scripts/vc4/hvs-dlist-smoke.py \
+            scripts/vc4/summarize-linux-kms.py
+          bash -n \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            scripts/vc4/build-v3d-linux-dtb.sh \
+            scripts/vc4/build-vc4-kms-linux-dtb.sh
+          grep -Fq bcm2835_hdmi.c hw/display/meson.build
+          grep -Fq bcm2835_hvs.c hw/display/meson.build
+          grep -Fq bcm2835_pixelvalve.c hw/display/meson.build
+          grep -Fq TYPE_BCM2835_HVS include/hw/arm/bcm2835_peripherals.h
+          grep -Fq TYPE_BCM2835_HDMI include/hw/arm/bcm2835_peripherals.h
+          grep -Fq TYPE_BCM2835_PIXELVALVE include/hw/arm/bcm2835_peripherals.h
+          grep -Fq HDMI_CORE_OFFSET include/hw/raspi/raspi_platform.h
+          grep -Fq INTERRUPT_VIDEOSCALER hw/arm/bcm2835_peripherals.c
+          grep -Fq INTERRUPT_PWA0 hw/arm/bcm2835_peripherals.c
+          grep -Fq INTERRUPT_PWA1 hw/arm/bcm2835_peripherals.c
+          grep -Fq INTERRUPT_PIXELVALVE1 hw/arm/bcm2835_peripherals.c
+          grep -Fq hvs-dlist-smoke.py \
+            .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+          grep -Fq display-timing-smoke.py \
+            .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+          grep -Fq -- '--seconds 95 --sample-interval 5' \
+            .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+          git diff --check
+          git status --short | tee "$EVIDENCE_DIR/source-status.txt"
+
+      - name: Configure and build QEMU frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+      - name: Run focused display and retained architecture qtests
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/display-timing.log"
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/hvs-dlist.log"
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/property-power.log"
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/property-clocks.log"
+          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/hdmi-ddc.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/msync.log"
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/v3d.log"
+
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-hvs-pixelvalve-integration-${{ github.run_attempt }}
+          path: vc4-hvs-pixelvalve-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the validated integration commit
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm -r -- \
+            .github/vc4-hvs-bundle \
+            .github/workflows/vc4-hvs-pixelvalve-integration.yml
+          git add -A
+          git diff --cached --check
+          git commit -m "hw/display: model VC4 HVS flip completion"
+          git pull --rebase origin agent/vc4-hvs-pixelvalve-integration
+          git push origin HEAD:agent/vc4-hvs-pixelvalve-integration
