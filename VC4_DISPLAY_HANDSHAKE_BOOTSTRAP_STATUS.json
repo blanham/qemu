@@ -1,19 +1,17 @@
 {
-  "classification": "display-handshake-bootstrap-install-failed",
+  "classification": "display-handshake-bootstrap-tests-failed",
   "failed_steps": [
-    "install",
-    "build",
     "tests"
   ],
   "outcomes": {
-    "build": "skipped",
+    "build": "success",
     "dependencies": "success",
-    "install": "failure",
-    "tests": "skipped"
+    "install": "success",
+    "tests": "failure"
   },
   "passed": false,
   "run_attempt": "1",
-  "run_id": "32723586027",
+  "run_id": "32724549751",
   "schema_version": 1,
-  "source_sha": "ad4ea76f94cc30b914a490513a1d7154599381f5"
+  "source_sha": "1ef7afa8e363eebd802851b8be0d4e647c56997e"
 }
