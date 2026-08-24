@@ -28,6 +28,8 @@
 #define PCI_VENDOR_ID_ATI 0x1002
 /* Rage128 Pro GL */
 #define PCI_DEVICE_ID_ATI_RAGE128_PF 0x5046
+/* Rage128 GL PCI */
+#define PCI_DEVICE_ID_ATI_RAGE128_RE 0x5245
 /* Radeon RV100 (VE) */
 #define PCI_DEVICE_ID_ATI_RADEON_QY 0x5159
 
@@ -43,6 +45,8 @@ typedef struct ATIVGARegs {
     uint32_t bios_scratch[8];
     uint32_t gen_int_cntl;
     uint32_t gen_int_status;
+    uint32_t gen_reset_cntl;
+    uint32_t pc_ngui_ctlstat;
     uint32_t crtc_gen_cntl;
     uint32_t crtc_ext_cntl;
     uint32_t dac_cntl;
@@ -75,9 +79,20 @@ typedef struct ATIVGARegs {
     uint32_t src_y;
     uint32_t dst_x;
     uint32_t dst_y;
+    uint32_t dst_bres_err;
+    uint32_t dst_bres_inc;
+    uint32_t dst_bres_dec;
+    uint32_t dst_bres_lnth;
+    uint32_t dp_cntl_xdir_ydir_ymajor;
     uint32_t dp_gui_master_cntl;
+    uint32_t brush_y_x;
+    uint32_t brush_data[64];
     uint32_t dp_brush_bkgd_clr;
     uint32_t dp_brush_frgd_clr;
+    uint32_t clr_cmp_cntl;
+    uint32_t clr_cmp_clr_src;
+    uint32_t clr_cmp_clr_dst;
+    uint32_t clr_cmp_mask;
     uint32_t dp_src_frgd_clr;
     uint32_t dp_src_bkgd_clr;
     uint16_t sc_top;
@@ -99,9 +114,12 @@ typedef struct ATIVGARegs {
 
 typedef struct ATIHostDataState {
     bool active;
+    uint8_t pixel_bytes_used;
+    uint8_t padding_remaining;
     uint32_t row;
     uint32_t col;
     uint32_t next;
+    uint32_t pixel_accumulator;
     uint32_t acc[4];
 } ATIHostDataState;
 
@@ -110,6 +128,8 @@ struct ATIVGAState {
     VGACommonState vga;
     char *model;
     uint16_t dev_id;
+    uint16_t subsystem_id;
+    bool rage128_pci;
     uint8_t mode;
     uint8_t use_pixman;
     bool cursor_guest_mode;
@@ -130,6 +150,8 @@ struct ATIVGAState {
 const char *ati_reg_name(int num);
 
 void ati_2d_blt(ATIVGAState *s);
+void ati_2d_line(ATIVGAState *s);
+
 bool ati_host_data_flush(ATIVGAState *s);
 void ati_host_data_finish(ATIVGAState *s);
 
