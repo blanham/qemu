@@ -113,13 +113,22 @@ def main() -> int:
     if NEW_REALIZE not in text:
         text = replace_once(text, OLD_REALIZE, NEW_REALIZE, "realize scheduling")
 
-    stale = (
-        OLD_TIMER in text or
-        OLD_CALLBACK in text or
-        OLD_RESET in text or
-        OLD_REALIZE in text
-    )
-    if stale:
+    required = {
+        "periodic timer policy": NEW_TIMER,
+        "periodic callback": NEW_CALLBACK,
+        "reset scheduling": NEW_RESET,
+        "realize scheduling": NEW_REALIZE,
+    }
+    missing = [label for label, fragment in required.items()
+               if fragment not in text]
+    if missing:
+        raise SystemExit(f"incomplete periodic frame-clock repair: {missing}")
+
+    # OLD_REALIZE is intentionally a prefix of NEW_REALIZE, so checking for
+    # every old fragment would falsely reject the repaired source.  The two
+    # behavioral fragments below are disjoint and identify the actual
+    # one-shot policy that must be gone.
+    if OLD_TIMER in text or OLD_CALLBACK in text:
         raise SystemExit("stale one-shot pixel-valve timer logic remains")
 
     SOURCE.write_text(text)
