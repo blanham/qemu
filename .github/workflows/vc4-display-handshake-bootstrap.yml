@@ -1,4 +1,3 @@
-# Retriggered after recovering the live display-handshake frontier.
 name: VC4 display handshake bootstrap
 
 on:
@@ -20,13 +19,20 @@ concurrency:
 jobs:
   integrate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
+    env:
+      BRANCH: agent/vc4-linux-kms-display-handshake-direct
+      STATUS_JSON: VC4_DISPLAY_HANDSHAKE_BOOTSTRAP_STATUS.json
+      STATUS_MD: VC4_DISPLAY_HANDSHAKE_BOOTSTRAP_STATUS.md
+
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Install build dependencies
+        id: dependencies
+        continue-on-error: true
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -35,6 +41,9 @@ jobs:
             libglib2.0-dev libpixman-1-dev zlib1g-dev
 
       - name: Install the display handshake models
+        id: install
+        if: steps.dependencies.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           python3 scripts/vc4/apply-display-handshake.py
@@ -46,6 +55,9 @@ jobs:
           git diff --check
 
       - name: Configure and build QEMU frontends
+        id: build
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           ./configure \
@@ -54,6 +66,9 @@ jobs:
           ninja -C build qemu-system-aarch64 qemu-system-vc4
 
       - name: Prove focused display and architecture contracts
+        id: tests
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           python3 scripts/vc4/display-timing-smoke.py \
@@ -67,7 +82,72 @@ jobs:
           python3 scripts/vc4/v3d-smoke.py \
             --qemu build/qemu-system-aarch64
 
+      - name: Publish bootstrap failure
+        if: >-
+          always() &&
+          (steps.dependencies.outcome != 'success' ||
+           steps.install.outcome != 'success' ||
+           steps.build.outcome != 'success' ||
+           steps.tests.outcome != 'success')
+        env:
+          OUTCOME_DEPENDENCIES: ${{ steps.dependencies.outcome }}
+          OUTCOME_INSTALL: ${{ steps.install.outcome }}
+          OUTCOME_BUILD: ${{ steps.build.outcome }}
+          OUTCOME_TESTS: ${{ steps.tests.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          outcomes = {
+              "dependencies": os.environ["OUTCOME_DEPENDENCIES"],
+              "install": os.environ["OUTCOME_INSTALL"],
+              "build": os.environ["OUTCOME_BUILD"],
+              "tests": os.environ["OUTCOME_TESTS"],
+          }
+          failed = [name for name, value in outcomes.items()
+                    if value != "success"]
+          classification = (
+              "display-handshake-bootstrap-" + failed[0] + "-failed"
+              if failed else "display-handshake-bootstrap-clear"
+          )
+          record = {
+              "schema_version": 1,
+              "source_sha": os.environ.get("GITHUB_SHA"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "passed": not failed,
+              "classification": classification,
+              "outcomes": outcomes,
+              "failed_steps": failed,
+          }
+          Path(os.environ["STATUS_JSON"]).write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+          Path(os.environ["STATUS_MD"]).write_text(
+              "# VC4 display-handshake bootstrap\n\n"
+              f"- Passed: **`{record['passed']}`**\n"
+              f"- Classification: **`{classification}`**\n"
+              f"- Source SHA: `{record['source_sha']}`\n"
+              f"- Run ID: `{record['run_id']}`\n"
+              f"- Outcomes: `{outcomes}`\n"
+          )
+          print(json.dumps(record, indent=2, sort_keys=True))
+          PY
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          git commit -m "test/vc4: record display handshake bootstrap failure [skip ci]"
+          git push origin "HEAD:$BRANCH"
+
       - name: Publish the checked-in implementation
+        if: >-
+          steps.dependencies.outcome == 'success' &&
+          steps.install.outcome == 'success' &&
+          steps.build.outcome == 'success' &&
+          steps.tests.outcome == 'success'
         run: |
           set -euo pipefail
           git config user.name "VC4 CI"
@@ -75,8 +155,25 @@ jobs:
           git rm -f --ignore-unmatch \
             .github/workflows/vc4-display-handshake-bootstrap.yml \
             .github/workflows/vc4-display-timing-integration.yml \
-            scripts/vc4/apply-display-handshake.py
+            scripts/vc4/apply-display-handshake.py \
+            "$STATUS_JSON" "$STATUS_MD"
           git add -A
           git commit -m "hw/display: model BCM2835 display handshakes"
-          git pull --rebase origin agent/vc4-linux-kms-display-handshake-direct
-          git push origin HEAD:agent/vc4-linux-kms-display-handshake-direct
+          git push origin "HEAD:$BRANCH"
+
+      - name: Require a clean bootstrap
+        if: always()
+        env:
+          OUTCOME_DEPENDENCIES: ${{ steps.dependencies.outcome }}
+          OUTCOME_INSTALL: ${{ steps.install.outcome }}
+          OUTCOME_BUILD: ${{ steps.build.outcome }}
+          OUTCOME_TESTS: ${{ steps.tests.outcome }}
+        run: |
+          set -euo pipefail
+          for outcome in \
+            "$OUTCOME_DEPENDENCIES" \
+            "$OUTCOME_INSTALL" \
+            "$OUTCOME_BUILD" \
+            "$OUTCOME_TESTS"; do
+            test "$outcome" = success
+          done
