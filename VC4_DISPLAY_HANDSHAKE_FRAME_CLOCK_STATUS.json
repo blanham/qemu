@@ -1,21 +1,19 @@
 {
-  "classification": "display-handshake-frame-clock-generate-failed",
+  "classification": "display-handshake-frame-clock-tests-failed",
   "failed_steps": [
-    "generate",
-    "build",
     "tests",
     "publish"
   ],
   "outcomes": {
-    "build": "skipped",
+    "build": "success",
     "dependencies": "success",
-    "generate": "failure",
+    "generate": "success",
     "publish": "skipped",
-    "tests": "skipped"
+    "tests": "failure"
   },
   "passed": false,
   "run_attempt": "1",
-  "run_id": "32728168782",
+  "run_id": "32728380721",
   "schema_version": 1,
-  "source_sha": "4fa9602f593edec88fb40ec8544fc0a7b899176d"
+  "source_sha": "78d3e96a16dcb63d3bf9d75c2f581eecc9a3e450"
 }
