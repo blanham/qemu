@@ -7,6 +7,21 @@ import argparse
 from pathlib import Path
 
 
+MARKER_CONTRACT = (
+    "static const char vc4_pageflip_marker_contract[] __attribute__((used)) =\n"
+    '    "VC4_LINUX_KMS_MODESET_SETCRTC_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MODESET_OK\\0"\n'
+    '    "VC4_LINUX_KMS_PAGEFLIP_START\\0"\n'
+    '    "VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK\\0"\n'
+    '    "VC4_LINUX_KMS_PAGEFLIP_IOCTL_START\\0"\n'
+    '    "VC4_LINUX_KMS_PAGEFLIP_QUEUED\\0"\n'
+    '    "VC4_LINUX_KMS_PAGEFLIP_EVENT_OK\\0"\n'
+    '    "VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK\\0"\n'
+    '    "VC4_LINUX_KMS_PAGEFLIP_OK\\0"\n'
+    '    "VC4_LINUX_KMS_PAGEFLIP_TIMEOUT\\0";\n\n'
+)
+
+
 def patch_source(path: Path) -> None:
     source = path.read_text(encoding="utf-8")
 
@@ -23,7 +38,7 @@ def patch_source(path: Path) -> None:
         )
     source = source.replace(
         include_anchor,
-        include_line + include_anchor,
+        include_line + MARKER_CONTRACT + include_anchor,
         1,
     )
 
