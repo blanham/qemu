@@ -30,6 +30,7 @@ jobs:
             status=$?
             trap - EXIT
             if [ "$status" -ne 0 ]; then
+              cd "$GITHUB_WORKSPACE" || exit "$status"
               git reset --hard || true
               git clean -fdx || true
               git checkout -B rage128-xaa-report "$GITHUB_SHA"
