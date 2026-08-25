@@ -1,0 +1,15 @@
+{
+  "classification": "vc4-render-submit-regression",
+  "ddc_supplier_root_present": true,
+  "failure_errno": null,
+  "failure_stage": null,
+  "modeset_ok": false,
+  "native_kms_topology_clear": false,
+  "passed": false,
+  "relevant_tail": [],
+  "render_submission_preserved": false,
+  "run_attempt": "1",
+  "run_id": "32821671459",
+  "schema_version": 1,
+  "source_sha": "8dbea942a173e19aee2ebd2eaa21fafdf88cfe42"
+}
