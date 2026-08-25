@@ -40,6 +40,7 @@
 #include "qemu/target-info.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/qapi-commands-misc.h"
 #include "qom/object_interfaces.h"
 #include "exec/gdbstub.h"
 #include "system/block-backend.h"
@@ -300,12 +301,86 @@ static bool cmd_can_preconfig(const HMPCommand *cmd)
     return strchr(cmd->flags, 'p');
 }
 
+static bool cmd_architecture_available(const HMPCommand *cmd)
+{
+    return !cmd->arch_bitmask || qemu_arch_available(cmd->arch_bitmask);
+}
+
+static bool cmd_phase_available(const HMPCommand *cmd)
+{
+    return phase_check(PHASE_MACHINE_READY) || cmd_can_preconfig(cmd);
+}
+
 static bool cmd_available(const HMPCommand *cmd)
 {
-    if (cmd->arch_bitmask && !qemu_arch_available(cmd->arch_bitmask)) {
-        return false;
+    return cmd_architecture_available(cmd) && cmd_phase_available(cmd);
+}
+
+static char *hmp_command_canonical_component(const char *names)
+{
+    const char *separator = strchr(names, '|');
+
+    if (separator) {
+        return g_strndup(names, separator - names);
     }
-    return phase_check(PHASE_MACHINE_READY) || cmd_can_preconfig(cmd);
+    return g_strdup(names);
+}
+
+static bool hmp_command_implemented(const HMPCommand *cmd)
+{
+    return cmd->cmd || cmd->cmd_info_hrt || cmd->sub_table;
+}
+
+static HMPCommandInfoList **hmp_command_info_collect(
+    const HMPCommand *table, const char *prefix, HMPCommandInfoList **tail)
+{
+    const HMPCommand *cmd;
+
+    for (cmd = table; cmd->name; cmd++) {
+        g_autofree char *component =
+            hmp_command_canonical_component(cmd->name);
+        g_autofree char *path = prefix
+            ? g_strdup_printf("%s %s", prefix, component)
+            : g_strdup(component);
+        bool architecture_available = cmd_architecture_available(cmd);
+        bool phase_available = cmd_phase_available(cmd);
+        bool implemented = hmp_command_implemented(cmd);
+        HMPCommandInfo *info = g_new0(HMPCommandInfo, 1);
+        HMPCommandInfoList *entry = g_new0(HMPCommandInfoList, 1);
+
+        info->path = g_strdup(path);
+        info->names = g_strdup(cmd->name);
+        info->args_type = g_strdup(cmd->args_type ?: "");
+        info->parameters = g_strdup(cmd->params ?: "");
+        info->help = g_strdup(cmd->help ?: "");
+        info->available = architecture_available && phase_available &&
+                          implemented;
+        info->implemented = implemented;
+        info->architecture_available = architecture_available;
+        info->phase_available = phase_available;
+        info->preconfig = cmd_can_preconfig(cmd);
+        info->coroutine = cmd->coroutine;
+        info->subcommands = cmd->sub_table != NULL;
+        info->arch_mask = cmd->arch_bitmask;
+
+        entry->value = info;
+        *tail = entry;
+        tail = &entry->next;
+
+        if (cmd->sub_table) {
+            tail = hmp_command_info_collect(cmd->sub_table, path, tail);
+        }
+    }
+
+    return tail;
+}
+
+HMPCommandInfoList *qmp_query_hmp_commands(Error **errp)
+{
+    HMPCommandInfoList *list = NULL;
+
+    hmp_command_info_collect(hmp_cmds_for_target(false), NULL, &list);
+    return list;
 }
 
 static void help_cmd_dump_one(Monitor *mon,

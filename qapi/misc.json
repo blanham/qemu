@@ -207,6 +207,83 @@
   'features': [ 'unstable' ] }
 
 ##
+# @HMPCommandInfo:
+#
+# Structured metadata for a human-monitor command.
+#
+# @path: Canonical full command path.  For aliases, the first name is
+#     used in each path component.
+#
+# @names: Pipe-separated aliases for this command component.
+#
+# @args-type: Internal HMP argument-parser grammar.
+#
+# @parameters: Human-readable parameter syntax.
+#
+# @help: Short help text.
+#
+# @available: Whether the command is implemented and usable for the
+#     current target architecture and machine-initialization phase.
+#
+# @implemented: Whether a handler, human-readable QMP handler, or
+#     subcommand table is registered.
+#
+# @architecture-available: Whether the command applies to the current
+#     target architecture.
+#
+# @phase-available: Whether the command may run in the current
+#     machine-initialization phase.
+#
+# @preconfig: Whether the command may run before machine
+#     initialization.
+#
+# @coroutine: Whether the command handler runs in a coroutine.
+#
+# @subcommands: Whether the command has a nested command table.
+#
+# @arch-mask: QEMU architecture bitmask; zero means unrestricted.
+#
+# Since: 11.2
+##
+{ 'struct': 'HMPCommandInfo',
+  'data': {
+      'path': 'str',
+      'names': 'str',
+      'args-type': 'str',
+      'parameters': 'str',
+      'help': 'str',
+      'available': 'bool',
+      'implemented': 'bool',
+      'architecture-available': 'bool',
+      'phase-available': 'bool',
+      'preconfig': 'bool',
+      'coroutine': 'bool',
+      'subcommands': 'bool',
+      'arch-mask': 'uint32'
+  } }
+
+##
+# @query-hmp-commands:
+#
+# Return structured metadata for the HMP command set compiled for this
+# target.  Nested command tables are flattened into canonical command
+# paths while raw aliases and parser metadata remain available to
+# clients.
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: All HMP command and subcommand entries for this target.
+#
+# Since: 11.2
+##
+{ 'command': 'query-hmp-commands',
+  'returns': [ 'HMPCommandInfo' ],
+  'allow-preconfig': true,
+  'features': [ 'unstable' ] }
+
+##
 # @human-monitor-command:
 #
 # Execute a command on the human monitor and return the output.

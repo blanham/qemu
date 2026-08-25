@@ -36,3 +36,4 @@ the :ref:`tcg_internals`.
    index-internals
    index-tcg
    codebase
+   wd40-monitor-v2
