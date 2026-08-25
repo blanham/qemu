@@ -1,0 +1,149 @@
+{
+  "baseline": {
+    "component_score": 1,
+    "components": [
+      [
+        "3f400000.hvs",
+        "vc4_hvs_ops"
+      ]
+    ],
+    "marker_score": 0,
+    "markers": {
+      "VC4_LINUX_KMS_CONNECTED_OK": false,
+      "VC4_LINUX_KMS_CONNECTOR_OBJECT_OK": false,
+      "VC4_LINUX_KMS_CRTC_OK": false,
+      "VC4_LINUX_KMS_MODE_OK": false,
+      "VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK": false,
+      "VC4_LINUX_KMS_RESOURCES_OK": false,
+      "VC4_LINUX_KMS_TOPOLOGY_OK": false
+    },
+    "relevant_tail": [
+      "[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns",
+      "[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns",
+      "[    0.000087] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns",
+      "[    0.636391] PTP clock support registered",
+      "[    0.709562] clocksource: Switched to clocksource arch_sys_counter",
+      "[    2.606547] pinctrl-bcm2835 3f200000.gpio: GPIO_OUT persistence: yes",
+      "[    2.610072] brcmvirt-gpio soc:firmware:virtgpio: Failed to set gpiovirtbuf, trying to get err:0",
+      "[    2.619637]  brcmvirt_gpio_probe+0x158/0x2f8",
+      "[    2.621698]  brcmvirt_gpio_driver_init+0x24/0x38",
+      "[    2.623782] brcmvirt-gpio soc:firmware:virtgpio: Failed to map physical address",
+      "[    2.624131] brcmvirt-gpio soc:firmware:virtgpio: probe with driver brcmvirt-gpio failed with error -2",
+      "[    3.659746] clk: Disabling unused clocks",
+      "[    3.909019] VC4_LINUX_INIT_OK",
+      "[    3.910175] VC4_LINUX_V3D_MODULAR_START",
+      "[    3.910562] VC4_LINUX_MODULE_LOAD_START",
+      "[    6.861007] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[    6.874124] VC4_LINUX_MODULE_CLOSURE_OK",
+      "[    6.874419] VC4_LINUX_MODULE_LOAD_DONE",
+      "[    6.874615] VC4_LINUX_MODULE_CLOSURE_OK",
+      "[    9.133017] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[   16.960883] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[   16.963871] platform leds: deferred probe pending: leds-gpio: Failed to get GPIO '/leds/led-act'",
+      "[   29.365238] VC4_LINUX_KMS_FAILED stage=no-vc4-card",
+      "[   29.365761] VC4_LINUX_DRM_SUBMIT_SKIPPED no-vc4-node",
+      "[   34.420625] VC4_LINUX_V3D_MODULAR_DONE",
+      "[   34.420997] VC4_LINUX_V3D_MODULAR_PARTIAL",
+      "[   34.421459] VC4_LINUX_INIT_IDLE"
+    ]
+  },
+  "hpd_raw_high": {
+    "component_score": 1,
+    "components": [
+      [
+        "3f400000.hvs",
+        "vc4_hvs_ops"
+      ]
+    ],
+    "marker_score": 0,
+    "markers": {
+      "VC4_LINUX_KMS_CONNECTED_OK": false,
+      "VC4_LINUX_KMS_CONNECTOR_OBJECT_OK": false,
+      "VC4_LINUX_KMS_CRTC_OK": false,
+      "VC4_LINUX_KMS_MODE_OK": false,
+      "VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK": false,
+      "VC4_LINUX_KMS_RESOURCES_OK": false,
+      "VC4_LINUX_KMS_TOPOLOGY_OK": false
+    },
+    "relevant_tail": [
+      "[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns",
+      "[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns",
+      "[    0.000088] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns",
+      "[    0.629007] PTP clock support registered",
+      "[    0.780619] clocksource: Switched to clocksource arch_sys_counter",
+      "[    2.672417] pinctrl-bcm2835 3f200000.gpio: GPIO_OUT persistence: yes",
+      "[    2.676368] brcmvirt-gpio soc:firmware:virtgpio: Failed to set gpiovirtbuf, trying to get err:0",
+      "[    2.686069]  brcmvirt_gpio_probe+0x158/0x2f8",
+      "[    2.688005]  brcmvirt_gpio_driver_init+0x24/0x38",
+      "[    2.689963] brcmvirt-gpio soc:firmware:virtgpio: Failed to map physical address",
+      "[    2.690347] brcmvirt-gpio soc:firmware:virtgpio: probe with driver brcmvirt-gpio failed with error -2",
+      "[    3.601731] clk: Disabling unused clocks",
+      "[    3.852869] VC4_LINUX_INIT_OK",
+      "[    3.854048] VC4_LINUX_V3D_MODULAR_START",
+      "[    3.854423] VC4_LINUX_MODULE_LOAD_START",
+      "[    6.146298] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[    6.160984] VC4_LINUX_MODULE_CLOSURE_OK",
+      "[    6.161279] VC4_LINUX_MODULE_LOAD_DONE",
+      "[    6.161467] VC4_LINUX_MODULE_CLOSURE_OK",
+      "[    7.173847] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[   16.174284] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[   16.175859] platform leds: deferred probe pending: leds-gpio: Failed to get GPIO '/leds/led-act'",
+      "[   28.256573] VC4_LINUX_KMS_FAILED stage=no-vc4-card",
+      "[   28.257044] VC4_LINUX_DRM_SUBMIT_SKIPPED no-vc4-node",
+      "[   33.279568] VC4_LINUX_V3D_MODULAR_DONE",
+      "[   33.280155] VC4_LINUX_V3D_MODULAR_PARTIAL",
+      "[   33.280495] VC4_LINUX_INIT_IDLE"
+    ]
+  },
+  "hpd_raw_low": {
+    "component_score": 1,
+    "components": [
+      [
+        "3f400000.hvs",
+        "vc4_hvs_ops"
+      ]
+    ],
+    "marker_score": 0,
+    "markers": {
+      "VC4_LINUX_KMS_CONNECTED_OK": false,
+      "VC4_LINUX_KMS_CONNECTOR_OBJECT_OK": false,
+      "VC4_LINUX_KMS_CRTC_OK": false,
+      "VC4_LINUX_KMS_MODE_OK": false,
+      "VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK": false,
+      "VC4_LINUX_KMS_RESOURCES_OK": false,
+      "VC4_LINUX_KMS_TOPOLOGY_OK": false
+    },
+    "relevant_tail": [
+      "[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns",
+      "[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns",
+      "[    0.000120] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns",
+      "[    0.616155] PTP clock support registered",
+      "[    0.690167] clocksource: Switched to clocksource arch_sys_counter",
+      "[    2.570448] pinctrl-bcm2835 3f200000.gpio: GPIO_OUT persistence: yes",
+      "[    2.573703] brcmvirt-gpio soc:firmware:virtgpio: Failed to set gpiovirtbuf, trying to get err:0",
+      "[    2.583349]  brcmvirt_gpio_probe+0x158/0x2f8",
+      "[    2.585122]  brcmvirt_gpio_driver_init+0x24/0x38",
+      "[    2.586991] brcmvirt-gpio soc:firmware:virtgpio: Failed to map physical address",
+      "[    2.587334] brcmvirt-gpio soc:firmware:virtgpio: probe with driver brcmvirt-gpio failed with error -2",
+      "[    3.554623] clk: Disabling unused clocks",
+      "[    3.827161] VC4_LINUX_INIT_OK",
+      "[    3.828295] VC4_LINUX_V3D_MODULAR_START",
+      "[    3.828721] VC4_LINUX_MODULE_LOAD_START",
+      "[    6.585409] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[    6.600238] VC4_LINUX_MODULE_CLOSURE_OK",
+      "[    6.600545] VC4_LINUX_MODULE_LOAD_DONE",
+      "[    6.600729] VC4_LINUX_MODULE_CLOSURE_OK",
+      "[    8.379703] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[    8.387476] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[   16.705163] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+      "[   16.706848] platform leds: deferred probe pending: leds-gpio: Failed to get GPIO '/leds/led-act'",
+      "[   28.981634] VC4_LINUX_KMS_FAILED stage=no-vc4-card",
+      "[   28.982359] VC4_LINUX_DRM_SUBMIT_SKIPPED no-vc4-node",
+      "[   34.031862] VC4_LINUX_V3D_MODULAR_DONE",
+      "[   34.032282] VC4_LINUX_V3D_MODULAR_PARTIAL",
+      "[   34.032596] VC4_LINUX_INIT_IDLE"
+    ]
+  },
+  "improved": false,
+  "selected": null
+}
