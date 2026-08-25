@@ -1,4 +1,4 @@
-name: Stage VC4 native page-flip visual proof
+name: Export validated VC4 page-flip visual workflow
 
 on:
   push:
@@ -9,58 +9,63 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: vc4-pageflip-visual-stage
+  group: vc4-pageflip-visual-export
   cancel-in-progress: false
 
 jobs:
-  stage:
+  export:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: agent/vc4-linux-kms-bind-diagnostics
           fetch-depth: 0
 
-      - name: Install and validate the visual proof tranche
+      - name: Reconstruct and validate the exact staged workflow
         run: |
           set -euo pipefail
-          cat .github/vc4-pageflip-visual-parts/* | \
-            base64 --decode | gzip --decompress > /tmp/vc4-pageflip-visual-stage.py
-          test "$(sha256sum /tmp/vc4-pageflip-visual-stage.py | cut -d' ' -f1)" = \
+          source_tree=/tmp/vc4-pageflip-visual-source
+          stage_script=/tmp/vc4-pageflip-visual-stage.py
+          export_dir="$GITHUB_WORKSPACE/vc4-pageflip-visual-export"
+          rm -rf "$source_tree" "$export_dir" "$stage_script"
+          git worktree add --detach "$source_tree" \
+            d2db69bfdb9fb6a5b3a5f2cc3dd0c9dfc25bfa05
+          cat "$source_tree"/.github/vc4-pageflip-visual-parts/* | \
+            base64 --decode | gzip --decompress > "$stage_script"
+          test "$(sha256sum "$stage_script" | cut -d' ' -f1)" = \
             38d985c33b9833c426bd1650e8e195f91e28bdb056e6ddf999516ce472c61ed2
-          python3 /tmp/vc4-pageflip-visual-stage.py
-          python3 -m py_compile \
-            /tmp/vc4-pageflip-visual-stage.py \
-            scripts/vc4/enable-linux-kms-pageflip-probe.py \
-            scripts/vc4/kms-pageflip-image.py \
-            scripts/vc4/raspi3-kms-pageflip-visual-probe.py
-          python3 scripts/vc4/kms-pageflip-image.py --self-test
-          git diff --check
-          grep -Fq 'VC4_LINUX_KMS_PAGEFLIP_VISUAL_READY' \
-            tests/vc4/linux-kms-pageflip-probe.inc.c
-          grep -Fq 'raspi3-kms-pageflip-visual-probe.py' \
-            .github/workflows/vc4-kms-pageflip-probe.yml
-          grep -Fq 'linux-vc4-kms-pageflip-visual-clear' \
-            .github/workflows/vc4-kms-pageflip-probe.yml
 
-      - name: Publish the durable non-workflow files
-        run: |
-          set -euo pipefail
-          git config user.name "VC4 CI"
-          git config user.email "vc4-ci@users.noreply.github.com"
-          git restore -- .github/workflows/vc4-kms-pageflip-probe.yml
-          git rm .github/vc4-pageflip-visual-parts/*
-          git add \
-            scripts/vc4/enable-linux-kms-pageflip-probe.py \
-            scripts/vc4/kms-pageflip-image.py \
-            scripts/vc4/raspi3-kms-pageflip-visual-probe.py \
-            tests/vc4/linux-kms-pageflip-probe.inc.c
-          git diff --cached --check
-          git diff --cached --name-status
-          git commit -m "test/vc4: stage native page-flip visual helpers"
-          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
-          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
+          (
+            cd "$source_tree"
+            python3 "$stage_script"
+            python3 -m py_compile \
+              "$stage_script" \
+              scripts/vc4/enable-linux-kms-pageflip-probe.py \
+              scripts/vc4/kms-pageflip-image.py \
+              scripts/vc4/raspi3-kms-pageflip-visual-probe.py
+            python3 scripts/vc4/kms-pageflip-image.py --self-test
+            git diff --check
+            grep -Fq 'VC4_LINUX_KMS_PAGEFLIP_VISUAL_READY' \
+              tests/vc4/linux-kms-pageflip-probe.inc.c
+            grep -Fq 'raspi3-kms-pageflip-visual-probe.py' \
+              .github/workflows/vc4-kms-pageflip-probe.yml
+            grep -Fq 'linux-vc4-kms-pageflip-visual-clear' \
+              .github/workflows/vc4-kms-pageflip-probe.yml
+          )
+
+          mkdir -p "$export_dir"
+          cp "$source_tree/.github/workflows/vc4-kms-pageflip-probe.yml" \
+            "$export_dir/vc4-kms-pageflip-probe.yml"
+          cp "$stage_script" "$export_dir/vc4-pageflip-visual-stage.py"
+          sha256sum "$export_dir"/* > "$export_dir/SHA256SUMS"
+          cat "$export_dir/SHA256SUMS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vc4-pageflip-visual-workflow-${{ github.run_attempt }}
+          path: vc4-pageflip-visual-export
+          if-no-files-found: error
+          retention-days: 14
