@@ -284,6 +284,86 @@
   'features': [ 'unstable' ] }
 
 ##
+# @LogCategoryInfo:
+#
+# Structured metadata for a QEMU log category.
+#
+# @name: Category name accepted by ``-d`` and the HMP ``log`` command.
+#
+# @help: Human-readable description.
+#
+# @enabled: Whether the category is currently enabled.
+#
+# @sticky: Whether the category cannot be disabled after being
+#     enabled.
+#
+# Since: 11.2
+##
+{ 'struct': 'LogCategoryInfo',
+  'data': { 'name': 'str',
+            'help': 'str',
+            'enabled': 'bool',
+            'sticky': 'bool' } }
+
+##
+# @LogCategoryAction:
+#
+# How @set-log-categories changes the active category set.
+#
+# @replace: Replace the active set with @categories.
+#
+# @enable: Add @categories to the active set.
+#
+# @disable: Remove @categories from the active set.
+#
+# Since: 11.2
+##
+{ 'enum': 'LogCategoryAction',
+  'data': [ 'replace', 'enable', 'disable' ] }
+
+##
+# @query-log-categories:
+#
+# Return the compiled log-category registry and current enabled state.
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: All compiled log categories.
+#
+# Since: 11.2
+##
+{ 'command': 'query-log-categories',
+  'returns': [ 'LogCategoryInfo' ],
+  'allow-preconfig': true,
+  'features': [ 'unstable' ] }
+
+##
+# @set-log-categories:
+#
+# Change the active log categories and return the resulting registry.
+#
+# @action: How to apply @categories.
+#
+# @categories: Category names returned by @query-log-categories.
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: All compiled log categories after applying the change.
+#
+# Since: 11.2
+##
+{ 'command': 'set-log-categories',
+  'data': { 'action': 'LogCategoryAction',
+            'categories': [ 'str' ] },
+  'returns': [ 'LogCategoryInfo' ],
+  'allow-preconfig': true,
+  'features': [ 'unstable' ] }
+
+##
 # @human-monitor-command:
 #
 # Execute a command on the human monitor and return the output.

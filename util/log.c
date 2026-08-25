@@ -380,6 +380,16 @@ bool qemu_set_log(int log_flags, Error **errp)
     return qemu_set_log_internal(NULL, false, log_flags, errp);
 }
 
+unsigned qemu_get_log_mask(void)
+{
+    unsigned mask = qemu_loglevel;
+
+    if (log_per_thread) {
+        mask |= LOG_PER_THREAD;
+    }
+    return mask;
+}
+
 bool qemu_set_log_filename(const char *filename, Error **errp)
 {
     return qemu_set_log_internal(filename, true, qemu_loglevel, errp);
