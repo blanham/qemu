@@ -45,9 +45,8 @@ jobs:
         run: |
           set -euo pipefail
           cat "$PATCH_DIR"/product.patch.part-* > /tmp/vc4-packed-rgb.patch
-          git apply --check /tmp/vc4-packed-rgb.patch
-          git apply /tmp/vc4-packed-rgb.patch
-          git diff --check
+          git apply --3way --index /tmp/vc4-packed-rgb.patch
+          git diff --cached --check
           python3 -m py_compile \
             scripts/vc4/hvs-dlist-smoke.py \
             scripts/vc4/hvs-packed-rgb-smoke.py
