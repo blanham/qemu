@@ -41,12 +41,13 @@ jobs:
             pkg-config \
             python3
 
-      - name: Apply and validate the packed-RGB change
+      - name: Rebase and validate the packed-RGB change
         run: |
           set -euo pipefail
           cat "$PATCH_DIR"/product.patch.part-* > /tmp/vc4-packed-rgb.patch
-          git apply --3way --index /tmp/vc4-packed-rgb.patch
-          git diff --cached --check
+          python3 -m py_compile "$PATCH_DIR/rebase.py"
+          python3 "$PATCH_DIR/rebase.py" /tmp/vc4-packed-rgb.patch
+          git diff --check
           python3 -m py_compile \
             scripts/vc4/hvs-dlist-smoke.py \
             scripts/vc4/hvs-packed-rgb-smoke.py
@@ -89,7 +90,7 @@ jobs:
           git commit \
             --author="VC4 Development <vc4-dev@users.noreply.github.com>" \
             -m "hw/display: cover VC4 HVS packed-RGB scanout" \
-            -m "Decode every lower-depth packed-RGB layout exposed by the Linux VC4 HVS4 format table: RGB332/BGR233, RGB565/BGR565, the four RGBA4444 channel rotations, and XRGB1555. Honor the driver-programmed high-bit repetition mode instead of zero-filling HVS components, retain the mailbox framebuffer's existing ABI and conversion path, reject unsupported expansion modes, and screenshot-check exact nontrivial colors with padded pitches."
+            -m "Decode every lower-depth packed-RGB layout exposed by the Linux VC4 HVS4 format table: RGB332/BGR233, RGB565/BGR565, the four RGBA4444 channel rotations, and XRGB1555. Honor the driver-programmed ROUND component-expansion mode instead of zero-filling HVS components, retain the mailbox framebuffer's existing ABI and conversion path, reject unsupported expansion modes, and screenshot-check exact nontrivial colors with padded pitches."
 
           git fetch origin "$BRANCH"
           test "$(git rev-parse "origin/$BRANCH")" = "$staging_sha"
