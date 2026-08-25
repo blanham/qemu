@@ -1,0 +1,78 @@
+name: Refresh VC4 page-flip validation dependencies
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-pageflip-watch-display-publish.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-pageflip-watch-display-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Extend the durable page-flip dependency contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/vc4-kms-pageflip-probe.yml')
+          source = path.read_text(encoding='utf-8')
+          anchor = '''      - .github/workflows/vc4-kms-pageflip-probe.yml
+      - scripts/vc4/enable-linux-kms-pageflip-probe.py
+'''
+          replacement = '''      - .github/workflows/vc4-kms-pageflip-probe.yml
+      - hw/arm/bcm2835_peripherals.c
+      - hw/display/bcm2835_*.c
+      - hw/misc/bcm2835_property.c
+      - include/hw/arm/bcm2835_peripherals.h
+      - include/hw/display/bcm2835_*.h
+      - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+      - scripts/vc4/build-vc4-kms-linux-dtb.sh
+      - scripts/vc4/fetch-linux-vc4-modules.py
+      - scripts/vc4/enable-linux-kms-pageflip-probe.py
+      - tests/vc4/linux-v3d-modular-init.c
+      - tests/vc4/linux-kms-modeset-probe.inc.c
+      - tests/vc4/vc4-kms-frontier-overlay.dts
+'''
+          if source.count(anchor) != 1:
+              raise SystemExit('page-flip workflow path anchor changed')
+          updated = source.replace(anchor, replacement, 1)
+          if updated.count('      - hw/display/bcm2835_*.c\n') != 1:
+              raise SystemExit('display source dependency was not installed exactly once')
+          if updated.count('      - tests/vc4/linux-kms-modeset-probe.inc.c\n') != 1:
+              raise SystemExit('modeset witness dependency was not installed exactly once')
+          path.write_text(updated, encoding='utf-8')
+          PY
+          git diff --check
+          grep -Fq '      - hw/display/bcm2835_*.c' \
+            .github/workflows/vc4-kms-pageflip-probe.yml
+          grep -Fq '      - include/hw/display/bcm2835_*.h' \
+            .github/workflows/vc4-kms-pageflip-probe.yml
+          grep -Fq '      - tests/vc4/linux-kms-modeset-probe.inc.c' \
+            .github/workflows/vc4-kms-pageflip-probe.yml
+
+      - name: Publish and trigger the refreshed page-flip gate
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add .github/workflows/vc4-kms-pageflip-probe.yml
+          git rm .github/workflows/vc4-pageflip-watch-display-publish.yml
+          git commit -m "ci/vc4: rerun page flips for display-model changes"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
