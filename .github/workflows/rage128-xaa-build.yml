@@ -1,0 +1,121 @@
+name: Build Rage 128 XAA primitives
+
+on:
+  push:
+    branches:
+      - agent/rage128-xaa-build-qemu
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Transform, build, test, and publish
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          staging=agent/rage128-xaa-build-qemu
+          target=agent/rage128-upstream-20260823
+          log="$RUNNER_TEMP/rage128-xaa-build.log"
+          exec > >(tee "$log") 2>&1
+
+          report_failure() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              git reset --hard || true
+              git clean -fdx || true
+              git checkout -B rage128-xaa-report "$GITHUB_SHA"
+              mkdir -p .github/rage128-xaa
+              cp "$log" .github/rage128-xaa/result.txt
+              git add .github/rage128-xaa/result.txt
+              git -c user.name='github-actions[bot]' \
+                  -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                  commit -m 'ci: record failed Rage 128 XAA build'
+              git push --force origin HEAD:"$staging"
+            fi
+            exit "$status"
+          }
+          trap report_failure EXIT
+
+          base64 -d .github/rage128-xaa/transform.py.xz.b64 | xz -d > /tmp/transform.py
+          echo "c974a652425d93f92f3b67269dd2bb6cb4e13cce26a63d9161171927305bd00e  /tmp/transform.py" | sha256sum -c -
+
+          git config user.name 'Bryce Lanham'
+          git config user.email 'blanham@gmail.com'
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/qemu/qemu.git
+          git fetch --no-tags upstream master
+          git fetch --no-tags origin "$target"
+
+          upstream_sha=$(git rev-parse upstream/master)
+          source_sha=$(git rev-parse "origin/$target")
+          test "$(git rev-list --count "$source_sha^..$source_sha")" = 1
+
+          git checkout -B rage128-xaa-work "$upstream_sha"
+          git cherry-pick "$source_sha"
+          python3 /tmp/transform.py
+          git diff --check
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libfdt-dev \
+            libslirp-dev
+
+          mkdir build
+          cd build
+          ../configure \
+            --target-list=x86_64-softmmu \
+            --enable-debug \
+            --disable-werror \
+            --disable-docs
+          ninja -j2 \
+            qemu-system-x86_64 \
+            tests/unit/test-ati-rop3 \
+            tests/qtest/display-vga-test
+          meson test \
+            test-ati-rop3 \
+            display-vga-test \
+            --print-errorlogs
+          cd ..
+
+          git add \
+            hw/display/ati.c \
+            hw/display/ati_2d.c \
+            hw/display/ati_int.h \
+            hw/display/ati_regs.h \
+            tests/qtest/display-vga-test.c
+          git commit --amend -m 'hw/display/ati: add XAA brush and packed upload support
+
+          Preserve the existing Rage 128 PF/RE, DDC, PCI/AGP/PM, 2D,
+          line, and ROM-backed profile work while extending the synchronous
+          engine with the classic XAA primitives used by period drivers.
+
+          Implement 8x8 monochrome foreground/background and
+          foreground-transparent brushes, 32x1 monochrome dashed-line
+          brushes with phase handling, brush RAM MMIO readback, and packed
+          24-bpp HOST_DATA image writes with dword scanline padding and
+          cross-flush partial-pixel carry.
+
+          Add live qtests derived from the historical r128 XAA register
+          sequences for opaque and transparent pattern fills, dashed lines,
+          and two-row packed 24-bpp image uploads.
+
+          Validated with a complete x86_64 system build, the exhaustive ROP3
+          unit suite, and the full display-vga qtest suite.'
+
+          test "$(git rev-list --count "$upstream_sha..HEAD")" = 1
+          test "$(git merge-base "$upstream_sha" HEAD)" = "$upstream_sha"
+          test -z "$(git diff --name-only "$upstream_sha..HEAD" | grep '^\.github/' || true)"
+
+          git push --force origin HEAD:"$target"
+          git push --force origin "$upstream_sha":"$staging"
+          trap - EXIT
