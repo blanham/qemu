@@ -1,0 +1,2774 @@
+/tmp/transform.py: OK
+From https://github.com/qemu/qemu
+ * branch                  master     -> FETCH_HEAD
+ * [new branch]            master     -> upstream/master
+From https://github.com/blanham/qemu
+ * branch                  agent/rage128-upstream-20260823 -> FETCH_HEAD
+Switched to a new branch 'rage128-xaa-work'
+[rage128-xaa-work 82095422d2] hw/display/ati: strengthen Rage 128 emulation and DDC validation
+ Date: Mon Aug 24 08:10:25 2026 -0500
+ 8 files changed, 1587 insertions(+), 205 deletions(-)
+ create mode 100644 hw/display/ati_rop3.h
+ create mode 100644 tests/unit/test-ati-rop3.c
+Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+Hit:6 https://packages.microsoft.com/repos/azure-cli noble InRelease
+Hit:2 http://azure.archive.ubuntu.com/ubuntu noble InRelease
+Get:7 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
+Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+Get:4 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+Get:5 http://azure.archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+Get:8 https://dl.google.com/linux/chrome-stable/deb stable InRelease [2548 B]
+Get:9 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [411 kB]
+Get:10 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [364 kB]
+Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1229 kB]
+Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [286 kB]
+Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Components [181 kB]
+Get:14 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1687 kB]
+Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [337 kB]
+Get:16 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Components [388 kB]
+Get:17 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1486 kB]
+Get:18 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [339 kB]
+Get:19 http://azure.archive.ubuntu.com/ubuntu noble-updates/multiverse Translation-en [12.8 kB]
+Get:20 http://azure.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Components [940 B]
+Get:21 http://azure.archive.ubuntu.com/ubuntu noble-backports/main amd64 Components [5760 B]
+Get:22 http://azure.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Components [12.6 kB]
+Get:23 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Packages [969 kB]
+Get:24 http://azure.archive.ubuntu.com/ubuntu noble-security/main Translation-en [206 kB]
+Get:25 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Components [46.4 kB]
+Get:26 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1202 kB]
+Get:27 http://azure.archive.ubuntu.com/ubuntu noble-security/universe Translation-en [240 kB]
+Get:28 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Components [76.3 kB]
+Get:29 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1388 kB]
+Get:30 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted Translation-en [320 kB]
+Get:31 http://azure.archive.ubuntu.com/ubuntu noble-security/multiverse Translation-en [11.1 kB]
+Get:32 https://dl.google.com/linux/chrome-stable/deb stable/main amd64 Packages [1418 B]
+Fetched 11.6 MB in 1s (7776 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+pkg-config is already the newest version (1.8.1-2build1).
+python3-venv is already the newest version (3.12.3-0ubuntu2.1).
+The following additional packages will be installed:
+  libblkid-dev libfdt1 libgirepository-2.0-0 libglib2.0-dev-bin libmount-dev
+  libselinux1-dev libsepol-dev libslirp0 uuid-dev
+Suggested packages:
+  gir1.2-glib-2.0-dev libglib2.0-doc libgdk-pixbuf2.0-bin libxml2-utils
+The following NEW packages will be installed:
+  build-essential libblkid-dev libfdt-dev libfdt1 libgirepository-2.0-0
+  libglib2.0-dev libglib2.0-dev-bin libmount-dev libpixman-1-dev
+  libselinux1-dev libsepol-dev libslirp-dev libslirp0 ninja-build uuid-dev
+0 upgraded, 15 newly installed, 0 to remove and 29 not upgraded.
+Need to get 3497 kB of archives.
+After this operation, 17.7 MB of additional disk space will be used.
+Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+Get:2 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 build-essential amd64 12.10ubuntu1 [4928 B]
+Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libgirepository-2.0-0 amd64 2.80.0-6ubuntu3.8 [73.6 kB]
+Get:4 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-dev-bin amd64 2.80.0-6ubuntu3.8 [138 kB]
+Get:5 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 uuid-dev amd64 2.39.3-9ubuntu6.5 [33.5 kB]
+Get:6 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libblkid-dev amd64 2.39.3-9ubuntu6.5 [204 kB]
+Get:7 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libsepol-dev amd64 3.5-2build1 [384 kB]
+Get:8 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libselinux1-dev amd64 3.5-2ubuntu2.1 [164 kB]
+Get:9 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libmount-dev amd64 2.39.3-9ubuntu6.5 [14.9 kB]
+Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-dev amd64 2.80.0-6ubuntu3.8 [1860 kB]
+Get:11 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libpixman-1-dev amd64 0.42.2-1build1 [296 kB]
+Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libslirp0 amd64 4.7.0-1ubuntu3.1 [63.8 kB]
+Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libslirp-dev amd64 4.7.0-1ubuntu3.1 [79.0 kB]
+Get:14 http://azure.archive.ubuntu.com/ubuntu noble/universe amd64 ninja-build amd64 1.11.1-2 [129 kB]
+Get:15 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libfdt1 amd64 1.7.0-2build1 [20.1 kB]
+Get:16 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libfdt-dev amd64 1.7.0-2build1 [32.4 kB]
+Fetched 3497 kB in 1s (5604 kB/s)
+Selecting previously unselected package build-essential.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 203124 files and directories currently installed.)
+Preparing to unpack .../00-build-essential_12.10ubuntu1_amd64.deb ...
+Unpacking build-essential (12.10ubuntu1) ...
+Selecting previously unselected package libgirepository-2.0-0:amd64.
+Preparing to unpack .../01-libgirepository-2.0-0_2.80.0-6ubuntu3.8_amd64.deb ...
+Unpacking libgirepository-2.0-0:amd64 (2.80.0-6ubuntu3.8) ...
+Selecting previously unselected package libglib2.0-dev-bin.
+Preparing to unpack .../02-libglib2.0-dev-bin_2.80.0-6ubuntu3.8_amd64.deb ...
+Unpacking libglib2.0-dev-bin (2.80.0-6ubuntu3.8) ...
+Selecting previously unselected package uuid-dev:amd64.
+Preparing to unpack .../03-uuid-dev_2.39.3-9ubuntu6.5_amd64.deb ...
+Unpacking uuid-dev:amd64 (2.39.3-9ubuntu6.5) ...
+Selecting previously unselected package libblkid-dev:amd64.
+Preparing to unpack .../04-libblkid-dev_2.39.3-9ubuntu6.5_amd64.deb ...
+Unpacking libblkid-dev:amd64 (2.39.3-9ubuntu6.5) ...
+Selecting previously unselected package libsepol-dev:amd64.
+Preparing to unpack .../05-libsepol-dev_3.5-2build1_amd64.deb ...
+Unpacking libsepol-dev:amd64 (3.5-2build1) ...
+Selecting previously unselected package libselinux1-dev:amd64.
+Preparing to unpack .../06-libselinux1-dev_3.5-2ubuntu2.1_amd64.deb ...
+Unpacking libselinux1-dev:amd64 (3.5-2ubuntu2.1) ...
+Selecting previously unselected package libmount-dev:amd64.
+Preparing to unpack .../07-libmount-dev_2.39.3-9ubuntu6.5_amd64.deb ...
+Unpacking libmount-dev:amd64 (2.39.3-9ubuntu6.5) ...
+Selecting previously unselected package libglib2.0-dev:amd64.
+Preparing to unpack .../08-libglib2.0-dev_2.80.0-6ubuntu3.8_amd64.deb ...
+Unpacking libglib2.0-dev:amd64 (2.80.0-6ubuntu3.8) ...
+Selecting previously unselected package libpixman-1-dev:amd64.
+Preparing to unpack .../09-libpixman-1-dev_0.42.2-1build1_amd64.deb ...
+Unpacking libpixman-1-dev:amd64 (0.42.2-1build1) ...
+Selecting previously unselected package libslirp0:amd64.
+Preparing to unpack .../10-libslirp0_4.7.0-1ubuntu3.1_amd64.deb ...
+Unpacking libslirp0:amd64 (4.7.0-1ubuntu3.1) ...
+Selecting previously unselected package libslirp-dev:amd64.
+Preparing to unpack .../11-libslirp-dev_4.7.0-1ubuntu3.1_amd64.deb ...
+Unpacking libslirp-dev:amd64 (4.7.0-1ubuntu3.1) ...
+Selecting previously unselected package ninja-build.
+Preparing to unpack .../12-ninja-build_1.11.1-2_amd64.deb ...
+Unpacking ninja-build (1.11.1-2) ...
+Selecting previously unselected package libfdt1:amd64.
+Preparing to unpack .../13-libfdt1_1.7.0-2build1_amd64.deb ...
+Unpacking libfdt1:amd64 (1.7.0-2build1) ...
+Selecting previously unselected package libfdt-dev:amd64.
+Preparing to unpack .../14-libfdt-dev_1.7.0-2build1_amd64.deb ...
+Unpacking libfdt-dev:amd64 (1.7.0-2build1) ...
+Setting up libglib2.0-dev-bin (2.80.0-6ubuntu3.8) ...
+Setting up libpixman-1-dev:amd64 (0.42.2-1build1) ...
+Setting up libgirepository-2.0-0:amd64 (2.80.0-6ubuntu3.8) ...
+Setting up libfdt1:amd64 (1.7.0-2build1) ...
+Setting up ninja-build (1.11.1-2) ...
+Setting up libfdt-dev:amd64 (1.7.0-2build1) ...
+Setting up uuid-dev:amd64 (2.39.3-9ubuntu6.5) ...
+Setting up libsepol-dev:amd64 (3.5-2build1) ...
+Setting up libslirp0:amd64 (4.7.0-1ubuntu3.1) ...
+Setting up build-essential (12.10ubuntu1) ...
+Setting up libblkid-dev:amd64 (2.39.3-9ubuntu6.5) ...
+Setting up libselinux1-dev:amd64 (3.5-2ubuntu2.1) ...
+Setting up libslirp-dev:amd64 (4.7.0-1ubuntu3.1) ...
+Setting up libmount-dev:amd64 (2.39.3-9ubuntu6.5) ...
+Setting up libglib2.0-dev:amd64 (2.80.0-6ubuntu3.8) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+Not building database; man-db/auto-update is not 'true'.
+Processing triggers for libglib2.0-0t64:amd64 (2.80.0-6ubuntu3.8) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.8) ...
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+python determined to be '/usr/bin/python3'
+python version: Python 3.12.3
+mkvenv: Creating non-isolated virtual environment at 'pyvenv'
+mkvenv: checking for meson>=1.5.0
+mkvenv: checking for pycotap>=1.1.0
+mkvenv: installing meson==1.12.0, pycotap==1.3.1
+mkvenv: checking for qemu.qmp>=0.0.5
+mkvenv: checking for setuptools>=44.1.1
+mkvenv: checking for wheel>=0.34.2
+mkvenv: checking for pip>=20.3.4
+mkvenv: installing qemu.qmp==0.0.6
+mkvenv: installing /home/runner/work/qemu/qemu/python
+The Meson build system
+Version: 1.12.0
+Source dir: /home/runner/work/qemu/qemu
+Build dir: /home/runner/work/qemu/qemu/build
+Build type: native build
+Project name: qemu
+Project version: 11.1.50
+C compiler for the host machine: cc -m64 (gcc 13.3.0 "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0")
+C linker for the host machine: cc -m64 ld.bfd 2.42
+Host machine cpu family: x86_64
+Host machine cpu: x86_64
+Program scripts/symlink-install-tree.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/symlink-install-tree.py)
+Program sh found: YES (/usr/bin/sh)
+Program python3 found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3)
+C++ compiler for the host machine: c++ -m64 (gcc 13.3.0 "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0")
+C++ linker for the host machine: c++ -m64 ld.bfd 2.42
+Compiler for language rust skipped: feature rust disabled
+Program iasl found: NO
+Program bzip2 found: YES (/usr/bin/bzip2)
+Checking for size of "void *" : 8 
+Compiler for C supports arguments -fno-link-libatomic: NO 
+Compiler for C supports link arguments -Wl,-z,relro: YES 
+Compiler for C supports link arguments -Wl,-z,now: YES 
+Checking if "-fzero-call-used-regs=used-gpr" compiles: YES 
+Compiler for C supports arguments -mcx16: YES 
+Compiler for C supports arguments -msse2: YES 
+Compiler for C supports arguments -D_GNU_SOURCE: YES 
+Compiler for C supports arguments -D_FILE_OFFSET_BITS=64: YES 
+Compiler for C supports arguments -D_LARGEFILE_SOURCE: YES 
+Compiler for C supports arguments -fno-strict-aliasing: YES 
+Compiler for C supports arguments -fno-common: YES 
+Compiler for C supports arguments -fwrapv: YES 
+Compiler for C supports arguments -ftrivial-auto-var-init=zero: YES 
+Compiler for C supports arguments -fzero-init-padding-bits=all: NO 
+Compiler for C supports arguments -fzero-call-used-regs=used-gpr: YES 
+Compiler for C supports arguments -fstack-protector-strong: YES 
+Compiler for C supports arguments -Wempty-body: YES 
+Compiler for C supports arguments -Wendif-labels: YES 
+Compiler for C supports arguments -Wexpansion-to-defined: YES 
+Compiler for C supports arguments -Wformat-overflow=2: YES 
+Compiler for C supports arguments -Wformat-security: YES 
+Compiler for C supports arguments -Wformat-y2k: YES 
+Compiler for C supports arguments -Wignored-qualifiers: YES 
+Compiler for C supports arguments -Wimplicit-fallthrough=2: YES 
+Compiler for C supports arguments -Winit-self: YES 
+Compiler for C supports arguments -Wmissing-format-attribute: YES 
+Compiler for C supports arguments -Wmissing-prototypes: YES 
+Compiler for C supports arguments -Wnested-externs: YES 
+Compiler for C supports arguments -Wold-style-declaration: YES 
+Compiler for C supports arguments -Wold-style-definition: YES 
+Compiler for C supports arguments -Wredundant-decls: YES 
+Compiler for C supports arguments -Wshadow=local: YES 
+Compiler for C supports arguments -Wstrict-prototypes: YES 
+Compiler for C supports arguments -Wtype-limits: YES 
+Compiler for C supports arguments -Wundef: YES 
+Compiler for C supports arguments -Wvla: YES 
+Compiler for C supports arguments -Wwrite-strings: YES 
+Compiler for C supports arguments -Wno-gnu-variable-sized-type-not-at-end: NO 
+Compiler for C supports arguments -Wno-initializer-overrides: NO 
+Compiler for C supports arguments -Wno-missing-include-dirs: YES 
+Compiler for C supports arguments -Wno-psabi: YES 
+Compiler for C supports arguments -Wno-shift-negative-value: YES 
+Compiler for C supports arguments -Wno-string-plus-int: NO 
+Compiler for C supports arguments -Wno-tautological-type-limit-compare: NO 
+Compiler for C supports arguments -Wno-typedef-redefinition: NO 
+Compiler for C++ supports arguments -mcx16: YES 
+Compiler for C++ supports arguments -msse2: YES 
+Compiler for C++ supports arguments -D_GNU_SOURCE: YES 
+Compiler for C++ supports arguments -D_FILE_OFFSET_BITS=64: YES 
+Compiler for C++ supports arguments -D_LARGEFILE_SOURCE: YES 
+Compiler for C++ supports arguments -fno-strict-aliasing: YES 
+Compiler for C++ supports arguments -fno-common: YES 
+Compiler for C++ supports arguments -fwrapv: YES 
+Compiler for C++ supports arguments -ftrivial-auto-var-init=zero: YES 
+Compiler for C++ supports arguments -fzero-init-padding-bits=all: NO 
+Compiler for C++ supports arguments -fzero-call-used-regs=used-gpr: YES 
+Compiler for C++ supports arguments -D__STDC_LIMIT_MACROS: YES 
+Compiler for C++ supports arguments -D__STDC_CONSTANT_MACROS: YES 
+Compiler for C++ supports arguments -D__STDC_FORMAT_MACROS: YES 
+Compiler for C++ supports arguments -fstack-protector-strong: YES 
+Compiler for C++ supports arguments -Wempty-body: YES 
+Compiler for C++ supports arguments -Wendif-labels: YES 
+Compiler for C++ supports arguments -Wexpansion-to-defined: YES 
+Compiler for C++ supports arguments -Wformat-overflow=2: YES 
+Compiler for C++ supports arguments -Wformat-security: YES 
+Compiler for C++ supports arguments -Wformat-y2k: YES 
+Compiler for C++ supports arguments -Wignored-qualifiers: YES 
+Compiler for C++ supports arguments -Wimplicit-fallthrough=2: YES 
+Compiler for C++ supports arguments -Winit-self: YES 
+Compiler for C++ supports arguments -Wmissing-format-attribute: YES 
+Compiler for C++ supports arguments -Wmissing-prototypes: NO 
+Compiler for C++ supports arguments -Wnested-externs: NO 
+Compiler for C++ supports arguments -Wold-style-declaration: NO 
+Compiler for C++ supports arguments -Wold-style-definition: NO 
+Compiler for C++ supports arguments -Wredundant-decls: YES 
+Compiler for C++ supports arguments -Wshadow=local: YES 
+Compiler for C++ supports arguments -Wstrict-prototypes: NO 
+Compiler for C++ supports arguments -Wtype-limits: YES 
+Compiler for C++ supports arguments -Wundef: YES 
+Compiler for C++ supports arguments -Wvla: YES 
+Compiler for C++ supports arguments -Wwrite-strings: YES 
+Compiler for C++ supports arguments -Wno-gnu-variable-sized-type-not-at-end: NO 
+Compiler for C++ supports arguments -Wno-initializer-overrides: NO 
+Compiler for C++ supports arguments -Wno-missing-include-dirs: YES 
+Compiler for C++ supports arguments -Wno-psabi: YES 
+Compiler for C++ supports arguments -Wno-shift-negative-value: YES 
+Compiler for C++ supports arguments -Wno-string-plus-int: NO 
+Compiler for C++ supports arguments -Wno-tautological-type-limit-compare: NO 
+Compiler for C++ supports arguments -Wno-typedef-redefinition: NO 
+Program cgcc found: NO
+Library m found: YES
+Run-time dependency threads found: YES
+Library util found: YES
+Run-time dependency appleframeworks found: NO  (tried framework)
+Found pkg-config: YES (/usr/bin/pkg-config) 1.8.1
+Run-time dependency xencontrol found: NO  (tried pkg-config)
+Library xenstore found: NO
+Library xenctrl found: NO
+Library xendevicemodel found: NO
+Library xenforeignmemory found: NO
+Library xengnttab found: NO
+Library xenevtchn found: NO
+Library xentoolcore found: NO
+Run-time dependency glib-2.0 found: YES 2.80.0
+Run-time dependency gmodule-no-export-2.0 found: YES 2.80.0
+Run-time dependency gio-2.0 found: YES 2.80.0
+Program gdbus-codegen found: YES (/usr/bin/gdbus-codegen)
+Run-time dependency gio-unix-2.0 found: YES 2.80.0
+Program scripts/xml-preprocess.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/xml-preprocess.py)
+Run-time dependency pixman-1 found: YES 0.42.2
+Run-time dependency zlib found: YES 1.3
+Has header "libaio.h" : NO 
+Run-time dependency liburing found: NO  (tried pkg-config)
+Run-time dependency libnfs found: NO  (tried pkg-config)
+Run-time dependency appleframeworks found: NO  (tried framework)
+Run-time dependency appleframeworks found: NO  (tried framework)
+Run-time dependency libseccomp found: NO  (tried pkg-config)
+Has header "cap-ng.h" : NO 
+Run-time dependency xkbcommon found: NO  (tried pkg-config)
+Run-time dependency slirp found: YES 4.7.0
+Has header "libvdeplug.h" : NO 
+Run-time dependency libpulse found: NO  (tried pkg-config)
+Run-time dependency alsa found: NO  (tried pkg-config)
+Run-time dependency jack found: NO  (tried pkg-config)
+Run-time dependency libpipewire-0.3 found: NO  (tried pkg-config)
+Run-time dependency sndio found: NO  (tried pkg-config)
+Run-time dependency spice-protocol found: NO  (tried pkg-config)
+Run-time dependency spice-server found: NO  (tried pkg-config)
+Checking for function "shm_open" : YES 
+Run-time dependency libiscsi found: NO  (tried pkg-config)
+Run-time dependency libzstd found: YES 1.5.5
+Run-time dependency qpl found: NO  (tried pkg-config)
+Run-time dependency libwd found: NO  (tried pkg-config)
+Run-time dependency libwd_comp found: NO  (tried pkg-config)
+Run-time dependency qatzip found: NO  (tried pkg-config)
+Run-time dependency virglrenderer found: NO  (tried pkg-config)
+Run-time dependency rutabaga_gfx_ffi found: NO  (tried pkg-config)
+Run-time dependency blkio found: NO  (tried pkg-config)
+Run-time dependency libcurl found: NO  (tried pkg-config)
+Run-time dependency libudev found: NO  (tried pkg-config)
+Run-time dependency igvm found: NO  (tried pkg-config)
+Library mpathpersist found: NO
+Run-time dependency ncursesw found: YES 6.4.20240113
+Has header "brlapi.h" : NO 
+sdl2-config found: NO
+Found CMake: /usr/local/bin/cmake (3.31.6)
+Run-time dependency sdl2 found: NO  (tried pkg-config, config-tool and cmake)
+Library rados found: NO
+Has header "rbd/librbd.h" : NO 
+Run-time dependency libssh found: NO  (tried pkg-config)
+Has header "bzlib.h" : NO 
+Has header "lzfse.h" : NO 
+Has header "sys/soundcard.h" : YES 
+Run-time dependency epoxy found: NO  (tried pkg-config)
+Has header "epoxy/egl.h" with dependency epoxy: NO 
+Run-time dependency libcbor found: NO  (tried pkg-config and cmake)
+Run-time dependency gnutls found: NO  (tried pkg-config)
+libgcrypt-config found: NO need ['>=1.9.4']
+Run-time dependency libgcrypt found: NO  (tried pkg-config and config-tool)
+Run-time dependency nettle found: NO  (tried pkg-config)
+Run-time dependency capstone found: NO  (tried pkg-config)
+Run-time dependency gmp found: YES 6.3.0
+Run-time dependency gtk+-3.0 found: NO  (tried pkg-config)
+Run-time dependency x11 found: NO  (tried pkg-config)
+Run-time dependency libpng found: NO  (tried pkg-config)
+Run-time dependency libjpeg found: NO  (tried pkg-config)
+Has header "sasl/sasl.h" : NO 
+Has header "security/pam_appl.h" : NO 
+Has header "snappy-c.h" : NO 
+Has header "lzo/lzo1x.h" : NO 
+Has header "numa.h" : NO 
+Library fdt found: YES
+Has header "rdma/rdma_cma.h" : NO 
+Library ibverbs found: NO
+Run-time dependency libcacard found: NO  (tried pkg-config)
+Run-time dependency u2f-emu found: NO  (tried pkg-config)
+Run-time dependency canokey-qemu found: NO  (tried pkg-config)
+Run-time dependency libusbredirparser-0.5 found: NO  (tried pkg-config)
+Run-time dependency libusb-1.0 found: NO  (tried pkg-config)
+Run-time dependency libpmem found: NO  (tried pkg-config)
+Run-time dependency libdaxctl found: NO  (tried pkg-config)
+Run-time dependency libkeyutils found: NO  (tried pkg-config)
+Checking for function "gettid" : YES 
+Run-time dependency libselinux found: YES 3.5
+Checking for function "malloc_trim" : YES 
+Run-time dependency fuse3 found: NO  (tried pkg-config)
+Run-time dependency libbpf found: NO  (tried pkg-config)
+Run-time dependency libdw found: NO  (tried pkg-config)
+Header "linux/fs.h" has symbol "FIFREEZE" : YES 
+Header "linux/fs.h" has symbol "FITRIM" : YES 
+Has header "linux/magic.h" : YES 
+Has header "valgrind/valgrind.h" : NO 
+Has header "linux/btrfs.h" : YES 
+Has header "libdrm/drm.h" : NO 
+Has header "linux/openat2.h" : YES 
+Has header "pty.h" : YES 
+Has header "sys/disk.h" : NO 
+Has header "sys/ioccom.h" : NO 
+Has header "sys/kcov.h" : NO 
+Checking for function "close_range" : NO 
+Checking for function "accept4" : YES 
+Checking for function "clock_adjtime" : YES 
+Checking for function "dup3" : YES 
+Checking for function "fallocate" : YES 
+Checking for function "posix_fallocate" : YES 
+Checking for function "sched_getcpu" : NO 
+Checking for function "posix_memalign" : YES 
+Checking for function "_aligned_malloc" : NO 
+Checking for function "valloc" : YES 
+Checking for function "memalign" : YES 
+Checking for function "ppoll" : YES 
+Checking for function "preadv" : YES 
+Checking for function "pthread_fchdir_np" : NO 
+Checking for function "sendfile" : YES 
+Checking for function "setns" : YES 
+Checking for function "unshare" : YES 
+Checking for function "syncfs" : YES 
+Checking for function "sync_file_range" : YES 
+Checking for function "timerfd_create" : YES 
+Checking for function "getloadavg" : YES 
+Checking for function "htonll" : NO 
+Checking for function "copy_file_range" : YES 
+Checking for function "getifaddrs" : YES 
+Checking for function "openpty" with dependency -lutil: YES 
+Checking for function "strchrnul" : YES 
+Checking for function "system" : YES 
+Header "sys/inotify.h" has symbol "inotify_init1" : YES 
+Checking for function "inotify_init1" : YES 
+Header "linux/blkzoned.h" has symbol "BLKOPENZONE" : YES 
+Header "linux/falloc.h" has symbol "FALLOC_FL_PUNCH_HOLE" : YES 
+Header "linux/falloc.h" has symbol "FALLOC_FL_KEEP_SIZE" : YES 
+Header "linux/falloc.h" has symbol "FALLOC_FL_ZERO_RANGE" : YES 
+Has header "linux/fiemap.h" : YES 
+Header "linux/fs.h" has symbol "FS_IOC_FIEMAP" : YES 
+Header "sched.h" has symbol "getcpu" : YES 
+Checking for function "getrandom" : YES 
+Header "sys/random.h" has symbol "GRND_NONBLOCK" : YES 
+Header "sys/prctl.h" has symbol "PR_SET_TIMERSLACK" : YES 
+Header "linux/rtnetlink.h" has symbol "IFLA_PROTO_DOWN" : YES 
+Header "sys/sysmacros.h" has symbol "makedev" : YES 
+Header "getopt.h" has symbol "optreset" : NO 
+Header "netinet/in.h" has symbol "IPPROTO_MPTCP" : YES 
+Header "netinet/tcp.h" has symbol "TCP_KEEPCNT" : YES 
+Header "netinet/tcp.h" has symbol "TCP_KEEPIDLE" : YES 
+Header "netinet/tcp.h" has symbol "TCP_KEEPINTVL" : YES 
+Checking whether type "struct sigevent" has member "sigev_notify_thread_id" : NO 
+Checking whether type "struct stat" has member "st_atim" : YES 
+Checking whether type "struct blk_zone" has member "capacity" : YES 
+Checking for type "struct iovec" : YES 
+Checking for type "struct utmpx" : YES 
+Checking for type "struct mmsghdr" : YES 
+Header "asm/hwprobe.h" has symbol "RISCV_HWPROBE_EXT_ZBA" : NO 
+Header "linux/vm_sockets.h" has symbol "AF_VSOCK" : YES 
+Program scripts/minikconf.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/minikconf.py)
+Configuring x86_64-softmmu-config-target.h using configuration
+Configuring x86_64-softmmu-config-devices.mak with command
+Reading depfile: /home/runner/work/qemu/qemu/build/meson-private/x86_64-softmmu-config-devices.mak.d
+Configuring x86_64-softmmu-config-devices.h using configuration
+Program scripts/make-config-poison.sh found: YES (/home/runner/work/qemu/qemu/scripts/make-config-poison.sh)
+
+Executing subproject libvhost-user for machine: host 
+
+libvhost-user| Project name: libvhost-user
+libvhost-user| Project version: undefined
+libvhost-user| C compiler for the host machine: cc -m64 (gcc 13.3.0 "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0")
+libvhost-user| C linker for the host machine: cc -m64 ld.bfd 2.42
+libvhost-user| Compiler for C supports arguments -Wsign-compare: YES
+libvhost-user| Compiler for C supports arguments -Wdeclaration-after-statement: YES
+libvhost-user| Compiler for C supports arguments -Wstrict-aliasing: YES
+libvhost-user| Dependency threads for host machine found: YES unknown (cached)
+libvhost-user| Dependency glib-2.0 for host machine found: YES 2.80.0 (overridden)
+libvhost-user| Build targets in project: 4
+libvhost-user| Subproject libvhost-user finished.
+
+
+Executing subproject libvduse for machine: host 
+
+libvduse| Project name: libvduse
+libvduse| Project version: undefined
+libvduse| C compiler for the host machine: cc -m64 (gcc 13.3.0 "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0")
+libvduse| C linker for the host machine: cc -m64 ld.bfd 2.42
+libvduse| Compiler for C supports arguments -Wsign-compare: YES (cached)
+libvduse| Compiler for C supports arguments -Wdeclaration-after-statement: YES (cached)
+libvduse| Compiler for C supports arguments -Wstrict-aliasing: YES (cached)
+libvduse| Build targets in project: 5
+libvduse| Subproject libvduse finished.
+
+Configuring config-host.h using configuration
+Configuring run using configuration
+Program scripts/hxtool found: YES (/home/runner/work/qemu/qemu/scripts/hxtool)
+Program scripts/shaderinclude.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/shaderinclude.py)
+Initialized empty Git repository in /home/runner/work/qemu/qemu/subprojects/keycodemapdb/.git/
+From https://gitlab.com/qemu-project/keycodemapdb
+ * branch            f5772a62ec52591ff6870b7e8ef32482371f22c6 -> FETCH_HEAD
+HEAD is now at f5772a6 Add Qemu qcode support for F13 to F24
+Initialized empty Git repository in /home/runner/work/qemu/qemu/subprojects/berkeley-softfloat-3/.git/
+From https://gitlab.com/qemu-project/berkeley-softfloat-3
+ * branch            b64af41c3276f97f0e181920400ee056b9c88037 -> FETCH_HEAD
+HEAD is now at b64af41 Fix typo in function 'softfloat_propagateNaNF128M' for RISC-V.
+Initialized empty Git repository in /home/runner/work/qemu/qemu/subprojects/berkeley-testfloat-3/.git/
+From https://gitlab.com/qemu-project/berkeley-testfloat-3
+ * branch            e7af9751d9f9fd3b47911f51a5cfd08af256a9ab -> FETCH_HEAD
+HEAD is now at e7af975 Fix -Wreturn-type errors in fNNRandom
+Program scripts/qapi-gen.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/qapi-gen.py)
+Program scripts/qemu-version.sh found: YES (/home/runner/work/qemu/qemu/scripts/qemu-version.sh)
+
+Executing subproject keycodemapdb for machine: host 
+
+keycodemapdb| Project name: keycodemapdb
+keycodemapdb| Project version: undefined
+keycodemapdb| Program tools/keymap-gen found: YES (/home/runner/work/qemu/qemu/subprojects/keycodemapdb/tools/keymap-gen)
+keycodemapdb| Build targets in project: 450
+keycodemapdb| Subproject keycodemapdb finished.
+
+Configuring qemu-plugin.symbols with command
+Program scripts/decodetree.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/decodetree.py)
+Program ../scripts/feature_to_c.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/gdbstub/../scripts/feature_to_c.py)
+Program ../scripts/modules/module_block.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/block/../scripts/modules/module_block.py)
+Program ../scripts/block-coroutine-wrapper.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/block/../scripts/block-coroutine-wrapper.py)
+Program scripts/modinfo-collect.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/modinfo-collect.py)
+Program scripts/modinfo-generate.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/modinfo-generate.py)
+Program scripts/rust/rust_root_crate.sh found: YES (/home/runner/work/qemu/qemu/scripts/rust/rust_root_crate.sh)
+Configuring 50-edk2-i386-secure.json using configuration
+Configuring 50-edk2-x86_64-secure.json using configuration
+Configuring 60-edk2-aarch64.json using configuration
+Configuring 60-edk2-arm.json using configuration
+Configuring 60-edk2-i386.json using configuration
+Configuring 60-edk2-x86_64.json using configuration
+Configuring 60-edk2-loongarch64.json using configuration
+Configuring 60-edk2-riscv64.json using configuration
+Program dtc found: NO
+Program qemu-keymap found: NO
+Program /home/runner/work/qemu/qemu/build/pyvenv/bin/sphinx-build skipped: feature docs disabled
+Program bash found: YES 5.2.21 5.2.21 (/usr/bin/bash)
+Program /home/runner/work/qemu/qemu/scripts/decodetree.py found: YES (/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/decodetree.py)
+
+Executing subproject berkeley-softfloat-3 for machine: host 
+
+berkeley-softfloat-3| Project name: berkeley-softfloat-3
+berkeley-softfloat-3| Project version: undefined
+berkeley-softfloat-3| C compiler for the host machine: cc -m64 (gcc 13.3.0 "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0")
+berkeley-softfloat-3| C linker for the host machine: cc -m64 ld.bfd 2.42
+berkeley-softfloat-3| Configuring platform.h using configuration
+berkeley-softfloat-3| Build targets in project: 585
+berkeley-softfloat-3| Subproject berkeley-softfloat-3 finished.
+
+
+Executing subproject berkeley-testfloat-3 for machine: host 
+
+berkeley-testfloat-3| Project name: berkeley-testfloat-3
+berkeley-testfloat-3| Project version: undefined
+berkeley-testfloat-3| C compiler for the host machine: cc -m64 (gcc 13.3.0 "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0")
+berkeley-testfloat-3| C linker for the host machine: cc -m64 ld.bfd 2.42
+berkeley-testfloat-3| Configuring platform.h using configuration
+berkeley-testfloat-3| Compiler for C supports arguments -Wno-ignored-pragmas: NO
+berkeley-testfloat-3| Build targets in project: 587
+berkeley-testfloat-3| Subproject berkeley-testfloat-3 finished.
+
+Program diff found: YES (/usr/bin/diff)
+Program dbus-daemon found: YES (/usr/bin/dbus-daemon)
+Run-time dependency gvnc-1.0 found: NO  (tried pkg-config)
+Run-time dependency sysprof-capture-4 found: NO  (tried pkg-config)
+Run-time dependency glib-2.0 found: YES 2.80.0
+Program initrd-stress.sh found: YES (/home/runner/work/qemu/qemu/tests/migration-stress/initrd-stress.sh)
+Build targets in project: 819
+
+qemu 11.1.50
+
+  Build environment
+    Build directory                 : /home/runner/work/qemu/qemu/build
+    Source path                     : /home/runner/work/qemu/qemu
+    Download dependencies           : YES
+
+  Directories
+    Install prefix                  : /usr/local
+    BIOS directory                  : share/qemu
+    firmware path                   : share/qemu-firmware
+    binary directory                : /usr/local/bin
+    library directory               : /usr/local/lib/x86_64-linux-gnu
+    module directory                : lib/x86_64-linux-gnu/qemu
+    libexec directory               : /usr/local/libexec
+    include directory               : /usr/local/include
+    config directory                : /usr/local/etc
+    local state directory           : /var/local
+    Manual directory                : /usr/local/share/man
+    Doc directory                   : /usr/local/share/doc
+
+  Host binaries
+    python                          : /home/runner/work/qemu/qemu/build/pyvenv/bin/python3 (version: 3.12)
+    sphinx-build                    : NO
+    gdb                             : 
+    iasl                            : NO
+    genisoimage                     : 
+    smbd                            : /usr/sbin/smbd
+
+  Configurable features
+    Documentation                   : NO
+    system-mode emulation           : YES
+    user-mode emulation             : NO
+    block layer                     : YES
+    Install blobs                   : YES
+    module support                  : NO
+    fuzzing support                 : NO
+    Audio drivers                   : oss
+    Trace backends                  : log
+    QOM debugging                   : YES
+    Relocatable install             : YES
+    vhost-kernel support            : YES
+    vhost-net support               : YES
+    vhost-user support              : YES
+    vhost-user-crypto support       : YES
+    vhost-user-blk server support   : YES
+    vhost-vdpa support              : YES
+    build guest agent               : YES
+
+  Compilation
+    host CPU                        : x86_64
+    host endianness                 : little
+    C compiler                      : cc -m64
+    Host C compiler                 : cc -m64
+    C++ compiler                    : c++ -m64
+    Objective-C compiler            : NO
+    Rust support                    : NO
+    CFLAGS                          : -g -O0
+    CXXFLAGS                        : -g -O0
+    QEMU_CFLAGS                     : -mcx16 -msse2 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -fno-strict-aliasing -fno-common -fwrapv -ftrivial-auto-var-init=zero -fzero-init-padding-bits=all -fzero-call-used-regs=used-gpr -fstack-protector-strong
+    QEMU_CXXFLAGS                   : -mcx16 -msse2 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -fno-strict-aliasing -fno-common -fwrapv -ftrivial-auto-var-init=zero -fzero-init-padding-bits=all -fzero-call-used-regs=used-gpr -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -fstack-protector-strong
+    QEMU_LDFLAGS                    : -fstack-protector-strong -Wl,-z,relro -Wl,-z,now
+    link-time optimization (LTO)    : NO
+    PIE                             : YES
+    static build                    : NO
+    malloc trim support             : YES
+    membarrier                      : NO
+    debug graph lock                : YES
+    debug stack usage               : NO
+    mutex debugging                 : YES
+    memory allocator                : system
+    avx2 optimization               : YES
+    avx512bw optimization           : YES
+    gcov                            : NO
+    thread sanitizer                : NO
+    CFI support                     : NO
+    strip binaries                  : NO
+    sparse                          : NO
+    mingw32 support                 : NO
+
+  Cross compilers
+    x86_64                          : cc
+
+  Targets and accelerators
+    KVM support                     : YES
+    Nitro support                   : YES
+    HVF support                     : NO
+    WHPX support                    : NO
+    NVMM support                    : NO
+    MSHV support                    : YES
+    Xen support                     : NO
+    Xen emulation                   : YES
+    TCG support                     : YES
+    TCG backend                     : native (x86_64)
+    TCG plugins                     : YES
+    TCG debug enabled               : YES
+    target list                     : x86_64-softmmu
+    default devices                 : YES
+    out of process emulation        : YES
+    vfio-user server                : NO
+
+  Block layer support
+    coroutine backend               : ucontext
+    coroutine pool                  : YES
+    Block whitelist (rw)            : 
+    Block whitelist (ro)            : 
+    Use block whitelist in tools    : NO
+    VirtFS (9P) support             : YES
+    replication support             : YES
+    bochs support                   : YES
+    cloop support                   : YES
+    dmg support                     : YES
+    qcow v1 support                 : YES
+    vdi support                     : YES
+    vhdx support                    : YES
+    vmdk support                    : YES
+    vpc support                     : YES
+    vvfat support                   : YES
+    qed support                     : YES
+    parallels support               : YES
+    FUSE exports                    : NO
+    VDUSE block exports             : YES
+
+  Crypto
+    TLS priority                    : NORMAL
+    GNUTLS support                  : NO
+    libgcrypt                       : NO
+    nettle                          : NO
+    SM4 ALG support                 : NO
+    SM3 ALG support                 : NO
+    AF_ALG support                  : NO
+    rng-none                        : NO
+    Linux keyring                   : YES
+    Linux keyutils                  : NO
+
+  User interface
+    D-Bus display                   : YES
+    SDL support                     : NO
+    SDL image support               : NO
+    GTK support                     : NO
+    pixman                          : YES 0.42.2
+    VTE support                     : NO
+    PNG support                     : NO
+    VNC support                     : YES
+    VNC SASL support                : NO
+    VNC JPEG support                : NO
+    VNC D-Bus server (qemu-vnc)     : YES
+    spice protocol support          : NO
+    curses support                  : YES
+    brlapi support                  : NO
+
+  Graphics backends
+    VirGL support                   : NO
+    Rutabaga support                : NO
+
+  Audio backends
+    OSS support                     : YES
+    sndio support                   : NO
+    ALSA support                    : NO
+    PulseAudio support              : NO
+    PipeWire support                : NO
+    JACK support                    : NO
+
+  Network backends
+    AF_XDP support                  : NO
+    passt support                   : YES
+    slirp support                   : YES 4.7.0
+    vde support                     : NO
+    netmap support                  : NO
+    l2tpv3 support                  : YES
+
+  Dependencies
+    libtasn1                        : NO
+    PAM                             : NO
+    iconv support                   : YES
+    blkio support                   : NO
+    curl support                    : NO
+    Multipath support               : NO
+    Linux AIO support               : NO
+    Linux io_uring support          : NO
+    ATTR/XATTR support              : YES
+    RDMA support                    : NO
+    fdt support                     : YES
+    libcap-ng support               : NO
+    bpf support                     : NO
+    rbd support                     : NO
+    smartcard support               : NO
+    U2F support                     : NO
+    libusb                          : NO
+    usb net redir                   : NO
+    OpenGL support (epoxy)          : NO
+    GBM                             : NO
+    libiscsi support                : NO
+    libnfs support                  : NO
+    seccomp support                 : NO
+    hv-balloon support              : YES
+    TPM support                     : YES
+    IGVM support                    : NO
+    libssh support                  : NO
+    lzo support                     : NO
+    snappy support                  : NO
+    bzip2 support                   : NO
+    lzfse support                   : NO
+    zstd support                    : YES 1.5.5
+    Query Processing Library support: NO
+    UADK Library support            : NO
+    qatzip support                  : NO
+    NUMA host support               : NO
+    capstone                        : NO
+    libpmem support                 : NO
+    libdaxctl support               : NO
+    libcbor support                 : NO
+    libudev                         : NO
+    FUSE lseek                      : NO
+    selinux                         : YES 3.5
+    libdw                           : NO
+    valgrind                        : NO
+
+  Subprojects (for host machine)
+    berkeley-softfloat-3            : YES
+    berkeley-testfloat-3            : YES
+    keycodemapdb                    : YES
+    libvduse                        : YES
+    libvhost-user                   : YES
+
+  User defined options
+    Native files                    : config-meson.cross
+    debug_graph_lock                : true
+    debug_mutex                     : true
+    debug_tcg                       : true
+    docs                            : disabled
+    optimization                    : 0
+    plugins                         : true
+    werror                          : false
+
+Found ninja-1.13.2 at /usr/local/bin/ninja
+Running postconf script '/home/runner/work/qemu/qemu/build/pyvenv/bin/python3 /home/runner/work/qemu/qemu/scripts/symlink-install-tree.py'
+[1/1959] Generating config-poison.h with a custom command (wrapped by meson to capture output)
+[2/1959] Generating qemu-version.h with a custom command (wrapped by meson to capture output)
+[3/1959] Generating qapi/shared QAPI source files with a custom command
+[4/1959] Generating qemu-img-cmds.h with a custom command (wrapped by meson to capture output)
+[5/1959] Generating hmp-commands.h with a custom command (wrapped by meson to capture output)
+[6/1959] Generating qemu-options.def with a custom command (wrapped by meson to capture output)
+[7/1959] Generating trace/trace-root.h with a custom command
+[8/1959] Generating hmp-commands-info.h with a custom command (wrapped by meson to capture output)
+[9/1959] Generating trace/trace-root.c with a custom command
+[10/1959] Generating trace/trace-crypto.h with a custom command
+[11/1959] Generating trace/trace-crypto.c with a custom command
+[12/1959] Generating trace/trace-qapi.h with a custom command
+[13/1959] Generating trace/trace-qapi.c with a custom command
+[14/1959] Generating trace/trace-qom.h with a custom command
+[15/1959] Generating trace/trace-qom.c with a custom command
+[16/1959] Generating trace/trace-monitor.h with a custom command
+[17/1959] Generating trace/trace-monitor.c with a custom command
+[18/1959] Generating trace/trace-util.c with a custom command
+[19/1959] Generating trace/trace-util.h with a custom command
+[20/1959] Generating trace/trace-gdbstub.c with a custom command
+[21/1959] Generating trace/trace-gdbstub.h with a custom command
+[22/1959] Generating trace/trace-tools_qemu_vnc.h with a custom command
+[23/1959] Generating trace/trace-tools_qemu_vnc.c with a custom command
+[24/1959] Generating trace/trace-authz.c with a custom command
+[25/1959] Generating trace/trace-authz.h with a custom command
+[26/1959] Generating trace/trace-block.c with a custom command
+[27/1959] Generating trace/trace-block.h with a custom command
+[28/1959] Generating trace/trace-chardev.h with a custom command
+[29/1959] Generating trace/trace-chardev.c with a custom command
+[30/1959] Generating trace/trace-io.h with a custom command
+[31/1959] Generating trace/trace-io.c with a custom command
+[32/1959] Generating trace/trace-nbd.c with a custom command
+[33/1959] Generating trace/trace-nbd.h with a custom command
+[34/1959] Generating trace/trace-scsi.h with a custom command
+[35/1959] Generating trace/trace-scsi.c with a custom command
+[36/1959] Generating trace/trace-accel_hvf.h with a custom command
+[37/1959] Generating trace/trace-accel_hvf.c with a custom command
+[38/1959] Generating trace/trace-accel_kvm.c with a custom command
+[39/1959] Generating trace/trace-accel_kvm.h with a custom command
+[40/1959] Generating trace/trace-accel_mshv.h with a custom command
+[41/1959] Generating trace/trace-accel_mshv.c with a custom command
+[42/1959] Generating trace/trace-accel_nitro.c with a custom command
+[43/1959] Generating trace/trace-accel_nitro.h with a custom command
+[44/1959] Generating trace/trace-audio.c with a custom command
+[45/1959] Generating trace/trace-audio.h with a custom command
+[46/1959] Generating trace/trace-backends.h with a custom command
+[47/1959] Generating trace/trace-backends.c with a custom command
+[48/1959] Generating trace/trace-backends_tpm.c with a custom command
+[49/1959] Generating trace/trace-backends_tpm.h with a custom command
+[50/1959] Generating trace/trace-ebpf.h with a custom command
+[51/1959] Generating trace/trace-ebpf.c with a custom command
+[52/1959] Generating trace/trace-hw_9pfs.c with a custom command
+[53/1959] Generating trace/trace-hw_9pfs.h with a custom command
+[54/1959] Generating trace/trace-hw_acpi.h with a custom command
+[55/1959] Generating trace/trace-hw_acpi.c with a custom command
+[56/1959] Generating trace/trace-hw_adc.c with a custom command
+[57/1959] Generating trace/trace-hw_adc.h with a custom command
+[58/1959] Generating trace/trace-hw_alpha.h with a custom command
+[59/1959] Generating trace/trace-hw_alpha.c with a custom command
+[60/1959] Generating trace/trace-hw_arm.c with a custom command
+[61/1959] Generating trace/trace-hw_arm.h with a custom command
+[62/1959] Generating trace/trace-hw_audio.h with a custom command
+[63/1959] Generating trace/trace-hw_audio.c with a custom command
+[64/1959] Generating trace/trace-hw_block.c with a custom command
+[65/1959] Generating trace/trace-hw_block.h with a custom command
+[66/1959] Generating trace/trace-hw_char.c with a custom command
+[67/1959] Generating trace/trace-hw_char.h with a custom command
+[68/1959] Generating trace/trace-hw_display.c with a custom command
+[69/1959] Generating trace/trace-hw_display.h with a custom command
+[70/1959] Generating trace/trace-hw_dma.h with a custom command
+[71/1959] Generating trace/trace-hw_dma.c with a custom command
+[72/1959] Generating trace/trace-hw_fsi.h with a custom command
+[73/1959] Generating trace/trace-hw_fsi.c with a custom command
+[74/1959] Generating trace/trace-hw_hexagon.h with a custom command
+[75/1959] Generating trace/trace-hw_hexagon.c with a custom command
+[76/1959] Generating trace/trace-hw_hyperv.c with a custom command
+[77/1959] Generating trace/trace-hw_hyperv.h with a custom command
+[78/1959] Generating trace/trace-hw_i2c.h with a custom command
+[79/1959] Generating trace/trace-hw_i2c.c with a custom command
+[80/1959] Generating trace/trace-hw_i3c.c with a custom command
+[81/1959] Generating trace/trace-hw_i3c.h with a custom command
+[82/1959] Generating trace/trace-hw_i386.c with a custom command
+[83/1959] Generating trace/trace-hw_i386.h with a custom command
+[84/1959] Generating trace/trace-hw_i386_xen.h with a custom command
+[85/1959] Generating trace/trace-hw_i386_xen.c with a custom command
+[86/1959] Generating trace/trace-hw_i386_kvm.h with a custom command
+[87/1959] Generating trace/trace-hw_i386_kvm.c with a custom command
+[88/1959] Generating trace/trace-hw_ide.c with a custom command
+[89/1959] Generating trace/trace-hw_ide.h with a custom command
+[90/1959] Generating trace/trace-hw_input.h with a custom command
+[91/1959] Generating trace/trace-hw_input.c with a custom command
+[92/1959] Generating trace/trace-hw_intc.c with a custom command
+[93/1959] Generating trace/trace-hw_intc.h with a custom command
+[94/1959] Generating trace/trace-hw_isa.h with a custom command
+[95/1959] Generating trace/trace-hw_isa.c with a custom command
+[96/1959] Generating trace/trace-hw_mem.h with a custom command
+[97/1959] Generating trace/trace-hw_mem.c with a custom command
+[98/1959] Generating trace/trace-hw_mips.h with a custom command
+[99/1959] Generating trace/trace-hw_mips.c with a custom command
+[100/1959] Generating trace/trace-hw_misc.c with a custom command
+[101/1959] Generating trace/trace-hw_misc.h with a custom command
+[102/1959] Generating trace/trace-hw_misc_macio.h with a custom command
+[103/1959] Generating trace/trace-hw_misc_macio.c with a custom command
+[104/1959] Generating trace/trace-hw_net.c with a custom command
+[105/1959] Generating trace/trace-hw_net.h with a custom command
+[106/1959] Generating trace/trace-hw_net_can.h with a custom command
+[107/1959] Generating trace/trace-hw_net_can.c with a custom command
+[108/1959] Generating trace/trace-hw_nitro.h with a custom command
+[109/1959] Generating trace/trace-hw_nitro.c with a custom command
+[110/1959] Generating trace/trace-hw_nubus.h with a custom command
+[111/1959] Generating trace/trace-hw_nubus.c with a custom command
+[112/1959] Generating trace/trace-hw_nvme.c with a custom command
+[113/1959] Generating trace/trace-hw_nvme.h with a custom command
+[114/1959] Generating trace/trace-hw_nvram.h with a custom command
+[115/1959] Generating trace/trace-hw_nvram.c with a custom command
+[116/1959] Generating trace/trace-hw_pci.c with a custom command
+[117/1959] Generating trace/trace-hw_pci.h with a custom command
+[118/1959] Generating trace/trace-hw_pci_host.c with a custom command
+[119/1959] Generating trace/trace-hw_pci_host.h with a custom command
+[120/1959] Generating trace/trace-hw_ppc.c with a custom command
+[121/1959] Generating trace/trace-hw_ppc.h with a custom command
+[122/1959] Generating trace/trace-hw_rtc.h with a custom command
+[123/1959] Generating trace/trace-hw_rtc.c with a custom command
+[124/1959] Generating trace/trace-hw_riscv.h with a custom command
+[125/1959] Generating trace/trace-hw_riscv.c with a custom command
+[126/1959] Generating trace/trace-hw_s390x.c with a custom command
+[127/1959] Generating trace/trace-hw_s390x.h with a custom command
+[128/1959] Generating trace/trace-hw_scsi.c with a custom command
+[129/1959] Generating trace/trace-hw_scsi.h with a custom command
+[130/1959] Generating trace/trace-hw_sd.h with a custom command
+[131/1959] Generating trace/trace-hw_sd.c with a custom command
+[132/1959] Generating trace/trace-hw_sensor.h with a custom command
+[133/1959] Generating trace/trace-hw_sensor.c with a custom command
+[134/1959] Generating trace/trace-hw_sh4.h with a custom command
+[135/1959] Generating trace/trace-hw_sh4.c with a custom command
+[136/1959] Generating trace/trace-hw_sparc.h with a custom command
+[137/1959] Generating trace/trace-hw_sparc.c with a custom command
+[138/1959] Generating trace/trace-hw_sparc64.h with a custom command
+[139/1959] Generating trace/trace-hw_sparc64.c with a custom command
+[140/1959] Generating trace/trace-hw_ssi.h with a custom command
+[141/1959] Generating trace/trace-hw_ssi.c with a custom command
+[142/1959] Generating trace/trace-hw_timer.c with a custom command
+[143/1959] Generating trace/trace-hw_timer.h with a custom command
+[144/1959] Generating trace/trace-hw_tpm.h with a custom command
+[145/1959] Generating trace/trace-hw_tpm.c with a custom command
+[146/1959] Generating trace/trace-hw_uefi.h with a custom command
+[147/1959] Generating trace/trace-hw_uefi.c with a custom command
+[148/1959] Generating trace/trace-hw_ufs.c with a custom command
+[149/1959] Generating trace/trace-hw_ufs.h with a custom command
+[150/1959] Generating trace/trace-hw_usb.c with a custom command
+[151/1959] Generating trace/trace-hw_usb.h with a custom command
+[152/1959] Generating trace/trace-hw_vfio.h with a custom command
+[153/1959] Generating trace/trace-hw_vfio.c with a custom command
+[154/1959] Generating trace/trace-hw_vfio_user.h with a custom command
+[155/1959] Generating trace/trace-hw_vfio_user.c with a custom command
+[156/1959] Generating trace/trace-hw_virtio.c with a custom command
+[157/1959] Generating trace/trace-hw_virtio.h with a custom command
+[158/1959] Generating trace/trace-hw_vmapple.h with a custom command
+[159/1959] Generating trace/trace-hw_vmapple.c with a custom command
+[160/1959] Generating trace/trace-hw_watchdog.h with a custom command
+[161/1959] Generating trace/trace-hw_watchdog.c with a custom command
+[162/1959] Generating trace/trace-hw_xen.c with a custom command
+[163/1959] Generating trace/trace-hw_xen.h with a custom command
+[164/1959] Generating trace/trace-hw_gpio.h with a custom command
+[165/1959] Generating trace/trace-hw_gpio.c with a custom command
+[166/1959] Generating trace/trace-migration.c with a custom command
+[167/1959] Generating trace/trace-migration.h with a custom command
+[168/1959] Generating trace/trace-net.h with a custom command
+[169/1959] Generating trace/trace-net.c with a custom command
+[170/1959] Generating trace/trace-replay.h with a custom command
+[171/1959] Generating trace/trace-replay.c with a custom command
+[172/1959] Generating trace/trace-system.h with a custom command
+[173/1959] Generating trace/trace-system.c with a custom command
+[174/1959] Generating trace/trace-ui.h with a custom command
+[175/1959] Generating trace/trace-ui.c with a custom command
+[176/1959] Generating trace/trace-hw_remote.h with a custom command
+[177/1959] Generating trace/trace-hw_remote.c with a custom command
+[178/1959] Generating trace/trace-accel_tcg.c with a custom command
+[179/1959] Generating trace/trace-accel_tcg.h with a custom command
+[180/1959] Generating trace/trace-hw_core.h with a custom command
+[181/1959] Generating trace/trace-hw_core.c with a custom command
+[182/1959] Generating trace/trace-target_arm.c with a custom command
+[183/1959] Generating trace/trace-target_arm.h with a custom command
+[184/1959] Generating trace/trace-target_arm_hvf.h with a custom command
+[185/1959] Generating trace/trace-target_arm_hvf.c with a custom command
+[186/1959] Generating trace/trace-target_arm_tcg.c with a custom command
+[187/1959] Generating trace/trace-target_arm_tcg.h with a custom command
+[188/1959] Generating trace/trace-target_hppa.h with a custom command
+[189/1959] Generating trace/trace-target_hppa.c with a custom command
+[190/1959] Generating trace/trace-target_i386.c with a custom command
+[191/1959] Generating trace/trace-target_i386.h with a custom command
+[192/1959] Generating trace/trace-target_i386_kvm.h with a custom command
+[193/1959] Generating trace/trace-target_i386_kvm.c with a custom command
+[194/1959] Generating trace/trace-target_i386_whpx.c with a custom command
+[195/1959] Generating trace/trace-target_i386_whpx.h with a custom command
+[196/1959] Generating trace/trace-target_loongarch.h with a custom command
+[197/1959] Generating trace/trace-target_loongarch.c with a custom command
+[198/1959] Generating trace/trace-target_mips_tcg.c with a custom command
+[199/1959] Generating trace/trace-target_mips_tcg.h with a custom command
+[200/1959] Generating trace/trace-target_ppc.h with a custom command
+[201/1959] Generating trace/trace-target_ppc.c with a custom command
+[202/1959] Generating trace/trace-target_riscv.c with a custom command
+[203/1959] Generating trace/trace-target_riscv.h with a custom command
+[204/1959] Generating trace/trace-target_s390x.h with a custom command
+[205/1959] Generating trace/trace-target_s390x.c with a custom command
+[206/1959] Generating trace/trace-target_s390x_kvm.c with a custom command
+[207/1959] Generating trace/trace-target_s390x_kvm.h with a custom command
+[208/1959] Generating trace/trace-target_sparc.h with a custom command
+[209/1959] Generating trace/trace-target_sparc.c with a custom command
+[210/1959] Generating trace/trace-qapi_commands_authz_trace_events.h with a custom command
+[211/1959] Generating trace/trace-qapi_commands_authz_trace_events.c with a custom command
+[212/1959] Generating trace/trace-qapi_commands_block_trace_events.c with a custom command
+[213/1959] Generating trace/trace-qapi_commands_block_trace_events.h with a custom command
+[214/1959] Generating trace/trace-qapi_commands_block_core_trace_events.c with a custom command
+[215/1959] Generating trace/trace-qapi_commands_block_core_trace_events.h with a custom command
+[216/1959] Generating trace/trace-qapi_commands_block_export_trace_events.h with a custom command
+[217/1959] Generating trace/trace-qapi_commands_block_export_trace_events.c with a custom command
+[218/1959] Generating trace/trace-qapi_commands_char_trace_events.h with a custom command
+[219/1959] Generating trace/trace-qapi_commands_char_trace_events.c with a custom command
+[220/1959] Generating trace/trace-qapi_commands_common_trace_events.h with a custom command
+[221/1959] Generating trace/trace-qapi_commands_common_trace_events.c with a custom command
+[222/1959] Generating trace/trace-qapi_commands_compat_trace_events.h with a custom command
+[223/1959] Generating trace/trace-qapi_commands_compat_trace_events.c with a custom command
+[224/1959] Generating trace/trace-qapi_commands_control_trace_events.c with a custom command
+[225/1959] Generating trace/trace-qapi_commands_control_trace_events.h with a custom command
+[226/1959] Generating trace/trace-qapi_commands_crypto_trace_events.h with a custom command
+[227/1959] Generating trace/trace-qapi_commands_crypto_trace_events.c with a custom command
+[228/1959] Generating trace/trace-qapi_commands_cxl_trace_events.h with a custom command
+[229/1959] Generating trace/trace-qapi_commands_cxl_trace_events.c with a custom command
+[230/1959] Generating trace/trace-qapi_commands_dump_trace_events.c with a custom command
+[231/1959] Generating trace/trace-qapi_commands_dump_trace_events.h with a custom command
+[232/1959] Generating trace/trace-qapi_commands_ebpf_trace_events.h with a custom command
+[233/1959] Generating trace/trace-qapi_commands_ebpf_trace_events.c with a custom command
+[234/1959] Generating trace/trace-qapi_commands_error_trace_events.c with a custom command
+[235/1959] Generating trace/trace-qapi_commands_error_trace_events.h with a custom command
+[236/1959] Generating trace/trace-qapi_commands_introspect_trace_events.h with a custom command
+[237/1959] Generating trace/trace-qapi_commands_introspect_trace_events.c with a custom command
+[238/1959] Generating trace/trace-qapi_commands_job_trace_events.h with a custom command
+[239/1959] Generating trace/trace-qapi_commands_job_trace_events.c with a custom command
+[240/1959] Generating trace/trace-qapi_commands_machine_common_trace_events.h with a custom command
+[241/1959] Generating trace/trace-qapi_commands_machine_common_trace_events.c with a custom command
+[242/1959] Generating trace/trace-qapi_commands_machine_trace_events.c with a custom command
+[243/1959] Generating trace/trace-qapi_commands_machine_trace_events.h with a custom command
+[244/1959] Generating trace/trace-qapi_commands_machine_s390x_trace_events.h with a custom command
+[245/1959] Generating trace/trace-qapi_commands_machine_s390x_trace_events.c with a custom command
+[246/1959] Generating trace/trace-qapi_commands_migration_trace_events.c with a custom command
+[247/1959] Generating trace/trace-qapi_commands_migration_trace_events.h with a custom command
+[248/1959] Generating trace/trace-qapi_commands_misc_trace_events.h with a custom command
+[249/1959] Generating trace/trace-qapi_commands_misc_trace_events.c with a custom command
+[250/1959] Generating trace/trace-qapi_commands_net_trace_events.c with a custom command
+[251/1959] Generating trace/trace-qapi_commands_net_trace_events.h with a custom command
+[252/1959] Generating trace/trace-qapi_commands_pragma_trace_events.h with a custom command
+[253/1959] Generating trace/trace-qapi_commands_pragma_trace_events.c with a custom command
+[254/1959] Generating trace/trace-qapi_commands_qom_trace_events.c with a custom command
+[255/1959] Generating trace/trace-qapi_commands_qom_trace_events.h with a custom command
+[256/1959] Generating trace/trace-qapi_commands_replay_trace_events.h with a custom command
+[257/1959] Generating trace/trace-qapi_commands_replay_trace_events.c with a custom command
+[258/1959] Generating trace/trace-qapi_commands_run_state_trace_events.c with a custom command
+[259/1959] Generating trace/trace-qapi_commands_run_state_trace_events.h with a custom command
+[260/1959] Generating trace/trace-qapi_commands_sockets_trace_events.h with a custom command
+[261/1959] Generating trace/trace-qapi_commands_sockets_trace_events.c with a custom command
+[262/1959] Generating trace/trace-qapi_commands_stats_trace_events.c with a custom command
+[263/1959] Generating trace/trace-qapi_commands_stats_trace_events.h with a custom command
+[264/1959] Generating trace/trace-qapi_commands_trace_trace_events.h with a custom command
+[265/1959] Generating trace/trace-qapi_commands_trace_trace_events.c with a custom command
+[266/1959] Generating trace/trace-qapi_commands_transaction_trace_events.h with a custom command
+[267/1959] Generating trace/trace-qapi_commands_transaction_trace_events.c with a custom command
+[268/1959] Generating trace/trace-qapi_commands_vfio_trace_events.h with a custom command
+[269/1959] Generating trace/trace-qapi_commands_vfio_trace_events.c with a custom command
+[270/1959] Generating trace/trace-qapi_commands_virtio_trace_events.c with a custom command
+[271/1959] Generating trace/trace-qapi_commands_virtio_trace_events.h with a custom command
+[272/1959] Generating trace/trace-qapi_commands_yank_trace_events.h with a custom command
+[273/1959] Generating trace/trace-qapi_commands_yank_trace_events.c with a custom command
+[274/1959] Generating trace/trace-qapi_commands_accelerator_trace_events.c with a custom command
+[275/1959] Generating trace/trace-qapi_commands_accelerator_trace_events.h with a custom command
+[276/1959] Generating trace/trace-qapi_commands_acpi_trace_events.h with a custom command
+[277/1959] Generating trace/trace-qapi_commands_acpi_trace_events.c with a custom command
+[278/1959] Generating trace/trace-qapi_commands_acpi_hest_trace_events.c with a custom command
+[279/1959] Generating trace/trace-qapi_commands_acpi_hest_trace_events.h with a custom command
+[280/1959] Generating trace/trace-qapi_commands_audio_trace_events.h with a custom command
+[281/1959] Generating trace/trace-qapi_commands_audio_trace_events.c with a custom command
+[282/1959] Generating trace/trace-qapi_commands_cryptodev_trace_events.c with a custom command
+[283/1959] Generating trace/trace-qapi_commands_cryptodev_trace_events.h with a custom command
+[284/1959] Generating trace/trace-qapi_commands_qdev_trace_events.h with a custom command
+[285/1959] Generating trace/trace-qapi_commands_qdev_trace_events.c with a custom command
+[286/1959] Generating trace/trace-qapi_commands_pci_trace_events.c with a custom command
+[287/1959] Generating trace/trace-qapi_commands_pci_trace_events.h with a custom command
+[288/1959] Generating trace/trace-qapi_commands_rocker_trace_events.h with a custom command
+[289/1959] Generating trace/trace-qapi_commands_rocker_trace_events.c with a custom command
+[290/1959] Generating trace/trace-qapi_commands_misc_arm_trace_events.c with a custom command
+[291/1959] Generating trace/trace-qapi_commands_misc_arm_trace_events.h with a custom command
+[292/1959] Generating trace/trace-qapi_commands_misc_i386_trace_events.h with a custom command
+[293/1959] Generating trace/trace-qapi_commands_misc_i386_trace_events.c with a custom command
+[294/1959] Generating trace/trace-qapi_commands_tpm_trace_events.c with a custom command
+[295/1959] Generating trace/trace-qapi_commands_tpm_trace_events.h with a custom command
+[296/1959] Generating trace/trace-qapi_commands_uefi_trace_events.h with a custom command
+[297/1959] Generating trace/trace-qapi_commands_uefi_trace_events.c with a custom command
+[298/1959] Generating trace/trace-qapi_commands_ui_trace_events.c with a custom command
+[299/1959] Generating trace/trace-qapi_commands_ui_trace_events.h with a custom command
+[300/1959] Generating ui/input-keymap-linux-to-qcode.c.inc with a custom command (wrapped by meson to capture output)
+[301/1959] Generating ui/input-keymap-atset1-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[302/1959] Generating ui/input-keymap-linux-to-atset1.c.inc with a custom command (wrapped by meson to capture output)
+[303/1959] Generating ui/input-keymap-linux-to-atset2.c.inc with a custom command (wrapped by meson to capture output)
+[304/1959] Generating ui/input-keymap-linux-to-atset3.c.inc with a custom command (wrapped by meson to capture output)
+[305/1959] Generating ui/input-keymap-qcode-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[306/1959] Generating ui/input-keymap-linux-to-qnum.c.inc with a custom command (wrapped by meson to capture output)
+[307/1959] Generating ui/input-keymap-linux-to-sun.c.inc with a custom command (wrapped by meson to capture output)
+[308/1959] Generating ui/input-keymap-qnum-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[309/1959] Generating ui/input-keymap-usb-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[310/1959] Generating ui/input-keymap-win32-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[311/1959] Generating ui/input-keymap-xorgkbd-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[312/1959] Generating ui/input-keymap-x11-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[313/1959] Generating ui/input-keymap-xorgxquartz-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[314/1959] Generating ui/input-keymap-xorgxwin-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[315/1959] Generating ui/dbus-display preprocess with a custom command (wrapped by meson to set env)
+[316/1959] Generating ui/input-keymap-osx-to-linux.c.inc with a custom command (wrapped by meson to capture output)
+[317/1959] Generating ui/shader/texture-blit-frag.h with a custom command (wrapped by meson to capture output)
+[318/1959] Generating ui/shader/texture-blit-vert.h with a custom command (wrapped by meson to capture output)
+[319/1959] Generating ui/shader/texture-blit-flip-vert.h with a custom command (wrapped by meson to capture output)
+[320/1959] Compiling C object subprojects/libvhost-user/libvhost-user-glib.a.p/libvhost-user-glib.c.o
+[321/1959] Compiling C object subprojects/libvduse/libvduse.a.p/libvduse.c.o
+[322/1959] Compiling C object subprojects/libvhost-user/libvhost-user.a.p/libvhost-user.c.o
+[323/1959] Generating ui/dbus-display gdbus-codegen with a custom command
+[324/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types.c.o
+[325/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-introspect.c.o
+[326/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit.c.o
+[327/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands.c.o
+[328/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-init-commands.c.o
+[329/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-emit-events.c.o
+[330/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events.c.o
+[331/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-builtin-types.c.o
+[332/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-builtin-visit.c.o
+[333/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-authz.c.o
+[334/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-authz.c.o
+[335/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-authz.c.o
+[336/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-authz.c.o
+[337/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-block.c.o
+[338/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-block.c.o
+[339/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-block.c.o
+[340/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-block.c.o
+[341/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-block-core.c.o
+[342/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-block-core.c.o
+[343/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-block-core.c.o
+[344/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-block-core.c.o
+[345/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-block-export.c.o
+[346/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-block-export.c.o
+[347/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-block-export.c.o
+[348/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-char.c.o
+[349/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-block-export.c.o
+[350/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-char.c.o
+[351/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-char.c.o
+[352/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-char.c.o
+[353/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-common.c.o
+[354/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-common.c.o
+[355/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-common.c.o
+[356/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-common.c.o
+[357/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-compat.c.o
+[358/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-compat.c.o
+[359/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-compat.c.o
+[360/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-compat.c.o
+[361/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-control.c.o
+[362/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-control.c.o
+[363/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-control.c.o
+[364/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-control.c.o
+[365/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-crypto.c.o
+[366/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-crypto.c.o
+[367/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-crypto.c.o
+[368/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-crypto.c.o
+[369/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-cxl.c.o
+[370/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-cxl.c.o
+[371/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-cxl.c.o
+[372/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-dump.c.o
+[373/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-cxl.c.o
+[374/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-dump.c.o
+[375/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-dump.c.o
+[376/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-ebpf.c.o
+[377/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-dump.c.o
+[378/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-ebpf.c.o
+[379/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-ebpf.c.o
+[380/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-ebpf.c.o
+[381/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-error.c.o
+[382/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-error.c.o
+[383/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-error.c.o
+[384/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-error.c.o
+[385/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-introspect.c.o
+[386/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-introspect.c.o
+[387/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-introspect.c.o
+[388/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-job.c.o
+[389/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-introspect.c.o
+[390/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-job.c.o
+[391/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-job.c.o
+[392/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-machine-common.c.o
+[393/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-job.c.o
+[394/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-machine-common.c.o
+[395/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-machine-common.c.o
+[396/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-machine-common.c.o
+[397/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-machine.c.o
+[398/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-machine.c.o
+[399/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-machine.c.o
+[400/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-machine-s390x.c.o
+[401/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-machine.c.o
+[402/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-machine-s390x.c.o
+[403/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-machine-s390x.c.o
+[404/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-machine-s390x.c.o
+[405/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-migration.c.o
+[406/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-migration.c.o
+[407/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-migration.c.o
+[408/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-misc.c.o
+[409/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-migration.c.o
+[410/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-misc.c.o
+[411/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-misc.c.o
+[412/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-misc.c.o
+[413/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-net.c.o
+[414/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-net.c.o
+[415/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-net.c.o
+[416/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-net.c.o
+[417/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-pragma.c.o
+[418/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-pragma.c.o
+[419/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-pragma.c.o
+[420/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-pragma.c.o
+[421/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-qom.c.o
+[422/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-qom.c.o
+[423/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-qom.c.o
+[424/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-replay.c.o
+[425/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-qom.c.o
+[426/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-replay.c.o
+[427/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-replay.c.o
+[428/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-replay.c.o
+[429/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-run-state.c.o
+[430/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-run-state.c.o
+[431/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-run-state.c.o
+[432/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-sockets.c.o
+[433/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-run-state.c.o
+[434/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-sockets.c.o
+[435/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-sockets.c.o
+[436/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-sockets.c.o
+[437/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-stats.c.o
+[438/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-stats.c.o
+[439/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-stats.c.o
+[440/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-trace.c.o
+[441/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-stats.c.o
+[442/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-trace.c.o
+[443/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-trace.c.o
+[444/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-trace.c.o
+[445/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-transaction.c.o
+[446/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-transaction.c.o
+[447/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-transaction.c.o
+[448/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-vfio.c.o
+[449/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-transaction.c.o
+[450/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-vfio.c.o
+[451/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-vfio.c.o
+[452/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-vfio.c.o
+[453/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-virtio.c.o
+[454/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-virtio.c.o
+[455/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-virtio.c.o
+[456/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-yank.c.o
+[457/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-virtio.c.o
+[458/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-yank.c.o
+[459/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-yank.c.o
+[460/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-accelerator.c.o
+[461/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-yank.c.o
+[462/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-accelerator.c.o
+[463/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-accelerator.c.o
+[464/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-acpi.c.o
+[465/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-accelerator.c.o
+[466/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-acpi.c.o
+[467/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-acpi.c.o
+[468/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-acpi-hest.c.o
+[469/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-acpi.c.o
+[470/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-acpi-hest.c.o
+[471/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-acpi-hest.c.o
+[472/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-acpi-hest.c.o
+[473/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-audio.c.o
+[474/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-audio.c.o
+[475/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-audio.c.o
+[476/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-audio.c.o
+[477/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-cryptodev.c.o
+[478/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-cryptodev.c.o
+[479/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-cryptodev.c.o
+[480/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-cryptodev.c.o
+[481/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-qdev.c.o
+[482/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-qdev.c.o
+[483/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-qdev.c.o
+[484/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-qdev.c.o
+[485/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-pci.c.o
+[486/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-pci.c.o
+[487/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-pci.c.o
+[488/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-pci.c.o
+[489/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-rocker.c.o
+[490/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-rocker.c.o
+[491/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-rocker.c.o
+[492/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-rocker.c.o
+[493/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-misc-arm.c.o
+[494/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-misc-arm.c.o
+[495/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-misc-arm.c.o
+[496/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-misc-arm.c.o
+[497/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-misc-i386.c.o
+[498/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-misc-i386.c.o
+[499/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-misc-i386.c.o
+[500/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-tpm.c.o
+[501/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-misc-i386.c.o
+[502/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-tpm.c.o
+[503/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-tpm.c.o
+[504/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-tpm.c.o
+[505/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-uefi.c.o
+[506/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-uefi.c.o
+[507/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-uefi.c.o
+[508/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-uefi.c.o
+[509/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-types-ui.c.o
+[510/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-events-ui.c.o
+[511/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-visit-ui.c.o
+[512/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-root.c.o
+[513/1959] Compiling C object libqemuutil.a.p/meson-generated_.._qapi_qapi-commands-ui.c.o
+[514/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-crypto.c.o
+[515/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi.c.o
+[516/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qom.c.o
+[517/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-monitor.c.o
+[518/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-gdbstub.c.o
+[519/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-util.c.o
+[520/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-tools_qemu_vnc.c.o
+[521/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-authz.c.o
+[522/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-chardev.c.o
+[523/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-block.c.o
+[524/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-io.c.o
+[525/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-nbd.c.o
+[526/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-scsi.c.o
+[527/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-accel_hvf.c.o
+[528/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-accel_kvm.c.o
+[529/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-accel_mshv.c.o
+[530/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-accel_nitro.c.o
+[531/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-audio.c.o
+[532/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-backends.c.o
+[533/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-backends_tpm.c.o
+[534/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-ebpf.c.o
+[535/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_9pfs.c.o
+[536/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_acpi.c.o
+[537/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_adc.c.o
+[538/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_alpha.c.o
+[539/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_arm.c.o
+[540/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_audio.c.o
+[541/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_block.c.o
+[542/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_char.c.o
+[543/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_display.c.o
+[544/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_dma.c.o
+[545/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_fsi.c.o
+[546/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_hexagon.c.o
+[547/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_hyperv.c.o
+[548/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_i2c.c.o
+[549/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_i3c.c.o
+[550/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_i386.c.o
+[551/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_i386_xen.c.o
+[552/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_i386_kvm.c.o
+[553/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_ide.c.o
+[554/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_input.c.o
+[555/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_intc.c.o
+[556/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_isa.c.o
+[557/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_mem.c.o
+[558/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_mips.c.o
+[559/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_misc.c.o
+[560/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_misc_macio.c.o
+[561/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_net_can.c.o
+[562/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_net.c.o
+[563/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_nitro.c.o
+[564/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_nubus.c.o
+[565/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_nvram.c.o
+[566/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_nvme.c.o
+[567/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_pci.c.o
+[568/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_pci_host.c.o
+[569/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_rtc.c.o
+[570/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_ppc.c.o
+[571/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_riscv.c.o
+[572/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_s390x.c.o
+[573/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_sd.c.o
+[574/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_scsi.c.o
+[575/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_sensor.c.o
+[576/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_sh4.c.o
+[577/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_sparc.c.o
+[578/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_sparc64.c.o
+[579/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_ssi.c.o
+[580/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_timer.c.o
+[581/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_tpm.c.o
+[582/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_uefi.c.o
+[583/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_ufs.c.o
+[584/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_usb.c.o
+[585/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_vfio.c.o
+[586/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_vfio_user.c.o
+[587/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_virtio.c.o
+[588/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_vmapple.c.o
+[589/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_watchdog.c.o
+[590/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_xen.c.o
+[591/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_gpio.c.o
+[592/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-migration.c.o
+[593/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-net.c.o
+[594/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-replay.c.o
+[595/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-system.c.o
+[596/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-ui.c.o
+[597/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_remote.c.o
+[598/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-accel_tcg.c.o
+[599/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-hw_core.c.o
+[600/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_arm.c.o
+[601/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_arm_hvf.c.o
+[602/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_arm_tcg.c.o
+[603/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_hppa.c.o
+[604/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_i386.c.o
+[605/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_i386_kvm.c.o
+[606/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_i386_whpx.c.o
+[607/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_loongarch.c.o
+[608/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_mips_tcg.c.o
+[609/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_ppc.c.o
+[610/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_riscv.c.o
+[611/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_s390x.c.o
+[612/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_s390x_kvm.c.o
+[613/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-target_sparc.c.o
+[614/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_authz_trace_events.c.o
+[615/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_block_trace_events.c.o
+[616/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_block_core_trace_events.c.o
+[617/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_block_export_trace_events.c.o
+[618/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_char_trace_events.c.o
+[619/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_common_trace_events.c.o
+[620/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_compat_trace_events.c.o
+[621/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_control_trace_events.c.o
+[622/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_crypto_trace_events.c.o
+[623/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_cxl_trace_events.c.o
+[624/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_dump_trace_events.c.o
+[625/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_ebpf_trace_events.c.o
+[626/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_error_trace_events.c.o
+[627/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_introspect_trace_events.c.o
+[628/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_job_trace_events.c.o
+[629/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_machine_common_trace_events.c.o
+[630/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_machine_trace_events.c.o
+[631/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_machine_s390x_trace_events.c.o
+[632/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_misc_trace_events.c.o
+[633/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_migration_trace_events.c.o
+[634/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_pragma_trace_events.c.o
+[635/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_net_trace_events.c.o
+[636/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_replay_trace_events.c.o
+[637/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_qom_trace_events.c.o
+[638/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_sockets_trace_events.c.o
+[639/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_run_state_trace_events.c.o
+[640/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_stats_trace_events.c.o
+[641/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_trace_trace_events.c.o
+[642/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_transaction_trace_events.c.o
+[643/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_vfio_trace_events.c.o
+[644/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_yank_trace_events.c.o
+[645/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_virtio_trace_events.c.o
+[646/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_acpi_trace_events.c.o
+[647/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_accelerator_trace_events.c.o
+[648/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_acpi_hest_trace_events.c.o
+[649/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_audio_trace_events.c.o
+[650/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_cryptodev_trace_events.c.o
+[651/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_qdev_trace_events.c.o
+[652/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_pci_trace_events.c.o
+[653/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_rocker_trace_events.c.o
+[654/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_misc_arm_trace_events.c.o
+[655/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_misc_i386_trace_events.c.o
+[656/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_uefi_trace_events.c.o
+[657/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_tpm_trace_events.c.o
+[658/1959] Compiling C object libqemuutil.a.p/meson-generated_.._trace_trace-qapi_commands_ui_trace_events.c.o
+[659/1959] Compiling C object libqemuutil.a.p/qapi_opts-visitor.c.o
+[660/1959] Compiling C object libqemuutil.a.p/qapi_qapi-clone-visitor.c.o
+[661/1959] Compiling C object libqemuutil.a.p/qapi_qapi-dealloc-visitor.c.o
+[662/1959] Compiling C object libqemuutil.a.p/qapi_qapi-forward-visitor.c.o
+[663/1959] Compiling C object libqemuutil.a.p/qapi_qapi-util.c.o
+[664/1959] Compiling C object libqemuutil.a.p/qapi_qapi-visit-core.c.o
+[665/1959] Compiling C object libqemuutil.a.p/qapi_qobject-input-visitor.c.o
+[666/1959] Compiling C object libqemuutil.a.p/qapi_qobject-output-visitor.c.o
+[667/1959] Compiling C object libqemuutil.a.p/qapi_string-input-visitor.c.o
+[668/1959] Compiling C object libqemuutil.a.p/qapi_qapi-type-helpers.c.o
+[669/1959] Compiling C object libqemuutil.a.p/qapi_string-output-visitor.c.o
+[670/1959] Compiling C object libqemuutil.a.p/qapi_qmp-event.c.o
+[671/1959] Compiling C object libqemuutil.a.p/qapi_qmp-dispatch.c.o
+[672/1959] Compiling C object libqemuutil.a.p/qapi_qmp-registry.c.o
+[673/1959] Compiling C object libqemuutil.a.p/qobject_qnull.c.o
+[674/1959] Compiling C object libqemuutil.a.p/qobject_qnum.c.o
+[675/1959] Compiling C object libqemuutil.a.p/qobject_qstring.c.o
+[676/1959] Compiling C object libqemuutil.a.p/qobject_qdict.c.o
+[677/1959] Compiling C object libqemuutil.a.p/qobject_qlist.c.o
+[678/1959] Compiling C object libqemuutil.a.p/qobject_qbool.c.o
+[679/1959] Compiling C object libqemuutil.a.p/qobject_qlit.c.o
+[680/1959] Compiling C object libqemuutil.a.p/qobject_qobject.c.o
+[681/1959] Compiling C object libqemuutil.a.p/qobject_qjson.c.o
+[682/1959] Compiling C object libqemuutil.a.p/qobject_json-lexer.c.o
+[683/1959] Compiling C object libqemuutil.a.p/qobject_json-writer.c.o
+[684/1959] Compiling C object libqemuutil.a.p/qobject_json-streamer.c.o
+[685/1959] Compiling C object libqemuutil.a.p/qobject_json-parser.c.o
+[686/1959] Compiling C object libqemuutil.a.p/qobject_block-qdict.c.o
+[687/1959] Compiling C object libqemuutil.a.p/util_osdep.c.o
+[688/1959] Compiling C object libqemuutil.a.p/util_unicode.c.o
+[689/1959] Compiling C object libqemuutil.a.p/util_cutils.c.o
+[690/1959] Compiling C object libqemuutil.a.p/util_qemu-timer-common.c.o
+[691/1959] Compiling C object libqemuutil.a.p/util_thread-context.c.o
+[692/1959] Compiling C object libqemuutil.a.p/util_fdmon-poll.c.o
+[693/1959] Compiling C object libqemuutil.a.p/util_aio-posix.c.o
+[694/1959] Compiling C object libqemuutil.a.p/util_compatfd.c.o
+[695/1959] Compiling C object libqemuutil.a.p/util_fdmon-epoll.c.o
+[696/1959] Compiling C object libqemuutil.a.p/util_event_notifier-posix.c.o
+[697/1959] Compiling C object libqemuutil.a.p/util_mmap-alloc.c.o
+[698/1959] Compiling C object libqemuutil.a.p/util_qemu-thread-posix.c.o
+[699/1959] Compiling C object libqemuutil.a.p/util_oslib-posix.c.o
+[700/1959] Compiling C object libqemuutil.a.p/util_memfd.c.o
+[701/1959] Compiling C object libqemuutil.a.p/util_drm.c.o
+[702/1959] Compiling C object libqemuutil.a.p/util_datadir.c.o
+[703/1959] Compiling C object libqemuutil.a.p/util_defer-call.c.o
+[704/1959] Compiling C object libqemuutil.a.p/util_envlist.c.o
+[705/1959] Compiling C object libqemuutil.a.p/util_path.c.o
+[706/1959] Compiling C object libqemuutil.a.p/util_event.c.o
+[707/1959] Compiling C object libqemuutil.a.p/util_module.c.o
+[708/1959] Compiling C object libqemuutil.a.p/util_hexdump.c.o
+[709/1959] Compiling C object libqemuutil.a.p/util_host-utils.c.o
+[710/1959] Compiling C object libqemuutil.a.p/util_bitops.c.o
+[711/1959] Compiling C object libqemuutil.a.p/util_bitmap.c.o
+[712/1959] Compiling C object libqemuutil.a.p/util_fifo8.c.o
+[713/1959] Compiling C object libqemuutil.a.p/util_cacheflush.c.o
+[714/1959] Compiling C object libqemuutil.a.p/util_error.c.o
+[715/1959] Compiling C object libqemuutil.a.p/util_error-report.c.o
+[716/1959] Compiling C object libqemuutil.a.p/util_qemu-print.c.o
+[717/1959] Compiling C object libqemuutil.a.p/util_id.c.o
+[718/1959] Compiling C object libqemuutil.a.p/util_notify.c.o
+[719/1959] Compiling C object libqemuutil.a.p/util_qemu-config.c.o
+[720/1959] Compiling C object libqemuutil.a.p/util_qemu-progress.c.o
+[721/1959] Compiling C object libqemuutil.a.p/util_qemu-option.c.o
+[722/1959] Compiling C object libqemuutil.a.p/util_keyval.c.o
+[723/1959] Compiling C object libqemuutil.a.p/util_crc32.c.o
+[724/1959] Compiling C object libqemuutil.a.p/util_crc32c.c.o
+[725/1959] Compiling C object libqemuutil.a.p/util_uuid.c.o
+[726/1959] Compiling C object libqemuutil.a.p/util_getauxval.c.o
+[727/1959] Compiling C object libqemuutil.a.p/util_rcu.c.o
+[728/1959] Compiling C object libqemuutil.a.p/util_log.c.o
+[729/1959] Compiling C object libqemuutil.a.p/util_qdist.c.o
+[730/1959] Compiling C object libqemuutil.a.p/util_qht.c.o
+[731/1959] Compiling C object libqemuutil.a.p/util_qsp.c.o
+[732/1959] Compiling C object libqemuutil.a.p/util_range.c.o
+[733/1959] Compiling C object libqemuutil.a.p/util_reserved-region.c.o
+[734/1959] Compiling C object libqemuutil.a.p/util_systemd.c.o
+[735/1959] Compiling C object libqemuutil.a.p/util_transactions.c.o
+[736/1959] Compiling C object libqemuutil.a.p/util_guest-random.c.o
+[737/1959] Compiling C object libqemuutil.a.p/util_int128.c.o
+[738/1959] Compiling C object libqemuutil.a.p/util_memalign.c.o
+[739/1959] Compiling C object libqemuutil.a.p/util_interval-tree.c.o
+[740/1959] Compiling C object libqemuutil.a.p/util_lockcnt.c.o
+[741/1959] Compiling C object libqemuutil.a.p/util_crc-ccitt.c.o
+[742/1959] Compiling C object libqemuutil.a.p/util_dbus.c.o
+[743/1959] Compiling C object libqemuutil.a.p/util_userfaultfd.c.o
+[744/1959] Compiling C object libqemuutil.a.p/util_aiocb.c.o
+[745/1959] Compiling C object libqemuutil.a.p/util_async.c.o
+[746/1959] Compiling C object libqemuutil.a.p/util_aio-wait.c.o
+[747/1959] Compiling C object libqemuutil.a.p/util_base64.c.o
+[748/1959] Compiling C object libqemuutil.a.p/util_main-loop.c.o
+[749/1959] Compiling C object libqemuutil.a.p/util_qemu-coroutine.c.o
+[750/1959] Compiling C object libqemuutil.a.p/util_qemu-coroutine-io.c.o
+[751/1959] Compiling C object libqemuutil.a.p/util_qemu-coroutine-lock.c.o
+[752/1959] Compiling C object libqemuutil.a.p/util_coroutine-ucontext.c.o
+[753/1959] Compiling C object libqemuutil.a.p/util_thread-pool.c.o
+[754/1959] Compiling C object libqemuutil.a.p/util_qemu-sockets.c.o
+[755/1959] Compiling C object libqemuutil.a.p/util_qemu-timer.c.o
+[756/1959] Compiling C object libqemuutil.a.p/util_buffer.c.o
+[757/1959] Compiling C object libqemuutil.a.p/util_hbitmap.c.o
+[758/1959] Compiling C object libqemuutil.a.p/util_iova-tree.c.o
+[759/1959] Compiling C object libqemuutil.a.p/util_bufferiszero.c.o
+[760/1959] Compiling C object libqemuutil.a.p/util_iov.c.o
+[761/1959] Compiling C object libqemuutil.a.p/util_nvdimm-utils.c.o
+[762/1959] Compiling C object libqemuutil.a.p/util_block-helpers.c.o
+[763/1959] Compiling C object libqemuutil.a.p/util_qemu-coroutine-sleep.c.o
+[764/1959] Compiling C object libqemuutil.a.p/util_qemu-co-shared-resource.c.o
+[765/1959] Compiling C object libqemuutil.a.p/util_qemu-co-timeout.c.o
+[766/1959] Compiling C object libqemuutil.a.p/util_readline.c.o
+[767/1959] Compiling C object libqemuutil.a.p/util_throttle.c.o
+[768/1959] Compiling C object libqemuutil.a.p/util_timed-average.c.o
+[769/1959] Compiling C object libqemuutil.a.p/util_filemonitor-inotify.c.o
+[770/1959] Compiling C object libqemuutil.a.p/util_vhost-user-server.c.o
+[771/1959] Compiling C object libqemuutil.a.p/util_chardev_open.c.o
+[772/1959] Compiling C object libqemuutil.a.p/util_vfio-helpers.c.o
+[773/1959] Compiling C object libqemuutil.a.p/util_yank.c.o
+[774/1959] Compiling C object libqemuutil.a.p/util_cpuinfo-i386.c.o
+[775/1959] Compiling C object libqemuutil.a.p/crypto_clmul.c.o
+[776/1959] Compiling C object libqemuutil.a.p/crypto_aes.c.o
+[777/1959] Compiling C object libqemuutil.a.p/crypto_sm4.c.o
+[778/1959] Compiling C object libqemuutil.a.p/crypto_init.c.o
+[779/1959] Compiling C object libqemuutil.a.p/crypto_random-platform.c.o
+[780/1959] Compiling C object libqemuutil.a.p/trace_control.c.o
+[781/1959] Compiling C object libqemuutil.a.p/trace_qmp.c.o
+[782/1959] Compiling C object libqemuutil.a.p/stubs_cpu-get-clock.c.o
+[783/1959] Compiling C object libqemuutil.a.p/stubs_iothread-lock.c.o
+[784/1959] Compiling C object libqemuutil.a.p/stubs_fdset.c.o
+[785/1959] Compiling C object libqemuutil.a.p/stubs_is-daemonized.c.o
+[786/1959] Compiling C object libqemuutil.a.p/stubs_monitor-core.c.o
+[787/1959] Compiling C object libqemuutil.a.p/stubs_trace-control.c.o
+[788/1959] Compiling C object libqemuutil.a.p/stubs_replay-mode.c.o
+[789/1959] Compiling C object libqemuutil.a.p/stubs_bdrv-next-monitor-owned.c.o
+[790/1959] Compiling C object libqemuutil.a.p/stubs_blk-commit-all.c.o
+[791/1959] Compiling C object libqemuutil.a.p/stubs_blk-exp-close-all.c.o
+[792/1959] Compiling C object libqemuutil.a.p/stubs_blockdev-close-all-bdrv-states.c.o
+[793/1959] Compiling C object libqemuutil.a.p/stubs_change-state-handler.c.o
+[794/1959] Compiling C object libqemuutil.a.p/stubs_get-vm-name.c.o
+[795/1959] Compiling C object libqemuutil.a.p/stubs_iothread-lock-block.c.o
+[796/1959] Compiling C object libqemuutil.a.p/stubs_migr-blocker.c.o
+[797/1959] Compiling C object libqemuutil.a.p/stubs_physmem.c.o
+[798/1959] Compiling C object libqemuutil.a.p/stubs_ram-block.c.o
+[799/1959] Compiling C object libqemuutil.a.p/stubs_runstate-check.c.o
+[800/1959] Compiling C object libqemuutil.a.p/stubs_uuid.c.o
+[801/1959] Compiling C object libqemuutil.a.p/stubs_cpus-virtual-clock.c.o
+[802/1959] Compiling C object libqemuutil.a.p/stubs_replay-tools.c.o
+[803/1959] Compiling C object libqemuutil.a.p/stubs_graph-lock.c.o
+[804/1959] Compiling C object libqemuutil.a.p/stubs_icount.c.o
+[805/1959] Compiling C object libqemuutil.a.p/stubs_monitor-internal.c.o
+[806/1959] Compiling C object libqemuutil.a.p/stubs_qemu-timer-notify-cb.c.o
+[807/1959] Compiling C object libqemuutil.a.p/stubs_qmp-command-available.c.o
+[808/1959] Compiling C object libqemuutil.a.p/stubs_qmp-quit.c.o
+[809/1959] Compiling C object libqemuutil.a.p/stubs_cpus-queue.c.o
+[810/1959] Compiling C object libqemuutil.a.p/stubs_async-run-on-cpu.c.o
+[811/1959] Compiling C object libqemuutil.a.p/stubs_vm-stop.c.o
+[812/1959] Compiling C object libqemuutil.a.p/stubs_qtest.c.o
+[813/1959] Compiling C object libqemuutil.a.p/stubs_dump.c.o
+[814/1959] Compiling C object libqemuutil.a.p/stubs_vmstate.c.o
+[815/1959] Compiling C object libqemuutil.a.p/stubs_cmos.c.o
+[816/1959] Compiling C object libqemuutil.a.p/stubs_fw_cfg.c.o
+[817/1959] Compiling C object libqemuutil.a.p/stubs_kvm.c.o
+[818/1959] Compiling C object libqemuutil.a.p/stubs_win32-kbd-hook.c.o
+[819/1959] Compiling C object libqemuutil.a.p/stubs_qmp-arm-gic.c.o
+[820/1959] Compiling C object libqemuutil.a.p/stubs_xen-hw-stub.c.o
+[821/1959] Compiling C object libqemuutil.a.p/stubs_qmp-i386-rtc.c.o
+[822/1959] Compiling C object libqemuutil.a.p/stubs_qmp-i386-sev.c.o
+[823/1959] Compiling C object libqemuutil.a.p/stubs_qmp-i386-sgx.c.o
+[824/1959] Compiling C object libqemuutil.a.p/stubs_qmp-i386-xen.c.o
+[825/1959] Compiling C object libqemuutil.a.p/stubs_qmp-cpu.c.o
+[826/1959] Compiling C object libqemuutil.a.p/stubs_qmp-cpu-s390x.c.o
+[827/1959] Compiling C object libqemuutil.a.p/stubs_qmp-cpu-s390x-kvm.c.o
+[828/1959] Compiling C object libqemuutil.a.p/stubs_hmp-cmd-info_mem.c.o
+[829/1959] Compiling C object libqemuutil.a.p/stubs_hmp-cmd-info_sev.c.o
+[830/1959] Compiling C object libqemuutil.a.p/stubs_hmp-cmd-info_tlb.c.o
+[831/1959] Compiling C object libqemuutil.a.p/stubs_hmp-cmds-hw-s390x.c.o
+[832/1959] Compiling C object libqemuutil.a.p/stubs_hmp-cmds-target-i386.c.o
+[833/1959] Compiling C object libqemuutil.a.p/stubs_replay.c.o
+[834/1959] Compiling C object libqemuutil.a.p/stubs_hotplug-stubs.c.o
+[835/1959] Compiling C object libqemuutil.a.p/stubs_sysbus.c.o
+[836/1959] Compiling C object libqemuutil.a.p/semihosting_stubs-all.c.o
+[837/1959] Compiling C object libqemuutil.a.p/semihosting_stubs-system.c.o
+[838/1959] Compiling C object libqemuutil.a.p/semihosting_arm-compat-semi-stub.c.o
+[839/1959] Compiling C object libqemuutil.a.p/fsdev_qemu-fsdev-dummy.c.o
+[840/1959] Compiling C object libqemuutil.a.p/accel_stubs_hvf-stub.c.o
+[841/1959] Compiling C object libqemuutil.a.p/accel_stubs_nitro-stub.c.o
+[842/1959] Compiling C object libqemuutil.a.p/accel_stubs_kvm-stub.c.o
+[843/1959] Compiling C object libqemuutil.a.p/accel_stubs_nvmm-stub.c.o
+[844/1959] Compiling C object libqemuutil.a.p/accel_stubs_mshv-stub.c.o
+[845/1959] Compiling C object libqemuutil.a.p/accel_stubs_whpx-stub.c.o
+[846/1959] Compiling C object libqemuutil.a.p/accel_stubs_xen-stub.c.o
+[847/1959] Compiling C object libqemuutil.a.p/migration_vfio-stub.c.o
+[848/1959] Compiling C object libqemuutil.a.p/net_vhost-user-stub.c.o
+[849/1959] Compiling C object libqemuutil.a.p/net_vhost-vdpa-stub.c.o
+[850/1959] Compiling C object libqemuutil.a.p/hw_arm_smmuv3-accel-stubs.c.o
+[851/1959] Compiling C object libqemuutil.a.p/hw_arm_tegra241-cmdqv-stubs.c.o
+[852/1959] Compiling C object libqemuutil.a.p/hw_i386_sgx-hmp-stub.c.o
+[853/1959] Compiling C object libqemuutil.a.p/hw_i386_kvm_xen-stubs.c.o
+[854/1959] Compiling C object libqemuutil.a.p/hw_s390x_s390-pci-vfio-stubs.c.o
+[855/1959] Compiling C object libqemuutil.a.p/hw_acpi_acpi-cpu-hotplug-stub.c.o
+[856/1959] Compiling C object libqemuutil.a.p/hw_acpi_acpi-mem-hotplug-stub.c.o
+[857/1959] Compiling C object libqemuutil.a.p/hw_acpi_acpi-nvdimm-stub.c.o
+[858/1959] Compiling C object libqemuutil.a.p/hw_acpi_cxl-stub.c.o
+[859/1959] Compiling C object libqemuutil.a.p/hw_acpi_ghes-stub.c.o
+[860/1959] Compiling C object libqemuutil.a.p/hw_acpi_wdat-ich9-stub.c.o
+[861/1959] Compiling C object libqemuutil.a.p/hw_acpi_acpi-pci-hotplug-stub.c.o
+[862/1959] Compiling C object libqemuutil.a.p/hw_acpi_acpi-x86-stub.c.o
+[863/1959] Compiling C object libqemuutil.a.p/hw_acpi_ipmi-stub.c.o
+[864/1959] Compiling C object libqemuutil.a.p/hw_acpi_acpi-stub.c.o
+[865/1959] Compiling C object libqemuutil.a.p/hw_acpi_aml-build-stub.c.o
+[866/1959] Compiling C object libqemuutil.a.p/hw_acpi_pci-bridge-stub.c.o
+[867/1959] Compiling C object libqemuutil.a.p/hw_acpi_wdat-gwdt-stub.c.o
+[868/1959] Compiling C object libqemuutil.a.p/hw_acpi_ghes_cper_stub.c.o
+[869/1959] Compiling C object libqemuutil.a.p/hw_display_ramfb-stubs.c.o
+[870/1959] Compiling C object libqemuutil.a.p/hw_cxl_cxl-host-stubs.c.o
+[871/1959] Compiling C object libqemuutil.a.p/hw_display_acpi-vga-stub.c.o
+[872/1959] Compiling C object libqemuutil.a.p/hw_intc_arm_gicv3_hvf_stub.c.o
+[873/1959] Compiling C object libqemuutil.a.p/hw_mem_cxl_type3_stubs.c.o
+[874/1959] Compiling C object libqemuutil.a.p/hw_mem_memory-device-stubs.c.o
+[875/1959] Compiling C object libqemuutil.a.p/hw_misc_mos6522-stub.c.o
+[876/1959] Compiling C object libqemuutil.a.p/hw_net_vhost_net-stub.c.o
+[877/1959] Compiling C object libqemuutil.a.p/hw_net_rocker_rocker-stubs.c.o
+[878/1959] Compiling C object libqemuutil.a.p/hw_smbios_smbios_type_38-stub.c.o
+[879/1959] Compiling C object libqemuutil.a.p/hw_pci_pci-stub.c.o
+[880/1959] Compiling C object libqemuutil.a.p/hw_smbios_smbios_legacy_stub.c.o
+[881/1959] Compiling C object libqemuutil.a.p/hw_smbios_smbios-stub.c.o
+[882/1959] Compiling C object libqemuutil.a.p/hw_usb_bus-stub.c.o
+[883/1959] Compiling C object libqemuutil.a.p/hw_vfio_kvm-stubs.c.o
+[884/1959] Compiling C object libqemuutil.a.p/hw_vfio_iommufd-stubs.c.o
+[885/1959] Compiling C object libqemuutil.a.p/hw_vfio_igd-stubs.c.o
+[886/1959] Compiling C object libqemuutil.a.p/hw_virtio_vhost-stub.c.o
+[887/1959] Compiling C object libqemuutil.a.p/hw_virtio_vhost-user-stub.c.o
+[888/1959] Compiling C object libqemuutil.a.p/hw_virtio_virtio-stub.c.o
+[889/1959] Compiling C object libqemuutil.a.p/hw_virtio_virtio-md-stubs.c.o
+[890/1959] Generating block/module_block.h with a custom command
+[891/1959] Generating gdbstub/gdbstub-xml.c with a custom command (wrapped by meson to capture output)
+/home/runner/work/qemu/qemu/gdbstub/../scripts/feature_to_c.py:28: SyntaxWarning: invalid escape sequence '\{'
+  sys.stdout.write(f'\{c:03o}')
+
+[892/1959] Generating block/block-gen.c with a custom command
+[893/1959] Generating 'libcommon.a.p/decode-insns.c.inc'
+[894/1959] Linking static target subprojects/libvhost-user/libvhost-user-glib.a
+[895/1959] Linking static target subprojects/libvhost-user/libvhost-user.a
+[896/1959] Linking static target subprojects/libvduse/libvduse.a
+[897/1959] Compiling C object ui/libqemuui.a.p/clipboard.c.o
+[898/1959] Compiling C object ui/libqemuui.a.p/cursor.c.o
+[899/1959] Compiling C object ui/libqemuui.a.p/console.c.o
+[900/1959] Compiling C object ui/libqemuui.a.p/dmabuf.c.o
+[901/1959] Compiling C object ui/libqemuui.a.p/display-surface.c.o
+[902/1959] Compiling C object ui/libqemuui.a.p/input-keymap.c.o
+[903/1959] Compiling C object ui/libqemuui.a.p/kbd-state.c.o
+[904/1959] Compiling C object ui/libqemuui.a.p/keymaps.c.o
+[905/1959] Compiling C object ui/libqemuui.a.p/qemu-pixman.c.o
+[906/1959] Compiling C object ui/libqemuui.a.p/spice-module.c.o
+[907/1959] Compiling C object ui/libqemuui.a.p/vgafont.c.o
+[908/1959] Compiling C object ui/libqemuui.a.p/cp437.c.o
+[909/1959] Compiling C object libqom.a.p/qom_container.c.o
+[910/1959] Compiling C object ui/libqemuui.a.p/vt100.c.o
+[911/1959] Compiling C object libqom.a.p/qom_object_interfaces.c.o
+[912/1959] Compiling C object libqom.a.p/qom_qom-qobject.c.o
+[913/1959] Compiling C object libqom.a.p/qom_object.c.o
+[914/1959] Compiling C object libqom.a.p/qom_compat-properties.c.o
+[915/1959] Compiling C object libevent-loop-base.a.p/event-loop-base.c.o
+[916/1959] Compiling C object tests/qtest/libqos/libqos.a.p/.._libqtest.c.o
+[917/1959] Linking static target libqemuutil.a
+[918/1959] Compiling C object tests/qtest/libqos/libqos.a.p/.._libqmp.c.o
+[919/1959] Compiling C object tests/qtest/libqos/libqos.a.p/qgraph.c.o
+[920/1959] Compiling C object tests/qtest/libqos/libqos.a.p/qos_external.c.o
+[921/1959] Compiling C object tests/qtest/libqos/libqos.a.p/pci.c.o
+[922/1959] Compiling C object tests/qtest/libqos/libqos.a.p/fw_cfg.c.o
+[923/1959] Compiling C object tests/qtest/libqos/libqos.a.p/libqos-malloc.c.o
+[924/1959] Compiling C object tests/qtest/libqos/libqos.a.p/libqos.c.o
+[925/1959] Compiling C object tests/qtest/libqos/libqos.a.p/sdhci-cmd.c.o
+[926/1959] Compiling C object tests/qtest/libqos/libqos.a.p/malloc-spapr.c.o
+[927/1959] Compiling C object tests/qtest/libqos/libqos.a.p/libqos-spapr.c.o
+[928/1959] Compiling C object tests/qtest/libqos/libqos.a.p/rtas.c.o
+[929/1959] Compiling C object tests/qtest/libqos/libqos.a.p/pci-spapr.c.o
+[930/1959] Compiling C object tests/qtest/libqos/libqos.a.p/pci-pc.c.o
+[931/1959] Compiling C object tests/qtest/libqos/libqos.a.p/malloc-pc.c.o
+[932/1959] Compiling C object tests/qtest/libqos/libqos.a.p/libqos-pc.c.o
+[933/1959] Compiling C object tests/qtest/libqos/libqos.a.p/usb.c.o
+[934/1959] Compiling C object tests/qtest/libqos/libqos.a.p/ahci.c.o
+[935/1959] Compiling C object tests/qtest/libqos/libqos.a.p/e1000e.c.o
+[936/1959] Compiling C object tests/qtest/libqos/libqos.a.p/i2c.c.o
+[937/1959] Compiling C object tests/qtest/libqos/libqos.a.p/i2c-imx.c.o
+[938/1959] Compiling C object tests/qtest/libqos/libqos.a.p/i2c-omap.c.o
+[939/1959] Compiling C object tests/qtest/libqos/libqos.a.p/igb.c.o
+[940/1959] Compiling C object tests/qtest/libqos/libqos.a.p/sdhci.c.o
+[941/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio.c.o
+[942/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-balloon.c.o
+[943/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-blk.c.o
+[944/1959] Compiling C object tests/qtest/libqos/libqos.a.p/vhost-user-blk.c.o
+[945/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-mmio.c.o
+[946/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-net.c.o
+[947/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-pci.c.o
+[948/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-pci-modern.c.o
+[949/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-rng.c.o
+[950/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-scsi.c.o
+[951/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-serial.c.o
+[952/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-iommu.c.o
+[953/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-gpio.c.o
+[954/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-scmi.c.o
+[955/1959] Compiling C object tests/qtest/libqos/libqos.a.p/generic-pcihost.c.o
+[956/1959] Compiling C object tests/qtest/libqos/libqos.a.p/aarch64-xlnx-zcu102-machine.c.o
+[957/1959] Compiling C object tests/qtest/libqos/libqos.a.p/arm-imx25-pdk-machine.c.o
+[958/1959] Compiling C object tests/qtest/libqos/libqos.a.p/arm-raspi2-machine.c.o
+[959/1959] Compiling C object tests/qtest/libqos/libqos.a.p/arm-sabrelite-machine.c.o
+[960/1959] Compiling C object tests/qtest/libqos/libqos.a.p/arm-smdkc210-machine.c.o
+[961/1959] Compiling C object tests/qtest/libqos/libqos.a.p/arm-virt-machine.c.o
+[962/1959] Compiling C object tests/qtest/libqos/libqos.a.p/arm-xilinx-zynq-a9-machine.c.o
+[963/1959] Compiling C object tests/qtest/libqos/libqos.a.p/ppc64_pseries-machine.c.o
+[964/1959] Compiling C object tests/qtest/libqos/libqos.a.p/x86_64_pc-machine.c.o
+[965/1959] Compiling C object tests/qtest/libqos/libqos.a.p/riscv-virt-machine.c.o
+[966/1959] Compiling C object tests/qtest/libqos/libqos.a.p/loongarch-virt-machine.c.o
+[967/1959] Compiling C object tests/qtest/libqos/libqos.a.p/qos-iommu-testdev.c.o
+[968/1959] Compiling C object tests/qtest/libqos/libqos.a.p/qos-smmuv3.c.o
+[969/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-9p.c.o
+[970/1959] Compiling C object tests/qtest/libqos/libqos.a.p/qos-intel-iommu.c.o
+[971/1959] Compiling C object tests/qtest/libqos/libqos.a.p/virtio-9p-client.c.o
+[972/1959] Compiling C object tests/qtest/libqos/libqos.a.p/tpci200.c.o
+[973/1959] Compiling C object libauthz.a.p/authz_base.c.o
+[974/1959] Compiling C object libauthz.a.p/authz_list.c.o
+[975/1959] Compiling C object libauthz.a.p/authz_listfile.c.o
+[976/1959] Compiling C object libauthz.a.p/authz_simple.c.o
+[977/1959] Compiling C object libcrypto.a.p/crypto_afsplit.c.o
+[978/1959] Compiling C object libcrypto.a.p/crypto_akcipher.c.o
+[979/1959] Compiling C object libcrypto.a.p/crypto_block-luks.c.o
+[980/1959] Compiling C object libcrypto.a.p/crypto_block-qcow.c.o
+[981/1959] Compiling C object libcrypto.a.p/crypto_cipher.c.o
+[982/1959] Compiling C object libcrypto.a.p/crypto_block.c.o
+[983/1959] Compiling C object libcrypto.a.p/crypto_der.c.o
+[984/1959] Compiling C object libcrypto.a.p/crypto_hash.c.o
+[985/1959] Compiling C object libcrypto.a.p/crypto_hmac.c.o
+[986/1959] Compiling C object libcrypto.a.p/crypto_ivgen-essiv.c.o
+[987/1959] Compiling C object libcrypto.a.p/crypto_ivgen-plain.c.o
+[988/1959] Compiling C object libcrypto.a.p/crypto_ivgen-plain64.c.o
+[989/1959] Compiling C object libcrypto.a.p/crypto_ivgen.c.o
+[990/1959] Compiling C object libcrypto.a.p/crypto_pbkdf.c.o
+[991/1959] Compiling C object libcrypto.a.p/crypto_secret_common.c.o
+[992/1959] Compiling C object libcrypto.a.p/crypto_secret.c.o
+[993/1959] Compiling C object libcrypto.a.p/crypto_tlscreds.c.o
+[994/1959] Compiling C object libcrypto.a.p/crypto_tlscredsanon.c.o
+[995/1959] Compiling C object libcrypto.a.p/crypto_tlscredspsk.c.o
+[996/1959] Compiling C object libcrypto.a.p/crypto_tlscredsx509.c.o
+[997/1959] Compiling C object libcrypto.a.p/crypto_tlssession.c.o
+[998/1959] Compiling C object libcrypto.a.p/crypto_rsakey.c.o
+[999/1959] Compiling C object libcrypto.a.p/crypto_hash-glib.c.o
+[1000/1959] Compiling C object libcrypto.a.p/crypto_hmac-glib.c.o
+[1001/1959] Compiling C object libcrypto.a.p/crypto_pbkdf-stub.c.o
+[1002/1959] Compiling C object libcrypto.a.p/crypto_secret_keyring.c.o
+[1003/1959] Compiling C object libio.a.p/io_channel-buffer.c.o
+[1004/1959] Compiling C object libio.a.p/io_channel-command.c.o
+[1005/1959] Compiling C object libio.a.p/io_channel-file.c.o
+[1006/1959] Compiling C object libio.a.p/io_channel-null.c.o
+[1007/1959] Compiling C object libio.a.p/io_channel-socket.c.o
+[1008/1959] Compiling C object libio.a.p/io_channel-tls.c.o
+[1009/1959] Compiling C object libio.a.p/io_channel-util.c.o
+[1010/1959] Compiling C object libio.a.p/io_channel-watch.c.o
+[1011/1959] Compiling C object libio.a.p/io_channel.c.o
+[1012/1959] Compiling C object libio.a.p/io_channel-websock.c.o
+[1013/1959] Compiling C object libio.a.p/io_dns-resolver.c.o
+[1014/1959] Compiling C object libio.a.p/io_net-listener.c.o
+[1015/1959] Compiling C object libio.a.p/io_task.c.o
+[1016/1959] Compiling C object libmigration.a.p/migration_migration-stats.c.o
+[1017/1959] Compiling C object libmigration.a.p/migration_page_cache.c.o
+[1018/1959] Compiling C object libmigration.a.p/migration_vmstate-types.c.o
+[1019/1959] Compiling C object libmigration.a.p/migration_xbzrle.c.o
+[1020/1959] Compiling C object libmigration.a.p/migration_vmstate.c.o
+[1021/1959] Compiling C object libmigration.a.p/migration_yank_functions.c.o
+[1022/1959] Compiling C object libmigration.a.p/migration_qemu-file.c.o
+[1023/1959] Compiling C object libblock.a.p/meson-generated_.._block_block-gen.c.o
+[1024/1959] Compiling C object libblock.a.p/blockjob.c.o
+[1025/1959] Compiling C object libblock.a.p/block.c.o
+[1026/1959] Compiling C object libblock.a.p/job.c.o
+[1027/1959] Compiling C object libblock.a.p/replication.c.o
+[1028/1959] Compiling C object libblock.a.p/qemu-io-cmds.c.o
+[1029/1959] Compiling C object libblock.a.p/nbd_client.c.o
+[1030/1959] Compiling C object libblock.a.p/nbd_client-connection.c.o
+[1031/1959] Compiling C object libblock.a.p/scsi_utils.c.o
+[1032/1959] Compiling C object libblock.a.p/nbd_common.c.o
+[1033/1959] Compiling C object libblock.a.p/scsi_pr-manager.c.o
+[1034/1959] Compiling C object libblock.a.p/scsi_pr-manager-helper.c.o
+[1035/1959] Compiling C object libblock.a.p/block_aio_task.c.o
+[1036/1959] Compiling C object libblock.a.p/block_accounting.c.o
+[1037/1959] Compiling C object libblock.a.p/block_amend.c.o
+[1038/1959] Compiling C object libblock.a.p/block_backup.c.o
+[1039/1959] Compiling C object libblock.a.p/block_blkdebug.c.o
+[1040/1959] Compiling C object libblock.a.p/block_blklogwrites.c.o
+[1041/1959] Compiling C object libblock.a.p/block_blkverify.c.o
+[1042/1959] Compiling C object libblock.a.p/block_block-copy.c.o
+[1043/1959] Compiling C object libblock.a.p/block_block-backend.c.o
+[1044/1959] Compiling C object libblock.a.p/block_commit.c.o
+[1045/1959] Compiling C object libblock.a.p/block_copy-before-write.c.o
+[1046/1959] Compiling C object libblock.a.p/block_copy-on-read.c.o
+[1047/1959] Compiling C object libblock.a.p/block_create.c.o
+[1048/1959] Compiling C object libblock.a.p/block_crypto.c.o
+[1049/1959] Compiling C object libblock.a.p/block_dirty-bitmap.c.o
+[1050/1959] Compiling C object libblock.a.p/block_filter-compress.c.o
+[1051/1959] Compiling C object libblock.a.p/block_graph-lock.c.o
+[1052/1959] Compiling C object libblock.a.p/block_mirror.c.o
+[1053/1959] Compiling C object libblock.a.p/block_io.c.o
+[1054/1959] Compiling C object libblock.a.p/block_nbd.c.o
+[1055/1959] Compiling C object libblock.a.p/block_null.c.o
+[1056/1959] Compiling C object libblock.a.p/block_progress_meter.c.o
+[1057/1959] Compiling C object libblock.a.p/block_preallocate.c.o
+[1058/1959] Compiling C object libblock.a.p/block_qapi.c.o
+[1059/1959] Compiling C object libblock.a.p/block_qcow2-bitmap.c.o
+[1060/1959] Compiling C object libblock.a.p/block_qcow2.c.o
+[1061/1959] Compiling C object libblock.a.p/block_qcow2-cache.c.o
+[1062/1959] Compiling C object libblock.a.p/block_qcow2-cluster.c.o
+[1063/1959] Compiling C object libblock.a.p/block_qcow2-refcount.c.o
+[1064/1959] Compiling C object libblock.a.p/block_qcow2-snapshot.c.o
+[1065/1959] Compiling C object libblock.a.p/block_qcow2-threads.c.o
+[1066/1959] Compiling C object libblock.a.p/block_quorum.c.o
+[1067/1959] Compiling C object libblock.a.p/block_raw-format.c.o
+[1068/1959] Compiling C object libblock.a.p/block_reqlist.c.o
+[1069/1959] Compiling C object libblock.a.p/block_snapshot-access.c.o
+[1070/1959] Compiling C object libblock.a.p/block_snapshot.c.o
+[1071/1959] Compiling C object libblock.a.p/block_throttle.c.o
+[1072/1959] Compiling C object libblock.a.p/block_throttle-groups.c.o
+[1073/1959] Compiling C object libblock.a.p/block_write-threshold.c.o
+[1074/1959] Compiling C object libblock.a.p/block_qcow.c.o
+[1075/1959] Compiling C object libblock.a.p/block_vdi.c.o
+[1076/1959] Compiling C object libblock.a.p/block_vhdx-endian.c.o
+[1077/1959] Compiling C object libblock.a.p/block_vhdx-log.c.o
+[1078/1959] Compiling C object libblock.a.p/block_vhdx.c.o
+[1079/1959] Compiling C object libblock.a.p/block_vmdk.c.o
+[1080/1959] Compiling C object libblock.a.p/block_vpc.c.o
+[1081/1959] Compiling C object libblock.a.p/block_cloop.c.o
+[1082/1959] Compiling C object libblock.a.p/block_bochs.c.o
+[1083/1959] Compiling C object libblock.a.p/block_dmg.c.o
+[1084/1959] Compiling C object libblock.a.p/block_vvfat.c.o
+[1085/1959] Compiling C object libblock.a.p/block_qed-check.c.o
+[1086/1959] Compiling C object libblock.a.p/block_qed-cluster.c.o
+[1087/1959] Compiling C object libblock.a.p/block_qed-l2-cache.c.o
+[1088/1959] Compiling C object libblock.a.p/block_qed-table.c.o
+[1089/1959] Compiling C object libblock.a.p/block_qed.c.o
+[1090/1959] Compiling C object libblock.a.p/block_parallels.c.o
+[1091/1959] Compiling C object libblock.a.p/block_parallels-ext.c.o
+[1092/1959] Compiling C object libblock.a.p/block_file-posix.c.o
+[1093/1959] Compiling C object libblock.a.p/block_nvme.c.o
+[1094/1959] Compiling C object libblock.a.p/block_replication.c.o
+[1095/1959] Compiling C object libblock.a.p/block_stream.c.o
+[1096/1959] Compiling C object libblock.a.p/block_monitor_bitmap-qmp-cmds.c.o
+[1097/1959] Compiling C object libblockdev.a.p/block_export_export.c.o
+[1098/1959] Compiling C object libblockdev.a.p/nbd_server.c.o
+[1099/1959] Compiling C object libblockdev.a.p/block_export_vhost-user-blk-server.c.o
+[1100/1959] Compiling C object libblockdev.a.p/block_export_virtio-blk-handler.c.o
+[1101/1959] Compiling C object libblockdev.a.p/block_export_vduse-blk.c.o
+[1102/1959] Compiling C object libblockdev.a.p/blockdev-nbd.c.o
+[1103/1959] Compiling C object libblockdev.a.p/blockdev.c.o
+[1104/1959] Compiling C object libblockdev.a.p/iothread.c.o
+[1105/1959] Compiling C object libblockdev.a.p/job-qmp.c.o
+[1106/1959] Compiling C object libblockdev.a.p/os-posix.c.o
+[1107/1959] Compiling C object libqmp.a.p/qom_qom-qmp-cmds.c.o
+[1108/1959] Compiling C object libqmp.a.p/monitor_monitor.c.o
+[1109/1959] Compiling C object libqmp.a.p/monitor_qmp.c.o
+[1110/1959] Compiling C object libqmp.a.p/monitor_qmp-cmds-control.c.o
+[1111/1959] Compiling C object libchardev.a.p/chardev_char-file.c.o
+[1112/1959] Compiling C object libchardev.a.p/chardev_char-fe.c.o
+[1113/1959] Compiling C object libchardev.a.p/chardev_char-io.c.o
+[1114/1959] Compiling C object libchardev.a.p/chardev_char-hub.c.o
+[1115/1959] Compiling C object libchardev.a.p/chardev_char-mux.c.o
+[1116/1959] Compiling C object libchardev.a.p/chardev_char-null.c.o
+[1117/1959] Compiling C object libchardev.a.p/chardev_char-pipe.c.o
+[1118/1959] Compiling C object libchardev.a.p/chardev_char-ringbuf.c.o
+[1119/1959] Compiling C object libchardev.a.p/chardev_char-serial.c.o
+[1120/1959] Compiling C object libchardev.a.p/chardev_char-stdio.c.o
+[1121/1959] Compiling C object libchardev.a.p/chardev_char-socket.c.o
+[1122/1959] Compiling C object libchardev.a.p/chardev_char-udp.c.o
+[1123/1959] Compiling C object libchardev.a.p/chardev_char-fd.c.o
+[1124/1959] Compiling C object libchardev.a.p/chardev_char.c.o
+[1125/1959] Compiling C object libchardev.a.p/chardev_char-parallel.c.o
+[1126/1959] Compiling C object libchardev.a.p/chardev_char-pty.c.o
+[1127/1959] Compiling C object libhwcore.a.p/hw_core_bus.c.o
+[1128/1959] Compiling C object libhwcore.a.p/hw_core_gpio.c.o
+[1129/1959] Compiling C object libhwcore.a.p/hw_core_qdev-properties.c.o
+[1130/1959] Compiling C object libhwcore.a.p/hw_core_resetcontainer.c.o
+[1131/1959] Compiling C object libhwcore.a.p/hw_core_qdev.c.o
+[1132/1959] Compiling C object libhwcore.a.p/hw_core_resettable.c.o
+[1133/1959] Compiling C object libhwcore.a.p/hw_core_vmstate-if.c.o
+[1134/1959] Compiling C object libhwcore.a.p/hw_core_irq.c.o
+[1135/1959] Compiling C object libhwcore.a.p/hw_core_clock.c.o
+[1136/1959] Compiling C object libhwcore.a.p/hw_core_qdev-clock.c.o
+[1137/1959] Compiling C object libqemuaudio.a.p/audio_audio.c.o
+[1138/1959] Compiling C object libqemuaudio.a.p/audio_audio-be.c.o
+[1139/1959] Compiling C object libqemuaudio.a.p/audio_mixeng.c.o
+[1140/1959] Compiling C object libqemuaudio.a.p/audio_audio-mixeng-be.c.o
+[1141/1959] Compiling C object libqemuaudio.a.p/audio_noaudio.c.o
+[1142/1959] Compiling C object libqemuaudio.a.p/audio_wavaudio.c.o
+[1143/1959] Compiling C object libqemuaudio.a.p/audio_ossaudio.c.o
+[1144/1959] Compiling C object libqemuaudio.a.p/audio_dbusaudio.c.o
+[1145/1959] Compiling C object libsystem.a.p/trace_control-target.c.o
+[1146/1959] Compiling C object libsystem.a.p/trace_trace-hmp-cmds.c.o
+[1147/1959] Compiling C object libsystem.a.p/qom_qom-hmp-cmds.c.o
+[1148/1959] Compiling C object libsystem.a.p/ui_input-barrier.c.o
+[1149/1959] Compiling C object libsystem.a.p/ui_input.c.o
+[1150/1959] Compiling C object libsystem.a.p/ui_ui-hmp-cmds.c.o
+[1151/1959] Compiling C object libsystem.a.p/ui_ui-qmp-cmds.c.o
+[1152/1959] Compiling C object libsystem.a.p/ui_util.c.o
+[1153/1959] Compiling C object libsystem.a.p/ui_console-vc.c.o
+[1154/1959] Compiling C object libsystem.a.p/ui_dbus-module.c.o
+[1155/1959] Compiling C object libsystem.a.p/meson-generated_.._ui_dbus-display1.c.o
+[1156/1959] Compiling C object libsystem.a.p/ui_udmabuf.c.o
+[1157/1959] Compiling C object libsystem.a.p/ui_input-linux.c.o
+[1158/1959] Compiling C object libsystem.a.p/ui_vnc-enc-zlib.c.o
+[1159/1959] Compiling C object libsystem.a.p/ui_vnc-enc-hextile.c.o
+[1160/1959] Compiling C object libsystem.a.p/ui_vnc.c.o
+[1161/1959] Compiling C object libsystem.a.p/ui_vnc-palette.c.o
+[1162/1959] Compiling C object libsystem.a.p/ui_vnc-enc-tight.c.o
+[1163/1959] Compiling C object libsystem.a.p/ui_vnc-auth-vencrypt.c.o
+[1164/1959] Compiling C object libsystem.a.p/ui_vnc-enc-zrle.c.o
+[1165/1959] Compiling C object libsystem.a.p/ui_vnc-ws.c.o
+[1166/1959] Compiling C object libsystem.a.p/ui_vnc-jobs.c.o
+[1167/1959] Compiling C object libsystem.a.p/ui_vnc-clipboard.c.o
+[1168/1959] Compiling C object libsystem.a.p/ui_vnc-system.c.o
+[1169/1959] Compiling C object libsystem.a.p/audio_audio-hmp-cmds.c.o
+[1170/1959] Compiling C object libsystem.a.p/audio_wavcapture.c.o
+[1171/1959] Compiling C object libsystem.a.p/chardev_char-hmp-cmds.c.o
+[1172/1959] Compiling C object libsystem.a.p/chardev_msmouse.c.o
+[1173/1959] Compiling C object libsystem.a.p/chardev_testdev.c.o
+[1174/1959] Compiling C object libsystem.a.p/chardev_wctablet.c.o
+[1175/1959] Compiling C object libsystem.a.p/fsdev_qemu-fsdev-opts.c.o
+[1176/1959] Compiling C object libsystem.a.p/fsdev_qemu-fsdev-throttle.c.o
+[1177/1959] Compiling C object libsystem.a.p/fsdev_9p-iov-marshal.c.o
+[1178/1959] Compiling C object libsystem.a.p/fsdev_9p-marshal.c.o
+[1179/1959] Compiling C object libsystem.a.p/fsdev_qemu-fsdev.c.o
+[1180/1959] Compiling C object libsystem.a.p/dump_dump-hmp-cmds.c.o
+[1181/1959] Compiling C object libsystem.a.p/dump_dump.c.o
+[1182/1959] Compiling C object libsystem.a.p/accel_accel-system.c.o
+[1183/1959] Compiling C object libsystem.a.p/accel_accel-blocker.c.o
+[1184/1959] Compiling C object libsystem.a.p/accel_accel-qmp.c.o
+[1185/1959] Compiling C object libsystem.a.p/accel_accel-irq.c.o
+[1186/1959] Compiling C object libsystem.a.p/accel_tcg_cpu-exec-common.c.o
+[1187/1959] Compiling C object libsystem.a.p/accel_tcg_cpu-exec.c.o
+[1188/1959] Compiling C object libsystem.a.p/accel_tcg_tcg-runtime.c.o
+[1189/1959] Compiling C object libsystem.a.p/accel_tcg_tb-maint.c.o
+[1190/1959] Compiling C object libsystem.a.p/accel_tcg_tcg-all.c.o
+[1191/1959] Compiling C object libsystem.a.p/accel_tcg_tcg-runtime-gvec.c.o
+[1192/1959] Compiling C object libsystem.a.p/accel_tcg_tcg-stats.c.o
+[1193/1959] Compiling C object libsystem.a.p/accel_tcg_translate-all.c.o
+[1194/1959] Compiling C object libsystem.a.p/accel_tcg_plugin-gen.c.o
+[1195/1959] Compiling C object libsystem.a.p/accel_tcg_translator.c.o
+[1196/1959] Compiling C object libsystem.a.p/accel_tcg_icount-common.c.o
+[1197/1959] Compiling C object libsystem.a.p/accel_tcg_monitor.c.o
+[1198/1959] Compiling C object libsystem.a.p/accel_tcg_tcg-accel-ops.c.o
+[1199/1959] Compiling C object libsystem.a.p/accel_tcg_tcg-accel-ops-icount.c.o
+[1200/1959] Compiling C object libsystem.a.p/accel_tcg_cputlb.c.o
+[1201/1959] Compiling C object libsystem.a.p/accel_tcg_tcg-accel-ops-mttcg.c.o
+[1202/1959] Compiling C object libsystem.a.p/accel_tcg_tcg-accel-ops-rr.c.o
+[1203/1959] Compiling C object libsystem.a.p/accel_tcg_watchpoint.c.o
+[1204/1959] Compiling C object libsystem.a.p/accel_mshv_irq.c.o
+[1205/1959] Compiling C object libsystem.a.p/accel_mshv_mem.c.o
+[1206/1959] Compiling C object libsystem.a.p/accel_nitro_nitro-accel.c.o
+[1207/1959] Compiling C object libsystem.a.p/accel_mshv_mshv-all.c.o
+[1208/1959] Compiling C object libsystem.a.p/accel_dummy-cpus.c.o
+[1209/1959] Compiling C object libsystem.a.p/backends_cryptodev-builtin.c.o
+[1210/1959] Compiling C object libsystem.a.p/backends_cryptodev-hmp-cmds.c.o
+[1211/1959] Compiling C object libsystem.a.p/backends_hostmem-ram.c.o
+[1212/1959] Compiling C object libsystem.a.p/backends_cryptodev.c.o
+[1213/1959] Compiling C object libsystem.a.p/backends_rng-builtin.c.o
+[1214/1959] Compiling C object libsystem.a.p/backends_hostmem.c.o
+[1215/1959] Compiling C object libsystem.a.p/backends_rng-egd.c.o
+[1216/1959] Compiling C object libsystem.a.p/backends_rng.c.o
+[1217/1959] Compiling C object libsystem.a.p/backends_confidential-guest-support.c.o
+[1218/1959] Compiling C object libsystem.a.p/backends_rng-random.c.o
+[1219/1959] Compiling C object libsystem.a.p/backends_hostmem-file.c.o
+[1220/1959] Compiling C object libsystem.a.p/backends_hostmem-shm.c.o
+[1221/1959] Compiling C object libsystem.a.p/backends_host_iommu_device.c.o
+[1222/1959] Compiling C object libsystem.a.p/backends_hostmem-memfd.c.o
+[1223/1959] Compiling C object libsystem.a.p/backends_vhost-user.c.o
+[1224/1959] Compiling C object libsystem.a.p/backends_cryptodev-vhost.c.o
+[1225/1959] Compiling C object libsystem.a.p/backends_iommufd.c.o
+[1226/1959] Compiling C object libsystem.a.p/backends_cryptodev-vhost-user.c.o
+[1227/1959] Compiling C object libsystem.a.p/backends_hostmem-epc.c.o
+[1228/1959] Compiling C object libsystem.a.p/backends_dbus-vmstate.c.o
+[1229/1959] Compiling C object libsystem.a.p/backends_spdm-socket.c.o
+[1230/1959] Compiling C object libsystem.a.p/backends_tpm_tpm_backend.c.o
+[1231/1959] Compiling C object libsystem.a.p/backends_tpm_tpm_util.c.o
+[1232/1959] Compiling C object libsystem.a.p/backends_tpm_tpm_passthrough.c.o
+[1233/1959] Compiling C object libsystem.a.p/disas_disas-mon.c.o
+[1234/1959] Compiling C object libsystem.a.p/backends_tpm_tpm_emulator.c.o
+[1235/1959] Compiling C object libsystem.a.p/migration_block-active.c.o
+[1236/1959] Compiling C object libsystem.a.p/migration_block-dirty-bitmap.c.o
+[1237/1959] Compiling C object libsystem.a.p/migration_channel.c.o
+[1238/1959] Compiling C object libsystem.a.p/migration_channel-block.c.o
+[1239/1959] Compiling C object libsystem.a.p/migration_cpr.c.o
+[1240/1959] Compiling C object libsystem.a.p/migration_cpr-transfer.c.o
+[1241/1959] Compiling C object libsystem.a.p/migration_cpr-exec.c.o
+[1242/1959] Compiling C object libsystem.a.p/migration_cpu-throttle.c.o
+[1243/1959] Compiling C object libsystem.a.p/migration_exec.c.o
+[1244/1959] Compiling C object libsystem.a.p/migration_dirtyrate.c.o
+[1245/1959] Compiling C object libsystem.a.p/migration_fd.c.o
+[1246/1959] Compiling C object libsystem.a.p/migration_file.c.o
+[1247/1959] Compiling C object libsystem.a.p/migration_global_state.c.o
+[1248/1959] Compiling C object libsystem.a.p/migration_multifd.c.o
+[1249/1959] Compiling C object libsystem.a.p/migration_migration.c.o
+[1250/1959] Compiling C object libsystem.a.p/migration_multifd-device-state.c.o
+[1251/1959] Compiling C object libsystem.a.p/migration_multifd-nocomp.c.o
+[1252/1959] Compiling C object libsystem.a.p/migration_multifd-zlib.c.o
+[1253/1959] Compiling C object libsystem.a.p/migration_multifd-zero-page.c.o
+[1254/1959] Compiling C object libsystem.a.p/migration_options.c.o
+[1255/1959] Compiling C object libsystem.a.p/migration_postcopy-ram.c.o
+[1256/1959] Compiling C object libsystem.a.p/migration_ram.c.o
+[1257/1959] Compiling C object libsystem.a.p/migration_socket.c.o
+[1258/1959] Compiling C object libsystem.a.p/migration_savevm.c.o
+[1259/1959] Compiling C object libsystem.a.p/migration_tls.c.o
+[1260/1959] Compiling C object libsystem.a.p/migration_migration-hmp-cmds.c.o
+[1261/1959] Compiling C object libsystem.a.p/migration_colo-failover.c.o
+[1262/1959] Compiling C object libsystem.a.p/migration_multifd-colo.c.o
+[1263/1959] Compiling C object libsystem.a.p/migration_colo.c.o
+[1264/1959] Compiling C object libsystem.a.p/migration_multifd-zstd.c.o
+[1265/1959] Compiling C object libsystem.a.p/migration_vfio.c.o
+[1266/1959] Compiling C object libsystem.a.p/monitor_fds.c.o
+[1267/1959] Compiling C object libsystem.a.p/monitor_hmp-cmds.c.o
+[1268/1959] Compiling C object libsystem.a.p/monitor_hmp.c.o
+[1269/1959] Compiling C object libsystem.a.p/monitor_qemu-config-qmp.c.o
+[1270/1959] Compiling C object libsystem.a.p/net_announce.c.o
+[1271/1959] Compiling C object libsystem.a.p/monitor_qmp-cmds.c.o
+[1272/1959] Compiling C object libsystem.a.p/net_checksum.c.o
+[1273/1959] Compiling C object libsystem.a.p/net_dgram.c.o
+[1274/1959] Compiling C object libsystem.a.p/net_dump.c.o
+[1275/1959] Compiling C object libsystem.a.p/net_eth.c.o
+[1276/1959] Compiling C object libsystem.a.p/net_filter-buffer.c.o
+[1277/1959] Compiling C object libsystem.a.p/net_filter-mirror.c.o
+[1278/1959] Compiling C object libsystem.a.p/net_filter.c.o
+[1279/1959] Compiling C object libsystem.a.p/net_hub.c.o
+[1280/1959] Compiling C object libsystem.a.p/net_net-hmp-cmds.c.o
+[1281/1959] Compiling C object libsystem.a.p/net_queue.c.o
+[1282/1959] Compiling C object libsystem.a.p/net_net.c.o
+[1283/1959] Compiling C object libsystem.a.p/net_socket.c.o
+[1284/1959] Compiling C object libsystem.a.p/net_stream.c.o
+[1285/1959] Compiling C object libsystem.a.p/net_stream_data.c.o
+[1286/1959] Compiling C object libsystem.a.p/net_util.c.o
+[1287/1959] Compiling C object libsystem.a.p/net_colo.c.o
+[1288/1959] Compiling C object libsystem.a.p/net_colo-compare.c.o
+[1289/1959] Compiling C object libsystem.a.p/net_filter-rewriter.c.o
+[1290/1959] Compiling C object libsystem.a.p/net_l2tpv3.c.o
+[1291/1959] Compiling C object libsystem.a.p/net_filter-replay.c.o
+[1292/1959] Compiling C object libsystem.a.p/net_slirp.c.o
+[1293/1959] Compiling C object libsystem.a.p/net_passt.c.o
+[1294/1959] Compiling C object libsystem.a.p/net_vhost-user.c.o
+[1295/1959] Compiling C object libsystem.a.p/net_tap.c.o
+[1296/1959] Compiling C object libsystem.a.p/net_tap-linux.c.o
+[1297/1959] Compiling C object libsystem.a.p/net_can_can_core.c.o
+[1298/1959] Compiling C object libsystem.a.p/net_vhost-vdpa.c.o
+[1299/1959] Compiling C object libsystem.a.p/net_can_can_host.c.o
+[1300/1959] Compiling C object libsystem.a.p/net_can_can_socketcan.c.o
+[1301/1959] Compiling C object libsystem.a.p/replay_replay.c.o
+[1302/1959] Compiling C object libsystem.a.p/replay_replay-internal.c.o
+[1303/1959] Compiling C object libsystem.a.p/replay_replay-time.c.o
+[1304/1959] Compiling C object libsystem.a.p/replay_replay-events.c.o
+[1305/1959] Compiling C object libsystem.a.p/replay_replay-input.c.o
+[1306/1959] Compiling C object libsystem.a.p/replay_replay-char.c.o
+[1307/1959] Compiling C object libsystem.a.p/replay_replay-snapshot.c.o
+[1308/1959] Compiling C object libsystem.a.p/replay_replay-net.c.o
+[1309/1959] Compiling C object libsystem.a.p/replay_replay-audio.c.o
+[1310/1959] Compiling C object libsystem.a.p/replay_replay-random.c.o
+[1311/1959] Compiling C object libsystem.a.p/stats_stats-hmp-cmds.c.o
+[1312/1959] Compiling C object libsystem.a.p/replay_replay-debugging.c.o
+[1313/1959] Compiling C object libsystem.a.p/stats_stats-qmp-cmds.c.o
+[1314/1959] Compiling C object libsystem.a.p/tcg_region.c.o
+[1315/1959] Compiling C object libsystem.a.p/tcg_optimize.c.o
+[1316/1959] Compiling C object libsystem.a.p/tcg_tcg-common.c.o
+[1317/1959] Compiling C object libsystem.a.p/tcg_tcg.c.o
+[1318/1959] Compiling C object libsystem.a.p/tcg_tcg-op.c.o
+[1319/1959] Compiling C object libsystem.a.p/tcg_tcg-op-ldst.c.o
+[1320/1959] Compiling C object libsystem.a.p/tcg_tcg-op-gvec.c.o
+[1321/1959] Compiling C object libsystem.a.p/tcg_perf.c.o
+[1322/1959] Compiling C object libsystem.a.p/tcg_tcg-op-vec.c.o
+[1323/1959] Compiling C object libsystem.a.p/plugins_system.c.o
+[1324/1959] Compiling C object libsystem.a.p/plugins_api-system.c.o
+[1325/1959] Compiling C object libsystem.a.p/plugins_api.c.o
+[1326/1959] Compiling C object libsystem.a.p/ebpf_ebpf_rss-stub.c.o
+[1327/1959] Compiling C object libsystem.a.p/hw_remote_machine.c.o
+[1328/1959] Compiling C object libsystem.a.p/plugins_core.c.o
+[1329/1959] Compiling C object libsystem.a.p/hw_remote_mpqemu-link.c.o
+[1330/1959] Compiling C object libsystem.a.p/hw_remote_message.c.o
+[1331/1959] Compiling C object libsystem.a.p/hw_remote_remote-obj.c.o
+[1332/1959] Compiling C object libsystem.a.p/hw_remote_proxy.c.o
+[1333/1959] Compiling C object libsystem.a.p/hw_remote_iohub.c.o
+[1334/1959] Compiling C object libsystem.a.p/hw_remote_vfio-user-obj-stub.c.o
+[1335/1959] Compiling C object libsystem.a.p/hw_remote_iommu.c.o
+[1336/1959] Compiling C object libsystem.a.p/hw_9pfs_9p-posix-acl.c.o
+[1337/1959] Compiling C object libsystem.a.p/hw_9pfs_9p-local.c.o
+[1338/1959] Compiling C object libsystem.a.p/hw_9pfs_9p-util-generic.c.o
+[1339/1959] Compiling C object libsystem.a.p/hw_9pfs_9p-synth.c.o
+[1340/1959] Compiling C object libsystem.a.p/hw_9pfs_9p-xattr-user.c.o
+[1341/1959] Compiling C object libsystem.a.p/hw_9pfs_9p-xattr.c.o
+[1342/1959] Compiling C object libsystem.a.p/hw_9pfs_codir.c.o
+[1343/1959] Compiling C object libsystem.a.p/hw_9pfs_cofile.c.o
+[1344/1959] Compiling C object libsystem.a.p/hw_9pfs_9p.c.o
+[1345/1959] Compiling C object libsystem.a.p/hw_9pfs_cofs.c.o
+[1346/1959] Compiling C object libsystem.a.p/hw_9pfs_coth.c.o
+[1347/1959] Compiling C object libsystem.a.p/hw_9pfs_coxattr.c.o
+[1348/1959] Compiling C object libsystem.a.p/hw_9pfs_9p-util-linux.c.o
+[1349/1959] Compiling C object libsystem.a.p/hw_9pfs_xen-9p-backend.c.o
+[1350/1959] Compiling C object libsystem.a.p/hw_9pfs_virtio-9p-device.c.o
+[1351/1959] Compiling C object libsystem.a.p/hw_acpi_bios-linker-loader.c.o
+[1352/1959] Compiling C object libsystem.a.p/hw_acpi_aml-build.c.o
+[1353/1959] Compiling C object libsystem.a.p/hw_acpi_core.c.o
+[1354/1959] Compiling C object libsystem.a.p/hw_acpi_utils.c.o
+[1355/1959] Compiling C object libsystem.a.p/hw_acpi_cpu.c.o
+[1356/1959] Compiling C object libsystem.a.p/hw_acpi_memory_hotplug.c.o
+[1357/1959] Compiling C object libsystem.a.p/hw_acpi_nvdimm.c.o
+[1358/1959] Compiling C object libsystem.a.p/hw_acpi_pci.c.o
+[1359/1959] Compiling C object libsystem.a.p/hw_acpi_cxl.c.o
+[1360/1959] Compiling C object libsystem.a.p/hw_acpi_vmgenid.c.o
+[1361/1959] Compiling C object libsystem.a.p/hw_acpi_vmclock.c.o
+[1362/1959] Compiling C object libsystem.a.p/hw_acpi_generic_event_device.c.o
+[1363/1959] Compiling C object libsystem.a.p/hw_acpi_hmat.c.o
+[1364/1959] Compiling C object libsystem.a.p/hw_acpi_pci-bridge.c.o
+[1365/1959] Compiling C object libsystem.a.p/hw_acpi_piix4.c.o
+[1366/1959] Compiling C object libsystem.a.p/hw_acpi_viot.c.o
+[1367/1959] Compiling C object libsystem.a.p/hw_acpi_pcihp.c.o
+[1368/1959] Compiling C object libsystem.a.p/hw_acpi_ich9.c.o
+[1369/1959] Compiling C object libsystem.a.p/hw_acpi_ich9_tco.c.o
+[1370/1959] Compiling C object libsystem.a.p/hw_acpi_ich9_timer.c.o
+[1371/1959] Compiling C object libsystem.a.p/hw_acpi_wdat-ich9.c.o
+[1372/1959] Compiling C object libsystem.a.p/hw_acpi_ipmi.c.o
+[1373/1959] Compiling C object libsystem.a.p/hw_acpi_erst.c.o
+[1374/1959] Compiling C object libsystem.a.p/hw_acpi_tpm.c.o
+[1375/1959] Compiling C object libsystem.a.p/hw_acpi_acpi-qmp-cmds.c.o
+[1376/1959] Compiling C object libsystem.a.p/hw_acpi_acpi_interface.c.o
+[1377/1959] Compiling C object libsystem.a.p/hw_audio_model.c.o
+[1378/1959] Compiling C object libsystem.a.p/hw_audio_fmopl.c.o
+[1379/1959] Compiling C object libsystem.a.p/hw_audio_ac97.c.o
+[1380/1959] Compiling C object libsystem.a.p/hw_audio_adlib.c.o
+[1381/1959] Compiling C object libsystem.a.p/hw_audio_cs4231a.c.o
+[1382/1959] Compiling C object libsystem.a.p/hw_audio_es1370.c.o
+[1383/1959] Compiling C object libsystem.a.p/hw_audio_gus.c.o
+[1384/1959] Compiling C object libsystem.a.p/hw_audio_gusemu_hal.c.o
+[1385/1959] Compiling C object libsystem.a.p/hw_audio_gusemu_mixer.c.o
+[1386/1959] Compiling C object libsystem.a.p/hw_audio_intel-hda.c.o
+[1387/1959] Compiling C object libsystem.a.p/hw_audio_hda-codec.c.o
+[1388/1959] Compiling C object libsystem.a.p/hw_audio_pcspk.c.o
+[1389/1959] Compiling C object libsystem.a.p/hw_audio_sb16.c.o
+[1390/1959] Compiling C object libsystem.a.p/hw_audio_virtio-snd.c.o
+[1391/1959] Compiling C object libsystem.a.p/hw_audio_virtio-snd-pci.c.o
+[1392/1959] Compiling C object libsystem.a.p/hw_block_block.c.o
+[1393/1959] Compiling C object libsystem.a.p/hw_block_cdrom.c.o
+[1394/1959] Compiling C object libsystem.a.p/hw_block_hd-geometry.c.o
+[1395/1959] Compiling C object libsystem.a.p/hw_block_fdc.c.o
+[1396/1959] Compiling C object libsystem.a.p/hw_block_fdc-isa.c.o
+[1397/1959] Compiling C object libsystem.a.p/hw_block_pflash_cfi01.c.o
+[1398/1959] Compiling C object libsystem.a.p/hw_block_xen-block.c.o
+[1399/1959] Compiling C object libsystem.a.p/hw_block_virtio-blk-common.c.o
+[1400/1959] Compiling C object libsystem.a.p/hw_block_virtio-blk.c.o
+[1401/1959] Compiling C object libsystem.a.p/hw_block_vhost-user-blk.c.o
+[1402/1959] Compiling C object libsystem.a.p/hw_char_ipoctal232.c.o
+[1403/1959] Compiling C object libsystem.a.p/hw_char_parallel-isa.c.o
+[1404/1959] Compiling C object libsystem.a.p/hw_char_debugcon.c.o
+[1405/1959] Compiling C object libsystem.a.p/hw_char_parallel.c.o
+[1406/1959] Compiling C object libsystem.a.p/hw_char_serial.c.o
+[1407/1959] Compiling C object libsystem.a.p/hw_char_serial-isa.c.o
+[1408/1959] Compiling C object libsystem.a.p/hw_char_serial-pci.c.o
+[1409/1959] Compiling C object libsystem.a.p/hw_char_serial-pci-multi.c.o
+[1410/1959] Compiling C object libsystem.a.p/hw_char_virtio-console.c.o
+[1411/1959] Compiling C object libsystem.a.p/hw_char_virtio-serial-bus.c.o
+[1412/1959] Compiling C object libsystem.a.p/hw_char_xen_console.c.o
+[1413/1959] Compiling C object libsystem.a.p/hw_core_generic-loader.c.o
+[1414/1959] Compiling C object libsystem.a.p/hw_core_guest-loader.c.o
+[1415/1959] Compiling C object libsystem.a.p/hw_core_cpu-system.c.o
+[1416/1959] Compiling C object libsystem.a.p/hw_core_fw-path-provider.c.o
+[1417/1959] Compiling C object libsystem.a.p/hw_core_hotplug.c.o
+[1418/1959] Compiling C object libsystem.a.p/hw_core_machine-hmp-cmds.c.o
+[1419/1959] Compiling C object libsystem.a.p/hw_core_loader.c.o
+[1420/1959] Compiling C object libsystem.a.p/hw_core_machine-qmp-cmds.c.o
+[1421/1959] Compiling C object libsystem.a.p/hw_core_nmi.c.o
+[1422/1959] Compiling C object libsystem.a.p/hw_core_null-machine.c.o
+[1423/1959] Compiling C object libsystem.a.p/hw_core_machine.c.o
+[1424/1959] Compiling C object libsystem.a.p/hw_core_qdev-fw.c.o
+[1425/1959] Compiling C object libsystem.a.p/hw_core_numa.c.o
+[1426/1959] Compiling C object libsystem.a.p/hw_core_qdev-hotplug.c.o
+[1427/1959] Compiling C object libsystem.a.p/hw_core_reset.c.o
+[1428/1959] Compiling C object libsystem.a.p/hw_core_qdev-properties-system.c.o
+[1429/1959] Compiling C object libsystem.a.p/hw_core_sysbus.c.o
+[1430/1959] Compiling C object libsystem.a.p/hw_core_vm-change-state-handler.c.o
+[1431/1959] Compiling C object libsystem.a.p/hw_core_clock-vmstate.c.o
+[1432/1959] Compiling C object libsystem.a.p/hw_cpu_core.c.o
+[1433/1959] Compiling C object libsystem.a.p/hw_cxl_cxl-component-utils.c.o
+[1434/1959] Compiling C object libsystem.a.p/hw_cxl_cxl-device-utils.c.o
+[1435/1959] Compiling C object libsystem.a.p/hw_cxl_cxl-host.c.o
+[1436/1959] Compiling C object libsystem.a.p/hw_cxl_cxl-mailbox-utils.c.o
+[1437/1959] Compiling C object libsystem.a.p/hw_cxl_cxl-cdat.c.o
+[1438/1959] Compiling C object libsystem.a.p/hw_cxl_cxl-events.c.o
+[1439/1959] Compiling C object libsystem.a.p/hw_cxl_switch-mailbox-cci.c.o
+[1440/1959] Compiling C object libsystem.a.p/hw_display_i2c-ddc.c.o
+[1441/1959] Compiling C object libsystem.a.p/hw_display_edid-generate.c.o
+[1442/1959] Compiling C object libsystem.a.p/hw_display_edid-region.c.o
+[1443/1959] Compiling C object libsystem.a.p/hw_display_ramfb.c.o
+[1444/1959] Compiling C object libsystem.a.p/hw_display_ramfb-standalone.c.o
+[1445/1959] Compiling C object libsystem.a.p/hw_display_cirrus_vga_isa.c.o
+[1446/1959] Compiling C object libsystem.a.p/hw_display_xenfb.c.o
+[1447/1959] Compiling C object libsystem.a.p/hw_display_vga-pci.c.o
+[1448/1959] Compiling C object libsystem.a.p/hw_display_vga-isa.c.o
+[1449/1959] Compiling C object libsystem.a.p/hw_display_vmware_vga.c.o
+[1450/1959] Compiling C object libsystem.a.p/hw_display_cirrus_vga.c.o
+[1451/1959] Compiling C object libsystem.a.p/hw_display_bochs-display.c.o
+[1452/1959] Compiling C object libsystem.a.p/hw_display_virtio-dmabuf.c.o
+[1453/1959] Compiling C object libsystem.a.p/hw_display_vga.c.o
+[1454/1959] Compiling C object libsystem.a.p/hw_display_acpi-vga.c.o
+[1455/1959] Compiling C object libsystem.a.p/hw_display_ati.c.o
+[1456/1959] Compiling C object libsystem.a.p/hw_display_ati_2d.c.o
+[1457/1959] Compiling C object libsystem.a.p/hw_display_ati_dbg.c.o
+[1458/1959] Compiling C object libsystem.a.p/hw_dma_i8257.c.o
+[1459/1959] Compiling C object libsystem.a.p/hw_hyperv_hyperv_testdev.c.o
+[1460/1959] Compiling C object libsystem.a.p/hw_hyperv_hyperv.c.o
+[1461/1959] Compiling C object libsystem.a.p/hw_hyperv_syndbg.c.o
+[1462/1959] Compiling C object libsystem.a.p/hw_hyperv_vmbus.c.o
+[1463/1959] Compiling C object libsystem.a.p/hw_hyperv_hv-balloon-page_range_tree.c.o
+[1464/1959] Compiling C object libsystem.a.p/hw_hyperv_hv-balloon.c.o
+[1465/1959] Compiling C object libsystem.a.p/hw_hyperv_hv-balloon-our_range_memslots.c.o
+[1466/1959] Compiling C object libsystem.a.p/hw_i2c_core.c.o
+[1467/1959] Compiling C object libsystem.a.p/hw_i2c_smbus_slave.c.o
+[1468/1959] Compiling C object libsystem.a.p/hw_i2c_smbus_master.c.o
+[1469/1959] Compiling C object libsystem.a.p/hw_i2c_pm_smbus.c.o
+[1470/1959] Compiling C object libsystem.a.p/hw_i2c_smbus_ich9.c.o
+[1471/1959] Compiling C object libsystem.a.p/hw_i2c_bitbang_i2c.c.o
+[1472/1959] Compiling C object libsystem.a.p/hw_i2c_smbus_eeprom.c.o
+[1473/1959] Compiling C object libsystem.a.p/hw_ide_ahci.c.o
+[1474/1959] Compiling C object libsystem.a.p/hw_ide_ich.c.o
+[1475/1959] Compiling C object libsystem.a.p/hw_ide_cf.c.o
+[1476/1959] Compiling C object libsystem.a.p/hw_ide_ide-bus.c.o
+[1477/1959] Compiling C object libsystem.a.p/hw_ide_atapi.c.o
+[1478/1959] Compiling C object libsystem.a.p/hw_ide_core.c.o
+[1479/1959] Compiling C object libsystem.a.p/hw_ide_ide-dev.c.o
+[1480/1959] Compiling C object libsystem.a.p/hw_ide_isa.c.o
+[1481/1959] Compiling C object libsystem.a.p/hw_ide_ioport.c.o
+[1482/1959] Compiling C object libsystem.a.p/hw_ide_piix.c.o
+[1483/1959] Compiling C object libsystem.a.p/hw_ide_pci.c.o
+[1484/1959] Compiling C object libsystem.a.p/hw_input_hid.c.o
+[1485/1959] Compiling C object libsystem.a.p/hw_input_pckbd.c.o
+[1486/1959] Compiling C object libsystem.a.p/hw_input_ps2.c.o
+[1487/1959] Compiling C object libsystem.a.p/hw_input_virtio-input.c.o
+[1488/1959] Compiling C object libsystem.a.p/hw_input_virtio-input-hid.c.o
+[1489/1959] Compiling C object libsystem.a.p/hw_input_virtio-input-host.c.o
+[1490/1959] Compiling C object libsystem.a.p/hw_intc_intc.c.o
+[1491/1959] Compiling C object libsystem.a.p/hw_intc_i8259_common.c.o
+[1492/1959] Compiling C object libsystem.a.p/hw_intc_i8259.c.o
+[1493/1959] Compiling C object libsystem.a.p/hw_intc_ioapic_common.c.o
+[1494/1959] Compiling C object libsystem.a.p/hw_intc_kvm_irqcount.c.o
+[1495/1959] Compiling C object libsystem.a.p/hw_ipack_ipack.c.o
+[1496/1959] Compiling C object libsystem.a.p/hw_ipack_tpci200.c.o
+[1497/1959] Compiling C object libsystem.a.p/hw_ipmi_ipmi.c.o
+[1498/1959] Compiling C object libsystem.a.p/hw_ipmi_ipmi_kcs.c.o
+[1499/1959] Compiling C object libsystem.a.p/hw_ipmi_ipmi_bt.c.o
+[1500/1959] Compiling C object libsystem.a.p/hw_ipmi_ipmi_bmc_extern.c.o
+[1501/1959] Compiling C object libsystem.a.p/hw_ipmi_ipmi_bmc_sim.c.o
+[1502/1959] Compiling C object libsystem.a.p/hw_ipmi_isa_ipmi_kcs.c.o
+[1503/1959] Compiling C object libsystem.a.p/hw_ipmi_pci_ipmi_kcs.c.o
+[1504/1959] Compiling C object libsystem.a.p/hw_ipmi_isa_ipmi_bt.c.o
+[1505/1959] Compiling C object libsystem.a.p/hw_ipmi_smbus_ipmi.c.o
+[1506/1959] Compiling C object libsystem.a.p/hw_ipmi_pci_ipmi_bt.c.o
+[1507/1959] Compiling C object libsystem.a.p/hw_isa_isa-bus.c.o
+[1508/1959] Compiling C object libsystem.a.p/hw_isa_apm.c.o
+[1509/1959] Compiling C object libsystem.a.p/hw_isa_piix.c.o
+[1510/1959] Compiling C object libsystem.a.p/hw_mem_memory-device.c.o
+[1511/1959] Compiling C object libsystem.a.p/hw_mem_nvdimm.c.o
+[1512/1959] Compiling C object libsystem.a.p/hw_mem_pc-dimm.c.o
+[1513/1959] Compiling C object libsystem.a.p/hw_mem_sp-mem.c.o
+[1514/1959] Compiling C object libsystem.a.p/hw_misc_applesmc.c.o
+[1515/1959] Compiling C object libsystem.a.p/hw_mem_cxl_type3.c.o
+[1516/1959] Compiling C object libsystem.a.p/hw_misc_vmcoreinfo.c.o
+[1517/1959] Compiling C object libsystem.a.p/hw_misc_edu.c.o
+[1518/1959] Compiling C object libsystem.a.p/hw_misc_debugexit.c.o
+[1519/1959] Compiling C object libsystem.a.p/hw_misc_pc-testdev.c.o
+[1520/1959] Compiling C object libsystem.a.p/hw_misc_pci-testdev.c.o
+[1521/1959] Compiling C object libsystem.a.p/hw_misc_iommu-testdev.c.o
+[1522/1959] Compiling C object libsystem.a.p/hw_misc_pvpanic.c.o
+[1523/1959] Compiling C object libsystem.a.p/hw_misc_ivshmem-pci.c.o
+[1524/1959] Compiling C object libsystem.a.p/hw_misc_ivshmem-flat.c.o
+[1525/1959] Compiling C object libsystem.a.p/hw_misc_pvpanic-isa.c.o
+[1526/1959] Compiling C object libsystem.a.p/hw_misc_pvpanic-pci.c.o
+[1527/1959] Compiling C object libsystem.a.p/hw_misc_i2c-echo.c.o
+[1528/1959] Compiling C object libsystem.a.p/hw_net_xen_nic.c.o
+[1529/1959] Compiling C object libsystem.a.p/hw_net_ne2000.c.o
+[1530/1959] Compiling C object libsystem.a.p/hw_net_ne2000-pci.c.o
+[1531/1959] Compiling C object libsystem.a.p/hw_net_eepro100.c.o
+[1532/1959] Compiling C object libsystem.a.p/hw_net_pcnet-pci.c.o
+[1533/1959] Compiling C object libsystem.a.p/hw_net_pcnet.c.o
+[1534/1959] Compiling C object libsystem.a.p/hw_net_e1000.c.o
+[1535/1959] Compiling C object libsystem.a.p/hw_net_e1000x_common.c.o
+[1536/1959] Compiling C object libsystem.a.p/hw_net_net_tx_pkt.c.o
+[1537/1959] Compiling C object libsystem.a.p/hw_net_net_rx_pkt.c.o
+[1538/1959] Compiling C object libsystem.a.p/hw_net_e1000e.c.o
+[1539/1959] Compiling C object libsystem.a.p/hw_net_igb.c.o
+[1540/1959] Compiling C object libsystem.a.p/hw_net_e1000e_core.c.o
+[1541/1959] Compiling C object libsystem.a.p/hw_net_igbvf.c.o
+[1542/1959] Compiling C object libsystem.a.p/hw_net_igb_core.c.o
+[1543/1959] Compiling C object libsystem.a.p/hw_net_rtl8139.c.o
+[1544/1959] Compiling C object libsystem.a.p/hw_net_tulip.c.o
+[1545/1959] Compiling C object libsystem.a.p/hw_net_vmxnet3.c.o
+[1546/1959] Compiling C object libsystem.a.p/hw_net_ne2000-isa.c.o
+[1547/1959] Compiling C object libsystem.a.p/hw_net_vhost_net.c.o
+[1548/1959] Compiling C object libsystem.a.p/hw_net_rocker_rocker.c.o
+[1549/1959] Compiling C object libsystem.a.p/hw_net_virtio-net.c.o
+[1550/1959] Compiling C object libsystem.a.p/hw_net_rocker_rocker_fp.c.o
+[1551/1959] Compiling C object libsystem.a.p/hw_net_rocker_rocker_desc.c.o
+[1552/1959] Compiling C object libsystem.a.p/hw_net_rocker_rocker_world.c.o
+[1553/1959] Compiling C object libsystem.a.p/hw_net_rocker_rocker_of_dpa.c.o
+[1554/1959] Compiling C object libsystem.a.p/hw_net_rocker_rocker-hmp-cmds.c.o
+[1555/1959] Compiling C object libsystem.a.p/hw_net_can_can_sja1000.c.o
+[1556/1959] Compiling C object libsystem.a.p/hw_net_can_can_kvaser_pci.c.o
+[1557/1959] Compiling C object libsystem.a.p/hw_net_can_can_pcm3680_pci.c.o
+[1558/1959] Compiling C object libsystem.a.p/hw_net_can_can_mioe3680_pci.c.o
+[1559/1959] Compiling C object libsystem.a.p/hw_net_can_ctucan_core.c.o
+[1560/1959] Compiling C object libsystem.a.p/hw_net_can_ctucan_pci.c.o
+[1561/1959] Compiling C object libsystem.a.p/hw_nitro_nitro-vsock-bus.c.o
+[1562/1959] Compiling C object libsystem.a.p/hw_nitro_serial-vsock.c.o
+[1563/1959] Compiling C object libsystem.a.p/hw_nitro_heartbeat.c.o
+[1564/1959] Compiling C object libsystem.a.p/hw_nitro_machine.c.o
+[1565/1959] Compiling C object libsystem.a.p/hw_nvme_dif.c.o
+[1566/1959] Compiling C object libsystem.a.p/hw_nvme_ns.c.o
+[1567/1959] Compiling C object libsystem.a.p/hw_nvme_subsys.c.o
+[1568/1959] Compiling C object libsystem.a.p/hw_nvme_ctrl.c.o
+[1569/1959] Compiling C object libsystem.a.p/hw_nvme_nguid.c.o
+[1570/1959] Compiling C object libsystem.a.p/hw_nvram_fw_cfg-interface.c.o
+[1571/1959] Compiling C object libsystem.a.p/hw_nvram_eeprom93xx.c.o
+[1572/1959] Compiling C object libsystem.a.p/hw_nvram_fw_cfg.c.o
+[1573/1959] Compiling C object libsystem.a.p/hw_nvram_fw_cfg-acpi.c.o
+[1574/1959] Compiling C object libsystem.a.p/hw_pci_pcie_port.c.o
+[1575/1959] Compiling C object libsystem.a.p/hw_pci_pcie_host.c.o
+[1576/1959] Compiling C object libsystem.a.p/hw_pci_msi.c.o
+[1577/1959] Compiling C object libsystem.a.p/hw_pci_msix.c.o
+[1578/1959] Compiling C object libsystem.a.p/hw_pci_pci_bridge.c.o
+[1579/1959] Compiling C object libsystem.a.p/hw_pci_pci.c.o
+[1580/1959] Compiling C object libsystem.a.p/hw_pci_pci_host.c.o
+[1581/1959] Compiling C object libsystem.a.p/hw_pci_pci-hmp-cmds.c.o
+[1582/1959] Compiling C object libsystem.a.p/hw_pci_pci-qmp-cmds.c.o
+[1583/1959] Compiling C object libsystem.a.p/hw_pci_pcie_sriov.c.o
+[1584/1959] Compiling C object libsystem.a.p/hw_pci_shpc.c.o
+[1585/1959] Compiling C object libsystem.a.p/hw_pci_slotid_cap.c.o
+[1586/1959] Compiling C object libsystem.a.p/hw_pci_pcie.c.o
+[1587/1959] Compiling C object libsystem.a.p/hw_pci_pcie_aer.c.o
+[1588/1959] Compiling C object libsystem.a.p/hw_pci_pcie_doe.c.o
+[1589/1959] Compiling C object libsystem.a.p/hw_pci-bridge_pci_bridge_dev.c.o
+[1590/1959] Compiling C object libsystem.a.p/hw_pci-bridge_i82801b11.c.o
+[1591/1959] Compiling C object libsystem.a.p/hw_pci-bridge_ioh3420.c.o
+[1592/1959] Compiling C object libsystem.a.p/hw_pci-bridge_pcie_root_port.c.o
+[1593/1959] Compiling C object libsystem.a.p/hw_pci-bridge_gen_pcie_root_port.c.o
+[1594/1959] Compiling C object libsystem.a.p/hw_pci-bridge_pcie_pci_bridge.c.o
+[1595/1959] Compiling C object libsystem.a.p/hw_pci-bridge_pci_expander_bridge.c.o
+[1596/1959] Compiling C object libsystem.a.p/hw_pci-bridge_xio3130_upstream.c.o
+[1597/1959] Compiling C object libsystem.a.p/hw_pci-bridge_xio3130_downstream.c.o
+[1598/1959] Compiling C object libsystem.a.p/hw_pci-bridge_cxl_root_port.c.o
+[1599/1959] Compiling C object libsystem.a.p/hw_pci-bridge_cxl_upstream.c.o
+[1600/1959] Compiling C object libsystem.a.p/hw_pci-bridge_cxl_downstream.c.o
+[1601/1959] Compiling C object libsystem.a.p/hw_pci-host_pam.c.o
+[1602/1959] Compiling C object libsystem.a.p/hw_pci-host_gpex.c.o
+[1603/1959] Compiling C object libsystem.a.p/hw_pci-host_gpex-acpi.c.o
+[1604/1959] Compiling C object libsystem.a.p/hw_pci-host_q35.c.o
+[1605/1959] Compiling C object libsystem.a.p/hw_pci-host_i440fx.c.o
+[1606/1959] Compiling C object libsystem.a.p/hw_pci-host_remote.c.o
+[1607/1959] Compiling C object libsystem.a.p/hw_scsi_emulation.c.o
+[1608/1959] Compiling C object libsystem.a.p/hw_rtc_mc146818rtc.c.o
+[1609/1959] Compiling C object libsystem.a.p/hw_scsi_scsi-bus.c.o
+[1610/1959] Compiling C object libsystem.a.p/hw_scsi_scsi-disk.c.o
+[1611/1959] Compiling C object libsystem.a.p/hw_scsi_scsi-generic.c.o
+[1612/1959] Compiling C object libsystem.a.p/hw_scsi_esp.c.o
+[1613/1959] Compiling C object libsystem.a.p/hw_scsi_esp-pci.c.o
+[1614/1959] Compiling C object libsystem.a.p/hw_scsi_lsi53c895a.c.o
+[1615/1959] Compiling C object libsystem.a.p/hw_scsi_megasas.c.o
+[1616/1959] Compiling C object libsystem.a.p/hw_scsi_mptsas.c.o
+[1617/1959] Compiling C object libsystem.a.p/hw_scsi_mptconfig.c.o
+[1618/1959] Compiling C object libsystem.a.p/hw_scsi_mptendian.c.o
+[1619/1959] Compiling C object libsystem.a.p/hw_scsi_vmw_pvscsi.c.o
+[1620/1959] Compiling C object libsystem.a.p/hw_scsi_virtio-scsi-dataplane.c.o
+[1621/1959] Compiling C object libsystem.a.p/hw_scsi_vhost-scsi.c.o
+[1622/1959] Compiling C object libsystem.a.p/hw_scsi_vhost-user-scsi.c.o
+[1623/1959] Compiling C object libsystem.a.p/hw_scsi_vhost-scsi-common.c.o
+[1624/1959] Compiling C object libsystem.a.p/hw_scsi_virtio-scsi.c.o
+[1625/1959] Compiling C object libsystem.a.p/hw_sd_core.c.o
+[1626/1959] Compiling C object libsystem.a.p/hw_sd_sd.c.o
+[1627/1959] Compiling C object libsystem.a.p/hw_sd_sdhci-pci.c.o
+[1628/1959] Compiling C object libsystem.a.p/hw_sd_sdhci.c.o
+[1629/1959] Compiling C object libsystem.a.p/hw_smbios_smbios_type_38.c.o
+[1630/1959] Compiling C object libsystem.a.p/hw_smbios_smbios_legacy.c.o
+[1631/1959] Compiling C object libsystem.a.p/hw_smbios_smbios.c.o
+[1632/1959] Compiling C object libsystem.a.p/hw_timer_i8254_common.c.o
+[1633/1959] Compiling C object libsystem.a.p/hw_timer_hpet.c.o
+[1634/1959] Compiling C object libsystem.a.p/hw_timer_i8254.c.o
+[1635/1959] Compiling C object libsystem.a.p/hw_tpm_tpm_tis_common.c.o
+[1636/1959] Compiling C object libsystem.a.p/hw_tpm_tpm_tis_isa.c.o
+[1637/1959] Compiling C object libsystem.a.p/hw_tpm_tpm_crb.c.o
+[1638/1959] Compiling C object libsystem.a.p/hw_tpm_tpm_ppi.c.o
+[1639/1959] Compiling C object libsystem.a.p/hw_uefi_hardware-info.c.o
+[1640/1959] Compiling C object libsystem.a.p/hw_uefi_ovmf-log.c.o
+[1641/1959] Compiling C object libsystem.a.p/hw_ufs_lu.c.o
+[1642/1959] Compiling C object libsystem.a.p/hw_ufs_ufs.c.o
+[1643/1959] Compiling C object libsystem.a.p/hw_ufs_ufs-pci.c.o
+[1644/1959] Compiling C object libsystem.a.p/hw_usb_bus.c.o
+[1645/1959] Compiling C object libsystem.a.p/hw_usb_combined-packet.c.o
+[1646/1959] Compiling C object libsystem.a.p/hw_usb_core.c.o
+[1647/1959] Compiling C object libsystem.a.p/hw_usb_desc.c.o
+[1648/1959] Compiling C object libsystem.a.p/hw_usb_desc-msos.c.o
+[1649/1959] Compiling C object libsystem.a.p/hw_usb_libhw.c.o
+[1650/1959] Compiling C object libsystem.a.p/hw_usb_pcap.c.o
+[1651/1959] Compiling C object libsystem.a.p/hw_usb_hcd-uhci.c.o
+[1652/1959] Compiling C object libsystem.a.p/hw_usb_hcd-ohci.c.o
+[1653/1959] Compiling C object libsystem.a.p/hw_usb_hcd-ohci-pci.c.o
+[1654/1959] Compiling C object libsystem.a.p/hw_usb_hcd-ehci-pci.c.o
+[1655/1959] Compiling C object libsystem.a.p/hw_usb_hcd-ehci.c.o
+[1656/1959] Compiling C object libsystem.a.p/hw_usb_hcd-xhci-pci.c.o
+[1657/1959] Compiling C object libsystem.a.p/hw_usb_hcd-xhci.c.o
+[1658/1959] Compiling C object libsystem.a.p/hw_usb_hcd-xhci-sysbus.c.o
+[1659/1959] Compiling C object libsystem.a.p/hw_usb_hcd-xhci-nec.c.o
+[1660/1959] Compiling C object libsystem.a.p/hw_usb_dev-hub.c.o
+[1661/1959] Compiling C object libsystem.a.p/hw_usb_dev-hid.c.o
+[1662/1959] Compiling C object libsystem.a.p/hw_usb_dev-wacom.c.o
+[1663/1959] Compiling C object libsystem.a.p/hw_usb_dev-storage.c.o
+[1664/1959] Compiling C object libsystem.a.p/hw_usb_dev-storage-bot.c.o
+[1665/1959] Compiling C object libsystem.a.p/hw_usb_dev-storage-classic.c.o
+[1666/1959] Compiling C object libsystem.a.p/hw_usb_dev-uas.c.o
+[1667/1959] Compiling C object libsystem.a.p/hw_usb_dev-audio.c.o
+[1668/1959] Compiling C object libsystem.a.p/hw_usb_dev-serial.c.o
+[1669/1959] Compiling C object libsystem.a.p/hw_usb_dev-network.c.o
+[1670/1959] Compiling C object libsystem.a.p/hw_usb_dev-mtp.c.o
+[1671/1959] Compiling C object libsystem.a.p/hw_usb_dev-smartcard-reader.c.o
+[1672/1959] Compiling C object libsystem.a.p/hw_usb_u2f.c.o
+[1673/1959] Compiling C object libsystem.a.p/hw_usb_u2f-passthru.c.o
+[1674/1959] Compiling C object libsystem.a.p/hw_vfio_container.c.o
+[1675/1959] Compiling C object libsystem.a.p/hw_vfio_listener.c.o
+[1676/1959] Compiling C object libsystem.a.p/hw_vfio_helpers.c.o
+[1677/1959] Compiling C object libsystem.a.p/hw_vfio_container-legacy.c.o
+[1678/1959] Compiling C object libsystem.a.p/hw_vfio_kvm-helpers.c.o
+[1679/1959] Compiling C object libsystem.a.p/hw_vfio_pci-quirks.c.o
+[1680/1959] Compiling C object libsystem.a.p/hw_vfio_igd.c.o
+[1681/1959] Compiling C object libsystem.a.p/hw_vfio_pci.c.o
+[1682/1959] Compiling C object libsystem.a.p/hw_vfio_cpr-legacy.c.o
+[1683/1959] Compiling C object libsystem.a.p/hw_vfio_cpr.c.o
+[1684/1959] Compiling C object libsystem.a.p/hw_vfio_device.c.o
+[1685/1959] Compiling C object libsystem.a.p/hw_vfio_migration.c.o
+[1686/1959] Compiling C object libsystem.a.p/hw_vfio_migration-multifd.c.o
+[1687/1959] Compiling C object libsystem.a.p/hw_vfio_region.c.o
+[1688/1959] Compiling C object libsystem.a.p/hw_vfio_cpr-iommufd.c.o
+[1689/1959] Compiling C object libsystem.a.p/hw_vfio_iommufd.c.o
+[1690/1959] Compiling C object libsystem.a.p/hw_vfio_display.c.o
+[1691/1959] Compiling C object libsystem.a.p/hw_vfio-user_container.c.o
+[1692/1959] Compiling C object libsystem.a.p/hw_vfio-user_device.c.o
+[1693/1959] Compiling C object libsystem.a.p/hw_vfio-user_pci.c.o
+[1694/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-bus.c.o
+[1695/1959] Compiling C object libsystem.a.p/hw_vfio-user_proxy.c.o
+[1696/1959] Compiling C object libsystem.a.p/hw_virtio_iothread-vq-mapping.c.o
+[1697/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-config-io.c.o
+[1698/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-mmio.c.o
+[1699/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-pci.c.o
+[1700/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-crypto.c.o
+[1701/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-vsock-common.c.o
+[1702/1959] Compiling C object libsystem.a.p/hw_virtio_vdpa-dev.c.o
+[1703/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-iommu.c.o
+[1704/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-qmp.c.o
+[1705/1959] Compiling C object libsystem.a.p/hw_virtio_virtio.c.o
+[1706/1959] Compiling C object libsystem.a.p/hw_virtio_vhost.c.o
+[1707/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-kernel.c.o
+[1708/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-iova-tree.c.o
+[1709/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-base.c.o
+[1710/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user.c.o
+[1711/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-test-device.c.o
+[1712/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-gpio.c.o
+[1713/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-i2c.c.o
+[1714/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-rng.c.o
+[1715/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-snd.c.o
+[1716/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-input.c.o
+[1717/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-spi.c.o
+[1718/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-rtc.c.o
+[1719/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-test-device-pci.c.o
+[1720/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-gpio-pci.c.o
+[1721/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-i2c-pci.c.o
+[1722/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-rng-pci.c.o
+[1723/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-snd-pci.c.o
+[1724/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-input-pci.c.o
+[1725/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-spi-pci.c.o
+[1726/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-rtc-pci.c.o
+[1727/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-shadow-virtqueue.c.o
+[1728/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-vdpa.c.o
+[1729/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-vsock.c.o
+[1730/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-rng.c.o
+[1731/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-rtc.c.o
+[1732/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-balloon.c.o
+[1733/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-fs.c.o
+[1734/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-vsock.c.o
+[1735/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-pmem.c.o
+[1736/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-vsock-pci.c.o
+[1737/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-mem.c.o
+[1738/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-vsock-pci.c.o
+[1739/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-blk-pci.c.o
+[1740/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-scsi-pci.c.o
+[1741/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-scsi-pci.c.o
+[1742/1959] Compiling C object libsystem.a.p/hw_virtio_vhost-user-fs-pci.c.o
+[1743/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-crypto-pci.c.o
+[1744/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-input-host-pci.c.o
+[1745/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-input-pci.c.o
+[1746/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-rng-pci.c.o
+[1747/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-rtc-pci.c.o
+[1748/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-balloon-pci.c.o
+[1749/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-9p-pci.c.o
+[1750/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-scsi-pci.c.o
+[1751/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-blk-pci.c.o
+[1752/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-net-pci.c.o
+[1753/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-serial-pci.c.o
+[1754/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-pmem-pci.c.o
+[1755/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-iommu-pci.c.o
+[1756/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-mem-pci.c.o
+[1757/1959] Compiling C object libsystem.a.p/hw_virtio_vdpa-dev-pci.c.o
+[1758/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-md-pci.c.o
+[1759/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-hmp-cmds.c.o
+[1760/1959] Compiling C object libsystem.a.p/hw_virtio_virtio-acpi.c.o
+[1761/1959] Compiling C object libsystem.a.p/hw_watchdog_watchdog.c.o
+[1762/1959] Compiling C object libsystem.a.p/hw_watchdog_wdt_ib700.c.o
+[1763/1959] Compiling C object libsystem.a.p/hw_watchdog_wdt_i6300esb.c.o
+[1764/1959] Compiling C object libsystem.a.p/hw_xen_xen-backend.c.o
+[1765/1959] Compiling C object libsystem.a.p/hw_xen_xen-bus-helper.c.o
+[1766/1959] Compiling C object libsystem.a.p/hw_xen_xen-bus.c.o
+[1767/1959] Compiling C object libsystem.a.p/hw_xen_xen-legacy-backend.c.o
+[1768/1959] Compiling C object libsystem.a.p/hw_xen_xen_devconfig.c.o
+[1769/1959] Compiling C object libsystem.a.p/hw_xen_xen_pvdev.c.o
+[1770/1959] Compiling C object libsystem.a.p/hw_xen_xen_stubs.c.o
+[1771/1959] Compiling C object libsystem.a.p/gdbstub_syscalls.c.o
+[1772/1959] Compiling C object libsystem.a.p/gdbstub_gdbstub.c.o
+[1773/1959] Compiling C object libsystem.a.p/gdbstub_system.c.o
+[1774/1959] Compiling C object libsystem.a.p/block_blkreplay.c.o
+[1775/1959] Compiling C object libsystem.a.p/block_block-ram-registrar.c.o
+[1776/1959] Compiling C object libsystem.a.p/block_qapi-system.c.o
+[1777/1959] Compiling C object libsystem.a.p/cpu-target.c.o
+[1778/1959] Compiling C object libsystem.a.p/block_monitor_block-hmp-cmds.c.o
+[1779/1959] Compiling C object libsystem.a.p/system_arch_init.c.o
+[1780/1959] Compiling C object libsystem.a.p/system_balloon.c.o
+[1781/1959] Compiling C object libsystem.a.p/system_bootdevice.c.o
+[1782/1959] Compiling C object libsystem.a.p/system_vl.c.o
+[1783/1959] Compiling C object libsystem.a.p/system_cpus.c.o
+[1784/1959] Compiling C object libsystem.a.p/system_cpu-timers.c.o
+[1785/1959] Compiling C object libsystem.a.p/system_dirtylimit-hmp-cmds.c.o
+[1786/1959] Compiling C object libsystem.a.p/system_dirtylimit.c.o
+[1787/1959] Compiling C object libsystem.a.p/system_dma-helpers.c.o
+[1788/1959] Compiling C object libsystem.a.p/system_exit-with-parent.c.o
+[1789/1959] Compiling C object libsystem.a.p/system_ioport.c.o
+[1790/1959] Compiling C object libsystem.a.p/system_globals.c.o
+[1791/1959] Compiling C object libsystem.a.p/system_ram-block-attributes.c.o
+[1792/1959] Compiling C object libsystem.a.p/system_ram-discard-manager.c.o
+[1793/1959] Compiling C object libsystem.a.p/system_memory_mapping.c.o
+[1794/1959] Compiling C object libsystem.a.p/system_memory.c.o
+[1795/1959] Compiling C object libsystem.a.p/system_physmem-qmp-cmds.c.o
+[1796/1959] Compiling C object libsystem.a.p/system_physmem.c.o
+[1797/1959] Compiling C object libsystem.a.p/system_qdev-monitor.c.o
+[1798/1959] Compiling C object libsystem.a.p/system_qtest.c.o
+[1799/1959] Compiling C object libsystem.a.p/system_rtc.c.o
+[1800/1959] Compiling C object libsystem.a.p/system_runstate-action.c.o
+[1801/1959] Compiling C object libsystem.a.p/system_runstate-hmp-cmds.c.o
+[1802/1959] Compiling C object libsystem.a.p/system_tpm-hmp-cmds.c.o
+[1803/1959] Compiling C object libsystem.a.p/system_watchpoint.c.o
+[1804/1959] Compiling C object libsystem.a.p/system_runstate.c.o
+[1805/1959] Compiling C object libsystem.a.p/system_tpm.c.o
+[1806/1959] Compiling C object libsystem.a.p/system_async-teardown.c.o
+[1807/1959] Compiling C object libsystem.a.p/system_device_tree.c.o
+[1808/1959] Compiling C object libsystem.a.p/page-vary-system.c.o
+[1809/1959] Compiling C object libsystem.a.p/target-info-qom.c.o
+[1810/1959] Compiling C object libsystem.a.p/ui_curses.c.o
+[1811/1959] Compiling C object libsystem.a.p/ui_dbus-chardev.c.o
+[1812/1959] Compiling C object libsystem.a.p/ui_dbus-clipboard.c.o
+[1813/1959] Compiling C object libsystem.a.p/ui_dbus-console.c.o
+[1814/1959] Compiling C object libsystem.a.p/ui_dbus-error.c.o
+[1815/1959] Compiling C object libsystem.a.p/ui_dbus-listener.c.o
+[1816/1959] Compiling C object libsystem.a.p/ui_dbus.c.o
+[1817/1959] Compiling C object libsystem.a.p/accel_qtest_qtest.c.o
+[1818/1959] Compiling C object libsystem.a.p/hw_display_virtio-gpu-base.c.o
+[1819/1959] Compiling C object libsystem.a.p/hw_display_virtio-gpu.c.o
+[1820/1959] Compiling C object libsystem.a.p/hw_display_virtio-gpu-udmabuf.c.o
+[1821/1959] Compiling C object libsystem.a.p/hw_display_vhost-user-gpu.c.o
+[1822/1959] Compiling C object libsystem.a.p/hw_display_virtio-gpu-pci.c.o
+[1823/1959] Compiling C object libsystem.a.p/hw_display_vhost-user-gpu-pci.c.o
+[1824/1959] Compiling C object libsystem.a.p/hw_display_virtio-vga.c.o
+[1825/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-core.c.o
+[1826/1959] Compiling C object libsystem.a.p/hw_display_vhost-user-vga.c.o
+[1827/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-pcap.c.o
+[1828/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-json.c.o
+[1829/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-auth.c.o
+[1830/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-vars.c.o
+[1831/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-guid.c.o
+[1832/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-utils.c.o
+[1833/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-sysbus.c.o
+[1834/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-policy.c.o
+[1835/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-pkcs7-stub.c.o
+[1836/1959] Compiling C object libsystem.a.p/hw_uefi_var-service-siglist.c.o
+[1837/1959] Compiling C object libcommon.a.p/meson-generated_.._gdbstub_gdbstub-xml.c.o
+[1838/1959] Compiling C object libcommon.a.p/accel_accel-common.c.o
+[1839/1959] Compiling C object libcommon.a.p/disas_disas-host.c.o
+[1840/1959] Compiling C object libcommon.a.p/disas_objdump.c.o
+[1841/1959] Compiling C object libcommon.a.p/disas_disas-target.c.o
+[1842/1959] Compiling C object libcommon.a.p/disas_disas-common.c.o
+[1843/1959] Compiling C object libcommon.a.p/plugins_loader.c.o
+[1844/1959] Compiling C object libcommon.a.p/hw_core_cpu-common.c.o
+[1845/1959] Compiling C object libcommon.a.p/hw_core_machine-smp.c.o
+[1846/1959] Compiling C object libcommon.a.p/fpu_softfloat.c.o
+[1847/1959] Compiling C object libcommon.a.p/cpu-common.c.o
+[1848/1959] Compiling C object libcommon.a.p/page-vary-common.c.o
+[1849/1959] Compiling C object libcommon.a.p/target-info.c.o
+[1850/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_arch_dump.c.o
+[1851/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_arch_memory_mapping.c.o
+[1852/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_monitor.c.o
+[1853/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_machine.c.o
+[1854/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_cpu-apic.c.o
+[1855/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_cpu-system.c.o
+[1856/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_kvm_hyperv.c.o
+[1857/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_sev.c.o
+[1858/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_kvm_kvm-cpu.c.o
+[1859/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_kvm_vmsr_energy.c.o
+[1860/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_kvm_kvm.c.o
+[1861/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_kvm_xen-emu.c.o
+[1862/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_kvm_tdx.c.o
+[1863/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_kvm_tdx-quote-generator.c.o
+[1864/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_system_tcg-cpu.c.o
+[1865/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_system_excp_helper.c.o
+[1866/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_system_smm_helper.c.o
+[1867/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_system_bpt_helper.c.o
+[1868/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_system_fpu_helper.c.o
+[1869/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_system_misc_helper.c.o
+[1870/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_system_svm_helper.c.o
+[1871/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_system_seg_helper.c.o
+[1872/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_emulate_x86_decode.c.o
+[1873/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_emulate_x86_flags.c.o
+[1874/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_emulate_x86_emu.c.o
+[1875/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_emulate_x86_mmu.c.o
+[1876/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_emulate_x86_helpers.c.o
+[1877/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_mshv_msr.c.o
+[1878/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_mshv_mshv-cpu.c.o
+[1879/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_mshv_synic.c.o
+[1880/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_e820_memory_layout.c.o
+[1881/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_fw_cfg.c.o
+[1882/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_monitor.c.o
+[1883/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_multiboot.c.o
+[1884/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_x86.c.o
+[1885/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_x86-cpu.c.o
+[1886/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_vapic.c.o
+[1887/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_x86-iommu.c.o
+[1888/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_pc_piix.c.o
+[1889/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_amd_iommu.c.o
+[1890/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_isapc.c.o
+[1891/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_x86-common.c.o
+[1892/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_microvm.c.o
+[1893/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_acpi-microvm.c.o
+[1894/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_microvm-dt.c.o
+[1895/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_pc_q35.c.o
+[1896/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_vmmouse.c.o
+[1897/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_vmport.c.o
+[1898/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_intel_iommu_accel.c.o
+[1899/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_sgx-epc.c.o
+[1900/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_intel_iommu.c.o
+[1901/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_acpi-common.c.o
+[1902/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_sgx.c.o
+[1903/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_pc_sysfw.c.o
+[1904/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_pc.c.o
+[1905/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_port92.c.o
+[1906/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_acpi-build.c.o
+[1907/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_pc_sysfw_ovmf.c.o
+[1908/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_tdvf.c.o
+[1909/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_tdvf-hob.c.o
+[1910/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_clock.c.o
+[1911/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_i8254.c.o
+[1912/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_apic.c.o
+[1913/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_i8259.c.o
+[1914/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_ioapic.c.o
+[1915/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_xen_overlay.c.o
+[1916/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_xen_gnttab.c.o
+[1917/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_xen_evtchn.c.o
+[1918/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_xen_primary_console.c.o
+[1919/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_xen_xenstore.c.o
+[1920/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_mshv_clock.c.o
+[1921/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_kvm_xenstore_impl.c.o
+[1922/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_mshv_apic.c.o
+[1923/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_i386_xen_xen_platform.c.o
+[1924/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target-info-stub.c.o
+[1925/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_gdbstub.c.o
+[1926/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_cpu.c.o
+[1927/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_helper.c.o
+[1928/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_cpu-dump.c.o
+[1929/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_host-cpu.c.o
+[1930/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_confidential-guest.c.o
+[1931/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_xsave_helper.c.o
+[1932/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_access.c.o
+[1933/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_bpt_helper.c.o
+[1934/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_cc_helper.c.o
+[1935/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_excp_helper.c.o
+[1936/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_int_helper.c.o
+[1937/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_mem_helper.c.o
+[1938/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_fpu_helper.c.o
+[1939/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_misc_helper.c.o
+[1940/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_mpx_helper.c.o
+[1941/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_tcg-cpu.c.o
+[1942/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_seg_helper.c.o
+[1943/1959] Compiling C object libqemu-x86_64-softmmu.a.p/dump_win_dump-x86.c.o
+[1944/1959] Compiling C object libqemu-x86_64-softmmu.a.p/accel_kvm_kvm-all.c.o
+[1945/1959] Compiling C object libqemu-x86_64-softmmu.a.p/accel_kvm_kvm-accel-ops.c.o
+[1946/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_remote_memory.c.o
+[1947/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_remote_proxy-memory-listener.c.o
+[1948/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_block_dataplane_xen-block.c.o
+[1949/1959] Compiling C object libqemu-x86_64-softmmu.a.p/target_i386_tcg_translate.c.o
+[1950/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_intc_apic.c.o
+[1951/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_intc_apic_common.c.o
+[1952/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_intc_ioapic.c.o
+[1953/1959] Compiling C object libqemu-x86_64-softmmu.a.p/hw_isa_lpc_ich9.c.o
+[1954/1959] Compiling C object tests/unit/test-ati-rop3.p/test-ati-rop3.c.o
+[1955/1959] Compiling C object qemu-system-x86_64.p/system_main.c.o
+[1956/1959] Compiling C object tests/qtest/display-vga-test.p/display-vga-test.c.o
+../tests/qtest/display-vga-test.c: In function ‘test_rage128_xaa_primitives’:
+../tests/qtest/display-vga-test.c:828:38: warning: implicit declaration of function ‘BIT’ [-Wimplicit-function-declaration]
+  828 |             uint8_t expected = row & BIT(x) ? 0xe1 : 0x1e;
+      |                                      ^~~
+../tests/qtest/display-vga-test.c:828:38: warning: nested extern declaration of ‘BIT’ [-Wnested-externs]
+[1957/1959] Linking target tests/unit/test-ati-rop3
+[1958/1959] Linking target tests/qtest/display-vga-test
+FAILED: [code=1] tests/qtest/display-vga-test 
+cc -m64  -o tests/qtest/display-vga-test libevent-loop-base.a.p/event-loop-base.c.o libqom.a.p/qom_container.c.o libqom.a.p/qom_object.c.o libqom.a.p/qom_object_interfaces.c.o libqom.a.p/qom_qom-qobject.c.o libqom.a.p/qom_compat-properties.c.o tests/qtest/libqos/libqos.a.p/.._libqtest.c.o tests/qtest/libqos/libqos.a.p/.._libqmp.c.o tests/qtest/libqos/libqos.a.p/qgraph.c.o tests/qtest/libqos/libqos.a.p/qos_external.c.o tests/qtest/libqos/libqos.a.p/pci.c.o tests/qtest/libqos/libqos.a.p/fw_cfg.c.o tests/qtest/libqos/libqos.a.p/libqos-malloc.c.o tests/qtest/libqos/libqos.a.p/libqos.c.o tests/qtest/libqos/libqos.a.p/sdhci-cmd.c.o tests/qtest/libqos/libqos.a.p/malloc-spapr.c.o tests/qtest/libqos/libqos.a.p/libqos-spapr.c.o tests/qtest/libqos/libqos.a.p/rtas.c.o tests/qtest/libqos/libqos.a.p/pci-spapr.c.o tests/qtest/libqos/libqos.a.p/pci-pc.c.o tests/qtest/libqos/libqos.a.p/malloc-pc.c.o tests/qtest/libqos/libqos.a.p/libqos-pc.c.o tests/qtest/libqos/libqos.a.p/ahci.c.o tests/qtest/libqos/libqos.a.p/usb.c.o tests/qtest/libqos/libqos.a.p/e1000e.c.o tests/qtest/libqos/libqos.a.p/i2c.c.o tests/qtest/libqos/libqos.a.p/i2c-imx.c.o tests/qtest/libqos/libqos.a.p/i2c-omap.c.o tests/qtest/libqos/libqos.a.p/igb.c.o tests/qtest/libqos/libqos.a.p/sdhci.c.o tests/qtest/libqos/libqos.a.p/virtio.c.o tests/qtest/libqos/libqos.a.p/virtio-balloon.c.o tests/qtest/libqos/libqos.a.p/virtio-blk.c.o tests/qtest/libqos/libqos.a.p/vhost-user-blk.c.o tests/qtest/libqos/libqos.a.p/virtio-mmio.c.o tests/qtest/libqos/libqos.a.p/virtio-net.c.o tests/qtest/libqos/libqos.a.p/virtio-pci.c.o tests/qtest/libqos/libqos.a.p/virtio-pci-modern.c.o tests/qtest/libqos/libqos.a.p/virtio-rng.c.o tests/qtest/libqos/libqos.a.p/virtio-scsi.c.o tests/qtest/libqos/libqos.a.p/virtio-serial.c.o tests/qtest/libqos/libqos.a.p/virtio-iommu.c.o tests/qtest/libqos/libqos.a.p/virtio-gpio.c.o tests/qtest/libqos/libqos.a.p/virtio-scmi.c.o tests/qtest/libqos/libqos.a.p/generic-pcihost.c.o tests/qtest/libqos/libqos.a.p/aarch64-xlnx-zcu102-machine.c.o tests/qtest/libqos/libqos.a.p/arm-imx25-pdk-machine.c.o tests/qtest/libqos/libqos.a.p/arm-raspi2-machine.c.o tests/qtest/libqos/libqos.a.p/arm-sabrelite-machine.c.o tests/qtest/libqos/libqos.a.p/arm-smdkc210-machine.c.o tests/qtest/libqos/libqos.a.p/arm-virt-machine.c.o tests/qtest/libqos/libqos.a.p/arm-xilinx-zynq-a9-machine.c.o tests/qtest/libqos/libqos.a.p/ppc64_pseries-machine.c.o tests/qtest/libqos/libqos.a.p/x86_64_pc-machine.c.o tests/qtest/libqos/libqos.a.p/riscv-virt-machine.c.o tests/qtest/libqos/libqos.a.p/loongarch-virt-machine.c.o tests/qtest/libqos/libqos.a.p/qos-iommu-testdev.c.o tests/qtest/libqos/libqos.a.p/qos-smmuv3.c.o tests/qtest/libqos/libqos.a.p/virtio-9p.c.o tests/qtest/libqos/libqos.a.p/virtio-9p-client.c.o tests/qtest/libqos/libqos.a.p/qos-intel-iommu.c.o tests/qtest/libqos/libqos.a.p/tpci200.c.o tests/qtest/display-vga-test.p/display-vga-test.c.o -Wl,--as-needed -Wl,--no-undefined -pie -fstack-protector-strong -Wl,-z,relro -Wl,-z,now -Wl,--start-group libqemuutil.a subprojects/libvhost-user/libvhost-user-glib.a subprojects/libvhost-user/libvhost-user.a /usr/lib/x86_64-linux-gnu/libgio-2.0.so /usr/lib/x86_64-linux-gnu/libgobject-2.0.so /usr/lib/x86_64-linux-gnu/libglib-2.0.so /usr/lib/x86_64-linux-gnu/libgmodule-2.0.so -pthread -lm /usr/lib/x86_64-linux-gnu/libpixman-1.so -Wl,--end-group
+/usr/bin/ld: tests/qtest/display-vga-test.p/display-vga-test.c.o: in function `test_rage128_xaa_primitives':
+/home/runner/work/qemu/qemu/build/../tests/qtest/display-vga-test.c:828:(.text+0x5dc3): undefined reference to `BIT'
+/usr/bin/ld: /home/runner/work/qemu/qemu/build/../tests/qtest/display-vga-test.c:874:(.text+0x62d3): undefined reference to `BIT'
+collect2: error: ld returned 1 exit status
+[1959/1959] Linking target qemu-system-x86_64
+ninja: build stopped: subcommand failed.
+HEAD is now at 82095422d2 hw/display/ati: strengthen Rage 128 emulation and DDC validation
+Removing build/
+Removing scripts/qapi/__pycache__/
+Removing scripts/tracetool/__pycache__/
+Removing scripts/tracetool/backend/__pycache__/
+Removing scripts/tracetool/format/__pycache__/
+Removing subprojects/.wraplock
+Removing tests/qemu-iotests/__pycache__/
+Removing tests/qemu-iotests/scratch/
+Switched to a new branch 'rage128-xaa-report'
