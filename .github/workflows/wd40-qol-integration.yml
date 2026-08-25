@@ -45,6 +45,19 @@ jobs:
             git cherry-pick a1cffdb7eda8cab773e6594aef1ba4a92b344261
           fi
 
+      - name: Apply and validate the complete QoL source contract
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/wd40/apply-rustless-build.py
+          python3 scripts/wd40/apply-amd-1tb-hole-control.py
+          python3 scripts/wd40/apply-subtractive-log-mask.py
+          python3 scripts/wd40/apply-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          git diff --check
+
       - name: Install C and probe build dependencies
         run: |
           sudo apt-get update
@@ -89,14 +102,7 @@ jobs:
           aarch64-linux-gnu-readelf -r /tmp/aarch64-handoff.elf \
             | grep -F "There are no relocations in this file."
 
-      - name: Validate the Rustless and AMD-hole contracts
-        run: |
-          set -Eeuo pipefail
-          python3 scripts/ci/check-wd40-rustless.py
-          python3 scripts/ci/check-wd40-amd-1tb-hole.py
-          git diff --check
-
-      - name: Build x86_64 and AArch64 without a Rust toolchain
+      - name: Build system and user emulators without a Rust toolchain
         run: |
           set -Eeuo pipefail
           mkdir .wd40-poison
@@ -113,18 +119,77 @@ jobs:
           mkdir build-qol-integration
           cd build-qol-integration
           ../configure \
-            --target-list=x86_64-softmmu,aarch64-softmmu \
+            --target-list=x86_64-softmmu,aarch64-softmmu,x86_64-linux-user \
             --disable-rust \
             --enable-fdt=internal \
             --disable-docs \
             --disable-werror
-          ninja -j2 qemu-system-x86_64 qemu-system-aarch64
+          ninja -j2 \
+            tests/unit/test-logging \
+            qemu-system-x86_64 \
+            qemu-system-aarch64 \
+            qemu-x86_64
           cd ..
+
+      - name: Exercise subtractive log masks across front ends
+        run: |
+          set -Eeuo pipefail
+          ./build-qol-integration/tests/unit/test-logging --tap -k
+
+          set +e
+          ./build-qol-integration/qemu-system-x86_64 -d help \
+            > /tmp/wd40-system-log-help.txt 2>&1
+          system_help_rc=$?
+          ./build-qol-integration/qemu-x86_64 -d help \
+            > /tmp/wd40-user-log-help.txt 2>&1
+          user_help_rc=$?
+          set -e
+
+          grep -F "prefix '+' to add and '-' to remove" \
+            /tmp/wd40-system-log-help.txt
+          grep -F "prefix '+' to add and '-' to remove" \
+            /tmp/wd40-user-log-help.txt
+          if [[ $system_help_rc -eq 0 || $user_help_rc -eq 0 ]]; then
+            echo "-d help unexpectedly continued into emulation" >&2
+            exit 1
+          fi
+
+          ./build-qol-integration/qemu-x86_64 -h \
+            | grep -F "enable logging; prefix '-' to exclude an item"
+
+          printf 'log guest_errors,int,-int\nlog all,-tid,-int,-exec,-cpu\nquit\n' \
+            | timeout 30 ./build-qol-integration/qemu-system-x86_64 \
+                -machine none \
+                -display none \
+                -nodefaults \
+                -S \
+                -monitor stdio
+
+          set +e
+          ./build-qol-integration/qemu-system-x86_64 \
+            -machine none \
+            -display none \
+            -nodefaults \
+            -d all,-definitely-not-a-log-item \
+            > /tmp/wd40-invalid-mask.txt 2>&1
+          invalid_rc=$?
+          set -e
+          if [[ $invalid_rc -eq 0 ]]; then
+            cat /tmp/wd40-invalid-mask.txt
+            echo "invalid subtractive log item unexpectedly succeeded" >&2
+            exit 1
+          fi
 
       - name: Exercise the AMD memory-layout overrides
         run: |
           set -Eeuo pipefail
           python3 scripts/ci/check-wd40-amd-1tb-hole.py build-qol-integration
+
+      - name: Query HMP registries and initialization phases
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py \
+            build-qol-integration
 
       - name: Publish the validated integration history
         run: |
@@ -132,6 +197,8 @@ jobs:
           rm -rf .wd40-poison build-qol-integration
           python3 scripts/ci/check-wd40-rustless.py
           python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
           git diff --check
           git status --short
           test -z "$(git status --porcelain)"
