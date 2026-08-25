@@ -87,6 +87,36 @@ static void test_parse_range(void)
     error_free_or_abort(&err);
 }
 
+static int all_log_items_mask(void)
+{
+    const QEMULogItem *item;
+    int mask = 0;
+
+    for (item = qemu_log_items; item->mask != 0; item++) {
+        mask |= item->mask;
+    }
+    return mask;
+}
+
+static void test_parse_log_mask(void)
+{
+    int all = all_log_items_mask();
+
+    g_assert_cmpint(qemu_str_to_log_mask("int"), ==, CPU_LOG_INT);
+    g_assert_cmpint(qemu_str_to_log_mask("+int,guest_errors"), ==,
+                    CPU_LOG_INT | LOG_GUEST_ERROR);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-int"), ==,
+                    all & ~CPU_LOG_INT);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-int,+int"), ==, all);
+    g_assert_cmpint(qemu_str_to_log_mask("-all,guest_errors"), ==,
+                    LOG_GUEST_ERROR);
+    g_assert_cmpint(qemu_str_to_log_mask("int,-int,guest_errors"), ==,
+                    LOG_GUEST_ERROR);
+    g_assert_cmpint(
+        qemu_str_to_log_mask("all,-definitely-not-a-log-item"), ==, 0);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-"), ==, 0);
+}
+
 static void set_log_path_tmp(char const *dir, char const *tpl, Error **errp)
 {
     gchar *file_path = g_build_filename(dir, tpl, NULL);
@@ -200,6 +230,7 @@ int main(int argc, char **argv)
     g_assert_nonnull(tmp_path);
 
     g_test_add_func("/logging/parse_range", test_parse_range);
+    g_test_add_func("/logging/parse_mask", test_parse_log_mask);
     g_test_add_data_func("/logging/parse_path", tmp_path, test_parse_path);
     g_test_add_data_func("/logging/logfile_write_path",
                          tmp_path, test_logfile_write);

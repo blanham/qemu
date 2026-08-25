@@ -534,7 +534,11 @@ const QEMULogItem qemu_log_items[] = {
     { 0, NULL, NULL },
 };
 
-/* takes a comma separated list of log masks. Return 0 if error. */
+/*
+ * Take a comma-separated list of log masks. Items are processed from left to
+ * right. A leading '-' removes an item and a leading '+' adds one. Return 0
+ * on error.
+ */
 int qemu_str_to_log_mask(const char *str)
 {
     const QEMULogItem *item;
@@ -543,24 +547,44 @@ int qemu_str_to_log_mask(const char *str)
     char **tmp;
 
     for (tmp = parts; tmp && *tmp; tmp++) {
-        if (g_str_equal(*tmp, "all")) {
+        const char *part = *tmp;
+        bool subtract = false;
+        int item_mask = 0;
+
+        if (*part == '+' || *part == '-') {
+            subtract = *part == '-';
+            part++;
+        }
+        if (*part == '\0') {
+            goto error;
+        }
+
+        if (g_str_equal(part, "all")) {
             for (item = qemu_log_items; item->mask != 0; item++) {
-                mask |= item->mask;
+                item_mask |= item->mask;
             }
 #ifdef CONFIG_TRACE_LOG
-        } else if (g_str_has_prefix(*tmp, "trace:") && (*tmp)[6] != '\0') {
-            trace_enable_events((*tmp) + 6);
-            mask |= LOG_TRACE;
+        } else if (!subtract && g_str_has_prefix(part, "trace:") &&
+                   part[6] != '\0') {
+            trace_enable_events(part + 6);
+            item_mask = LOG_TRACE;
 #endif
         } else {
             for (item = qemu_log_items; item->mask != 0; item++) {
-                if (g_str_equal(*tmp, item->name)) {
-                    goto found;
+                if (g_str_equal(part, item->name)) {
+                    item_mask = item->mask;
+                    break;
                 }
             }
-            goto error;
-        found:
-            mask |= item->mask;
+            if (item_mask == 0) {
+                goto error;
+            }
+        }
+
+        if (subtract) {
+            mask &= ~item_mask;
+        } else {
+            mask |= item_mask;
         }
     }
 
@@ -576,6 +600,8 @@ void qemu_print_log_usage(FILE *f)
 {
     const QEMULogItem *item;
     fprintf(f, "Log items (comma separated):\n");
+    fprintf(f, "Items are processed left-to-right; prefix '+' to add and "
+               "'-' to remove.\n");
     for (item = qemu_log_items; item->mask != 0; item++) {
         fprintf(f, "%-15s %s\n", item->name, item->help);
     }

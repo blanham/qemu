@@ -168,7 +168,7 @@ static void usage(void)
            "-B address        set guest_base address to address\n"
            "\n"
            "Debug options:\n"
-           "-d item1[,...]    enable logging of specified items\n"
+           "-d item1[,...]    enable logging; prefix '-' to exclude an item\n"
            "                  (use '-d help' for a list of log items)\n"
            "-D logfile        write logs to 'logfile' (default stderr)\n"
            "-one-insn-per-tb  run with one guest instruction per emulated TB\n"

@@ -332,13 +332,22 @@ ERST
         .name       = "log",
         .args_type  = "items:s",
         .params     = "item1[,...]",
-        .help       = "activate logging of the specified items",
+        .help       = "set logging items; prefix '-' to exclude",
         .cmd        = hmp_log,
     },
 
 SRST
 ``log`` *item1*\ [,...]
-  Activate logging of the specified items.
+  Replace the active log mask with the specified items. Items are processed
+  from left to right; prefix an item with ``-`` to remove it from the mask
+  built so far, or with ``+`` to add it explicitly.
+
+  For example, enable every ordinary category except per-thread files,
+  interrupt logging, and the two highest-volume execution streams::
+
+    (qemu) log all,-tid,-int,-exec,-cpu
+
+  Use ``log none`` to disable logging.
 ERST
 
     {

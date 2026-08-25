@@ -5122,12 +5122,21 @@ SRST
 ERST
 
 DEF("d", HAS_ARG, QEMU_OPTION_d, \
-    "-d item1,...    enable logging of specified items (use '-d help' for a list of log items)\n",
+    "-d item1,...    enable logging; prefix items with '-' to exclude them\n"
+    "                (use '-d help' for a list of log items)\n",
     QEMU_ARCH_ALL)
 SRST
 ``-d item1[,...]``
-    Enable logging of specified items. Use '-d help' for a list of log
+    Enable logging of specified items. Use ``-d help`` for a list of log
     items.
+
+    Items are processed from left to right. Prefix an item with ``-`` to
+    remove it from the current mask, or with ``+`` to add it explicitly.
+
+    For example, enable every ordinary log category except per-thread files,
+    interrupt logging, and the two highest-volume execution streams::
+
+        -d all,-tid,-int,-exec,-cpu
 ERST
 
 DEF("D", HAS_ARG, QEMU_OPTION_D, \

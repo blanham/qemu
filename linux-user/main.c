@@ -503,7 +503,7 @@ static const struct qemu_argument arg_table[] = {
      "tsig hsig n[,...]",
                    "map target rt signals [tsig,tsig+n) to [hsig,hsig+n]"},
     {"d",          "QEMU_LOG",         true,  handle_arg_log,
-     "item[,...]", "enable logging of specified items "
+     "item[,...]", "enable logging; prefix '-' to exclude an item "
      "(use '-d help' for a list of items)"},
     {"dfilter",    "QEMU_DFILTER",     true,  handle_arg_dfilter,
      "range[,...]","filter logging based on address range"},
