@@ -54,8 +54,8 @@ def main() -> None:
 #
 # Structured metadata for a human-monitor command.
 #
-# @path: Canonical full command path.  For aliases, the first name is used in
-#     each path component.
+# @path: Canonical full command path.  For aliases, the first name is
+#     used in each path component.
 #
 # @names: Pipe-separated aliases for this command component.
 #
@@ -65,19 +65,20 @@ def main() -> None:
 #
 # @help: Short help text.
 #
-# @available: Whether the command is implemented and usable for the current
-#     target architecture and machine-initialization phase.
+# @available: Whether the command is implemented and usable for the
+#     current target architecture and machine-initialization phase.
 #
-# @implemented: Whether a handler, human-readable QMP handler, or subcommand
-#     table is registered.
+# @implemented: Whether a handler, human-readable QMP handler, or
+#     subcommand table is registered.
 #
-# @architecture-available: Whether the command applies to the current target
-#     architecture.
+# @architecture-available: Whether the command applies to the current
+#     target architecture.
 #
 # @phase-available: Whether the command may run in the current
 #     machine-initialization phase.
 #
-# @preconfig: Whether the command may run before machine initialization.
+# @preconfig: Whether the command may run before machine
+#     initialization.
 #
 # @coroutine: Whether the command handler runs in a coroutine.
 #
@@ -107,9 +108,10 @@ def main() -> None:
 ##
 # @query-hmp-commands:
 #
-# Return structured metadata for the HMP command set compiled for this target.
-# Nested command tables are flattened into canonical command paths while raw
-# aliases and parser metadata remain available to clients.
+# Return structured metadata for the HMP command set compiled for this
+# target.  Nested command tables are flattened into canonical command
+# paths while raw aliases and parser metadata remain available to
+# clients.
 #
 # Features:
 #
