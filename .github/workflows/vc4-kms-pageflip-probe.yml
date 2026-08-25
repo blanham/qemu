@@ -6,10 +6,34 @@ on:
       - agent/vc4-linux-kms-bind-diagnostics
     paths:
       - .github/workflows/vc4-kms-pageflip-probe.yml
+      - hw/arm/bcm2835_peripherals.c
+      - hw/arm/vc4_*.c
+      - hw/display/bcm2835_*.c
+      - hw/misc/bcm2835_property.c
+      - hw/vc4/bcm2835_vc4_intc.c
+      - include/hw/arm/bcm2835_peripherals.h
+      - include/hw/display/bcm2835_*.h
+      - include/hw/misc/bcm2835_property.h
+      - include/hw/raspi/raspi_platform.h
+      - scripts/vc4/bcm2835-hdmi-ddc-smoke.py
+      - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+      - scripts/vc4/build-vc4-kms-linux-dtb.sh
+      - scripts/vc4/display-timing-smoke.py
       - scripts/vc4/enable-linux-kms-pageflip-probe.py
-      - tests/vc4/linux-kms-pageflip-probe.inc.c
+      - scripts/vc4/fetch-linux-vc4-modules.py
+      - scripts/vc4/hvs-dlist-smoke.py
       - scripts/vc4/kms-pageflip-image.py
+      - scripts/vc4/msync-smoke.py
+      - scripts/vc4/property-clock-enumeration-smoke.py
+      - scripts/vc4/property-power-domain-smoke.py
       - scripts/vc4/raspi3-kms-pageflip-visual-probe.py
+      - scripts/vc4/summarize-linux-kms-pageflip.py
+      - scripts/vc4/summarize-linux-kms-pageflip-smoke.py
+      - scripts/vc4/v3d-smoke.py
+      - tests/vc4/linux-kms-modeset-probe.inc.c
+      - tests/vc4/linux-kms-pageflip-probe.inc.c
+      - tests/vc4/linux-v3d-modular-init.c
+      - tests/vc4/vc4-kms-frontier-overlay.dts
   workflow_dispatch:
 
 permissions:
@@ -42,6 +66,11 @@ jobs:
           ref: agent/vc4-linux-kms-bind-diagnostics
           fetch-depth: 0
 
+      - name: Capture the exact source revision
+        run: |
+          set -euo pipefail
+          printf 'SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: |
           set -euo pipefail
@@ -58,15 +87,18 @@ jobs:
           mkdir -p \
             "$OFFICIAL_DIR" "$DTB_DIR" "$PROBE_DIR" "$EVIDENCE_DIR"
 
-      - name: Enable and validate the inherited-master page-flip witness
+      - name: Validate the inherited-master page-flip witness
         run: |
           set -euo pipefail
           python3 scripts/vc4/enable-linux-kms-pageflip-probe.py
           python3 -m py_compile \
             scripts/vc4/enable-linux-kms-pageflip-probe.py \
             scripts/vc4/kms-pageflip-image.py \
-            scripts/vc4/raspi3-kms-pageflip-visual-probe.py
+            scripts/vc4/raspi3-kms-pageflip-visual-probe.py \
+            scripts/vc4/summarize-linux-kms-pageflip.py \
+            scripts/vc4/summarize-linux-kms-pageflip-smoke.py
           python3 scripts/vc4/kms-pageflip-image.py --self-test
+          python3 scripts/vc4/summarize-linux-kms-pageflip-smoke.py
           git diff --check
           grep -Fq '#include "linux-kms-pageflip-probe.inc.c"' \
             tests/vc4/linux-v3d-modular-init.c
@@ -89,6 +121,11 @@ jobs:
               --output "$OFFICIAL_DIR/$file" \
               "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
           done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* > "$EVIDENCE_DIR/OFFICIAL_SHA256SUMS"
 
           python3 scripts/vc4/fetch-linux-vc4-modules.py \
             --base-url \
@@ -134,6 +171,7 @@ jobs:
           bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
             "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
             "$DTB_DIR/kms.dtbo" "$DTB_DIR/kms.dtb"
+          sha256sum "$DTB_DIR"/* > "$EVIDENCE_DIR/DTB_SHA256SUMS"
 
       - name: Build QEMU and prove focused display regressions
         run: |
@@ -181,208 +219,16 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import json
-          import re
-
-          serial_path = Path("/tmp/vc4-pageflip-probe/serial.log")
-          serial = (
-              serial_path.read_text(errors="replace")
-              if serial_path.is_file()
-              else ""
-          )
-          manifest_path = Path("/tmp/vc4-pageflip-modules/MANIFEST")
-          manifest = (
-              manifest_path.read_text(errors="replace")
-              if manifest_path.is_file()
-              else ""
-          )
-          image_path = Path(
-              "/tmp/vc4-pageflip-probe/pageflip-image.json"
-          )
-          image_present = image_path.is_file()
-          try:
-              image_record = (
-                  json.loads(image_path.read_text(errors="replace"))
-                  if image_present
-                  else {}
-              )
-          except (OSError, json.JSONDecodeError) as exc:
-              image_record = {
-                  "passed": False,
-                  "error": f"{type(exc).__name__}: {exc}",
-              }
-
-          modeset_failure = re.search(
-              r"VC4_LINUX_KMS_MODESET_FAILED "
-              r"stage=(\S+) errno=(\d+)",
-              serial,
-          )
-          pageflip_failure = re.search(
-              r"VC4_LINUX_KMS_PAGEFLIP_FAILED "
-              r"stage=(\S+) errno=(\d+)",
-              serial,
-          )
-          module_ok = "VC4_LINUX_MODULE_CLOSURE_OK" in serial
-          topology_ok = "VC4_LINUX_KMS_TOPOLOGY_OK" in serial
-          submit_ok = "VC4_LINUX_DRM_SUBMIT_OK" in serial
-          supplier_ok = "i2c-bcm2835" in manifest
-          modeset_ok = "VC4_LINUX_KMS_MODESET_OK" in serial
-          modeset_supervisor_ok = (
-              "VC4_LINUX_KMS_MODESET_SUPERVISOR_OK" in serial
-          )
-          pageflip_started = "VC4_LINUX_KMS_PAGEFLIP_START" in serial
-          active_ok = "VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK" in serial
-          queued = "VC4_LINUX_KMS_PAGEFLIP_QUEUED" in serial
-          event_ok = "VC4_LINUX_KMS_PAGEFLIP_EVENT_OK" in serial
-          current_fb_ok = (
-              "VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK" in serial
-          )
-          visual_ready = (
-              "VC4_LINUX_KMS_PAGEFLIP_VISUAL_READY" in serial
-          )
-          visual_ok = image_record.get("passed") is True
-          pageflip_ok = "VC4_LINUX_KMS_PAGEFLIP_OK" in serial
-          pageflip_supervisor_ok = (
-              "VC4_LINUX_KMS_PAGEFLIP_SUPERVISOR_OK" in serial
-          )
-          timed_out = "VC4_LINUX_KMS_PAGEFLIP_TIMEOUT" in serial
-
-          if not supplier_ok:
-              classification = "vc4-kms-ddc-supplier-fixture-missing"
-          elif not module_ok:
-              classification = "vc4-kms-module-closure-regression"
-          elif not topology_ok:
-              classification = "vc4-kms-topology-regression"
-          elif not (modeset_ok and modeset_supervisor_ok):
-              if modeset_failure:
-                  classification = (
-                      "vc4-kms-modeset-" + modeset_failure.group(1)
-                  )
-              else:
-                  classification = "vc4-kms-modeset-regression"
-          elif timed_out:
-              classification = "vc4-kms-pageflip-timeout"
-          elif pageflip_failure:
-              classification = (
-                  "vc4-kms-pageflip-" + pageflip_failure.group(1)
-              )
-          elif all((
-              active_ok,
-              queued,
-              event_ok,
-              current_fb_ok,
-              pageflip_ok,
-              pageflip_supervisor_ok,
-          )):
-              if not visual_ready:
-                  classification = "vc4-kms-pageflip-visual-not-ready"
-              elif not image_present:
-                  classification = "vc4-kms-pageflip-image-missing"
-              elif not visual_ok:
-                  classification = "vc4-kms-pageflip-image-mismatch"
-              else:
-                  classification = "linux-vc4-kms-pageflip-visual-clear"
-          elif queued and not event_ok:
-              classification = "vc4-kms-pageflip-event-incomplete"
-          elif pageflip_started:
-              classification = "vc4-kms-pageflip-incomplete"
-          else:
-              classification = "vc4-kms-pageflip-not-reached"
-
-          passed = all((
-              supplier_ok,
-              module_ok,
-              topology_ok,
-              submit_ok,
-              modeset_ok,
-              modeset_supervisor_ok,
-              active_ok,
-              queued,
-              event_ok,
-              current_fb_ok,
-              visual_ready,
-              visual_ok,
-              pageflip_ok,
-              pageflip_supervisor_ok,
-          ))
-          failure = pageflip_failure or modeset_failure
-          record = {
-              "schema_version": 2,
-              "source_sha": "${{ github.sha }}",
-              "run_id": "${{ github.run_id }}",
-              "run_attempt": "${{ github.run_attempt }}",
-              "passed": passed,
-              "classification": classification,
-              "ddc_supplier_root_present": supplier_ok,
-              "module_closure_ok": module_ok,
-              "native_kms_topology_clear": topology_ok,
-              "render_submission_preserved": submit_ok,
-              "modeset_ok": modeset_ok,
-              "modeset_supervisor_ok": modeset_supervisor_ok,
-              "pageflip_started": pageflip_started,
-              "active_crtc_ok": active_ok,
-              "pageflip_queued": queued,
-              "flip_event_ok": event_ok,
-              "current_fb_ok": current_fb_ok,
-              "visual_ready": visual_ready,
-              "visual_pixels_ok": visual_ok,
-              "visual_image": image_record if image_present else None,
-              "pageflip_ok": pageflip_ok,
-              "pageflip_supervisor_ok": pageflip_supervisor_ok,
-              "timed_out": timed_out,
-              "failure_stage": failure.group(1) if failure else None,
-              "failure_errno": int(failure.group(2)) if failure else None,
-              "relevant_tail": [
-                  line
-                  for line in serial.splitlines()
-                  if "VC4_LINUX_KMS_MODESET" in line
-                  or "VC4_LINUX_KMS_PAGEFLIP" in line
-                  or "VC4_LINUX_KMS_TOPOLOGY" in line
-                  or "VC4_LINUX_DRM_SUBMIT" in line
-                  or "timeout" in line.lower()
-                  or "failed" in line.lower()
-              ][-600:],
-          }
-          Path("VC4_LINUX_KMS_PAGEFLIP_STATUS.json").write_text(
-              json.dumps(record, indent=2, sort_keys=True) + "\n"
-          )
-          Path("VC4_LINUX_KMS_PAGEFLIP_STATUS.md").write_text(
-              "\n".join((
-                  "# VC4 inherited-master native KMS page flip",
-                  "",
-                  f"Validation passed: **{'true' if passed else 'false'}**",
-                  "",
-                  f"Frontier: **`{classification}`**",
-                  "",
-                  f"- DDC supplier root present: `{supplier_ok}`",
-                  f"- Module closure loaded: `{module_ok}`",
-                  f"- Native topology clear: `{topology_ok}`",
-                  f"- Existing render submission preserved: `{submit_ok}`",
-                  f"- Initial modeset completed: `{modeset_ok}`",
-                  f"- Active CRTC inherited: `{active_ok}`",
-                  f"- Page flip queued: `{queued}`",
-                  f"- Flip-complete event received: `{event_ok}`",
-                  f"- GETCRTC reports the new FB: `{current_fb_ok}`",
-                  f"- Visual-ready hold reached: `{visual_ready}`",
-                  f"- Exact flipped pixels verified: `{visual_ok}`",
-                  f"- Page-flip witness completed: `{pageflip_ok}`",
-                  f"- Timeout: `{timed_out}`",
-                  f"- Failure stage: `{record['failure_stage']}`",
-                  f"- Failure errno: `{record['failure_errno']}`",
-                  "",
-                  "The modeset child leaves the first framebuffer on the "
-                  "shared drm_file. A second child creates a distinct "
-                  "framebuffer, queues DRM_IOCTL_MODE_PAGE_FLIP with the "
-                  "event flag, consumes DRM_EVENT_FLIP_COMPLETE, and checks "
-                  "that GETCRTC exposes the new framebuffer. The host "
-                  "then stops QEMU at the visual-ready marker and "
-                  "requires the captured PPM to match every pixel of "
-                  "the deterministic XRGB8888 witness pattern.",
-              )) + "\n"
-          )
-          PY
+          python3 scripts/vc4/summarize-linux-kms-pageflip.py \
+            --serial "$PROBE_DIR/serial.log" \
+            --manifest "$MODULE_DIR/MANIFEST" \
+            --image "$PROBE_DIR/pageflip-image.json" \
+            --return-code "$PROBE_DIR/return-code" \
+            --json "$STATUS_JSON" \
+            --markdown "$STATUS_MD" \
+            --source-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
 
       - name: Collect evidence
         if: always()
@@ -414,7 +260,36 @@ jobs:
           git config user.email "vc4-ci@users.noreply.github.com"
           git add -- "$STATUS_JSON" "$STATUS_MD"
           if ! git diff --cached --quiet; then
-            git commit -m "test/vc4: record inherited-master page-flip frontier"
+            git commit -m \
+              "test/vc4: record inherited-master page-flip frontier [skip ci]"
             git pull --rebase origin "$BRANCH"
             git push origin HEAD:"$BRANCH"
           fi
+
+      - name: Require the current exact-pixel page-flip proof
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - "$STATUS_JSON" "$SOURCE_SHA" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          expected_sha = sys.argv[2]
+          record = json.loads(path.read_text(encoding="utf-8"))
+          if record.get("source_sha") != expected_sha:
+              raise SystemExit(
+                  "page-flip status source mismatch: "
+                  f"{record.get('source_sha')} != {expected_sha}"
+              )
+          if record.get("classification") != \
+                  "linux-vc4-kms-pageflip-visual-clear":
+              raise SystemExit(
+                  "page-flip frontier is not clear: "
+                  f"{record.get('classification')}"
+              )
+          if record.get("passed") is not True:
+              raise SystemExit("page-flip status did not pass")
+          print("VC4 Linux KMS exact-pixel page flip: PASS")
+          PY
