@@ -186,6 +186,64 @@ ERST
 """,
     )
     replace_once(
+        "hmp-commands.hx",
+        """    {
+        .name       = "log",
+        .args_type  = "items:s",
+        .params     = "item1[,...]",
+        .help       = "activate logging of the specified items",
+        .cmd        = hmp_log,
+    },
+
+SRST
+``log`` *item1*\\ [,...]
+  Activate logging of the specified items.
+ERST
+""",
+        """    {
+        .name       = "log",
+        .args_type  = "items:s",
+        .params     = "item1[,...]",
+        .help       = "set logging items; prefix '-' to exclude",
+        .cmd        = hmp_log,
+    },
+
+SRST
+``log`` *item1*\\ [,...]
+  Replace the active log mask with the specified items. Items are processed
+  from left to right; prefix an item with ``-`` to remove it from the mask
+  built so far, or with ``+`` to add it explicitly.
+
+  For example, enable every ordinary category except per-thread files,
+  interrupt logging, and the two highest-volume execution streams::
+
+    (qemu) log all,-tid,-int,-exec,-cpu
+
+  Use ``log none`` to disable logging.
+ERST
+""",
+    )
+    replace_once(
+        "linux-user/main.c",
+        """    {"d",          "QEMU_LOG",         true,  handle_arg_log,
+     "item[,...]", "enable logging of specified items "
+     "(use '-d help' for a list of items)"},
+""",
+        """    {"d",          "QEMU_LOG",         true,  handle_arg_log,
+     "item[,...]", "enable logging; prefix '-' to exclude an item "
+     "(use '-d help' for a list of items)"},
+""",
+    )
+    replace_once(
+        "bsd-user/main.c",
+        """           "-d item1[,...]    enable logging of specified items\\n"
+           "                  (use '-d help' for a list of log items)\\n"
+""",
+        """           "-d item1[,...]    enable logging; prefix '-' to exclude an item\\n"
+           "                  (use '-d help' for a list of log items)\\n"
+""",
+    )
+    replace_once(
         "tests/unit/test-logging.c",
         """static void set_log_path_tmp(char const *dir, char const *tpl, Error **errp)
 """,
