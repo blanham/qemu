@@ -1,0 +1,118 @@
+name: VC4 scanout fixture main guard fix
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-scanout-v2
+    paths:
+      - .github/workflows/vc4-scanout-main-guard-fix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-scanout-main-guard-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-scanout-v2
+          fetch-depth: 0
+
+      - name: Install cross compiler and DRM headers
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdrm-dev
+
+      - name: Make the modular witness explicitly embeddable
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          modular = Path("tests/vc4/linux-v3d-modular-init.c")
+          text = modular.read_text()
+          anchor = "\nint main(void)\n{\n    struct timespec settle = {\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(
+                  f"{modular}: expected one modular main anchor, "
+                  f"found {text.count(anchor)}"
+              )
+          if "VC4_LINUX_V3D_MODULAR_NO_MAIN" in text:
+              raise SystemExit(f"{modular}: no-main guard already present")
+          if not text.endswith("}\n"):
+              raise SystemExit(f"{modular}: unexpected file ending")
+          text = text.replace(
+              anchor,
+              "\n#ifndef VC4_LINUX_V3D_MODULAR_NO_MAIN\n" + anchor[1:],
+              1,
+          )
+          modular.write_text(text + "#endif /* VC4_LINUX_V3D_MODULAR_NO_MAIN */\n")
+
+          scanout = Path("tests/vc4/linux-kms-scanout-init.c")
+          text = scanout.read_text()
+          old = (
+              "#define main vc4_linux_v3d_modular_base_main\n"
+              "#include \"linux-v3d-modular-init.c\"\n"
+              "#undef main\n"
+          )
+          new = (
+              "#define VC4_LINUX_V3D_MODULAR_NO_MAIN\n"
+              "#include \"linux-v3d-modular-init.c\"\n"
+              "#undef VC4_LINUX_V3D_MODULAR_NO_MAIN\n"
+          )
+          if text.count(old) != 1:
+              raise SystemExit(
+                  f"{scanout}: expected one brittle main-rename include, "
+                  f"found {text.count(old)}"
+              )
+          scanout.write_text(text.replace(old, new, 1))
+          PY
+
+          git diff --check
+          git diff -- tests/vc4/linux-v3d-modular-init.c \
+            tests/vc4/linux-kms-scanout-init.c
+
+      - name: Cross-compile both standalone and embedded witnesses
+        run: |
+          set -euo pipefail
+          common=(
+            -static -O2 -g0 -Wall -Wextra -Werror -fno-ident
+            -I/usr/include/libdrm -Wl,--build-id=none
+          )
+          aarch64-linux-gnu-gcc "${common[@]}" \
+            -o /tmp/vc4-modular-init \
+            tests/vc4/linux-v3d-modular-init.c
+          aarch64-linux-gnu-gcc "${common[@]}" \
+            -o /tmp/vc4-scanout-init \
+            tests/vc4/linux-kms-scanout-init.c
+          strings /tmp/vc4-scanout-init > /tmp/vc4-scanout-init.strings
+          for marker in \
+            VC4_LINUX_KMS_SCANOUT_SUPERVISOR_START \
+            VC4_LINUX_KMS_SETCRTC_OK \
+            VC4_LINUX_KMS_PAGE_FLIP_IOCTL_OK \
+            VC4_LINUX_KMS_PAGE_FLIP_EVENT_OK \
+            VC4_LINUX_KMS_SCANOUT_ARMED; do
+            grep -Fq "$marker" /tmp/vc4-scanout-init.strings
+          done
+
+      - name: Publish the fixture repair
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- \
+            tests/vc4/linux-v3d-modular-init.c \
+            tests/vc4/linux-kms-scanout-init.c
+          git diff --cached --check
+          git commit -m "test/vc4: make modular witness embeddable"
+          git pull --rebase origin agent/vc4-linux-kms-scanout-v2
+          git push origin HEAD:agent/vc4-linux-kms-scanout-v2
