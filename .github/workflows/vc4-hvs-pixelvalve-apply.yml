@@ -53,11 +53,12 @@ jobs:
 
       - name: Apply and fully validate the display contract
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           python3 \
             /tmp/vc4-hvs-pixelvalve-tranche/tranche/apply.py \
             --repo "$GITHUB_WORKSPACE" --apply
-          VC4_FULL_BUILD=1 bash \
+          git diff --stat
+          VC4_FULL_BUILD=1 bash -x \
             /tmp/vc4-hvs-pixelvalve-tranche/tranche/validate.sh \
             "$GITHUB_WORKSPACE"
 
