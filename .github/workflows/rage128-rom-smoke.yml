@@ -1,4 +1,4 @@
-name: Trace Rage 128 option ROM initialization
+name: Boot ATI Rage 128 option ROMs
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
 
       - name: Fetch and verify Rage 128 ROMs
         run: |
-          mkdir -p roms traces
+          mkdir -p roms logs
           base=https://raw.githubusercontent.com/blanham/86Box/7b0412684076a05c20d39483b2b9e75baba11b54/roms/video/ati_rage128
           curl --fail --location --retry 3 \
             "$base/113-57403-102.rom" -o roms/113-57403-102.rom
@@ -46,25 +46,20 @@ jobs:
           SUMS
           (cd roms && sha256sum -c SHA256SUMS)
 
-      - name: Execute and trace both x86 option ROMs
+      - name: Execute both x86 option ROMs without tracing
         shell: bash
         run: |
           set -Eeuo pipefail
-          cat > traces/events <<'EVENTS'
-          ati_mm_read
-          ati_mm_write
-          EVENTS
 
           run_rom() {
             name=$1
             rom=$2
             subsystem=$3
-            trace="traces/${name}.trace"
-            qlog="traces/${name}.qemu.log"
-            debug="traces/${name}.seabios.log"
+            debug="logs/${name}.seabios.log"
+            qlog="logs/${name}.qemu.log"
 
             set +e
-            timeout --signal=TERM 10s \
+            timeout --signal=TERM 60s \
               build/qemu-system-x86_64 \
                 -machine pc,accel=tcg \
                 -m 64M \
@@ -77,7 +72,6 @@ jobs:
                 -chardev file,id=debugcon,path="$debug" \
                 -device isa-debugcon,iobase=0x402,chardev=debugcon \
                 -device ati-vga,model=rage128re,x-subsystem-id="$subsystem",romfile="$rom" \
-                -trace events=traces/events,file="$trace" \
                 -D "$qlog" \
                 -d guest_errors,unimp
             rc=$?
@@ -87,63 +81,23 @@ jobs:
               exit "$rc"
             fi
 
-            python3 - "$name" "$trace" "$qlog" "$debug" <<'PY'
-          from __future__ import annotations
+            echo "===== $name SeaBIOS log ====="
+            cat "$debug"
+            echo "===== $name QEMU diagnostics ====="
+            cat "$qlog"
 
-          import collections
-          import pathlib
-          import re
-          import sys
-
-          name, trace_name, qlog_name, debug_name = sys.argv[1:]
-          trace = pathlib.Path(trace_name).read_text(errors="replace")
-          qlog = pathlib.Path(qlog_name).read_text(errors="replace") if pathlib.Path(qlog_name).exists() else ""
-          debug = pathlib.Path(debug_name).read_text(errors="replace") if pathlib.Path(debug_name).exists() else ""
-
-          counts: collections.Counter[tuple[str, str]] = collections.Counter()
-          for line in trace.splitlines():
-              event = "write" if "ati_mm_write" in line else "read" if "ati_mm_read" in line else None
-              if event is None:
-                  continue
-              match = re.search(r"(?:addr(?:ess)?[ =:]*)?(0x[0-9a-fA-F]{3,8})", line)
-              reg = match.group(1).lower() if match else "unknown"
-              counts[(event, reg)] += 1
-
-          print(f"===== {name}: option-ROM trace summary =====")
-          print(f"trace lines: {len(trace.splitlines())}")
-          print(f"register events: {sum(counts.values())}")
-          for (event, reg), count in counts.most_common(80):
-              print(f"{event:5s} {reg:>10s} {count:6d}")
-
-          interesting = [
-              line for line in qlog.splitlines()
-              if any(word in line.lower() for word in (
-                  "unimp", "unsupported", "guest error", "invalid", "unknown"
-              ))
-          ]
-          print(f"qemu diagnostic lines: {len(interesting)}")
-          for line in interesting[:200]:
-              print(line)
-
-          print("----- SeaBIOS tail -----")
-          for line in debug.splitlines()[-120:]:
-              print(line)
-          print("----- trace head -----")
-          for line in trace.splitlines()[:100]:
-              print(line)
-          print("----- trace tail -----")
-          for line in trace.splitlines()[-100:]:
-              print(line)
-          PY
+            grep -q 'Running option rom at c000:0003' "$debug"
+            grep -q 'Turning on vga text mode console' "$debug"
+            grep -q 'ATA controller 1' "$debug"
           }
 
           run_rom xpert roms/113-57403-102.rom 0x0008
           run_rom aiw roms/113-53008-100.rom 0x0068
 
-      - name: Upload raw traces
+      - name: Upload ROM logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rage128-option-rom-traces
-          path: traces/
+          name: rage128-option-rom-boot-logs
+          path: logs/
           if-no-files-found: error
