@@ -47,22 +47,20 @@ jobs:
           grep -Fq 'linux-vc4-kms-pageflip-visual-clear' \
             .github/workflows/vc4-kms-pageflip-probe.yml
 
-      - name: Publish the durable visual proof
+      - name: Publish the durable non-workflow files
         run: |
           set -euo pipefail
           git config user.name "VC4 CI"
           git config user.email "vc4-ci@users.noreply.github.com"
-          git rm \
-            .github/workflows/vc4-pageflip-visual-stage.yml \
-            .github/vc4-pageflip-visual-parts/*
+          git restore -- .github/workflows/vc4-kms-pageflip-probe.yml
+          git rm .github/vc4-pageflip-visual-parts/*
           git add \
-            .github/workflows/vc4-kms-pageflip-probe.yml \
             scripts/vc4/enable-linux-kms-pageflip-probe.py \
             scripts/vc4/kms-pageflip-image.py \
             scripts/vc4/raspi3-kms-pageflip-visual-probe.py \
             tests/vc4/linux-kms-pageflip-probe.inc.c
           git diff --cached --check
           git diff --cached --name-status
-          git commit -m "test/vc4: prove native page-flip pixels"
+          git commit -m "test/vc4: stage native page-flip visual helpers"
           git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
           git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
