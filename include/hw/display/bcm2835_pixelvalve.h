@@ -23,6 +23,7 @@ struct BCM2835PixelValveState {
 
     MemoryRegion iomem;
     qemu_irq irq;
+    qemu_irq vblank;
     QEMUTimer *frame_timer;
     uint32_t regs[BCM2835_PIXELVALVE_REG_COUNT];
 };

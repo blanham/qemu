@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise BCM2835 HVS channel state, display-list latching, and scanout."""
+"""Exercise BCM2835 HVS channel state, vblank latching, and scanout."""
 
 from __future__ import annotations
 
@@ -14,6 +14,12 @@ from typing import Any
 
 
 HVS_BASE = 0x3F400000
+PIXELVALVES = (0x3F206000, 0x3F207000, 0x3F807000)
+HVS_CHANNEL_TO_PIXELVALVE = (0, 2, 1)
+PV_CONTROL = 0x00
+PV_V_CONTROL = 0x04
+PV_INTSTAT = 0x28
+
 SCALER_DISPCTRL = HVS_BASE + 0x0000
 SCALER_DISPSTAT = HVS_BASE + 0x0004
 SCALER_DISPLIST = tuple(HVS_BASE + 0x0020 + index * 4 for index in range(3))
@@ -29,6 +35,12 @@ SCALER_DISPSTATX_MODE_DISABLED = 0 << 30
 SCALER_DISPSTATX_MODE_RUN = 2 << 30
 SCALER_DISPSTATX_FULL = 1 << 29
 SCALER_DISPSTATX_EMPTY = 1 << 28
+
+PV_CONTROL_EN = 1 << 0
+PV_VCONTROL_CONTINUOUS = 1 << 1
+PV_VCONTROL_VIDEN = 1 << 0
+PV_INT_VFP_START = 1 << 7
+FRAME_STEP_NS = 20_000_000
 
 SCALER_CTL0_END = 1 << 31
 SCALER_CTL0_VALID = 1 << 30
@@ -49,6 +61,7 @@ SCANOUT_WIDTH = 8
 SCANOUT_HEIGHT = 4
 SCANOUT_PITCH = SCANOUT_WIDTH * 4
 SCANOUT_LIST_WORD = 0x100
+SCANOUT_FLIP_LIST_WORD = 0x110
 SCANOUT_BUFFER_A = 0x00200000
 SCANOUT_BUFFER_B = 0x00201000
 RGB565_SCANOUT_PITCH = SCANOUT_WIDTH * 2
@@ -124,6 +137,23 @@ def load_property_support() -> Any:
     return module
 
 
+def advance_pixelvalve_frame(qtest: Any, channel: int) -> None:
+    if not 0 <= channel < len(HVS_CHANNEL_TO_PIXELVALVE):
+        raise ValueError(f"invalid HVS channel {channel}")
+
+    pixelvalve = PIXELVALVES[HVS_CHANNEL_TO_PIXELVALVE[channel]]
+    qtest.writel(pixelvalve + PV_INTSTAT, 0xFFFFFFFF)
+    qtest.writel(pixelvalve + PV_CONTROL, PV_CONTROL_EN)
+    qtest.writel(
+        pixelvalve + PV_V_CONTROL,
+        PV_VCONTROL_CONTINUOUS | PV_VCONTROL_VIDEN,
+    )
+    qtest.command(f"clock_step {FRAME_STEP_NS}")
+    qtest.writel(pixelvalve + PV_INTSTAT, PV_INT_VFP_START)
+    qtest.writel(pixelvalve + PV_V_CONTROL, 0)
+    qtest.writel(pixelvalve + PV_CONTROL, 0)
+
+
 def expect_disabled_empty(qtest: Any, channel: int) -> None:
     control = qtest.readl(SCALER_DISPCTRLX[channel])
     status = qtest.readl(SCALER_DISPSTATX[channel])
@@ -150,11 +180,14 @@ def exercise_channel(qtest: Any, channel: int) -> None:
     second_list = first_list + 0x10
     control = SCALER_DISPCTRLX_ENABLE | (640 << 12) | 480
 
+    previous_active = qtest.readl(SCALER_DISPLACT[channel])
     qtest.writel(SCALER_DISPLIST[channel], first_list)
     if qtest.readl(SCALER_DISPLIST[channel]) != first_list:
         raise RuntimeError(f"HVS channel {channel} did not retain DISPLIST")
-    if qtest.readl(SCALER_DISPLACT[channel]) != first_list:
-        raise RuntimeError(f"HVS channel {channel} did not latch DISPLACT")
+    if qtest.readl(SCALER_DISPLACT[channel]) != previous_active:
+        raise RuntimeError(
+            f"HVS channel {channel} latched DISPLACT while disabled"
+        )
 
     qtest.writel(SCALER_DISPCTRLX[channel], SCALER_DISPCTRLX_RESET)
     expect_disabled_empty(qtest, channel)
@@ -174,11 +207,21 @@ def exercise_channel(qtest: Any, channel: int) -> None:
         raise RuntimeError(
             f"HVS channel {channel} FIFO state is invalid: 0x{status:08x}"
         )
+    if qtest.readl(SCALER_DISPLACT[channel]) != first_list:
+        raise RuntimeError(
+            f"HVS channel {channel} did not activate its initial display list"
+        )
 
     qtest.writel(SCALER_DISPLIST[channel], second_list)
+    if qtest.readl(SCALER_DISPLACT[channel]) != first_list:
+        raise RuntimeError(
+            f"HVS channel {channel} latched replacement before vblank"
+        )
+
+    advance_pixelvalve_frame(qtest, channel)
     if qtest.readl(SCALER_DISPLACT[channel]) != second_list:
         raise RuntimeError(
-            f"HVS channel {channel} did not latch replacement display list"
+            f"HVS channel {channel} did not latch replacement at vblank"
         )
 
     qtest.writel(SCALER_DISPCTRLX[channel], 0)
@@ -369,6 +412,7 @@ def exercise_scanout(qtest: Any, qmp: QMPClient, temp: Path) -> None:
     expected_a = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255))
     expected_b = ((255, 255, 255), (0, 0, 255), (0, 255, 0), (255, 0, 0))
     dlist = SCALER_DLIST_START + SCANOUT_LIST_WORD * 4
+    flip_dlist = SCALER_DLIST_START + SCANOUT_FLIP_LIST_WORD * 4
     ctl0 = (
         SCALER_CTL0_VALID
         | (7 << 24)
@@ -387,11 +431,23 @@ def exercise_scanout(qtest: Any, qmp: QMPClient, temp: Path) -> None:
         SCANOUT_PITCH,
         SCALER_CTL0_END,
     )
+    flip_element = (
+        ctl0,
+        0xFF000000,
+        (SCANOUT_HEIGHT << 16) | SCANOUT_WIDTH,
+        0xC0C0C0C0,
+        SCANOUT_BUFFER_B,
+        0xC0C0C0C0,
+        SCANOUT_PITCH,
+        SCALER_CTL0_END,
+    )
 
     write_pattern(qtest, SCANOUT_BUFFER_A, colors_a)
     write_pattern(qtest, SCANOUT_BUFFER_B, colors_b)
     for index, value in enumerate(element):
         qtest.writel(dlist + index * 4, value)
+    for index, value in enumerate(flip_element):
+        qtest.writel(flip_dlist + index * 4, value)
 
     qtest.writel(SCALER_DISPLIST[SCANOUT_CHANNEL], SCANOUT_LIST_WORD)
     qtest.writel(
@@ -412,6 +468,35 @@ def exercise_scanout(qtest: Any, qmp: QMPClient, temp: Path) -> None:
     second = temp / "hvs-scanout-b.ppm"
     qmp.execute("screendump", {"filename": str(second)})
     expect_pattern(second, expected_b)
+
+    # Async flips rewrite the address in the active element and take effect
+    # immediately.  A normal atomic flip installs a new list and waits for the
+    # mapped pixel valve's next frame boundary before DISPLACT changes.
+    qtest.writel(
+        dlist + 4 * 4,
+        SCANOUT_BUFFER_A,
+    )
+    qtest.writel(
+        SCALER_DISPLIST[SCANOUT_CHANNEL],
+        SCANOUT_FLIP_LIST_WORD,
+    )
+    if qtest.readl(SCALER_DISPLACT[SCANOUT_CHANNEL]) != SCANOUT_LIST_WORD:
+        raise RuntimeError("HVS normal flip latched before vblank")
+
+    before_vblank = temp / "hvs-scanout-before-vblank.ppm"
+    qmp.execute("screendump", {"filename": str(before_vblank)})
+    expect_pattern(before_vblank, expected_a)
+
+    advance_pixelvalve_frame(qtest, SCANOUT_CHANNEL)
+    if (
+        qtest.readl(SCALER_DISPLACT[SCANOUT_CHANNEL])
+        != SCANOUT_FLIP_LIST_WORD
+    ):
+        raise RuntimeError("HVS normal flip did not latch at vblank")
+
+    after_vblank = temp / "hvs-scanout-after-vblank.ppm"
+    qmp.execute("screendump", {"filename": str(after_vblank)})
+    expect_pattern(after_vblank, expected_b)
 
     qtest.writel(SCALER_DISPCTRLX[SCANOUT_CHANNEL], 0)
     expect_disabled_empty(qtest, SCANOUT_CHANNEL)

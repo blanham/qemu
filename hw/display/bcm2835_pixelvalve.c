@@ -62,6 +62,8 @@ static void bcm2835_pixelvalve_frame(void *opaque)
         return;
     }
 
+    /* Latch the HVS list before the guest observes the vblank IRQ. */
+    qemu_irq_pulse(s->vblank);
     s->regs[PV_INTSTAT / 4] |= PV_INT_VFP_START;
     bcm2835_pixelvalve_update_irq(s);
     bcm2835_pixelvalve_schedule_frame(s);
@@ -191,6 +193,13 @@ static void bcm2835_pixelvalve_unrealize(DeviceState *dev)
     s->frame_timer = NULL;
 }
 
+static void bcm2835_pixelvalve_init(Object *obj)
+{
+    BCM2835PixelValveState *s = BCM2835_PIXELVALVE(obj);
+
+    qdev_init_gpio_out_named(DEVICE(obj), &s->vblank, "vblank", 1);
+}
+
 static void bcm2835_pixelvalve_class_init(ObjectClass *klass,
                                            const void *data)
 {
@@ -207,6 +216,7 @@ static const TypeInfo bcm2835_pixelvalve_info = {
     .name = TYPE_BCM2835_PIXELVALVE,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(BCM2835PixelValveState),
+    .instance_init = bcm2835_pixelvalve_init,
     .class_init = bcm2835_pixelvalve_class_init,
 };
 
