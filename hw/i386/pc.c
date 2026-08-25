@@ -736,6 +736,16 @@ static hwaddr pc_max_used_gpa(PCMachineState *pcms, uint64_t pci_hole64_size)
 #define AMD_ABOVE_1TB_START  (AMD_HT_END + 1)
 #define AMD_HT_SIZE          (AMD_ABOVE_1TB_START - AMD_HT_START)
 
+static bool pc_machine_amd_1tb_hole_enabled(PCMachineState *pcms)
+{
+    PCMachineClass *pcmc = PC_MACHINE_GET_CLASS(pcms);
+
+    if (pcms->amd_1tb_hole == ON_OFF_AUTO_AUTO) {
+        return pcmc->enforce_amd_1tb_hole;
+    }
+    return pcms->amd_1tb_hole == ON_OFF_AUTO_ON;
+}
+
 void pc_memory_init(PCMachineState *pcms,
                     MemoryRegion *system_memory,
                     MemoryRegion *rom_memory,
@@ -760,12 +770,13 @@ void pc_memory_init(PCMachineState *pcms,
     linux_boot = (machine->kernel_filename != NULL);
 
     /*
-     * The HyperTransport range close to the 1T boundary is unique to AMD
-     * hosts with IOMMUs enabled. Restrict the ram-above-4g relocation
-     * to above 1T to AMD vCPUs only. @enforce_amd_1tb_hole is only false in
-     * older machine types (<= 7.0) for compatibility purposes.
+     * The HyperTransport range close to the 1 TiB boundary is unique to AMD
+     * systems with IOMMUs. Keep the relocation AMD-vCPU-specific. In auto
+     * mode, preserve the selected versioned machine type's compatibility
+     * policy; explicit on/off values override that policy.
      */
-    if (IS_AMD_CPU(&cpu->env) && pcmc->enforce_amd_1tb_hole) {
+    if (IS_AMD_CPU(&cpu->env) &&
+        pc_machine_amd_1tb_hole_enabled(pcms)) {
         /* Bail out if max possible address does not cross HT range */
         if (pc_max_used_gpa(pcms, pci_hole64_size) >= AMD_HT_START) {
             x86ms->above_4g_mem_start = AMD_ABOVE_1TB_START;
@@ -1436,6 +1447,25 @@ static void pc_machine_set_vmport(Object *obj, Visitor *v, const char *name,
     visit_type_OnOffAuto(v, name, &pcms->vmport, errp);
 }
 
+static void pc_machine_get_amd_1tb_hole(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    PCMachineState *pcms = PC_MACHINE(obj);
+    OnOffAuto amd_1tb_hole = pcms->amd_1tb_hole;
+
+    visit_type_OnOffAuto(v, name, &amd_1tb_hole, errp);
+}
+
+static void pc_machine_set_amd_1tb_hole(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    PCMachineState *pcms = PC_MACHINE(obj);
+
+    visit_type_OnOffAuto(v, name, &pcms->amd_1tb_hole, errp);
+}
+
 static bool pc_machine_get_fd_bootchk(Object *obj, Error **errp)
 {
     PCMachineState *pcms = PC_MACHINE(obj);
@@ -1625,6 +1655,7 @@ static void pc_machine_initfn(Object *obj)
 #else
     pcms->vmport = ON_OFF_AUTO_OFF;
 #endif /* CONFIG_VMPORT */
+    pcms->amd_1tb_hole = ON_OFF_AUTO_AUTO;
     pcms->max_ram_below_4g = 0; /* use default */
     pcms->smbios_entry_point_type = pcmc->default_smbios_ep_type;
     pcms->south_bridge = pcmc->default_south_bridge;
@@ -1735,6 +1766,12 @@ static void pc_machine_class_init(ObjectClass *oc, const void *data)
         NULL, NULL);
     object_class_property_set_description(oc, PC_MACHINE_VMPORT,
         "Enable vmport (pc & q35)");
+
+    object_class_property_add(oc, PC_MACHINE_AMD_1TB_HOLE, "OnOffAuto",
+        pc_machine_get_amd_1tb_hole, pc_machine_set_amd_1tb_hole,
+        NULL, NULL);
+    object_class_property_set_description(oc, PC_MACHINE_AMD_1TB_HOLE,
+        "Control the AMD HyperTransport reservation near 1 TiB");
 
     object_class_property_add_bool(oc, PC_MACHINE_SMBUS,
         pc_machine_get_smbus, pc_machine_set_smbus);
