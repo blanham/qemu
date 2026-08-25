@@ -379,6 +379,7 @@ static int probe_kms_topology(VC4DRMNode *card)
     return -1;
 }
 
+#ifndef VC4_LINUX_V3D_MODULAR_NO_MAIN
 int main(void)
 {
     struct timespec settle = {
@@ -456,3 +457,4 @@ int main(void)
         pause();
     }
 }
+#endif /* VC4_LINUX_V3D_MODULAR_NO_MAIN */

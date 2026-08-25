@@ -8,9 +8,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#define main vc4_linux_v3d_modular_base_main
+#define VC4_LINUX_V3D_MODULAR_NO_MAIN
 #include "linux-v3d-modular-init.c"
-#undef main
+#undef VC4_LINUX_V3D_MODULAR_NO_MAIN
 
 #include "linux-kms-scanout-probe.inc.c"
 
