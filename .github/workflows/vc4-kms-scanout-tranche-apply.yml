@@ -1,0 +1,114 @@
+name: VC4 KMS scanout tranche apply
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-scanout-v2
+    paths:
+      - .github/workflows/vc4-kms-scanout-tranche-apply.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-scanout-tranche-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-scanout-v2
+          fetch-depth: 0
+
+      - name: Reassemble and validate the tranche
+        run: |
+          set -euo pipefail
+          parts=.github/vc4-kms-scanout-tranche-parts
+          {
+            cat "$parts/0000"
+            cat "$parts/0001"
+            cat "$parts/0002"
+            cat "$parts/0003"
+            cat "$parts/0004"
+            cat "$parts/0005-00"
+            cat "$parts/0005-01"
+            cat "$parts/0005-02"
+            cat "$parts/0005-03"
+            cat "$parts/0005-04"
+            cat "$parts/0005-05"
+            cat "$parts/0005-06"
+          } | base64 --decode > /tmp/vc4-scanout-tranche.zip
+          test "$(sha256sum /tmp/vc4-scanout-tranche.zip | cut -d' ' -f1)" = \
+            d7d980c007655c05421bcc383fe5ca4f5e8a9e5acc937466bf960e444ceb8931
+
+          rm -rf /tmp/vc4-scanout-tranche
+          mkdir -p /tmp/vc4-scanout-tranche
+          unzip -q /tmp/vc4-scanout-tranche.zip \
+            -d /tmp/vc4-scanout-tranche
+
+          test -s /tmp/vc4-scanout-tranche/tests/vc4/linux-kms-scanout-init.c
+          test -s /tmp/vc4-scanout-tranche/tests/vc4/linux-kms-scanout-probe.inc.c
+          test -s /tmp/vc4-scanout-tranche/scripts/vc4/summarize-linux-kms-scanout.py
+          test -s /tmp/vc4-scanout-tranche/scripts/vc4/build-linux-v3d-modular-initramfs.sh
+          test -s /tmp/vc4-scanout-tranche/.github/workflows/vc4-linux-kms-scanout-diagnostics.yml
+
+          python3 -m py_compile \
+            /tmp/vc4-scanout-tranche/scripts/vc4/summarize-linux-kms-scanout.py
+          bash -n \
+            /tmp/vc4-scanout-tranche/scripts/vc4/build-linux-v3d-modular-initramfs.sh
+          grep -Fq VC4_LINUX_KMS_SCANOUT_ARMED \
+            /tmp/vc4-scanout-tranche/tests/vc4/linux-kms-scanout-probe.inc.c
+          grep -Fq DRM_MODE_PAGE_FLIP_EVENT \
+            /tmp/vc4-scanout-tranche/tests/vc4/linux-kms-scanout-probe.inc.c
+          grep -Fq agent/vc4-linux-kms-scanout-v2 \
+            /tmp/vc4-scanout-tranche/.github/workflows/vc4-linux-kms-scanout-diagnostics.yml
+
+      - name: Stage the validated scanout model
+        run: |
+          set -euo pipefail
+          tranche=/tmp/vc4-scanout-tranche
+          publication=.github/vc4-kms-scanout-publication
+
+          install -D -m 0755 \
+            "$tranche/scripts/vc4/build-linux-v3d-modular-initramfs.sh" \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh
+          install -D -m 0755 \
+            "$tranche/scripts/vc4/summarize-linux-kms-scanout.py" \
+            scripts/vc4/summarize-linux-kms-scanout.py
+          install -D -m 0644 \
+            "$tranche/tests/vc4/linux-kms-scanout-init.c" \
+            tests/vc4/linux-kms-scanout-init.c
+          install -D -m 0644 \
+            "$tranche/tests/vc4/linux-kms-scanout-probe.inc.c" \
+            tests/vc4/linux-kms-scanout-probe.inc.c
+
+          rm -rf "$publication"
+          mkdir -p "$publication"
+          cp "$tranche/.github/workflows/vc4-linux-kms-scanout-diagnostics.yml" \
+            "$publication/vc4-linux-kms-scanout-diagnostics.yml"
+          cat > "$publication/manifest.txt" <<'EOF'
+          create .github/workflows/vc4-linux-kms-scanout-diagnostics.yml
+          delete .github/workflows/vc4-kms-scanout-tranche-apply.yml
+          delete .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+          EOF
+
+          rm -rf .github/vc4-kms-scanout-tranche-parts
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -A -- \
+            .github/vc4-kms-scanout-tranche-parts \
+            .github/vc4-kms-scanout-publication \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            scripts/vc4/summarize-linux-kms-scanout.py \
+            tests/vc4/linux-kms-scanout-init.c \
+            tests/vc4/linux-kms-scanout-probe.inc.c
+          git diff --cached --check
+          git diff --cached --name-status
+          git commit -m "test/vc4: stage supervised Linux KMS scanout frontier"
+          git pull --rebase origin agent/vc4-linux-kms-scanout-v2
+          git push origin HEAD:agent/vc4-linux-kms-scanout-v2
