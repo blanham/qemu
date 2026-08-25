@@ -141,8 +141,25 @@ jobs:
       - name: Publish the validated model
         run: |
           set -euo pipefail
+
+          # GITHUB_TOKEN has contents permission but cannot safely publish
+          # workflow-file changes.  Preserve the validated workflow as ordinary
+          # content, restore the triggering workflow set, and let a connector
+          # follow-up perform the final workflow-only commit.
+          publication=.github/vc4-hvs-pixelvalve-publication
+          rm -rf "$publication"
+          mkdir -p "$publication"
+          cp .github/workflows/vc4-linux-kms-bind-diagnostics.yml \
+            "$publication/vc4-linux-kms-bind-diagnostics.yml"
+          cat > "$publication/manifest.txt" <<'EOF'
+          update .github/workflows/vc4-linux-kms-bind-diagnostics.yml
+          delete .github/workflows/vc4-display-timing-integration.yml
+          delete .github/workflows/vc4-kms-continuation-audit.yml
+          delete .github/workflows/vc4-hvs-pixelvalve-apply.yml
+          EOF
+
+          git checkout "$GITHUB_SHA" -- .github/workflows
           rm -rf .github/vc4-hvs-pixelvalve-parts
-          rm -f .github/workflows/vc4-hvs-pixelvalve-apply.yml
           git config user.name "VC4 CI"
           git config user.email "vc4-ci@users.noreply.github.com"
           git add -A
