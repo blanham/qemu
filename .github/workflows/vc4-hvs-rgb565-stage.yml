@@ -1,0 +1,159 @@
+name: Stage VC4 RGB565 HVS scanout
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-hvs-rgb565-stage.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-rgb565-stage
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 zlib1g-dev
+
+      - name: Add RGB565 HVS scanout and regression coverage
+        run: |
+          set -euo pipefail
+          base64 --decode > /tmp/patch-vc4-rgb565.py <<'PY'
+          ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgoKZGVmIHJlcGxhY2Vfb25jZSh0ZXh0OiBzdHIsIG9s
+          ZDogc3RyLCBuZXc6IHN0ciwgbGFiZWw6IHN0cikgLT4gc3RyOgogICAgY291bnQgPSB0ZXh0LmNv
+          dW50KG9sZCkKICAgIGlmIGNvdW50ICE9IDE6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmInts
+          YWJlbH06IGV4cGVjdGVkIG9uZSBhbmNob3IsIGZvdW5kIHtjb3VudH0iKQogICAgcmV0dXJuIHRl
+          eHQucmVwbGFjZShvbGQsIG5ldyw gMSkKCgpodnNfcGF0aCA9IFBhdGgoImh3L2Rpc3BsYXkvYmNt
+          MjgzNV9odnMuYyIpCmh2cyA9IGh2c19wYXRoLnJlYWRfdGV4dChlbmNvZGluZz0idXRmLTgiKQoK
+          aHZzID0gcmVwbGFjZV9vbmNlKAogICAgaHZzLAogICAgJycnICogS01TIHNjYW5vdXQgY29udHJh
+          Y3Q6IG9uZSBmdWxsLXNjcmVlbiwgdW5pdHktc2NhbGVkLCBsaW5lYXIgUkdCQTg4ODggcGxhbmUu
+          CicnJywKICAgICcnJyAqIEtNUyBzY2Fub3V0IGNvbnRyYWN0OiBvbmUgZnVsbC1zY3JlZW4sIHVu
+          aXR5LXNjYWxlZCwgbGluZWFyIFJHQjU2NSBvcgo gKiBSR0JBODg4OCBwbGFuZS4KJycnLAogICAg
+          IkhWUyBjb250cmFjdCBjb21tZW50IiwKKQoKaHZzID0gcmVwbGFjZV9vbmNlKAogICAgaHZzLAog
+          ICAgJycnI2RlZmluZSBIVlNfUElYRUxfT1JERVJfQVJHQiAgICAgICAgIFVJTlQzMl9DKDIpCiNk
+          ZWZpbmUgSFZTX1BJWEVMX09SREVSX0FCR1IgICAgICAgICBVSU5UMzJfQygzKQojZGVmaW5lIEhW
+          U19QSVhFTF9GT1JNQVRfUkdCQTg4ODggICAgVUlOVDMyX0MoNykKJycnLAogICAgJycnI2RlZmlu
+          ZS BIVlNfUElYRUxfT1JERVJfQVJHQiAgICAgICAgIFVJTlQzMl9DKDIpCiNkZWZpbmUgSFZTX1BJ
+          WEVMX09SREVSX0FCR1IgICAgICAgICBVSU5UMzJfQygzKQojZGVmaW5lIEhWU19QSVhFTF9PUkRF
+          Ul9YUkdCICAgICAgICAgVUlOVDMyX0MoMikKI2RlZmluZSBIVlNfUElYRUxfT1JERVJfWEJHUiAg
+          ICAgICAgIFVJTlQzMl9DKDMpCiNkZWZpbmUgSFZTX1BJWEVMX0ZPUk1BVF9SR0I1NjUgICAgICBV
+          SU5UMzJfQyg0KQojZGVmaW5lIEhWU19QSVhFTF9GT1JNQVRfUkdCQTg4ODggICAgVUlOVDMyX0Mo
+          NykKJycnLAogICAgIkhWUyBmb3JtYXQgY29uc3RhbnRzIiwKKQoKaHZzID0gcmVwbGFjZV9vbmNl
+          KAogICAgaHZzLAogICAgJycnI2RlZmluZSBTQ0FMRVJfUkdCQTg4ODhfVU5JVFlfV09SRFMgIDcK
+          I2RlZmluZSBTQ0FMRVJfUkdCQTg4ODhfUE9TMF9XT1JEICAgIDEKI2RlZmluZSBTQ0FMRVJfUkdC
+          QTg4ODhfUE9TMl9XT1JEICAgIDIKI2RlZmluZSBTQ0FMRVJfUkdCQTg4ODhfUE9JTlRFUl9XT1JE
+          IDQKI2RlZmluZSBTQ0FMRVJfUkdCQTg4ODhfUElUQ0hfV09SRCAgIDYKJycnLAogICAgJycnI2Rl
+          ZmluZSBTQ0FMRVJfVU5JVFlfUExBTkVfV09SRFMgICAgICA3CiNkZWZpbmUgU0NBTEVSX1VOSVRZ
+          X1BMQU5FX1BPUzBfV09SRCAgMQojZGVmaW5lIFNDQUxFUl9VTklUWV9QTEFORV9QT1MyX1dPUkQg
+          IDIKI2RlZmluZSBTQ0FMRVJfVU5JVFlfUExBTkVfUFRSX1dPUkQgICA0CiNkZWZpbmUgU0NBTEVS
+          X1VOSVRZX1BMQU5FX1BJVENIX1dPUkQgNgonJycsCiAgICAiSFZTIHVuaXR5LXBsYW5lIHdvcmQg
+          Y29uc3RhbnRzIiwKKQoKZnVuY3Rpb25fc3RhcnQgPSBodnMuZmluZCgic3RhdGljIGJvb2wgYmNt
+          MjgzNV9odnNfc2Nhbm91dF9jb25maWcoIikKZnVuY3Rpb25fZW5kID0gaHZzLmZpbmQoIlxuc3Rh
+          dGljIHZvaWQgYmNtMjgzNV9odnNfcmVmcmVzaF9zY2Fub3V0IiwgZnVuY3Rpb25fc3RhcnQpCmlm
+          IGZ1bmN0aW9uX3N0YXJ0IDwgMCBvciBmdW5jdGlvbl9lbmQgPCAwOgogICAgcmFpc2UgU3lzdGVt
+          RXhpdCgiSFZTIHNjYW5vdXQgZnVuY3Rpb24gYm91bmRhcmllcyBub3QgZm91bmQiKQoKbmV3X2Z1
+          bmN0aW9uID0gcicnJ3N0YXRpYyBib29sIGJjbTI4MzVfaHZzX3NjYW5vdXRfY29uZmlnKEJDTTI4
+          MzVIVlNTdGF0ZSAqcywKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdW5zaW
+          duZWQgY2hhbm5lbCwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQkNNMjgz
+          NUZCQ29uZmlnICpjb25maWcpCnsKICAgIHVpbnQzMl90IGNvbnRyb2wgPSBzLT5yZWdzW2JjbTI4
+          MzVfaHZzX2luZGV4KAogICAgICAgIGJjbTI4MzVfaHZzX2NvbnRyb2xfb2Zmc2V0KGNoYW5uZWwp
+          KV07CiAgICB1aW50MzJfdCBjaGFubmVsX3dpZHRoOwogICAgdWludDMyX3QgY2hhbm5lbF9oZWln
+          aHQ7CiAgICB1aW50MzJfdCBsaXN0X3dvcmQ7CiAgICB1bnNpZ25lZCBsaXN0X2luZGV4OwogICAg
+          dWludDMyX3QgY3RsMDsKICAgIHVpbnQzMl90IGVsZW1lbnRfd29yZHM7CiAgICB1aW50MzJfdCB0
+          aWxpbmc7CiAgICB1aW50MzJfdCBvcmRlcjsKICAgIHVpbnQzMl90IGZvcm1hdDsKICAgIHVpbnQz
+          Ml90IGJ5dGVzX3Blcl9waXhlbDsKICAgIHVpbnQzMl90IGJpdHNfcGVyX3BpeGVsOwogICAgdWlu
+          dDMyX3QgcGl4bzsKICAgIHVpbnQzMl90IHBvczA7CiAgICB1aW50MzJfdCBwb3MyOwogICAgdWlu
+          dDMyX3Qgd2lkdGg7CiAgICB1aW50MzJfdCBoZWlnaHQ7CiAgICB1aW50MzJfdCBwaXRjaDsKCiAg
+          ICBpZiAoIShjb250cm9sICYgU0NBTEVSX0RJU1BDVFJMWF9FTkFCTEUpIHx8ICFzLT5mYikgewog
+          ICAgICAgIHJldHVybiBmYWxzZTsKICAgIH0KCiAgICBjaGFubmVsX3dpZHRoID0gKGNvbnRyb2wg
+          Pj4gU0NBTEVSX0RJU1BDVFJMWF9XSURUSF9TSElGVCkgJgogICAgICAgICAgICAgICAgICAgIFND
+          QUxFUl9ESVNQQ1RSTFhfV0lEVEhfTUFTSzsKICAgIGNoYW5uZWxfaGVpZ2h0ID0gY29udHJvbCAm
+          IFNDQUxFUl9ESVNQQ1RSTFhfSEVJR0hUX01BU0s7CiAgICBpZiAoIWNoYW5uZWxfd2lkdGggfHwg
+          IWNoYW5uZWxfaGVpZ2h0KSB7CiAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgfQoKICAgIGxpc3Rf
+          d29yZCA9IHMtPnJlZ3NbYmNtMjgzNV9odnNfaW5kZXgoCiAgICAgICAgYmNtMjgzNV9odnNfYWN0
+          aXZlX29mZnNldChjaGFubmVsKSldOwogICAgbGlzdF9pbmRleCA9IGJjbTI4MzVfaHZzX2luZGV4
+          KFNDQUxFUl9ETElTVF9TVEFSVCk7CiAgICBpZiAobGlzdF93b3JkID49IEJDTTI4MzVfSFZTX1JF
+          R19XT1JEUyAtIGxpc3RfaW5kZXgpIHsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICB9CiAgICBs
+          aXN0X2luZGV4ICs9IGxpc3Rfd29yZDsKCiAgICBjdGwwID0gcy0+cmVnc1tsaXN0X2luZGV4XTsK
+          ICAgIGVsZW1lbnRfd29yZHMgPSAoY3RsMCA+PiBTQ0FMRVJfQ1RMMF9TSVpFX1NISUZUKSAmCiAg
+          ICAgICAgICAgICAgICAgICAgU0NBTEVSX0NUTDBfU0laRV9NQVNLOwogICAgdGlsaW5nID0gKGN0
+          bDAgPj4gU0NBTEVSX0NUTDBfVElMSU5HX1NISUZUKSAmCiAgICAgICAgICAgICBTQ0FMRVJfQ1RM
+          MF9USUxJTkdfTUFTSzsKICAgIG9yZGVyID0gKGN0bDAgPj4gU0NBTEVSX0NUTDBfT1JERVJfU0hJ
+          RlQpICYKICAgICAgICAgICAgU0NBTEVSX0NUTDBfT1JERVJfTUFTSzsKICAgIGZvcm1hdCA9IGN0
+          bDAgJiBTQ0FMRVJfQ1RMMF9GT1JNQVRfTUFTSzsKCiAgICBpZiAoKGN0bDAgJiAoU0NBTEVSX0NU
+          TDBfRU5EIHwgU0NBTEVSX0NUTDBfVkFMSUQpKSAhPQogICAgICAgIFNDQUxFUl9DVEwwX1ZBTElE
+          IHx8CiAgICAgICAgZWxlbWVudF93b3JkcyAhPSBTQ0FMRVJfVU5JVFlfUExBTkVfV09SRFMgfHwK
+          ICAgICAgICBsaXN0X2luZGV4ICsgZWxlbWVudF93b3JkcyA+PSBCQ00yODM1X0hWU19SRUdfV09S
+          RFMgfHwKICAgICAgICAhKHMtPnJlZ3NbbGlzdF9pbmRleCArIGVsZW1lbnRfd29yZHNdICYgU0NB
+          TEVSX0NUTDBfRU5EKSB8fAogICAgICAgIHRpbGluZyAhPSBTQ0FMRVJfQ1RMMF9USUxJTkdfTElO
+          RUFSIHx8CiAgICAgICAgY3RsMCAmIChTQ0FMRVJfQ1RMMF9IRkxJUCB8IFNDQUxFUl9DVEwwX1ZG
+          TElQKSB8fAogICAgICAgICEoY3RsMCAmIFNDQUxFUl9DVEwwX1VOSVRZKSkgewogICAgICAgIHJl
+          dHVybiBmYWxzZTsKICAgIH0KCiAgICBzd2l0Y2ggKGZvcm1hdCkgewogICAgY2FzZSBIVlNfUElY
+          RUxfRk9STUFUX1JHQjU2NToKICAgICAgICBpZiAob3JkZXIgIT0gSFZTX1BJWEVMX09SREVSX1hS
+          R0IgJiYKICAgICAgICAgICAgb3JkZXIgIT0gSFZTX1BJWEVMX09SREVSX1hCR1IpIHsKICAgICAg
+          ICAgICAgcmV0dXJuIGZhbHNlOwogICAgICAgIH0KICAgICAgICBieXRlc19wZXJfcGl4ZWwgPSBz
+          aXplb2YodWludDE2X3QpOwogICAgICAgIGJpdHNfcGVyX3BpeGVsID0gMTY7CiAgICAgICAgcGl4
+          byA9IG9yZGVyID09IEhWU19QSVhFTF9PUkRFUl9YQkdSID8gMCA6IDE7CiAgICAgICAgYnJlYWs7
+          CiAgICBjYXNlIEhWU19QSVhFTF9GT1JNQVRfUkdCQTg4ODg6CiAgICAgICAgaWYgKG9yZGVyICE9
+          IEhWU19QSVhFTF9PUkRFUl9BUkdCICYmCiAgICAgICAgICAgIG9yZGVyICE9IEhWU19QSVhFTF9P
+          UkRFUl9BQkdSKSB7CiAgICAgICAgICAgIHJldHVybiBmYWxzZTsKICAgICAgICB9CiAgICAgICAg
+          Ynl0ZXNfcGVyX3BpeGVsID0gc2l6ZW9mKHVpbnQzMl90KTsKICAgICAgICBiaXRzX3Blcl9waXhl
+          bCA9IDMyOwogICAgICAgIHBpeG8gPSBvcmRlciA9PSBIVlNfUElYRUxfT1JERVJfQUJHUiA/IDAg
+          OiAxOwogICAgICAgIGJyZWFrOwogICAgZGVmYXVsdDoKICAgICAgICByZXR1cm4gZmFsc2U7CiAg
+          ICB9CgogICAgcG9zMCA9IHMtPnJlZ3NbbGlzdF9pbmRleCArIFNDQUxFUl9VTklUWV9QTEFORV9Q
+          T1MwX1dPUkRdOwogICAgcG9zMiA9IHMtPnJlZ3NbbGlzdF9pbmRleCArIFNDQUxFUl9VTklUWV9Q
+          TEFORV9QT1MyX1dPUkRdOwogICAgd2lkdGggPSBwb3MyICYgU0NBTEVSX1BPUzJfV0lEVEhfTUFT
+          SzsKICAgIGhlaWdodCA9IChwb3MyID4+IFNDQUxFUl9QT1MyX0hFSUdIVF9TSElGVCkgJgogICAg
+          ICAgICAgICAgU0NBTEVSX1BPUzJfSEVJR0hUX01BU0s7CiAgICBwaXRjaCA9IHMtPnJlZ3NbbGlz
+          dF9pbmRleCArIFNDQUxFUl9VTklUWV9QTEFORV9QSVRDSF9XT1JEXSAmCiAgICAgICAgICAgIFND
+          QUxFUl9TUkNfUElUQ0hfTUFTSzsKCiAgICBpZiAoKChwb3MwID4+IFNDQUxFUl9QT1MwX1NUQVJU
+          X1lfU0hJRlQpICYKICAgICAgICAgU0NBTEVSX1BPUzBfU1RBUlRfWV9NQVNLIK==
+          PY
+          python3 /tmp/patch-vc4-rgb565.py
+          python3 -m py_compile scripts/vc4/hvs-dlist-smoke.py
+          git diff --check
+          git diff --stat
+          git diff -- hw/display/bcm2835_hvs.c
+          git diff -- scripts/vc4/hvs-dlist-smoke.py
+
+      - name: Build and run focused HVS scanout tests
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the validated RGB565 model
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add \
+            hw/display/bcm2835_hvs.c \
+            scripts/vc4/hvs-dlist-smoke.py
+          git diff --cached --check
+          git diff --cached --name-status
+          git commit -m "hw/display: scan out VC4 RGB565 display lists"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
