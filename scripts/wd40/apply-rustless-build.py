@@ -2,7 +2,7 @@
 """Apply WD40's C-only build contract to the QEMU source tree.
 
 The transformation is deliberately marker-based and idempotent so it can be
-rerun after routine upstream rebases.  Rust sources remain in the repository as
+rerun after routine upstream rebases. Rust sources remain in the repository as
 upstream provenance, but the active build graph must not discover or compile
 Rust code.
 """
@@ -34,24 +34,12 @@ def replace_once(path: str, old: str, new: str) -> None:
     raise RuntimeError(f"{path}: expected one replacement site, found {count}")
 
 
-def replace_region(path: str, start: str, end: str, replacement: str) -> None:
-    file_path, text = load(path)
-    if start not in text:
-        if replacement in text:
-            return
-        raise RuntimeError(f"{path}: start marker not found: {start!r}")
-    start_at = text.index(start)
-    try:
-        end_at = text.index(end, start_at)
-    except ValueError as exc:
-        raise RuntimeError(f"{path}: end marker not found: {end!r}") from exc
-    store(file_path, text[:start_at] + replacement + text[end_at:])
-
-
 def transform_meson() -> None:
     file_path, text = load("meson.build")
 
     project_end = "        version: files('VERSION'))"
+    if project_end not in text:
+        raise RuntimeError("meson.build: project declaration end marker missing")
     project_end_at = text.index(project_end) + len(project_end)
     project = """project('qemu', ['c'], meson_version: '>=1.5.0',
         default_options: ['warning_level=1', 'c_std=gnu11',
@@ -78,24 +66,32 @@ add_test_setup('thorough',
 
     rust_start = "have_rust = add_languages('rust'"
     rust_end = "dtrace = not_found"
-    rust_start_at = text.index(rust_start)
-    rust_end_at = text.index(rust_end, rust_start_at)
     rust_policy = """if get_option('rust').enabled()
   error('Rust support is intentionally disabled in the WD40 fork')
 endif
 have_rust = false
 
 """
-    text = text[:rust_start_at] + rust_policy + text[rust_end_at:]
+    if rust_start in text:
+        rust_start_at = text.index(rust_start)
+        rust_end_at = text.index(rust_end, rust_start_at)
+        text = text[:rust_start_at] + rust_policy + text[rust_end_at:]
+    elif rust_policy not in text:
+        raise RuntimeError("meson.build: Rust toolchain discovery marker missing")
 
-    text = text.replace(
-        "if have_rust\n  subdir('rust')\nendif\n\n\n",
-        "",
+    subdir_line = "  subdir('rust')\n"
+    if text.count(subdir_line) > 1:
+        raise RuntimeError("meson.build: multiple Rust subtree inclusions found")
+    text = text.replace(subdir_line, "")
+
+    original_root_crate = (
+        "rust_root_crate = find_program('scripts/rust/rust_root_crate.sh')"
     )
-    text = text.replace(
-        "rust_root_crate = find_program('scripts/rust/rust_root_crate.sh')",
-        "rust_root_crate = not_found",
-    )
+    if original_root_crate in text:
+        text = text.replace(original_root_crate, "rust_root_crate = not_found", 1)
+    elif "rust_root_crate = not_found" not in text:
+        raise RuntimeError("meson.build: Rust root-crate helper marker missing")
+
     text = text.replace(
         "config_host_data.set('CONFIG_HAVE_RUST', have_rust)\n",
         "",
