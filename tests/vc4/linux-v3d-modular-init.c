@@ -224,6 +224,16 @@ static void mark_submit_success(void)
     marker("VC4_LINUX_DRM_SUBMIT_OK\n");
 }
 
+/*
+ * The transient corrected-supplier probe injects drm_mode.h and the modeset
+ * helper below this point.  Keep its declaration and userspace connection
+ * spelling gated on that header so ordinary builds remain unchanged.
+ */
+#ifdef _DRM_MODE_H
+#define DRM_MODE_CONNECTED VC4_DRM_MODE_CONNECTED
+static int vc4_kms_modeset_probe(int fd);
+#endif
+
 static int probe_kms_topology(VC4DRMNode *card)
 {
     struct vc4_drm_mode_card_res resources = { 0 };
