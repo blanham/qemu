@@ -44,6 +44,10 @@ def check_source() -> None:
         "meson.build",
         "summary_info += {'Rust support':      false}",
     )
+    require(
+        "configure",
+        'error_exit "Rust support is intentionally disabled in the WD40 fork"',
+    )
     require("hw/char/Kconfig", "select PL011_C")
     require("hw/timer/Kconfig", "select HPET_C")
 
@@ -63,6 +67,7 @@ def check_source() -> None:
         "summary_info += {'bindgen':",
         "summary_info += {'bindgen version':",
     )
+    forbid("configure", "--enable-rust) rust=enabled")
     forbid("Kconfig.host", "config HAVE_RUST")
     forbid("hw/char/Kconfig", "HAVE_RUST", "X_PL011_RUST")
     forbid("hw/timer/Kconfig", "HAVE_RUST", "X_HPET_RUST")

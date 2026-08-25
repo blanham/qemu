@@ -130,6 +130,17 @@ def main() -> None:
     transform_meson()
 
     replace_once(
+        "configure",
+        """  --enable-rust) rust=enabled
+  ;;
+  --disable-rust) rust=disabled""",
+        """  --enable-rust)
+      error_exit "Rust support is intentionally disabled in the WD40 fork"
+  ;;
+  --disable-rust) rust=disabled""",
+    )
+
+    replace_once(
         "meson_options.txt",
         """option('rust', type: 'feature', value: 'disabled',
        description: 'Rust support')
