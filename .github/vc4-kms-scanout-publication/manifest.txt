@@ -1,3 +1,0 @@
-create .github/workflows/vc4-linux-kms-scanout-diagnostics.yml
-delete .github/workflows/vc4-kms-scanout-tranche-apply.yml
-delete .github/workflows/vc4-linux-kms-bind-diagnostics.yml
