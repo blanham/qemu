@@ -48,6 +48,20 @@ def main() -> None:
         "-d all,-tid,-int,-exec,-cpu",
     )
     require(
+        "hmp-commands.hx",
+        "set logging items; prefix '-' to exclude",
+        "(qemu) log all,-tid,-int,-exec,-cpu",
+        "Use ``log none`` to disable logging.",
+    )
+    require(
+        "linux-user/main.c",
+        "enable logging; prefix '-' to exclude an item",
+    )
+    require(
+        "bsd-user/main.c",
+        "-d item1[,...]    enable logging; prefix '-' to exclude an item",
+    )
+    require(
         "tests/unit/test-logging.c",
         "static void test_parse_log_mask(void)",
         'qemu_str_to_log_mask("all,-int")',
