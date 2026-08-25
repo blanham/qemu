@@ -1,20 +1,15 @@
 project('qemu', ['c'], meson_version: '>=1.5.0',
-        default_options: ['warning_level=1', 'c_std=gnu11', 'cpp_std=gnu++23', 'b_colorout=auto',
-                          'b_staticpic=false', 'stdsplit=false', 'optimization=2', 'b_pie=true'] +
-
-                          # build.rust_std breaks with older meson, but Rust does not
-                          # support old meson anyway
-                          (meson.version().version_compare('>= 1.9') ? ['rust_std=2021', 'build.rust_std=2021',
-                                                                        'rust_nightly=disabled'] : []),
-
+        default_options: ['warning_level=1', 'c_std=gnu11',
+                          'cpp_std=gnu++23', 'b_colorout=auto',
+                          'b_staticpic=false', 'stdsplit=false',
+                          'optimization=2', 'b_pie=true'],
         version: files('VERSION'))
 
-add_test_setup('quick', exclude_suites: ['slow', 'thorough'], is_default: true,
-               env: ['RUST_BACKTRACE=1'])
+add_test_setup('quick', exclude_suites: ['slow', 'thorough'], is_default: true)
 add_test_setup('slow', exclude_suites: ['thorough'],
-               env: ['G_TEST_SLOW=1', 'SPEED=slow', 'RUST_BACKTRACE=1'])
+               env: ['G_TEST_SLOW=1', 'SPEED=slow'])
 add_test_setup('thorough',
-               env: ['G_TEST_SLOW=1', 'SPEED=thorough', 'RUST_BACKTRACE=1'])
+               env: ['G_TEST_SLOW=1', 'SPEED=thorough'])
 
 meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
 
@@ -24,7 +19,6 @@ meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
 
 not_found = dependency('', required: false)
 keyval = import('keyval')
-rust = import('rust')
 ss = import('sourceset')
 fs = import('fs')
 
@@ -93,53 +87,10 @@ if host_os == 'darwin' and \
   objc = meson.get_compiler('objc')
 endif
 
-have_rust = add_languages('rust', native: false,
-    required: get_option('rust').disable_auto_if(not have_system))
-have_rust = have_rust and add_languages('rust', native: true,
-    required: get_option('rust').disable_auto_if(not have_system))
-if have_rust
-  rustc = meson.get_compiler('rust')
-  if rustc.version().version_compare('<1.83.0')
-    if get_option('rust').enabled()
-      error('rustc version ' + rustc.version() + ' is unsupported. Please upgrade to at least 1.83.0')
-    else
-      warning('rustc version ' + rustc.version() + ' is unsupported, disabling Rust compilation.')
-      message('Please upgrade to at least 1.83.0 to use Rust.')
-      have_rust = false
-    endif
-  endif
+if get_option('rust').enabled()
+  error('Rust support is intentionally disabled in the WD40 fork')
 endif
-
-if have_rust
-  rustdoc = find_program('rustdoc', required: get_option('rust'))
-  bindgen = find_program('bindgen', required: get_option('rust'))
-  if not bindgen.found() or bindgen.version().version_compare('<0.60.0')
-    if get_option('rust').enabled()
-      error('bindgen version ' + bindgen.version() + ' is unsupported. You can install a new version with "cargo install --locked bindgen-cli"')
-    else
-      if bindgen.found()
-        warning('bindgen version ' + bindgen.version() + ' is unsupported, disabling Rust compilation.')
-      else
-        warning('bindgen not found, disabling Rust compilation.')
-      endif
-      message('To use Rust you can install a new version with "cargo install bindgen-cli"')
-      have_rust = false
-    endif
-  endif
-endif
-
-if have_rust
-  rustc_args = [find_program('scripts/rust/rustc_args.py'),
-    '--workspace', meson.project_source_root()]
-
-  rustfmt = find_program('rustfmt', required: false)
-
-  rustc_lint_args = get_option('strict_rust_lints') ?  ['-Dwarnings', '-Funknown_lints'] : []
-  add_project_arguments(rustc_lint_args + ['--cfg', 'MESON'],
-      native: false, language: 'rust')
-  add_project_arguments(rustc_lint_args + ['--cfg', 'MESON'],
-      native: true, language: 'rust')
-endif
+have_rust = false
 
 dtrace = not_found
 stap = not_found
@@ -2266,7 +2217,6 @@ endif
 
 config_host_data = configuration_data()
 
-config_host_data.set('CONFIG_HAVE_RUST', have_rust)
 audio_drivers_selected = []
 if have_system
   audio_drivers_available = {
@@ -3271,8 +3221,7 @@ host_kconfig = \
   (host_os == 'linux' ? ['CONFIG_LINUX=y'] : []) + \
   (multiprocess_allowed ? ['CONFIG_MULTIPROCESS_ALLOWED=y'] : []) + \
   (vfio_user_server_allowed ? ['CONFIG_VFIO_USER_SERVER_ALLOWED=y'] : []) + \
-  (hv_balloon ? ['CONFIG_HV_BALLOON_POSSIBLE=y'] : []) + \
-  (have_rust ? ['CONFIG_HAVE_RUST=y'] : [])
+  (hv_balloon ? ['CONFIG_HV_BALLOON_POSSIBLE=y'] : [])
 
 ignored = [ 'TARGET_XML_FILES', 'TARGET_ABI_DIR' ]
 
@@ -4240,11 +4189,10 @@ if have_rust
   if host_arch == 'wasm64'
     bindgen_c_args += ['-fvisibility=default']
   endif
-  subdir('rust')
 endif
 
 
-rust_root_crate = find_program('scripts/rust/rust_root_crate.sh')
+rust_root_crate = not_found
 
 if host_os == 'darwin'
   entitlement = find_program('scripts/entitlement.sh')
@@ -4739,15 +4687,7 @@ if 'objc' in all_languages
 else
   summary_info += {'Objective-C compiler': false}
 endif
-summary_info += {'Rust support':      have_rust}
-if have_rust
-  summary_info += {'Rust target':     rust.compiler_target(native: false)}
-  summary_info += {'rustc':           ' '.join(rustc.cmd_array())}
-  summary_info += {'rustc version':   rustc.version()}
-  summary_info += {'rustdoc':         rustdoc}
-  summary_info += {'bindgen':         bindgen.full_path()}
-  summary_info += {'bindgen version': bindgen.version()}
-endif
+summary_info += {'Rust support':      false}
 option_cflags = (get_option('debug') ? ['-g'] : [])
 if get_option('optimization') != 'plain'
   option_cflags += ['-O' + get_option('optimization')]

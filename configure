@@ -740,7 +740,8 @@ for opt do
   ;;
   --gdb=*) gdb_bin="$optarg"
   ;;
-  --enable-rust) rust=enabled
+  --enable-rust)
+      error_exit "Rust support is intentionally disabled in the WD40 fork"
   ;;
   --disable-rust) rust=disabled
   ;;
