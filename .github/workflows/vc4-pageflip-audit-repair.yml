@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: agent/vc4-linux-kms-bind-diagnostics
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Make static marker audit diagnostic
         run: |
@@ -26,49 +26,56 @@ jobs:
           from pathlib import Path
 
           path = Path(".github/workflows/vc4-kms-pageflip-probe.yml")
-          source = path.read_text(encoding="utf-8")
-          old = '''          for marker in \\
-            VC4_LINUX_KMS_MODESET_SETCRTC_OK \\
-            VC4_LINUX_KMS_MODESET_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_START \\
-            VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_IOCTL_START \\
-            VC4_LINUX_KMS_PAGEFLIP_QUEUED \\
-            VC4_LINUX_KMS_PAGEFLIP_EVENT_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_TIMEOUT; do
-            grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"
-          done
-          '''
-          new = '''          missing_markers=0
-          for marker in \\
-            VC4_LINUX_KMS_MODESET_SETCRTC_OK \\
-            VC4_LINUX_KMS_MODESET_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_START \\
-            VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_IOCTL_START \\
-            VC4_LINUX_KMS_PAGEFLIP_QUEUED \\
-            VC4_LINUX_KMS_PAGEFLIP_EVENT_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_OK \\
-            VC4_LINUX_KMS_PAGEFLIP_TIMEOUT; do
-            if ! grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"; then
-              printf 'page-flip marker absent from init.strings: %s\\n' \\
-                "$marker" >&2
-              missing_markers=$((missing_markers + 1))
-            fi
-          done
-          if [ "$missing_markers" -ne 0 ]; then
-            printf 'continuing to runtime probe despite %s missing static marker(s)\\n' \\
-              "$missing_markers" >&2
-          fi
-          '''
-          if source.count(old) != 1:
+          lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+          slash = chr(92)
+
+          anchor = next(
+              index
+              for index, line in enumerate(lines)
+              if line.strip() ==
+              "- name: Build the page-flip initramfs and native-KMS DTB"
+          )
+          starts = [
+              index
+              for index in range(anchor + 1, len(lines))
+              if lines[index].strip() == "for marker in " + slash
+          ]
+          if len(starts) != 1:
               raise SystemExit(
-                  f"expected one static marker audit, found {source.count(old)}"
+                  f"expected one marker loop after build step, found {len(starts)}"
               )
-          path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          start = starts[0]
+          end = next(
+              index
+              for index in range(start + 1, len(lines))
+              if lines[index].strip() == "done"
+          )
+          if 'grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"' not in lines[end - 1]:
+              raise SystemExit("unexpected marker-loop body")
+
+          indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+          inner = indent + "  "
+          deeper = inner + "  "
+          marker_lines = lines[start + 1:end - 1]
+          replacement = [
+              f"{indent}missing_markers=0\n",
+              f"{indent}for marker in {slash}\n",
+              *marker_lines,
+              f'{inner}if ! grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"; then\n',
+              f"{deeper}printf 'page-flip marker absent from init.strings: %s\\n' {slash}\n",
+              f'{deeper}  "$marker" >&2\n',
+              f"{deeper}missing_markers=$((missing_markers + 1))\n",
+              f"{inner}fi\n",
+              f"{indent}done\n",
+              f'{indent}if [ "$missing_markers" -ne 0 ]; then\n',
+              f"{inner}printf 'continuing to runtime probe despite %s missing static marker(s)\\n' {slash}\n",
+              f'{inner}  "$missing_markers" >&2\n',
+              f"{indent}fi\n",
+          ]
+          path.write_text(
+              "".join(lines[:start] + replacement + lines[end + 1:]),
+              encoding="utf-8",
+          )
           PY
 
           git diff --check
