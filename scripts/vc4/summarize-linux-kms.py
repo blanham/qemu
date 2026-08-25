@@ -22,6 +22,8 @@ EXPECTED_MARKERS = (
     "VC4_LINUX_KMS_TOPOLOGY_OK",
 )
 
+VISIBLE_CLEAR = "linux-vc4-kms-visible-scanout-clear"
+
 KMS_DONE_RE = re.compile(
     r"VC4_LINUX_KMS_DONE crtcs=(?P<crtcs>\d+) "
     r"connector_objects=(?P<connector_objects>\d+) "
@@ -78,6 +80,27 @@ def parse_outcomes(values: list[str]) -> dict[str, str]:
     return outcomes
 
 
+def visible_scanout(result: dict[str, Any]) -> dict[str, Any]:
+    screenshot_value = result.get("screenshot")
+    screenshot = screenshot_value if isinstance(screenshot_value, dict) else {}
+    samples_value = screenshot.get("samples")
+    matches_value = screenshot.get("matches")
+    samples = samples_value if isinstance(samples_value, dict) else {}
+    matches = matches_value if isinstance(matches_value, dict) else {}
+
+    return {
+        "framebuffer_marker_seen": result.get("framebuffer_marker_seen") is True,
+        "screenshot_available": screenshot.get("available") is True,
+        "quadrants_match": screenshot.get("quadrants_match") is True,
+        "probe_passed": result.get("passed") is True,
+        "width": screenshot.get("width"),
+        "height": screenshot.get("height"),
+        "samples": samples,
+        "matches": matches,
+        "error": screenshot.get("error"),
+    }
+
+
 def classify(
     markers: dict[str, bool],
     outcomes: dict[str, str],
@@ -86,8 +109,17 @@ def classify(
     generic_commit_timeout: bool,
     fbdev_registered: bool,
     hdmi_wait_timeouts: list[str],
+    scanout: dict[str, Any],
 ) -> str:
-    failed_steps = [key for key, value in outcomes.items() if value != "success"]
+    # kms_runtime is classified from its durable probe evidence below.  This
+    # preserves the actual failure boundary instead of flattening a black
+    # scanout, missing screenshot, or missing framebuffer into a generic step
+    # failure.
+    failed_steps = [
+        key
+        for key, value in outcomes.items()
+        if key != "kms_runtime" and value != "success"
+    ]
     if failed_steps:
         return "workflow-" + "-".join(failed_steps) + "-failed"
 
@@ -125,7 +157,18 @@ def classify(
         return "vc4-kms-connected-without-modes"
     if not markers["VC4_LINUX_KMS_TOPOLOGY_OK"]:
         return "vc4-kms-topology-incomplete"
-    return "linux-vc4-kms-topology-clear"
+
+    if not scanout["framebuffer_marker_seen"]:
+        return "vc4-kms-framebuffer-witness-unavailable"
+    if not scanout["screenshot_available"]:
+        return "vc4-kms-screenshot-unavailable"
+    if not scanout["quadrants_match"]:
+        return "vc4-kms-visible-scanout-mismatch"
+    if outcomes.get("kms_runtime", "success") != "success":
+        return "vc4-kms-runtime-failed"
+    if not scanout["probe_passed"]:
+        return "vc4-kms-probe-failed"
+    return VISIBLE_CLEAR
 
 
 def main() -> int:
@@ -173,6 +216,7 @@ def main() -> int:
     hdmi_wait_timeouts = [
         match.group("register") for match in HDMI_WAIT_RE.finditer(serial)
     ]
+    scanout = visible_scanout(result)
 
     classification = classify(
         markers,
@@ -182,8 +226,9 @@ def main() -> int:
         generic_commit_timeout,
         fbdev_registered,
         hdmi_wait_timeouts,
+        scanout,
     )
-    passed = classification == "linux-vc4-kms-topology-clear"
+    passed = classification == VISIBLE_CLEAR
     render_submission_preserved = (
         outcomes["render_regression"] == "success"
         if "render_regression" in outcomes
@@ -191,7 +236,7 @@ def main() -> int:
     )
 
     record = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source_sha": args.source_sha,
         "run_id": args.run_id,
@@ -210,6 +255,7 @@ def main() -> int:
             "generic_commit_timeout": generic_commit_timeout,
             "hdmi_register_wait_timeouts": hdmi_wait_timeouts,
         },
+        "visible_scanout": scanout,
         "probe_result": result,
         "serial_tail": serial.splitlines()[-400:],
     }
@@ -224,6 +270,10 @@ def main() -> int:
         "",
         f"- Render submission preserved: `{render_submission_preserved}`",
         f"- Native VC4 fbdev registered: `{fbdev_registered}`",
+        f"- Native framebuffer write witnessed: `{scanout['framebuffer_marker_seen']}`",
+        f"- Native screenshot captured: `{scanout['screenshot_available']}`",
+        f"- Native RGB quadrant scanout matched: `{scanout['quadrants_match']}`",
+        f"- Native probe passed: `{scanout['probe_passed']}`",
         f"- Flip-done timeouts: `{len(flip_timeouts)}`",
         f"- Object commit-wait timeouts: `{len(commit_timeouts)}`",
         f"- Generic commit timeout: `{generic_commit_timeout}`",
@@ -242,6 +292,18 @@ def main() -> int:
         f"- Connected physical connectors: `{counts['connected']}`",
         f"- Modes on connected physical connectors: `{counts['modes']}`",
     ]
+    if scanout["samples"]:
+        lines.extend(("", "## Visible scanout samples", ""))
+        for name in ("red", "green", "blue", "white"):
+            if name not in scanout["samples"]:
+                continue
+            lines.append(
+                f"- `{name}`: RGB `{scanout['samples'][name]}`, "
+                f"matched `{scanout['matches'].get(name)}`"
+            )
+    if scanout["error"]:
+        lines.extend(("", "## Visible scanout error", ""))
+        lines.append(f"- `{scanout['error']}`")
     if hdmi_wait_timeouts:
         lines.extend(("", "## HDMI hardware wait evidence", ""))
         lines.extend(f"- `{register}`" for register in hdmi_wait_timeouts)

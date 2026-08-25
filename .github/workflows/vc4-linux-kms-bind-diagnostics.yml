@@ -34,6 +34,7 @@ on:
       - scripts/vc4/property-power-domain-smoke.py
       - scripts/vc4/raspi3-linux-probe.py
       - scripts/vc4/summarize-linux-kms.py
+      - scripts/vc4/summarize-linux-kms-smoke.py
       - scripts/vc4/msync-smoke.py
       - scripts/vc4/v3d-smoke.py
       - tests/vc4/linux-v3d-modular-init.c
@@ -104,8 +105,10 @@ jobs:
             scripts/vc4/property-power-domain-smoke.py \
             scripts/vc4/raspi3-linux-probe.py \
             scripts/vc4/summarize-linux-kms.py \
+            scripts/vc4/summarize-linux-kms-smoke.py \
             scripts/vc4/msync-smoke.py \
             scripts/vc4/v3d-smoke.py
+          python3 scripts/vc4/summarize-linux-kms-smoke.py
           bash -n \
             scripts/vc4/build-linux-v3d-modular-initramfs.sh \
             scripts/vc4/build-v3d-linux-dtb.sh \
@@ -234,7 +237,7 @@ jobs:
           grep -Fq VC4_LINUX_DRM_SUBMIT_OK "$RENDER_OUT/serial.log"
           grep -Fq VC4_LINUX_V3D_MODULAR_OK "$RENDER_OUT/serial.log"
 
-      - name: Probe native Linux KMS with the DDC supplier closure
+      - name: Require visible native Linux KMS scanout
         id: kms_runtime
         run: |
           set +e
@@ -250,7 +253,7 @@ jobs:
           rc=$?
           printf '%s\n' "$rc" > "$KMS_OUT/return-code"
           cat "$KMS_OUT/probe.stdout"
-          exit 0
+          exit "$rc"
 
       - name: Record exact bind frontier
         id: record
