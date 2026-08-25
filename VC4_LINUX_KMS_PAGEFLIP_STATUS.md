@@ -2,7 +2,7 @@
 
 Validation passed: **true**
 
-Frontier: **`linux-vc4-kms-pageflip-clear`**
+Frontier: **`linux-vc4-kms-pageflip-visual-clear`**
 
 - DDC supplier root present: `True`
 - Module closure loaded: `True`
@@ -13,9 +13,11 @@ Frontier: **`linux-vc4-kms-pageflip-clear`**
 - Page flip queued: `True`
 - Flip-complete event received: `True`
 - GETCRTC reports the new FB: `True`
+- Visual-ready hold reached: `True`
+- Exact flipped pixels verified: `True`
 - Page-flip witness completed: `True`
 - Timeout: `False`
 - Failure stage: `None`
 - Failure errno: `None`
 
-The modeset child leaves the first framebuffer on the shared drm_file. A second child creates a distinct framebuffer, queues DRM_IOCTL_MODE_PAGE_FLIP with the event flag, consumes DRM_EVENT_FLIP_COMPLETE, and checks that GETCRTC exposes the new framebuffer.
+The modeset child leaves the first framebuffer on the shared drm_file. A second child creates a distinct framebuffer, queues DRM_IOCTL_MODE_PAGE_FLIP with the event flag, consumes DRM_EVENT_FLIP_COMPLETE, and checks that GETCRTC exposes the new framebuffer. The host then stops QEMU at the visual-ready marker and requires the captured PPM to match every pixel of the deterministic XRGB8888 witness pattern.
