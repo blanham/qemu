@@ -21,6 +21,7 @@
 #include "ati_regs.h"
 #include "vga-access.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/pci/pci_regs.h"
 #include "vga_regs.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
@@ -31,6 +32,24 @@
 #include "trace.h"
 
 #define ATI_DEBUG_HW_CURSOR 0
+#define ATI_SOFT_RESET_GUI BIT(0)
+#define ATI_PC_FLUSH_ALL 0x000000ffU
+#define ATI_PC_BUSY BIT(31)
+#define ATI_RAGE128_PF_SUBSYSTEM_ID_DEFAULT 0x0018
+#define ATI_RAGE128_RE_SUBSYSTEM_ID_DEFAULT 0x0008
+#define ATI_RAGE128_AGP_CAP_OFFSET 0x50
+#define ATI_RAGE128_PF_PM_CAP_OFFSET 0x5c
+#define ATI_RAGE128_RE_PM_CAP_OFFSET 0x50
+#define ATI_RAGE128_AGP_STATUS \
+    (0x1f000000U | PCI_AGP_STATUS_SBA | PCI_AGP_STATUS_RATE4 | \
+     PCI_AGP_STATUS_RATE2 | PCI_AGP_STATUS_RATE1)
+#define ATI_RAGE128_AGP_COMMAND_RESET PCI_AGP_COMMAND_SBA
+#define ATI_RAGE128_AGP_COMMAND_MASK \
+    (0x1f000000U | PCI_AGP_COMMAND_SBA | PCI_AGP_COMMAND_AGP | \
+     PCI_AGP_COMMAND_RATE4 | PCI_AGP_COMMAND_RATE2 | \
+     PCI_AGP_COMMAND_RATE1)
+#define ATI_RAGE128_PM_CAPABILITIES \
+    (PCI_PM_CAP_VER_1_1 | PCI_PM_CAP_D1)
 
 #ifdef CONFIG_PIXMAN
 #define DEFAULT_X_PIXMAN 3
@@ -43,10 +62,61 @@ static const struct {
     uint16_t dev_id;
 } ati_model_aliases[] = {
     { "rage128p", PCI_DEVICE_ID_ATI_RAGE128_PF },
+    { "rage128re", PCI_DEVICE_ID_ATI_RAGE128_RE },
+    { "rage128pci", PCI_DEVICE_ID_ATI_RAGE128_RE },
     { "rv100", PCI_DEVICE_ID_ATI_RADEON_QY },
 };
 
 enum { VGA_MODE, EXT_MODE };
+
+static void ati_vga_reset_2d(ATIVGAState *s)
+{
+    memset(&s->regs.dst_offset, 0,
+           sizeof(s->regs) - offsetof(ATIVGARegs, dst_offset));
+    memset(&s->host_data, 0, sizeof(s->host_data));
+    s->regs.pc_ngui_ctlstat = 0;
+}
+
+static bool ati_vga_init_pm_cap(PCIDevice *dev, uint8_t offset,
+                                     Error **errp)
+{
+    int cap = pci_pm_init(dev, offset, errp);
+
+    if (cap < 0) {
+        return false;
+    }
+    pci_set_word(dev->config + cap + PCI_PM_PMC,
+                 ATI_RAGE128_PM_CAPABILITIES);
+    pci_set_word(dev->wmask + cap + PCI_PM_CTRL,
+                 PCI_PM_CTRL_STATE_MASK);
+    return true;
+}
+
+static bool ati_vga_init_rage128_pf_caps(PCIDevice *dev,
+                                         Error **errp)
+{
+    int cap;
+
+    if (!ati_vga_init_pm_cap(dev, ATI_RAGE128_PF_PM_CAP_OFFSET,
+                             errp)) {
+        return false;
+    }
+    cap = pci_add_capability(dev, PCI_CAP_ID_AGP,
+                             ATI_RAGE128_AGP_CAP_OFFSET,
+                             PCI_AGP_SIZEOF, errp);
+    if (cap < 0) {
+        return false;
+    }
+    dev->config[cap + PCI_AGP_VERSION] = 0x20;
+    dev->config[cap + PCI_AGP_RFU] = 0;
+    pci_set_long(dev->config + cap + PCI_AGP_STATUS,
+                 ATI_RAGE128_AGP_STATUS);
+    pci_set_long(dev->config + cap + PCI_AGP_COMMAND,
+                 ATI_RAGE128_AGP_COMMAND_RESET);
+    pci_set_long(dev->wmask + cap + PCI_AGP_COMMAND,
+                 ATI_RAGE128_AGP_COMMAND_MASK);
+    return true;
+}
 
 static void ati_vga_set_offset(VGACommonState *vga, uint32_t offs)
 {
@@ -316,6 +386,10 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
     case GEN_INT_STATUS:
         val = s->regs.gen_int_status;
         break;
+    case GEN_RESET_CNTL ... GEN_RESET_CNTL + 3:
+        val = ati_reg_read_offs(s->regs.gen_reset_cntl,
+                                addr - GEN_RESET_CNTL, size);
+        break;
     case CRTC_GEN_CNTL ... CRTC_GEN_CNTL + 3:
         val = ati_reg_read_offs(s->regs.crtc_gen_cntl,
                                 addr - CRTC_GEN_CNTL, size);
@@ -373,6 +447,11 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case HOST_PATH_CNTL:
         val = BIT(23); /* Radeon HDP_APER_CNTL */
+        break;
+    case PC_NGUI_CTLSTAT ... PC_NGUI_CTLSTAT + 3:
+        val = ati_reg_read_offs(s->regs.pc_ngui_ctlstat &
+                                ~ATI_PC_BUSY,
+                                addr - PC_NGUI_CTLSTAT, size);
         break;
     case MC_STATUS:
         val = 5;
@@ -460,6 +539,21 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
     case DST_Y:
         val = s->regs.dst_y;
         break;
+    case DST_BRES_ERR:
+        val = s->regs.dst_bres_err;
+        break;
+    case DST_BRES_INC:
+        val = s->regs.dst_bres_inc;
+        break;
+    case DST_BRES_DEC:
+        val = s->regs.dst_bres_dec;
+        break;
+    case DST_BRES_LNTH:
+        val = s->regs.dst_bres_lnth;
+        break;
+    case DP_CNTL_XDIR_YDIR_YMAJOR:
+        val = s->regs.dp_cntl_xdir_ydir_ymajor;
+        break;
     case DP_GUI_MASTER_CNTL:
         /* DP_GUI_MASTER_CNTL aliases fields from DP_MIX and DP_DATATYPE */
         val = s->regs.dp_gui_master_cntl |
@@ -469,6 +563,18 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
               (s->regs.dp_mix & DP_ROP3) |
               ((s->regs.dp_mix & DP_SRC_SOURCE) << 16);
         break;
+    case BRUSH_Y_X ... BRUSH_Y_X + 3:
+        val = ati_reg_read_offs(s->regs.brush_y_x,
+                                addr - BRUSH_Y_X, size);
+        break;
+    case BRUSH_DATA0 ... BRUSH_DATA63 + 3:
+    {
+        unsigned int index = (addr - BRUSH_DATA0) / 4;
+
+        val = ati_reg_read_offs(s->regs.brush_data[index],
+                                (addr - BRUSH_DATA0) & 3, size);
+        break;
+    }
     case SRC_OFFSET:
         val = s->regs.src_offset;
         break;
@@ -477,6 +583,22 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
         if (s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_PF) {
             val |= s->regs.src_tile << 16;
         }
+        break;
+    case CLR_CMP_CNTL ... CLR_CMP_CNTL + 3:
+        val = ati_reg_read_offs(s->regs.clr_cmp_cntl,
+                                addr - CLR_CMP_CNTL, size);
+        break;
+    case CLR_CMP_CLR_SRC ... CLR_CMP_CLR_SRC + 3:
+        val = ati_reg_read_offs(s->regs.clr_cmp_clr_src,
+                                addr - CLR_CMP_CLR_SRC, size);
+        break;
+    case CLR_CMP_CLR_DST ... CLR_CMP_CLR_DST + 3:
+        val = ati_reg_read_offs(s->regs.clr_cmp_clr_dst,
+                                addr - CLR_CMP_CLR_DST, size);
+        break;
+    case CLR_CMP_MASK ... CLR_CMP_MASK + 3:
+        val = ati_reg_read_offs(s->regs.clr_cmp_mask,
+                                addr - CLR_CMP_MASK, size);
         break;
     case DP_BRUSH_BKGD_CLR:
         val = s->regs.dp_brush_bkgd_clr;
@@ -613,6 +735,18 @@ static void ati_mm_write(void *opaque, hwaddr addr,
         s->regs.gen_int_status &= ~data;
         ati_vga_update_irq(s);
         break;
+    case GEN_RESET_CNTL ... GEN_RESET_CNTL + 3:
+    {
+        uint32_t old = s->regs.gen_reset_cntl;
+
+        ati_reg_write_offs(&s->regs.gen_reset_cntl,
+                           addr - GEN_RESET_CNTL, data, size);
+        if (!(old & ATI_SOFT_RESET_GUI) &&
+            (s->regs.gen_reset_cntl & ATI_SOFT_RESET_GUI)) {
+            ati_vga_reset_2d(s);
+        }
+        break;
+    }
     case CRTC_GEN_CNTL ... CRTC_GEN_CNTL + 3:
     {
         uint32_t val = s->regs.crtc_gen_cntl;
@@ -724,6 +858,12 @@ static void ati_mm_write(void *opaque, hwaddr addr,
         break;
     case CNFG_CNTL:
         s->regs.config_cntl = data;
+        break;
+    case PC_NGUI_CTLSTAT ... PC_NGUI_CTLSTAT + 3:
+        ati_reg_write_offs(&s->regs.pc_ngui_ctlstat,
+                           addr - PC_NGUI_CTLSTAT, data, size);
+        /* The synchronous software engine completes flushes at once. */
+        s->regs.pc_ngui_ctlstat &= ATI_PC_FLUSH_ALL;
         break;
     case CRTC_H_TOTAL_DISP:
         s->regs.crtc_h_total_disp = data & 0x07ff07ff;
@@ -854,6 +994,24 @@ static void ati_mm_write(void *opaque, hwaddr addr,
     case DST_Y:
         s->regs.dst_y = data & 0x3fff;
         break;
+    case DST_BRES_ERR:
+        s->regs.dst_bres_err = data & 0x3ffff;
+        break;
+    case DST_BRES_INC:
+        s->regs.dst_bres_inc = data & 0x3ffff;
+        break;
+    case DST_BRES_DEC:
+        s->regs.dst_bres_dec = data & 0x3ffff;
+        break;
+    case DST_BRES_LNTH:
+        s->regs.dst_bres_lnth = data & 0x7fff;
+        ati_2d_line(s);
+        break;
+    case DP_CNTL_XDIR_YDIR_YMAJOR:
+        s->regs.dp_cntl_xdir_ydir_ymajor = data &
+            (DST_LINE_Y_MAJOR | DST_LINE_Y_TOP_TO_BOTTOM |
+             DST_LINE_X_LEFT_TO_RIGHT);
+        break;
     case SRC_PITCH_OFFSET:
         if (s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_PF) {
             s->regs.src_offset = (data & 0x1fffff) << 5;
@@ -895,6 +1053,16 @@ static void ati_mm_write(void *opaque, hwaddr addr,
                               (data & 0x4000) << 16;
         s->regs.dp_mix = (data & GMC_ROP3_MASK) | (data & 0x7000000) >> 16;
 
+        /*
+         * XAA carries GMC_CLR_CMP_CNTL_DIS in its baseline master-control
+         * word.  It is a command bit: clear stale comparison state when the
+         * master word is written, but do not keep comparisons disabled after
+         * software subsequently programs CLR_CMP_CNTL.
+         */
+        if (data & GMC_CLR_CMP_CNTL_DIS) {
+            s->regs.clr_cmp_cntl = 0;
+        }
+
         if (!(data & GMC_SRC_PITCH_OFFSET_CNTL)) {
             s->regs.src_offset = s->regs.default_offset;
             s->regs.src_pitch = s->regs.default_pitch;
@@ -914,6 +1082,18 @@ static void ati_mm_write(void *opaque, hwaddr addr,
             s->regs.sc_bottom = s->regs.default_sc_bottom;
         }
         break;
+    case BRUSH_Y_X ... BRUSH_Y_X + 3:
+        ati_reg_write_offs(&s->regs.brush_y_x, addr - BRUSH_Y_X,
+                           data, size);
+        break;
+    case BRUSH_DATA0 ... BRUSH_DATA63 + 3:
+    {
+        unsigned int index = (addr - BRUSH_DATA0) / 4;
+
+        ati_reg_write_offs(&s->regs.brush_data[index],
+                           (addr - BRUSH_DATA0) & 3, data, size);
+        break;
+    }
     case DST_WIDTH_X:
         s->regs.dst_x = data & 0x3fff;
         s->regs.dst_width = (data >> 16) & 0x3fff;
@@ -944,6 +1124,24 @@ static void ati_mm_write(void *opaque, hwaddr addr,
         if (s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_PF) {
             s->regs.src_tile = (data >> 16) & 1;
         }
+        break;
+    case CLR_CMP_CNTL ... CLR_CMP_CNTL + 3:
+        ati_reg_write_offs(&s->regs.clr_cmp_cntl,
+                           addr - CLR_CMP_CNTL, data, size);
+        s->regs.clr_cmp_cntl &=
+            CLR_CMP_FN_MASK | CLR_CMP_SRC_SOURCE;
+        break;
+    case CLR_CMP_CLR_SRC ... CLR_CMP_CLR_SRC + 3:
+        ati_reg_write_offs(&s->regs.clr_cmp_clr_src,
+                           addr - CLR_CMP_CLR_SRC, data, size);
+        break;
+    case CLR_CMP_CLR_DST ... CLR_CMP_CLR_DST + 3:
+        ati_reg_write_offs(&s->regs.clr_cmp_clr_dst,
+                           addr - CLR_CMP_CLR_DST, data, size);
+        break;
+    case CLR_CMP_MASK ... CLR_CMP_MASK + 3:
+        ati_reg_write_offs(&s->regs.clr_cmp_mask,
+                           addr - CLR_CMP_MASK, data, size);
         break;
     case DP_BRUSH_BKGD_CLR:
         s->regs.dp_brush_bkgd_clr = data;
@@ -1076,13 +1274,60 @@ static void ati_vga_realize(PCIDevice *dev, Error **errp)
                         "using default rage128p");
         }
     }
+    if (s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_RE) {
+        s->rage128_pci = true;
+        s->dev_id = PCI_DEVICE_ID_ATI_RAGE128_PF;
+    }
     if (s->dev_id != PCI_DEVICE_ID_ATI_RAGE128_PF &&
         s->dev_id != PCI_DEVICE_ID_ATI_RADEON_QY) {
         error_setg(errp, "Unknown ATI VGA device id, "
-                   "only 0x5046 and 0x5159 are supported");
+                   "only 0x5046, 0x5159, and 0x5245 are supported");
         return;
     }
-    pci_set_word(dev->config + PCI_DEVICE_ID, s->dev_id);
+    pci_set_word(dev->config + PCI_DEVICE_ID,
+                 s->rage128_pci ? PCI_DEVICE_ID_ATI_RAGE128_RE :
+                                 s->dev_id);
+
+    dev->wmask[PCI_CACHE_LINE_SIZE] = 0xff;
+    dev->wmask[PCI_LATENCY_TIMER] = 0xff;
+    if (s->rage128_pci) {
+        if (!s->subsystem_id) {
+            s->subsystem_id = ATI_RAGE128_RE_SUBSYSTEM_ID_DEFAULT;
+        }
+        pci_set_word(dev->config + PCI_SUBSYSTEM_VENDOR_ID,
+                     PCI_VENDOR_ID_ATI);
+        pci_set_word(dev->config + PCI_SUBSYSTEM_ID,
+                     s->subsystem_id);
+        if (!ati_vga_init_pm_cap(dev,
+                                 ATI_RAGE128_RE_PM_CAP_OFFSET,
+                                 errp)) {
+            return;
+        }
+    } else if (s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_PF) {
+        uint16_t status = pci_get_word(dev->config + PCI_STATUS);
+        uint16_t cmask = pci_get_word(dev->cmask + PCI_STATUS);
+
+        if (!s->subsystem_id) {
+            s->subsystem_id = ATI_RAGE128_PF_SUBSYSTEM_ID_DEFAULT;
+        }
+        dev->romsize = 128 * KiB;
+        pci_set_word(dev->config + PCI_SUBSYSTEM_VENDOR_ID,
+                     PCI_VENDOR_ID_ATI);
+        pci_set_word(dev->config + PCI_SUBSYSTEM_ID,
+                     s->subsystem_id);
+        dev->config[PCI_MIN_GNT] = 8;
+        dev->config[PCI_MAX_LAT] = 0;
+        status &= ~PCI_STATUS_DEVSEL_MASK;
+        status |= PCI_STATUS_DEVSEL_MEDIUM | PCI_STATUS_66MHZ |
+                  PCI_STATUS_FAST_BACK;
+        pci_set_word(dev->config + PCI_STATUS, status);
+        cmask |= PCI_STATUS_DEVSEL_MASK | PCI_STATUS_66MHZ |
+                 PCI_STATUS_FAST_BACK;
+        pci_set_word(dev->cmask + PCI_STATUS, cmask);
+        if (!ati_vga_init_rage128_pf_caps(dev, errp)) {
+            return;
+        }
+    }
 
     if (s->dev_id == PCI_DEVICE_ID_ATI_RADEON_QY &&
         s->vga.vram_size_mb < 16) {
@@ -1152,16 +1397,20 @@ static void ati_vga_reset(DeviceState *dev)
     ATIVGAState *s = ATI_VGA(dev);
 
     timer_del(&s->vblank_timer);
+    memset(&s->regs, 0, sizeof(s->regs));
+    ati_vga_reset_2d(s);
+    if (!s->rage128_pci &&
+        s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_PF) {
+        pci_set_long(s->dev.config + ATI_RAGE128_AGP_CAP_OFFSET +
+                     PCI_AGP_COMMAND,
+                     ATI_RAGE128_AGP_COMMAND_RESET);
+        s->dev.config[PCI_LATENCY_TIMER] = 0;
+    }
     ati_vga_update_irq(s);
 
     /* reset vga */
     vga_common_reset(&s->vga);
     s->mode = VGA_MODE;
-
-    s->host_data.active = false;
-    s->host_data.next = 0;
-    s->host_data.row = 0;
-    s->host_data.col = 0;
 }
 
 static void ati_vga_exit(PCIDevice *dev)
@@ -1177,6 +1426,7 @@ static const Property ati_vga_properties[] = {
     DEFINE_PROP_STRING("model", ATIVGAState, model),
     DEFINE_PROP_UINT16("x-device-id", ATIVGAState, dev_id,
                        PCI_DEVICE_ID_ATI_RAGE128_PF),
+    DEFINE_PROP_UINT16("x-subsystem-id", ATIVGAState, subsystem_id, 0),
     DEFINE_PROP_BOOL("guest_hwcursor", ATIVGAState, cursor_guest_mode, false),
     /* this is a debug option, prefer PROP_UINT over PROP_BIT for simplicity */
     DEFINE_PROP_UINT8("x-pixman", ATIVGAState, use_pixman, DEFAULT_X_PIXMAN),
