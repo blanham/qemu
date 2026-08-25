@@ -2,10 +2,14 @@
 
 Validation passed: **true**
 
-Frontier: **`linux-vc4-kms-topology-clear`**
+Frontier: **`linux-vc4-kms-visible-scanout-clear`**
 
 - Render submission preserved: `True`
 - Native VC4 fbdev registered: `True`
+- Native framebuffer write witnessed: `True`
+- Native screenshot captured: `True`
+- Native RGB quadrant scanout matched: `True`
+- Native probe passed: `True`
 - Flip-done timeouts: `0`
 - Object commit-wait timeouts: `0`
 - Generic commit timeout: `False`
@@ -23,6 +27,13 @@ Frontier: **`linux-vc4-kms-topology-clear`**
 - Physical connectors: `None`
 - Connected physical connectors: `None`
 - Modes on connected physical connectors: `None`
+
+## Visible scanout samples
+
+- `red`: RGB `[248, 0, 0]`, matched `True`
+- `green`: RGB `[0, 252, 0]`, matched `True`
+- `blue`: RGB `[0, 0, 248]`, matched `True`
+- `white`: RGB `[248, 252, 248]`, matched `True`
 
 ## Bound VC4 components
 
