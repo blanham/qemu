@@ -23,6 +23,8 @@
 #define BCM2835_PROPERTY_POWER_STATE_COUNT 32
 #define BCM2835_PROPERTY_EXP_GPIO_BASE 128
 #define BCM2835_PROPERTY_EXP_GPIO_COUNT 8
+#define BCM2835_PROPERTY_EXP_GPIO_HDMI_HPD 4
+#define BCM2835_PROPERTY_EXP_GPIO_RESET_STATE 0
 
 
 /*
@@ -752,7 +754,7 @@ static void bcm2835_property_reset(DeviceState *dev)
     s->exp_gpio_polarity = 0;
     s->exp_gpio_term_en = 0;
     s->exp_gpio_term_pull_up = 0;
-    s->exp_gpio_state = 0;
+    s->exp_gpio_state = BCM2835_PROPERTY_EXP_GPIO_RESET_STATE;
 }
 
 static void bcm2835_property_realize(DeviceState *dev, Error **errp)
