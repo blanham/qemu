@@ -18,14 +18,45 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Make the standalone optional git-add conditional
+      - name: Finalize the one-shot KMS gate handoffs
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path(".github/workflows/vc4-kms-monitor-contract.yml")
-          source = path.read_text()
+          def add_one_shot_trigger(workflow: str, trigger: str) -> None:
+              path = Path(workflow)
+              source = path.read_text()
+              workflow_entry = f"      - {workflow}\n"
+              trigger_entry = f"      - {trigger}\n"
+              if trigger_entry not in source:
+                  if source.count(workflow_entry) != 1:
+                      raise SystemExit(
+                          f"{workflow}: workflow path trigger anchor changed"
+                      )
+                  source = source.replace(
+                      workflow_entry,
+                      workflow_entry + trigger_entry,
+                      1,
+                  )
+
+              cleanup_marker = f"            {trigger} \\\n"
+              if cleanup_marker not in source:
+                  cleanup_anchor = f"          git rm -- {workflow}\n"
+                  if source.count(cleanup_anchor) != 1:
+                      raise SystemExit(
+                          f"{workflow}: publication cleanup anchor changed"
+                      )
+                  cleanup = (
+                      "          git rm -f --ignore-unmatch -- \\\n"
+                      f"            {trigger} \\\n"
+                      f"            {workflow}\n"
+                  )
+                  source = source.replace(cleanup_anchor, cleanup, 1)
+              path.write_text(source)
+
+          monitor = Path(".github/workflows/vc4-kms-monitor-contract.yml")
+          source = monitor.read_text()
           conditional = (
               "if test -e scripts/vc4/property-expander-gpio-smoke.py; then"
           )
@@ -44,27 +75,45 @@ jobs:
               if index == 0 or not lines[index - 1].rstrip().endswith("\\"):
                   raise SystemExit("optional git-add continuation anchor changed")
               lines[index - 1] = lines[index - 1].rstrip()[:-1].rstrip()
-              indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
+              indent = lines[index][
+                  :len(lines[index]) - len(lines[index].lstrip())
+              ]
               command_indent = indent[:-2]
               lines[index:index + 1] = [
                   command_indent + conditional,
                   indent + "git add -- " + needle,
                   command_indent + "fi",
               ]
-              path.write_text("\n".join(lines) + "\n")
+              monitor.write_text("\n".join(lines) + "\n")
+
+          add_one_shot_trigger(
+              ".github/workflows/vc4-kms-monitor-contract.yml",
+              ".github/vc4-kms-monitor-contract.trigger",
+          )
+          add_one_shot_trigger(
+              ".github/workflows/vc4-kms-contract-final.yml",
+              ".github/vc4-kms-contract-final.trigger",
+          )
+          add_one_shot_trigger(
+              ".github/workflows/vc4-kms-next-frontier.yml",
+              ".github/vc4-kms-next-frontier.trigger",
+          )
           PY
           git diff --check
 
-      - name: Publish the final gate repair
+      - name: Publish the repaired handoffs
         run: |
           set -euo pipefail
           git config user.name "VC4 CI"
           git config user.email "vc4-ci@users.noreply.github.com"
-          git add -- .github/workflows/vc4-kms-monitor-contract.yml
+          git add -- \
+            .github/workflows/vc4-kms-monitor-contract.yml \
+            .github/workflows/vc4-kms-contract-final.yml \
+            .github/workflows/vc4-kms-next-frontier.yml
           git rm -f --ignore-unmatch -- \
             .github/workflows/vc4-kms-monitor-contract-repair.yml \
             .github/workflows/vc4-kms-monitor-contract-repair-v2.yml \
             .github/workflows/vc4-kms-monitor-contract-repair-v3.yml
-          git commit -m "ci/vc4: finalize optional monitor witness handling"
+          git commit -m "ci/vc4: finalize one-shot KMS gate handoffs"
           git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
           git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
