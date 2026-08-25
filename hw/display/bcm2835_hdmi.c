@@ -11,6 +11,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/display/bcm2835_hdmi.h"
+#include "hw/irq.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"

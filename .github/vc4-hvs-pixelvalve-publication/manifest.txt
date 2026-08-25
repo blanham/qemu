@@ -1,4 +1,0 @@
-update .github/workflows/vc4-linux-kms-bind-diagnostics.yml
-delete .github/workflows/vc4-display-timing-integration.yml
-delete .github/workflows/vc4-kms-continuation-audit.yml
-delete .github/workflows/vc4-hvs-pixelvalve-apply.yml

@@ -10,12 +10,22 @@ on:
       - hw/arm/bcm2835_peripherals.c
       - hw/display/bcm2835_fb.c
       - hw/display/bcm2835_v3d.c
+      - hw/display/bcm2835_hdmi.c
+      - hw/display/bcm2835_hvs.c
+      - hw/display/bcm2835_pixelvalve.c
+      - hw/display/meson.build
       - hw/misc/bcm2835_property.c
       - include/hw/arm/bcm2835_peripherals.h
       - include/hw/display/bcm2835_fb.h
       - include/hw/display/bcm2835_v3d.h
+      - include/hw/display/bcm2835_hdmi.h
+      - include/hw/display/bcm2835_hvs.h
+      - include/hw/display/bcm2835_pixelvalve.h
+      - include/hw/raspi/raspi_platform.h
       - include/hw/misc/bcm2835_property.h
       - scripts/vc4/bcm2835-hdmi-ddc-smoke.py
+      - scripts/vc4/display-timing-smoke.py
+      - scripts/vc4/hvs-dlist-smoke.py
       - scripts/vc4/build-linux-v3d-modular-initramfs.sh
       - scripts/vc4/build-v3d-linux-dtb.sh
       - scripts/vc4/build-vc4-kms-linux-dtb.sh
@@ -87,6 +97,8 @@ jobs:
           set -euo pipefail
           python3 -m py_compile \
             scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            scripts/vc4/display-timing-smoke.py \
+            scripts/vc4/hvs-dlist-smoke.py \
             scripts/vc4/fetch-linux-vc4-modules.py \
             scripts/vc4/property-clock-enumeration-smoke.py \
             scripts/vc4/property-power-domain-smoke.py \
@@ -98,6 +110,12 @@ jobs:
             scripts/vc4/build-linux-v3d-modular-initramfs.sh \
             scripts/vc4/build-v3d-linux-dtb.sh \
             scripts/vc4/build-vc4-kms-linux-dtb.sh
+          grep -Fq bcm2835_hdmi.c hw/display/meson.build
+          grep -Fq bcm2835_hvs.c hw/display/meson.build
+          grep -Fq bcm2835_pixelvalve.c hw/display/meson.build
+          grep -Fq 'BCM2835HVSState hvs;' include/hw/arm/bcm2835_peripherals.h
+          grep -Fq 'BCM2835HDMIState hdmi;' include/hw/arm/bcm2835_peripherals.h
+          grep -Fq 'BCM2835PixelValveState pixelvalve[3];' include/hw/arm/bcm2835_peripherals.h
           git diff --check
 
       - name: Fetch pinned kernel and base device tree
@@ -187,6 +205,12 @@ jobs:
           python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
             --qemu build/qemu-system-aarch64 \
             2>&1 | tee "$EVIDENCE_DIR/hdmi-ddc.log"
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/display-timing.log"
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/hvs-dlist.log"
           python3 scripts/vc4/msync-smoke.py \
             --qemu build/qemu-system-aarch64 \
             2>&1 | tee "$EVIDENCE_DIR/msync.log"
@@ -221,7 +245,7 @@ jobs:
             --dtb "$DTB_DIR/native-kms.dtb" \
             --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
             --out-dir "$KMS_OUT" \
-            --seconds 75 --sample-interval 5 \
+            --seconds 95 --sample-interval 5 \
             > "$KMS_OUT/probe.stdout" 2>&1
           rc=$?
           printf '%s\n' "$rc" > "$KMS_OUT/return-code"
