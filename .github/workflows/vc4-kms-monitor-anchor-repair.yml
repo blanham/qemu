@@ -1,0 +1,105 @@
+name: VC4 monitor HPD anchor repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-monitor-anchor-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-monitor-anchor-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Name the HPD reset policy and retrigger the monitor matrix
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+
+          for attempt in $(seq 1 5); do
+            git fetch origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("hw/misc/bcm2835_property.c")
+          source = path.read_text()
+
+          count_define = "#define BCM2835_PROPERTY_EXP_GPIO_COUNT 8\n"
+          hpd_define = "#define BCM2835_PROPERTY_EXP_GPIO_HDMI_HPD 4\n"
+          reset_define = "#define BCM2835_PROPERTY_EXP_GPIO_RESET_STATE 0\n"
+
+          if source.count(count_define) != 1:
+              raise SystemExit("expander GPIO count anchor changed")
+          if hpd_define not in source:
+              source = source.replace(
+                  count_define,
+                  count_define + hpd_define,
+                  1,
+              )
+          elif source.count(hpd_define) != 1:
+              raise SystemExit("unexpected HDMI HPD definition multiplicity")
+
+          if "#define BCM2835_PROPERTY_EXP_GPIO_RESET_STATE" not in source:
+              source = source.replace(
+                  hpd_define,
+                  hpd_define + reset_define,
+                  1,
+              )
+          elif source.count(reset_define) != 1:
+              raise SystemExit("unexpected existing expander GPIO reset policy")
+
+          literal_reset = "    s->exp_gpio_state = 0;\n"
+          named_reset = (
+              "    s->exp_gpio_state = "
+              "BCM2835_PROPERTY_EXP_GPIO_RESET_STATE;\n"
+          )
+          if named_reset not in source:
+              if source.count(literal_reset) != 1:
+                  raise SystemExit("expander GPIO reset assignment changed")
+              source = source.replace(literal_reset, named_reset, 1)
+          elif source.count(named_reset) != 1:
+              raise SystemExit("unexpected reset assignment multiplicity")
+
+          if source.count(hpd_define) != 1 or source.count(reset_define) != 1:
+              raise SystemExit("HPD reset policy repair did not converge")
+          path.write_text(source)
+          PY
+
+            printf 'monitor-anchor-repair %s.%s\n' \
+              "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+              > .github/vc4-kms-monitor-contract.trigger
+            git rm -f .github/workflows/vc4-kms-monitor-anchor-repair.yml \
+              2>/dev/null || true
+            git diff --check
+            git add -A
+
+            if git diff --cached --quiet; then
+              exit 0
+            fi
+
+            git commit -m "hw/misc: name VC4 HDMI HPD reset policy"
+            if git push origin "HEAD:$BRANCH"; then
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "failed to publish monitor-anchor repair after retries" >&2
+          exit 1
