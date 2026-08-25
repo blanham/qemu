@@ -90,10 +90,19 @@ static void draw_line_src16(void *opaque, uint8_t *dst, const uint8_t *src,
             src += 3;
             break;
         case 32:
-            rgb888 = ldl_le_p(src);
-            r = (rgb888 >> 0) & 0xff;
-            g = (rgb888 >> 8) & 0xff;
-            b = (rgb888 >> 16) & 0xff;
+            if (s->config.pixo == BCM2835_FB_PIXEL_ORDER_RGBA) {
+                r = src[3];
+                g = src[2];
+                b = src[1];
+            } else if (s->config.pixo == BCM2835_FB_PIXEL_ORDER_BGRA) {
+                r = src[1];
+                g = src[2];
+                b = src[3];
+            } else {
+                r = src[0];
+                g = src[1];
+                b = src[2];
+            }
             src += 4;
             break;
         default:
@@ -103,7 +112,7 @@ static void draw_line_src16(void *opaque, uint8_t *dst, const uint8_t *src,
             break;
         }
 
-        if (s->config.pixo == 0) {
+        if (s->config.pixo == BCM2835_FB_PIXEL_ORDER_BGR) {
             /* swap to BGR pixel format */
             uint8_t tmp = r;
             r = b;

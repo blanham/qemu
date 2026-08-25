@@ -58,6 +58,8 @@
 #define SCALER_CTL0_UNITY            BIT(4)
 #define SCALER_CTL0_FORMAT_MASK      UINT32_C(0xf)
 
+#define HVS_PIXEL_ORDER_RGBA         UINT32_C(0)
+#define HVS_PIXEL_ORDER_BGRA         UINT32_C(1)
 #define HVS_PIXEL_ORDER_ARGB         UINT32_C(2)
 #define HVS_PIXEL_ORDER_ABGR         UINT32_C(3)
 #define HVS_PIXEL_ORDER_XRGB         UINT32_C(2)
@@ -208,7 +210,9 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
         }
         bytes_per_pixel = sizeof(uint16_t);
         bits_per_pixel = 16;
-        pixo = order == HVS_PIXEL_ORDER_XBGR ? 0 : 1;
+        pixo = order == HVS_PIXEL_ORDER_XBGR ?
+               BCM2835_FB_PIXEL_ORDER_BGR :
+               BCM2835_FB_PIXEL_ORDER_RGB;
         break;
     case HVS_PIXEL_FORMAT_RGB888:
         if (order != HVS_PIXEL_ORDER_XRGB &&
@@ -218,16 +222,29 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
         bytes_per_pixel = 3;
         bits_per_pixel = 24;
         /* DRM RGB888 is B,G,R in memory; BGR888 is R,G,B. */
-        pixo = order == HVS_PIXEL_ORDER_XRGB ? 0 : 1;
+        pixo = order == HVS_PIXEL_ORDER_XRGB ?
+               BCM2835_FB_PIXEL_ORDER_BGR :
+               BCM2835_FB_PIXEL_ORDER_RGB;
         break;
     case HVS_PIXEL_FORMAT_RGBA8888:
-        if (order != HVS_PIXEL_ORDER_ARGB &&
-            order != HVS_PIXEL_ORDER_ABGR) {
+        switch (order) {
+        case HVS_PIXEL_ORDER_ABGR:
+            pixo = BCM2835_FB_PIXEL_ORDER_BGR;
+            break;
+        case HVS_PIXEL_ORDER_ARGB:
+            pixo = BCM2835_FB_PIXEL_ORDER_RGB;
+            break;
+        case HVS_PIXEL_ORDER_RGBA:
+            pixo = BCM2835_FB_PIXEL_ORDER_RGBA;
+            break;
+        case HVS_PIXEL_ORDER_BGRA:
+            pixo = BCM2835_FB_PIXEL_ORDER_BGRA;
+            break;
+        default:
             return false;
         }
         bytes_per_pixel = sizeof(uint32_t);
         bits_per_pixel = 32;
-        pixo = order == HVS_PIXEL_ORDER_ABGR ? 0 : 1;
         break;
     default:
         return false;

@@ -21,6 +21,15 @@
 OBJECT_DECLARE_SIMPLE_TYPE(BCM2835FBState, BCM2835_FB)
 
 /*
+ * Framebuffer source-byte orders.  Values 0 and 1 retain the mailbox
+ * ABI; values 2 and 3 describe the HVS-only 32-bit byte rotations.
+ */
+#define BCM2835_FB_PIXEL_ORDER_BGR   0
+#define BCM2835_FB_PIXEL_ORDER_RGB   1
+#define BCM2835_FB_PIXEL_ORDER_RGBA  2
+#define BCM2835_FB_PIXEL_ORDER_BGRA  3
+
+/*
  * Configuration information about the fb which the guest can program
  * via the mailbox property interface.
  */
