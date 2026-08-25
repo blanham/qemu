@@ -56,12 +56,12 @@ def check_source() -> None:
         "config_host_data.set('CONFIG_HAVE_RUST'",
         "['CONFIG_HAVE_RUST=y']",
         "rust_root_crate = find_program",
-        "rust.compiler_target",
-        "rustc.cmd_array",
-        "rustc.version",
-        "bindgen.full_path",
-        "bindgen.version",
+        "summary_info += {'Rust target':",
+        "summary_info += {'rustc':",
+        "summary_info += {'rustc version':",
         "summary_info += {'rustdoc':",
+        "summary_info += {'bindgen':",
+        "summary_info += {'bindgen version':",
     )
     forbid("Kconfig.host", "config HAVE_RUST")
     forbid("hw/char/Kconfig", "HAVE_RUST", "X_PL011_RUST")
