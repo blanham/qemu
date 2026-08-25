@@ -1,0 +1,96 @@
+{
+  "after_components": [
+    [
+      "3f400000.hvs",
+      "vc4_hvs_ops"
+    ],
+    [
+      "3f400000.hvs",
+      "vc4_hvs_ops"
+    ],
+    [
+      "3f400000.hvs",
+      "vc4_hvs_ops"
+    ]
+  ],
+  "after_marker_score": 0,
+  "after_markers": {
+    "VC4_LINUX_KMS_CONNECTED_OK": false,
+    "VC4_LINUX_KMS_CONNECTOR_OBJECT_OK": false,
+    "VC4_LINUX_KMS_CRTC_OK": false,
+    "VC4_LINUX_KMS_MODE_OK": false,
+    "VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK": false,
+    "VC4_LINUX_KMS_RESOURCES_OK": false,
+    "VC4_LINUX_KMS_TOPOLOGY_OK": false
+  },
+  "after_relevant_tail": [
+    "[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns",
+    "[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns",
+    "[    0.000069] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns",
+    "[    0.547646] PTP clock support registered",
+    "[    0.609667] clocksource: Switched to clocksource arch_sys_counter",
+    "[    3.221984] clk: Disabling unused clocks",
+    "[    3.449987] VC4_LINUX_INIT_OK",
+    "[    3.451064] VC4_LINUX_V3D_MODULAR_START",
+    "[    3.451361] VC4_LINUX_MODULE_LOAD_START",
+    "[    5.104920] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+    "[    5.114577] VC4_LINUX_MODULE_CLOSURE_OK",
+    "[    5.114801] VC4_LINUX_MODULE_LOAD_DONE",
+    "[    5.114958] VC4_LINUX_MODULE_CLOSURE_OK",
+    "[    8.719103] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+    "[   15.138425] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+    "[   27.889286] VC4_LINUX_KMS_FAILED stage=no-vc4-card",
+    "[   27.889743] VC4_LINUX_DRM_SUBMIT_SKIPPED no-vc4-node",
+    "[   32.945973] VC4_LINUX_V3D_MODULAR_DONE",
+    "[   32.946475] VC4_LINUX_V3D_MODULAR_PARTIAL",
+    "[   32.946705] VC4_LINUX_INIT_IDLE"
+  ],
+  "before_components": [
+    [
+      "3f400000.hvs",
+      "vc4_hvs_ops"
+    ],
+    [
+      "3f400000.hvs",
+      "vc4_hvs_ops"
+    ],
+    [
+      "3f400000.hvs",
+      "vc4_hvs_ops"
+    ]
+  ],
+  "before_marker_score": 0,
+  "before_markers": {
+    "VC4_LINUX_KMS_CONNECTED_OK": false,
+    "VC4_LINUX_KMS_CONNECTOR_OBJECT_OK": false,
+    "VC4_LINUX_KMS_CRTC_OK": false,
+    "VC4_LINUX_KMS_MODE_OK": false,
+    "VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK": false,
+    "VC4_LINUX_KMS_RESOURCES_OK": false,
+    "VC4_LINUX_KMS_TOPOLOGY_OK": false
+  },
+  "before_relevant_tail": [
+    "[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns",
+    "[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns",
+    "[    0.000070] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns",
+    "[    0.438125] PTP clock support registered",
+    "[    0.479337] clocksource: Switched to clocksource arch_sys_counter",
+    "[    2.220448] clk: Disabling unused clocks",
+    "[    3.341653] VC4_LINUX_INIT_OK",
+    "[    3.342495] VC4_LINUX_V3D_MODULAR_START",
+    "[    3.342833] VC4_LINUX_MODULE_LOAD_START",
+    "[    5.724179] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+    "[    5.734617] VC4_LINUX_MODULE_CLOSURE_OK",
+    "[    5.734844] VC4_LINUX_MODULE_LOAD_DONE",
+    "[    5.735048] VC4_LINUX_MODULE_CLOSURE_OK",
+    "[    7.950380] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+    "[   15.891657] vc4-drm soc:gpu: bound 3f400000.hvs (ops vc4_hvs_ops [vc4])",
+    "[   27.822592] VC4_LINUX_KMS_FAILED stage=no-vc4-card",
+    "[   27.822877] VC4_LINUX_DRM_SUBMIT_SKIPPED no-vc4-node",
+    "[   32.842539] VC4_LINUX_V3D_MODULAR_DONE",
+    "[   32.842805] VC4_LINUX_V3D_MODULAR_PARTIAL",
+    "[   32.843356] VC4_LINUX_INIT_IDLE"
+  ],
+  "improved": false,
+  "schema_version": 1
+}
