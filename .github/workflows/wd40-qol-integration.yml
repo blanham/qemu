@@ -1,0 +1,139 @@
+name: WD40 QoL integration
+
+on:
+  push:
+    branches:
+      - wd40/qol-integration
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-qol-integration
+  cancel-in-progress: false
+
+jobs:
+  integrate-build-test-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out integration branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Transplant the fork-only VC4 handoff probes
+        run: |
+          set -Eeuo pipefail
+          git fetch origin master
+          for commit in \
+            3386b05f8923b208805440f6e8b297741e01b95d \
+            caf2bf6002766c644a1fefff832d9fe02b7f4c05 \
+            a1cffdb7eda8cab773e6594aef1ba4a92b344261
+          do
+            if git merge-base --is-ancestor "$commit" HEAD; then
+              echo "$commit already present"
+            else
+              git cherry-pick "$commit"
+            fi
+          done
+
+      - name: Validate the VC4 probe assets
+        run: |
+          set -Eeuo pipefail
+          test -f scripts/vc4/raspi3-arm-payload-probe.py
+          test -f tests/vc4/aarch64-handoff.S
+          test -f tests/vc4/aarch64-handoff.ld
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/vc4/raspi3-arm-payload-probe.py")
+          compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          PY
+
+          aarch64-linux-gnu-as \
+            -o /tmp/aarch64-handoff.o \
+            tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -T tests/vc4/aarch64-handoff.ld \
+            -o /tmp/aarch64-handoff.elf \
+            /tmp/aarch64-handoff.o
+          aarch64-linux-gnu-objcopy \
+            -O binary \
+            /tmp/aarch64-handoff.elf \
+            /tmp/aarch64-handoff.bin
+
+          entry="$({ aarch64-linux-gnu-readelf -h /tmp/aarch64-handoff.elf; } \
+            | awk '/Entry point address:/ { print $4 }')"
+          test "$entry" = "0x80000"
+          test -s /tmp/aarch64-handoff.bin
+          aarch64-linux-gnu-readelf -r /tmp/aarch64-handoff.elf \
+            | grep -F "There are no relocations in this file."
+
+      - name: Validate the Rustless and AMD-hole contracts
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          git diff --check
+
+      - name: Install C build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build x86_64 and AArch64 without a Rust toolchain
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-qol-integration
+          cd build-qol-integration
+          ../configure \
+            --target-list=x86_64-softmmu,aarch64-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 qemu-system-x86_64 qemu-system-aarch64
+          cd ..
+
+      - name: Exercise the AMD memory-layout overrides
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py build-qol-integration
+
+      - name: Publish the validated integration history
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-qol-integration
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          git diff --check
+          git status --short
+          test -z "$(git status --porcelain)"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
