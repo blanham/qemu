@@ -46,8 +46,7 @@ jobs:
             pkg-config \
             python3-venv \
             libglib2.0-dev \
-            libpixman-1-dev \
-            libfdt-dev
+            libpixman-1-dev
 
       - name: Poison Rust tools and configure representative targets
         run: |
@@ -68,6 +67,7 @@ jobs:
           ../configure \
             --target-list=x86_64-softmmu,aarch64-softmmu \
             --disable-rust \
+            --enable-fdt=internal \
             --disable-docs \
             --disable-werror
           make update-buildoptions
