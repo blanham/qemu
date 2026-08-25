@@ -2,17 +2,17 @@
 
 Validation passed: **false**
 
-Frontier: **`vc4-kms-module-closure-regression`**
+Frontier: **`vc4-kms-pageflip-incomplete`**
 
 - DDC supplier root present: `True`
-- Module closure loaded: `False`
-- Native topology clear: `False`
-- Existing render submission preserved: `False`
-- Initial modeset completed: `False`
-- Active CRTC inherited: `False`
-- Page flip queued: `False`
-- Flip-complete event received: `False`
-- GETCRTC reports the new FB: `False`
+- Module closure loaded: `True`
+- Native topology clear: `True`
+- Existing render submission preserved: `True`
+- Initial modeset completed: `True`
+- Active CRTC inherited: `True`
+- Page flip queued: `True`
+- Flip-complete event received: `True`
+- GETCRTC reports the new FB: `True`
 - Page-flip witness completed: `False`
 - Timeout: `False`
 - Failure stage: `None`
