@@ -1,8 +1,8 @@
 # VC4 inherited-master native KMS page flip
 
-Validation passed: **false**
+Validation passed: **true**
 
-Frontier: **`vc4-kms-pageflip-incomplete`**
+Frontier: **`linux-vc4-kms-pageflip-clear`**
 
 - DDC supplier root present: `True`
 - Module closure loaded: `True`
@@ -13,7 +13,7 @@ Frontier: **`vc4-kms-pageflip-incomplete`**
 - Page flip queued: `True`
 - Flip-complete event received: `True`
 - GETCRTC reports the new FB: `True`
-- Page-flip witness completed: `False`
+- Page-flip witness completed: `True`
 - Timeout: `False`
 - Failure stage: `None`
 - Failure errno: `None`
