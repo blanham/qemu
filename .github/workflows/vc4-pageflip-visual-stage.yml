@@ -1,4 +1,4 @@
-name: Export validated VC4 page-flip visual workflow
+name: Prepare validated VC4 page-flip visual workflow blob
 
 on:
   push:
@@ -9,28 +9,31 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: vc4-pageflip-visual-export
+  group: vc4-pageflip-visual-blob
   cancel-in-progress: false
 
 jobs:
-  export:
+  prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Reconstruct and validate the exact staged workflow
+      - name: Reconstruct, validate, and upload the exact workflow blob
         run: |
           set -euo pipefail
           source_tree=/tmp/vc4-pageflip-visual-source
           stage_script=/tmp/vc4-pageflip-visual-stage.py
-          export_dir="$GITHUB_WORKSPACE/vc4-pageflip-visual-export"
-          rm -rf "$source_tree" "$export_dir" "$stage_script"
+          workflow_path="$source_tree/.github/workflows/vc4-kms-pageflip-probe.yml"
+          manifest_dir="$GITHUB_WORKSPACE/vc4-pageflip-visual-blob"
+          rm -rf "$source_tree" "$manifest_dir" "$stage_script"
           git worktree add --detach "$source_tree" \
             d2db69bfdb9fb6a5b3a5f2cc3dd0c9dfc25bfa05
           cat "$source_tree"/.github/vc4-pageflip-visual-parts/* | \
@@ -56,16 +59,38 @@ jobs:
               .github/workflows/vc4-kms-pageflip-probe.yml
           )
 
-          mkdir -p "$export_dir"
-          cp "$source_tree/.github/workflows/vc4-kms-pageflip-probe.yml" \
-            "$export_dir/vc4-kms-pageflip-probe.yml"
-          cp "$stage_script" "$export_dir/vc4-pageflip-visual-stage.py"
-          sha256sum "$export_dir"/* > "$export_dir/SHA256SUMS"
-          cat "$export_dir/SHA256SUMS"
+          workflow_base64=$(base64 -w0 "$workflow_path")
+          blob_sha=$(jq -n \
+            --arg content "$workflow_base64" \
+            '{content: $content, encoding: "base64"}' | \
+            gh api --method POST \
+              "repos/$GITHUB_REPOSITORY/git/blobs" \
+              --input - --jq .sha)
+          test -n "$blob_sha"
+          test "$blob_sha" = "$(git hash-object "$workflow_path")"
+
+          mkdir -p "$manifest_dir"
+          jq -n \
+            --arg parent_sha "$GITHUB_SHA" \
+            --arg base_tree_sha "$(git rev-parse "$GITHUB_SHA^{tree}")" \
+            --arg workflow_blob_sha "$blob_sha" \
+            --arg workflow_sha256 "$(sha256sum "$workflow_path" | cut -d' ' -f1)" \
+            --arg stage_script_sha256 "$(sha256sum "$stage_script" | cut -d' ' -f1)" \
+            '{
+              schema_version: 1,
+              parent_sha: $parent_sha,
+              base_tree_sha: $base_tree_sha,
+              workflow_blob_sha: $workflow_blob_sha,
+              workflow_sha256: $workflow_sha256,
+              stage_script_sha256: $stage_script_sha256,
+              target_path: ".github/workflows/vc4-kms-pageflip-probe.yml",
+              delete_path: ".github/workflows/vc4-pageflip-visual-stage.yml"
+            }' > "$manifest_dir/manifest.json"
+          cat "$manifest_dir/manifest.json"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: vc4-pageflip-visual-workflow-${{ github.run_attempt }}
-          path: vc4-pageflip-visual-export
+          name: vc4-pageflip-visual-blob-${{ github.run_attempt }}
+          path: vc4-pageflip-visual-blob
           if-no-files-found: error
           retention-days: 14
