@@ -1,0 +1,572 @@
+name: VC4 corrected-supplier native modeset probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-modeset-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-modeset-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-modeset-official
+      MODULE_DIR: /tmp/vc4-modeset-modules
+      INITRAMFS_DIR: /tmp/vc4-modeset-initramfs
+      DTB_DIR: /tmp/vc4-modeset-dtbs
+      RENDER_DIR: /tmp/vc4-modeset-render
+      KMS_DIR: /tmp/vc4-modeset-kms
+      EVIDENCE_DIR: vc4-kms-modeset-evidence
+      STATUS_JSON: VC4_LINUX_KMS_MODESET_PROBE_STATUS.json
+      STATUS_MD: VC4_LINUX_KMS_MODESET_PROBE_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            ninja-build pkg-config python3 \
+            libglib2.0-dev libpixman-1-dev xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" "$DTB_DIR" \
+            "$RENDER_DIR" "$KMS_DIR" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$RENDER_DIR" \
+            "$KMS_DIR" "$EVIDENCE_DIR"
+
+      - name: Add an in-tree-fd native modeset witness
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/vc4/linux-v3d-modular-init.c")
+          source = path.read_text()
+          if "VC4_LINUX_KMS_MODESET_OK" in source:
+              raise SystemExit("modeset witness unexpectedly already present")
+
+          include_anchor = "#include <stdlib.h>\n"
+          if source.count(include_anchor) != 1:
+              raise SystemExit("stdlib include anchor changed")
+          source = source.replace(
+              include_anchor,
+              include_anchor + "#include <drm_mode.h>\n",
+              1,
+          )
+
+          main_anchor = "int main(void)\n"
+          position = source.find(main_anchor)
+          if position < 0:
+              raise SystemExit("init main function anchor changed")
+
+          helper = r'''
+          static int vc4_kms_modeset_ioctl(int fd, unsigned long request,
+                                           void *argument)
+          {
+              int ret;
+
+              do {
+                  ret = ioctl(fd, request, argument);
+              } while (ret < 0 && errno == EINTR);
+              return ret;
+          }
+
+          static int vc4_kms_modeset_fail(const char *stage)
+          {
+              char message[160];
+              int saved_errno = errno != 0 ? errno : EIO;
+
+              snprintf(message, sizeof(message),
+                       "VC4_LINUX_KMS_MODESET_FAILED stage=%s errno=%d\n",
+                       stage, saved_errno);
+              marker(message);
+              errno = saved_errno;
+              return -1;
+          }
+
+          static int vc4_kms_modeset_probe(int fd)
+          {
+              struct drm_mode_card_res resources = { 0 };
+              struct drm_mode_get_connector connector = { 0 };
+              struct drm_mode_get_encoder encoder = { 0 };
+              struct drm_mode_create_dumb create = { 0 };
+              struct drm_mode_map_dumb map = { 0 };
+              struct drm_mode_fb_cmd framebuffer = { 0 };
+              struct drm_mode_crtc set = { 0 };
+              struct drm_mode_modeinfo *modes = NULL;
+              uint32_t *connectors = NULL;
+              uint32_t *crtcs = NULL;
+              uint32_t *encoders = NULL;
+              uint32_t connector_id = 0;
+              uint32_t crtc_id = 0;
+              void *pixels = MAP_FAILED;
+              size_t map_size = 0;
+              int result = -1;
+
+              marker("VC4_LINUX_KMS_MODESET_START\n");
+              if (vc4_kms_modeset_ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES,
+                                        &resources) < 0 ||
+                  resources.count_crtcs == 0 ||
+                  resources.count_connectors == 0) {
+                  return vc4_kms_modeset_fail("resources");
+              }
+
+              crtcs = calloc(resources.count_crtcs, sizeof(*crtcs));
+              connectors = calloc(resources.count_connectors,
+                                  sizeof(*connectors));
+              if (!crtcs || !connectors) {
+                  errno = ENOMEM;
+                  return vc4_kms_modeset_fail("resource-allocation");
+              }
+              resources.crtc_id_ptr = (uintptr_t)crtcs;
+              resources.connector_id_ptr = (uintptr_t)connectors;
+              if (vc4_kms_modeset_ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES,
+                                        &resources) < 0) {
+                  result = vc4_kms_modeset_fail("resource-read");
+                  goto out;
+              }
+
+              for (uint32_t i = 0; i < resources.count_connectors; i++) {
+                  memset(&connector, 0, sizeof(connector));
+                  connector.connector_id = connectors[i];
+                  if (vc4_kms_modeset_ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR,
+                                            &connector) < 0 ||
+                      connector.count_modes == 0 ||
+                      connector.count_encoders == 0) {
+                      continue;
+                  }
+
+                  modes = calloc(connector.count_modes, sizeof(*modes));
+                  encoders = calloc(connector.count_encoders,
+                                    sizeof(*encoders));
+                  if (!modes || !encoders) {
+                      errno = ENOMEM;
+                      result = vc4_kms_modeset_fail("connector-allocation");
+                      goto out;
+                  }
+                  connector.modes_ptr = (uintptr_t)modes;
+                  connector.encoders_ptr = (uintptr_t)encoders;
+                  if (vc4_kms_modeset_ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR,
+                                            &connector) < 0 ||
+                      connector.connection != DRM_MODE_CONNECTED ||
+                      connector.connector_type ==
+                          DRM_MODE_CONNECTOR_WRITEBACK ||
+                      connector.count_modes == 0) {
+                      free(modes);
+                      free(encoders);
+                      modes = NULL;
+                      encoders = NULL;
+                      continue;
+                  }
+
+                  if (connector.encoder_id != 0) {
+                      memset(&encoder, 0, sizeof(encoder));
+                      encoder.encoder_id = connector.encoder_id;
+                      if (vc4_kms_modeset_ioctl(
+                              fd, DRM_IOCTL_MODE_GETENCODER, &encoder) == 0) {
+                          crtc_id = encoder.crtc_id;
+                          if (crtc_id == 0) {
+                              for (uint32_t bit = 0;
+                                   bit < resources.count_crtcs; bit++) {
+                                  if (encoder.possible_crtcs &
+                                      (UINT32_C(1) << bit)) {
+                                      crtc_id = crtcs[bit];
+                                      break;
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  if (crtc_id == 0) {
+                      for (uint32_t j = 0;
+                           j < connector.count_encoders; j++) {
+                          memset(&encoder, 0, sizeof(encoder));
+                          encoder.encoder_id = encoders[j];
+                          if (vc4_kms_modeset_ioctl(
+                                  fd, DRM_IOCTL_MODE_GETENCODER,
+                                  &encoder) < 0) {
+                              continue;
+                          }
+                          if (encoder.crtc_id != 0) {
+                              crtc_id = encoder.crtc_id;
+                              break;
+                          }
+                          for (uint32_t bit = 0;
+                               bit < resources.count_crtcs; bit++) {
+                              if (encoder.possible_crtcs &
+                                  (UINT32_C(1) << bit)) {
+                                  crtc_id = crtcs[bit];
+                                  break;
+                              }
+                          }
+                          if (crtc_id != 0) {
+                              break;
+                          }
+                      }
+                  }
+                  if (crtc_id != 0) {
+                      connector_id = connector.connector_id;
+                      break;
+                  }
+
+                  free(modes);
+                  free(encoders);
+                  modes = NULL;
+                  encoders = NULL;
+              }
+
+              if (connector_id == 0) {
+                  errno = ENODEV;
+                  result = vc4_kms_modeset_fail("connector");
+                  goto out;
+              }
+              if (crtc_id == 0) {
+                  errno = ENODEV;
+                  result = vc4_kms_modeset_fail("crtc");
+                  goto out;
+              }
+
+              create.width = modes[0].hdisplay;
+              create.height = modes[0].vdisplay;
+              create.bpp = 32;
+              if (vc4_kms_modeset_ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB,
+                                        &create) < 0) {
+                  result = vc4_kms_modeset_fail("create-dumb");
+                  goto out;
+              }
+
+              framebuffer.width = create.width;
+              framebuffer.height = create.height;
+              framebuffer.pitch = create.pitch;
+              framebuffer.bpp = 32;
+              framebuffer.depth = 24;
+              framebuffer.handle = create.handle;
+              if (vc4_kms_modeset_ioctl(fd, DRM_IOCTL_MODE_ADDFB,
+                                        &framebuffer) < 0) {
+                  result = vc4_kms_modeset_fail("addfb");
+                  goto out;
+              }
+
+              map.handle = create.handle;
+              if (vc4_kms_modeset_ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB,
+                                        &map) < 0) {
+                  result = vc4_kms_modeset_fail("map-dumb");
+                  goto out;
+              }
+              map_size = create.size;
+              pixels = mmap(NULL, map_size, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, fd, map.offset);
+              if (pixels == MAP_FAILED) {
+                  result = vc4_kms_modeset_fail("mmap");
+                  goto out;
+              }
+
+              for (uint32_t y = 0; y < create.height; y++) {
+                  uint32_t *row = (uint32_t *)((uint8_t *)pixels +
+                                              (size_t)y * create.pitch);
+                  for (uint32_t x = 0; x < create.width; x++) {
+                      row[x] = ((x ^ y) & 32) ? UINT32_C(0x00ff8000)
+                                             : UINT32_C(0x000040ff);
+                  }
+              }
+              if (msync(pixels, map_size, MS_SYNC) < 0) {
+                  result = vc4_kms_modeset_fail("msync");
+                  goto out;
+              }
+
+              set.crtc_id = crtc_id;
+              set.fb_id = framebuffer.fb_id;
+              set.set_connectors_ptr = (uintptr_t)&connector_id;
+              set.count_connectors = 1;
+              set.mode = modes[0];
+              set.mode_valid = 1;
+              if (vc4_kms_modeset_ioctl(fd, DRM_IOCTL_MODE_SETCRTC,
+                                        &set) < 0) {
+                  result = vc4_kms_modeset_fail("setcrtc");
+                  goto out;
+              }
+
+              report("VC4_LINUX_KMS_MODESET_RESULT connector=%u crtc=%u "
+                     "fb=%u width=%u height=%u pitch=%u\n",
+                     connector_id, crtc_id, framebuffer.fb_id,
+                     create.width, create.height, create.pitch);
+              marker("VC4_LINUX_KMS_MODESET_OK\n");
+              result = 0;
+
+          out:
+              if (pixels != MAP_FAILED) {
+                  (void)munmap(pixels, map_size);
+              }
+              free(modes);
+              free(encoders);
+              free(connectors);
+              free(crtcs);
+              return result;
+          }
+
+          '''
+          source = source[:position] + helper + source[position:]
+
+          topology_line = '        marker("VC4_LINUX_KMS_TOPOLOGY_OK\\n");\n'
+          if source.count(topology_line) != 1:
+              raise SystemExit("topology success anchor changed")
+          source = source.replace(
+              topology_line,
+              topology_line + "        (void)vc4_kms_modeset_probe(card->fd);\n",
+              1,
+          )
+          path.write_text(source)
+          PY
+          git diff --check
+          grep -Fq VC4_LINUX_KMS_MODESET_OK \
+            tests/vc4/linux-v3d-modular-init.c
+
+      - name: Build pinned corrected-supplier fixtures
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target i2c-bcm2835 \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+          grep -Fq i2c-bcm2835 "$MODULE_DIR/MANIFEST"
+          grep -Fq vc4.ko "$MODULE_DIR/MANIFEST"
+          i2c_line=$(grep -n i2c-bcm2835 "$MODULE_DIR/MANIFEST" | cut -d: -f1)
+          vc4_line=$(grep -n vc4.ko "$MODULE_DIR/MANIFEST" | cut -d: -f1)
+          test "$i2c_line" -lt "$vc4_line"
+
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" \
+            2>&1 | tee "$EVIDENCE_DIR/initramfs.log"
+
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/render.dtbo" \
+            tests/vc4/vc4-render-only-overlay.dts
+          bash scripts/vc4/build-v3d-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/render.dtbo" "$DTB_DIR/render.dtb"
+
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/kms.dtbo" "$DTB_DIR/kms.dtb"
+
+      - name: Build and prove focused regressions
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Preserve render submission
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/render.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$RENDER_DIR" \
+            --seconds 50 --sample-interval 5
+          grep -Fq VC4_LINUX_MODULE_CLOSURE_OK "$RENDER_DIR/serial.log"
+          grep -Fq VC4_LINUX_DRM_SUBMIT_OK "$RENDER_DIR/serial.log"
+
+      - name: Probe corrected native KMS modeset
+        run: |
+          set +e
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$KMS_DIR" \
+            --seconds 100 --sample-interval 5 \
+            > "$KMS_DIR/probe.stdout" 2>&1
+          rc=$?
+          printf '%s\n' "$rc" > "$KMS_DIR/return-code"
+          cat "$KMS_DIR/probe.stdout"
+          exit 0
+
+      - name: Record exact modeset frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          serial_path = Path("/tmp/vc4-modeset-kms/serial.log")
+          render_path = Path("/tmp/vc4-modeset-render/serial.log")
+          serial = (
+              serial_path.read_text(errors="replace")
+              if serial_path.is_file()
+              else ""
+          )
+          render = (
+              render_path.read_text(errors="replace")
+              if render_path.is_file()
+              else ""
+          )
+
+          failure = re.search(
+              r"VC4_LINUX_KMS_MODESET_FAILED "
+              r"stage=(\S+) errno=(\d+)",
+              serial,
+          )
+          success = "VC4_LINUX_KMS_MODESET_OK" in serial
+          topology = "VC4_LINUX_KMS_TOPOLOGY_OK" in serial
+          render_ok = "VC4_LINUX_DRM_SUBMIT_OK" in render
+          manifest_path = Path("/tmp/vc4-modeset-modules/MANIFEST")
+          supplier_loaded = (
+              manifest_path.is_file()
+              and "i2c-bcm2835" in manifest_path.read_text(errors="replace")
+          )
+
+          if not render_ok:
+              classification = "vc4-render-submit-regression"
+          elif not supplier_loaded:
+              classification = "vc4-kms-ddc-supplier-fixture-missing"
+          elif not topology:
+              classification = "vc4-kms-topology-regression"
+          elif success:
+              classification = "linux-vc4-kms-modeset-clear"
+          elif failure:
+              classification = "vc4-kms-modeset-" + failure.group(1)
+          else:
+              classification = "vc4-kms-modeset-not-reached"
+
+          record = {
+              "schema_version": 1,
+              "source_sha": "${{ github.sha }}",
+              "run_id": "${{ github.run_id }}",
+              "run_attempt": "${{ github.run_attempt }}",
+              "passed": success and topology and render_ok and supplier_loaded,
+              "classification": classification,
+              "render_submission_preserved": render_ok,
+              "native_kms_topology_clear": topology,
+              "ddc_supplier_root_present": supplier_loaded,
+              "modeset_ok": success,
+              "failure_stage": failure.group(1) if failure else None,
+              "failure_errno": int(failure.group(2)) if failure else None,
+              "relevant_tail": [
+                  line for line in serial.splitlines()
+                  if "VC4_LINUX_KMS" in line
+                  or "vc4" in line.lower()
+                  or "drm" in line.lower()
+                  or "hdmi" in line.lower()
+                  or "failed" in line.lower()
+                  or "timeout" in line.lower()
+              ][-400:],
+          }
+          Path("VC4_LINUX_KMS_MODESET_PROBE_STATUS.json").write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+          Path("VC4_LINUX_KMS_MODESET_PROBE_STATUS.md").write_text(
+              "\n".join((
+                  "# VC4 corrected-supplier native KMS modeset probe",
+                  "",
+                  f"Validation passed: **{'true' if record['passed'] else 'false'}**",
+                  "",
+                  f"Frontier: **`{classification}`**",
+                  "",
+                  f"- Render submission preserved: `{render_ok}`",
+                  f"- DDC supplier root present: `{supplier_loaded}`",
+                  f"- Native KMS topology clear: `{topology}`",
+                  f"- SETCRTC modeset completed: `{success}`",
+                  f"- Failure stage: `{record['failure_stage']}`",
+                  f"- Failure errno: `{record['failure_errno']}`",
+                  "",
+                  "The probe deliberately uses the already-open DRM card FD, "
+                  "so SETCRTC is issued by the file that owns DRM master. "
+                  "The fixture explicitly roots `i2c-bcm2835` before `vc4`; "
+                  "that supplier is not a module dependency of the VC4 "
+                  "consumer and must not be omitted from native-KMS tests.",
+              )) + "\n"
+          )
+          PY
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cp -a "$RENDER_DIR" "$EVIDENCE_DIR/render" || true
+          cp -a "$KMS_DIR" "$EVIDENCE_DIR/kms" || true
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs" || true
+          cp "$MODULE_DIR/MANIFEST" "$EVIDENCE_DIR/MODULE_MANIFEST" || true
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/" || true
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-kms-modeset-probe-${{ github.run_attempt }}
+          path: vc4-kms-modeset-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish modeset frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git restore --worktree --staged \
+            tests/vc4/linux-v3d-modular-init.c
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m "test/vc4: record corrected-supplier modeset probe"
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+          fi
