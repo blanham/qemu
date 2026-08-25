@@ -1,0 +1,16 @@
+eoutExpired:
++                    process.kill()
++                    process.wait(timeout=5)
++
++        if process.returncode not in (0, None):
++            stderr = process.stderr.read() if process.stderr else ""
++            raise RuntimeError(
++                f"QEMU exited with status {process.returncode}:\n{stderr}"
++            )
++
++    print("BCM2835 HVS packed-RGB scanout smoke test passed")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

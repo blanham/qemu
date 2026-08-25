@@ -1,0 +1,157 @@
+diff --git a/.github/workflows/vc4-hvs-packed-rgb.yml b/.github/workflows/vc4-hvs-packed-rgb.yml
+new file mode 100644
+index 0000000..ffe515e
+--- /dev/null
++++ b/.github/workflows/vc4-hvs-packed-rgb.yml
+@@ -0,0 +1,60 @@
++name: VC4 HVS packed-RGB scanout
++
++on:
++  push:
++    branches:
++      - agent/vc4-linux-kms-bind-diagnostics
++    paths:
++      - .github/workflows/vc4-hvs-packed-rgb.yml
++      - hw/display/bcm2835_fb.c
++      - hw/display/bcm2835_hvs.c
++      - include/hw/display/bcm2835_fb.h
++      - scripts/vc4/hvs-dlist-smoke.py
++      - scripts/vc4/hvs-packed-rgb-smoke.py
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++concurrency:
++  group: vc4-hvs-packed-rgb-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  packed-rgb:
++    runs-on: ubuntu-24.04
++    timeout-minutes: 30
++
++    steps:
++      - uses: actions/checkout@v5
++
++      - name: Install focused build dependencies
++        run: |
++          set -euo pipefail
++          sudo apt-get update
++          sudo apt-get install -y \
++            libglib2.0-dev \
++            libpixman-1-dev \
++            ninja-build \
++            pkg-config \
++            python3
++
++      - name: Build QEMU
++        run: |
++          set -euo pipefail
++          ./configure \
++            --target-list=aarch64-softmmu \
++            --disable-docs \
++            --disable-werror
++          ninja -C build qemu-system-aarch64
++
++      - name: Check packed-RGB scanout
++        run: |
++          set -euo pipefail
++          python3 -m py_compile \
++            scripts/vc4/hvs-dlist-smoke.py \
++            scripts/vc4/hvs-packed-rgb-smoke.py
++          python3 scripts/vc4/hvs-dlist-smoke.py \
++            --qemu build/qemu-system-aarch64
++          python3 scripts/vc4/hvs-packed-rgb-smoke.py \
++            --qemu build/qemu-system-aarch64
+diff --git a/hw/display/bcm2835_fb.c b/hw/display/bcm2835_fb.c
+index 97745bb..cf48085 100644
+--- a/hw/display/bcm2835_fb.c
++++ b/hw/display/bcm2835_fb.c
+@@ -5,12 +5,20 @@ static void fb_invalidate_display(void *opaque)
+     s->invalidate = true;
+ }
+ 
++static uint8_t bcm2835_fb_expand_component(uint32_t value, unsigned bits)
++{
++    uint32_t maximum = (UINT32_C(1) << bits) - 1;
++
++    return value * UINT8_MAX / maximum;
++}
++
+ static void draw_line_src16(void *opaque, uint8_t *dst, const uint8_t *src,
+                             int width, int deststep)
+ {
+     BCM2835FBState *s = opaque;
+     uint16_t rgb565;
+     uint32_t rgb888;
++    uint8_t packed;
+     uint8_t r, g, b;
+     DisplaySurface *surface = qemu_console_surface(s->con);
+     int bpp = surface_bits_per_pixel(surface);
+@@ -18,21 +26,72 @@ static void draw_line_src16(void *opaque, uint8_t *dst, const uint8_t *src,
+     while (width--) {
+         switch (s->config.bpp) {
+         case 8:
+-            /* lookup palette starting at video ram base
+-             * TODO: cache translation, rather than doing this each time!
+-             */
+-            rgb888 = ldl_le_phys(&s->dma_as, s->vcram_base + (*src << 2));
+-            r = (rgb888 >> 0) & 0xff;
+-            g = (rgb888 >> 8) & 0xff;
+-            b = (rgb888 >> 16) & 0xff;
+-            src++;
++            packed = *src++;
++            if (s->config.pixo == BCM2835_FB_PIXEL_ORDER_HVS_RGB332) {
++                r = bcm2835_fb_expand_component((packed >> 5) & 0x7, 3);
++                g = bcm2835_fb_expand_component((packed >> 2) & 0x7, 3);
++                b = bcm2835_fb_expand_component(packed & 0x3, 2);
++            } else if (s->config.pixo ==
++                       BCM2835_FB_PIXEL_ORDER_HVS_BGR233) {
++                r = bcm2835_fb_expand_component(packed & 0x7, 3);
++                g = bcm2835_fb_expand_component((packed >> 3) & 0x7, 3);
++                b = bcm2835_fb_expand_component((packed >> 6) & 0x3, 2);
++            } else {
++                /* lookup palette starting at video ram base
++                 * TODO: cache translation, rather than doing this each time!
++                 */
++                rgb888 = ldl_le_phys(&s->dma_as,
++                                     s->vcram_base + (packed << 2));
++                r = (rgb888 >> 0) & 0xff;
++                g = (rgb888 >> 8) & 0xff;
++                b = (rgb888 >> 16) & 0xff;
++            }
+             break;
+         case 16:
+             rgb565 = lduw_le_p(src);
+-            r = ((rgb565 >> 11) & 0x1f) << 3;
+-            g = ((rgb565 >>  5) & 0x3f) << 2;
+-            b = ((rgb565 >>  0) & 0x1f) << 3;
+             src += 2;
++            switch (s->config.pixo) {
++            case BCM2835_FB_PIXEL_ORDER_HVS_RGB565:
++                r = bcm2835_fb_expand_component((rgb565 >> 11) & 0x1f, 5);
++                g = bcm2835_fb_expand_component((rgb565 >> 5) & 0x3f, 6);
++                b = bcm2835_fb_expand_component(rgb565 & 0x1f, 5);
++                break;
++            case BCM2835_FB_PIXEL_ORDER_HVS_BGR565:
++                r = bcm2835_fb_expand_component(rgb565 & 0x1f, 5);
++                g = bcm2835_fb_expand_component((rgb565 >> 5) & 0x3f, 6);
++                b = bcm2835_fb_expand_component((rgb565 >> 11) & 0x1f, 5);
++                break;
++            case BCM2835_FB_PIXEL_ORDER_HVS_XRGB4444:
++                r = bcm2835_fb_expand_component((rgb565 >> 8) & 0xf, 4);
++                g = bcm2835_fb_expand_component((rgb565 >> 4) & 0xf, 4);
++                b = bcm2835_fb_expand_component(rgb565 & 0xf, 4);
++                break;
++            case BCM2835_FB_PIXEL_ORDER_HVS_XBGR4444:
++                r = bcm2835_fb_expand_component(rgb565 & 0xf, 4);
++                g = bcm2835_fb_expand_component((rgb565 >> 4) & 0xf, 4);
++                b = bcm2835_fb_expand_component((rgb565 >> 8) & 0xf, 4);
++                break;
++            case BCM2835_FB_PIXEL_ORDER_HVS_BGRX4444:
++                r = bcm2835_fb_expand_component((rgb565 >> 4) & 0xf, 4);
++                g = bcm2835_fb_expand_component((rgb565 >> 8) & 0xf, 4);
++                b = bcm2835_fb_expand_component((rgb565 >> 12) & 0xf, 4);
++                break;
++     

@@ -1,0 +1,97 @@
+name: Publish VC4 HVS packed-RGB scanout
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-hvs-packed-rgb-publish.yml
+      - .github/vc4-hvs-packed-rgb-publish/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-packed-rgb-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      PATCH_DIR: .github/vc4-hvs-packed-rgb-publish
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Install focused build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            ninja-build \
+            pkg-config \
+            python3
+
+      - name: Apply and validate the packed-RGB change
+        run: |
+          set -euo pipefail
+          cat "$PATCH_DIR"/product.patch.part-* > /tmp/vc4-packed-rgb.patch
+          git apply --check /tmp/vc4-packed-rgb.patch
+          git apply /tmp/vc4-packed-rgb.patch
+          git diff --check
+          python3 -m py_compile \
+            scripts/vc4/hvs-dlist-smoke.py \
+            scripts/vc4/hvs-packed-rgb-smoke.py
+
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-packed-rgb-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the validated commit and remove the transient publisher
+        run: |
+          set -euo pipefail
+          staging_sha="$GITHUB_SHA"
+
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+
+          git rm -r .github/vc4-hvs-packed-rgb-publish
+          git rm .github/workflows/vc4-hvs-packed-rgb-publish.yml
+          git add \
+            .github/workflows/vc4-hvs-packed-rgb.yml \
+            hw/display/bcm2835_fb.c \
+            hw/display/bcm2835_hvs.c \
+            include/hw/display/bcm2835_fb.h \
+            scripts/vc4/hvs-dlist-smoke.py \
+            scripts/vc4/hvs-packed-rgb-smoke.py
+
+          git diff --cached --check
+          git diff --exit-code
+          test -z "$(git diff --name-only)"
+
+          git commit \
+            --author="VC4 Development <vc4-dev@users.noreply.github.com>" \
+            -m "hw/display: cover VC4 HVS packed-RGB scanout" \
+            -m "Decode every lower-depth packed-RGB layout exposed by the Linux VC4 HVS4 format table: RGB332/BGR233, RGB565/BGR565, the four RGBA4444 channel rotations, and XRGB1555. Honor the driver-programmed high-bit repetition mode instead of zero-filling HVS components, retain the mailbox framebuffer's existing ABI and conversion path, reject unsupported expansion modes, and screenshot-check exact nontrivial colors with padded pitches."
+
+          git fetch origin "$BRANCH"
+          test "$(git rev-parse "origin/$BRANCH")" = "$staging_sha"
+          git push origin "HEAD:$BRANCH"
