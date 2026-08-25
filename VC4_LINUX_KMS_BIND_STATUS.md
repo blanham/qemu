@@ -2,10 +2,15 @@
 
 Validation passed: **false**
 
-Frontier: **`vc4-component-bind-frontier`**
+Frontier: **`workflow-build-regressions-render_regression-kms_runtime-failed`**
 
-- Render submission preserved: `True`
-- CRTC discovered: `False`
+- Render submission preserved: `False`
+- Native VC4 fbdev registered: `False`
+- Flip-done timeouts: `0`
+- Object commit-wait timeouts: `0`
+- Generic commit timeout: `False`
+- HDMI register wait timeouts: `0`
+- CRTC discovered by witness: `False`
 - Physical connector discovered: `False`
 - Physical connector connected: `False`
 - Display mode discovered: `False`
@@ -18,13 +23,3 @@ Frontier: **`vc4-component-bind-frontier`**
 - Physical connectors: `None`
 - Connected physical connectors: `None`
 - Modes on connected physical connectors: `None`
-
-## Bound VC4 components
-
-- `3f400000.hvs` via `vc4_hvs_ops`
-- `3f902000.hdmi` via `vc4_hdmi_ops`
-- `3f004000.txp` via `vc4_txp_ops`
-- `3f206000.pixelvalve` via `vc4_crtc_ops`
-- `3f207000.pixelvalve` via `vc4_crtc_ops`
-- `3f807000.pixelvalve` via `vc4_crtc_ops`
-- `3fc00000.v3d` via `vc4_v3d_ops`
