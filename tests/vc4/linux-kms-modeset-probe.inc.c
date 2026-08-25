@@ -292,9 +292,13 @@ static int vc4_modeset_run(int fd)
     }
     vc4_modeset_fill_pattern(mapping, create.pitch,
                              create.width, create.height);
-    if (msync(mapping, create.size, MS_SYNC) < 0) {
-        return vc4_modeset_fail("msync-dumb");
-    }
+    /*
+     * DRM dumb buffers are device mappings, not ordinary filesystem-backed
+     * mappings.  msync(2) is neither required for scanout coherence nor
+     * guaranteed to be accepted; the VC4 GEM mapping returns EINVAL.  Order
+     * the pattern stores before the framebuffer and CRTC ioctls instead.
+     */
+    __sync_synchronize();
     marker("VC4_LINUX_KMS_MODESET_MAP_OK\n");
 
     framebuffer.width = create.width;
