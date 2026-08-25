@@ -1,0 +1,60 @@
+{
+  "buffers": [],
+  "classification": "workflow-fixture-dtb-build-regressions-render_regression-scanout_runtime-failed",
+  "crtc_after_flip": null,
+  "failures": [],
+  "generated_at": "2026-08-25T05:07:51.216042+00:00",
+  "kernel_timeouts": {
+    "commit_wait": 0,
+    "flip_done": 0
+  },
+  "markers": {
+    "VC4_LINUX_DRM_SUBMIT_OK": false,
+    "VC4_LINUX_KMS_PAGE_FLIP_EVENT_OK": false,
+    "VC4_LINUX_KMS_PAGE_FLIP_IOCTL_OK": false,
+    "VC4_LINUX_KMS_PAGE_FLIP_OK": false,
+    "VC4_LINUX_KMS_SCANOUT_ARMED": false,
+    "VC4_LINUX_KMS_SCANOUT_CONNECTOR_OK": false,
+    "VC4_LINUX_KMS_SCANOUT_CRTC_OK": false,
+    "VC4_LINUX_KMS_SCANOUT_OK": false,
+    "VC4_LINUX_KMS_SCANOUT_SUPERVISOR_READY": false,
+    "VC4_LINUX_KMS_SCANOUT_SUPERVISOR_START": false,
+    "VC4_LINUX_KMS_SETCRTC_OK": false,
+    "VC4_LINUX_KMS_TOPOLOGY_OK": false,
+    "VC4_LINUX_MODULE_CLOSURE_OK": false
+  },
+  "outcomes": {
+    "build": "skipped",
+    "dependencies": "success",
+    "dtb": "skipped",
+    "fixture": "failure",
+    "pinned": "success",
+    "regressions": "skipped",
+    "render_regression": "skipped",
+    "scanout_runtime": "skipped",
+    "source": "success"
+  },
+  "page_flip_event": null,
+  "passed": false,
+  "probe_result": {},
+  "resources": null,
+  "run_attempt": "1",
+  "run_id": "32811520638",
+  "schema_version": 1,
+  "screenshot": {
+    "corner_signature_matches": false,
+    "corners": {},
+    "error": null,
+    "height": null,
+    "max_value": null,
+    "nonblack_fraction": 0.0,
+    "nonblack_pixels": 0,
+    "pattern_visible": false,
+    "present": false,
+    "sampled_unique_colors": 0,
+    "width": null
+  },
+  "selection": null,
+  "serial_tail": [],
+  "source_sha": "d0cb6ff914efb26fe61c09947bf9790c880d8bca"
+}
