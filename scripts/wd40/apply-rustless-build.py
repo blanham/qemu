@@ -107,6 +107,22 @@ have_rust = false
         "  (hv_balloon ? ['CONFIG_HV_BALLOON_POSSIBLE=y'] : [])",
     )
 
+    rust_summary = """summary_info += {'Rust support':      have_rust}
+if have_rust
+  summary_info += {'Rust target':     rust.compiler_target(native: false)}
+  summary_info += {'rustc':           ' '.join(rustc.cmd_array())}
+  summary_info += {'rustc version':   rustc.version()}
+  summary_info += {'rustdoc':         rustdoc}
+  summary_info += {'bindgen':         bindgen.full_path()}
+  summary_info += {'bindgen version': bindgen.version()}
+endif
+"""
+    rust_summary_disabled = "summary_info += {'Rust support':      false}\n"
+    if rust_summary in text:
+        text = text.replace(rust_summary, rust_summary_disabled, 1)
+    elif rust_summary_disabled not in text:
+        raise RuntimeError("meson.build: Rust compilation summary marker missing")
+
     store(file_path, text)
 
 

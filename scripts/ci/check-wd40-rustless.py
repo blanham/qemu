@@ -2,17 +2,23 @@
 """Validate WD40's C-only QEMU build contract.
 
 This checks both source configuration and, when supplied, a configured build
-directory. Rust sources may remain for upstream provenance, but no active build
-rule may invoke Rust tooling or compile a .rs file.
+directory. Rust sources may remain for upstream provenance, but no command in
+the selected emulator binaries' actual Ninja dependency closure may invoke
+Rust tooling or compile a .rs file.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+REPRESENTATIVE_TARGETS = (
+    "qemu-system-x86_64",
+    "qemu-system-aarch64",
+)
 
 
 def require(path: str, needle: str) -> None:
@@ -34,6 +40,10 @@ def check_source() -> None:
         "meson.build",
         "Rust support is intentionally disabled in the WD40 fork",
     )
+    require(
+        "meson.build",
+        "summary_info += {'Rust support':      false}",
+    )
     require("hw/char/Kconfig", "select PL011_C")
     require("hw/timer/Kconfig", "select HPET_C")
 
@@ -46,6 +56,12 @@ def check_source() -> None:
         "config_host_data.set('CONFIG_HAVE_RUST'",
         "['CONFIG_HAVE_RUST=y']",
         "rust_root_crate = find_program",
+        "rust.compiler_target",
+        "rustc.cmd_array",
+        "rustc.version",
+        "bindgen.full_path",
+        "bindgen.version",
+        "summary_info += {'rustdoc':",
     )
     forbid("Kconfig.host", "config HAVE_RUST")
     forbid("hw/char/Kconfig", "HAVE_RUST", "X_PL011_RUST")
@@ -66,40 +82,55 @@ def match_context(text: str, pattern: str, *, limit: int = 8) -> list[str]:
     return matches
 
 
+def ninja_commands(build_dir: Path) -> str:
+    command = [
+        "ninja",
+        "-C",
+        str(build_dir),
+        "-t",
+        "commands",
+        *REPRESENTATIVE_TARGETS,
+    ]
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        details = result.stderr.strip() or result.stdout.strip()
+        raise SystemExit(
+            "failed to inspect the active Ninja command closure for "
+            f"{', '.join(REPRESENTATIVE_TARGETS)}: {details}"
+        )
+    if not result.stdout.strip():
+        raise SystemExit("Ninja returned an empty active command closure")
+    return result.stdout
+
+
 def check_build(build_dir: Path) -> None:
     if not build_dir.is_dir():
         raise SystemExit(f"build directory does not exist: {build_dir}")
 
-    candidates = [
-        build_dir / "build.ninja",
-        build_dir / "compile_commands.json",
-    ]
-    metadata: list[tuple[Path, str]] = [
-        (path, path.read_text(encoding="utf-8", errors="replace"))
-        for path in candidates
-        if path.exists()
-    ]
-    if not metadata:
-        raise SystemExit(f"no build metadata found below {build_dir}")
-
+    commands = ninja_commands(build_dir)
     forbidden_patterns = {
         "Rust compiler command": r"(?:^|[\s/])rustc(?:[\s\"']|$)",
         "Cargo command": r"(?:^|[\s/])cargo(?:[\s\"']|$)",
+        "rustdoc command": r"(?:^|[\s/])rustdoc(?:[\s\"']|$)",
+        "rustfmt command": r"(?:^|[\s/])rustfmt(?:[\s\"']|$)",
         "bindgen command": r"(?:^|[\s/])bindgen(?:[\s\"']|$)",
         "Rust source compilation": r"\.rs(?:[\s\"']|$)",
         "Rust source tree": r"(?:^|[\s\"'])rust/",
     }
     for label, pattern in forbidden_patterns.items():
-        findings: list[str] = []
-        for path, text in metadata:
-            contexts = match_context(text, pattern)
-            if contexts:
-                findings.append(f"{path}:")
-                findings.extend(contexts)
-        if findings:
-            details = "\n".join(findings)
+        contexts = match_context(commands, pattern)
+        if contexts:
+            details = "\n".join(contexts)
             raise SystemExit(
-                f"{build_dir}: {label} present in active build graph\n{details}"
+                f"{build_dir}: {label} present in the active command closure\n"
+                f"{details}"
             )
 
     device_configs = list(build_dir.glob("*-config-devices.mak"))
