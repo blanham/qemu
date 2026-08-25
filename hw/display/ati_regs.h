@@ -192,6 +192,8 @@
 #define BRUSH_SCALE                             0x1470
 #define BRUSH_Y_X                               0x1474
 #define DP_BRUSH_BKGD_CLR                       0x1478
+#define BRUSH_DATA0                             0x1480
+#define BRUSH_DATA63                            0x157c
 #define DP_BRUSH_FRGD_CLR                       0x147c
 #define DST_WIDTH_X                             0x1588
 #define DST_HEIGHT_WIDTH_8                      0x158c
@@ -403,7 +405,12 @@
 #define DP_SRC_DATATYPE                         0x00030000
 #define DP_BYTE_PIX_ORDER                       0x40000000
 
+#define BRUSH_8X8_MONO_FG_BG                   0x00000000
+#define BRUSH_8X8_MONO_FG_LA                   0x00000100
+#define BRUSH_32X1_MONO_FG_BG                  0x00000600
+#define BRUSH_32X1_MONO_FG_LA                  0x00000700
 #define BRUSH_SOLIDCOLOR                        0x00000d00
+#define BRUSH_NONE                              0x00000f00
 
 /* DP_GUI_MASTER_CNTL bit constants */
 #define GMC_SRC_PITCH_OFFSET_CNTL               0x00000001
@@ -450,6 +457,11 @@
 #define DST_POLYLINE_NONLAST                    0x00008000
 #define DST_RASTER_STALL                        0x00010000
 #define DST_POLY_EDGE                           0x00040000
+
+/* DP_CNTL_XDIR_YDIR_YMAJOR bit constants */
+#define DST_LINE_Y_MAJOR                        0x00000004
+#define DST_LINE_Y_TOP_TO_BOTTOM                0x00008000
+#define DST_LINE_X_LEFT_TO_RIGHT                0x80000000
 
 /* DP_MIX bit constants */
 #define DP_SRC_RECT                             0x00000200
