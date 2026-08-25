@@ -1,0 +1,143 @@
+name: Stage VC4 live HVS state capture
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-hvs-live-state-stage.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-live-state-stage
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Add bounded HVS state capture to the Linux probe
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/vc4/raspi3-linux-probe.py")
+          text = path.read_text(encoding="utf-8")
+
+          constants_anchor = "PM_PROC = 0x3F100110\n\nPC_RE ="
+          constants_replacement = """PM_PROC = 0x3F100110
+
+HVS_BASE = 0x3F400000
+HVS_DISPCTRL = HVS_BASE + 0x0000
+HVS_DISPSTAT = HVS_BASE + 0x0004
+HVS_DISPLIST = tuple(HVS_BASE + 0x0020 + index * 4 for index in range(3))
+HVS_DISPLACT = tuple(HVS_BASE + 0x0030 + index * 4 for index in range(3))
+HVS_DISPCTRLX = tuple(HVS_BASE + 0x0040 + index * 0x10 for index in range(3))
+HVS_DISPSTATX = tuple(HVS_BASE + 0x0048 + index * 0x10 for index in range(3))
+HVS_DLIST_START = HVS_BASE + 0x2000
+HVS_DLIST_CAPACITY_WORDS = 0x4000 // 4
+HVS_SNAPSHOT_WORDS = 32
+
+PC_RE ="""
+          if text.count(constants_anchor) != 1:
+              raise SystemExit("unexpected VC4 probe constants anchor")
+          text = text.replace(constants_anchor, constants_replacement, 1)
+
+          function_anchor = "\ndef main() -> int:\n"
+          function = r'''
+def hvs_snapshot(qtest: QTest) -> dict[str, Any]:
+    """Capture the live HVS channel handoff and a bounded active dlist."""
+    snapshot: dict[str, Any] = {
+        "global_control": f"0x{qtest.readl(HVS_DISPCTRL):08x}",
+        "global_status": f"0x{qtest.readl(HVS_DISPSTAT):08x}",
+        "channels": [],
+    }
+
+    channels: list[dict[str, Any]] = []
+    for channel in range(3):
+        list_word = qtest.readl(HVS_DISPLIST[channel])
+        active_word = qtest.readl(HVS_DISPLACT[channel])
+        record: dict[str, Any] = {
+            "channel": channel,
+            "list_word": f"0x{list_word:08x}",
+            "active_word": f"0x{active_word:08x}",
+            "control": f"0x{qtest.readl(HVS_DISPCTRLX[channel]):08x}",
+            "status": f"0x{qtest.readl(HVS_DISPSTATX[channel]):08x}",
+        }
+        if active_word < HVS_DLIST_CAPACITY_WORDS:
+            words = [
+                qtest.readl(HVS_DLIST_START + (active_word + index) * 4)
+                for index in range(HVS_SNAPSHOT_WORDS)
+            ]
+            record["active_dlist"] = [f"0x{word:08x}" for word in words]
+        else:
+            record["active_dlist_error"] = (
+                f"active word 0x{active_word:08x} exceeds HVS dlist RAM"
+            )
+        channels.append(record)
+
+    snapshot["channels"] = channels
+    return snapshot
+'''
+          if text.count(function_anchor) != 1:
+              raise SystemExit("unexpected VC4 probe main anchor")
+          text = text.replace(function_anchor, function + function_anchor, 1)
+
+          stop_anchor = '''            try:
+                qmp.execute("stop")
+            except Exception:
+                pass
+            try:
+                result["final_cpu_snapshot"] = cpu_snapshot(
+'''
+          stop_replacement = '''            try:
+                qmp.execute("stop")
+            except Exception:
+                pass
+            try:
+                result["hvs_snapshot"] = hvs_snapshot(qtest)
+            except Exception as exc:
+                result["hvs_snapshot_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
+            try:
+                result["final_cpu_snapshot"] = cpu_snapshot(
+'''
+          if text.count(stop_anchor) != 1:
+              raise SystemExit("unexpected VC4 probe stop anchor")
+          text = text.replace(stop_anchor, stop_replacement, 1)
+
+          schema_anchor = '            "schema_version": 1,\n'
+          if text.count(schema_anchor) != 1:
+              raise SystemExit("unexpected VC4 probe schema anchor")
+          text = text.replace(
+              schema_anchor,
+              '            "schema_version": 2,\n',
+              1,
+          )
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          python3 -m py_compile scripts/vc4/raspi3-linux-probe.py
+          git diff --check
+          git diff -- scripts/vc4/raspi3-linux-probe.py
+
+      - name: Publish the probe instrumentation
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add scripts/vc4/raspi3-linux-probe.py
+          git commit -m "test/vc4: capture live HVS display-list state"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
