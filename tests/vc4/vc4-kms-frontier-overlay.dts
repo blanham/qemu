@@ -9,6 +9,8 @@
      * HVS, all three pixel valves, HDMI, TXP, V3D, and the VC4 DRM master.
      * The firmware framebuffer is disabled so any CRTC, connector, mode, or
      * fbdev object observed by the witness must come from Linux VC4 KMS.
+     * The probe also snapshots the live HVS channel and active display list,
+     * keeping topology success distinct from successful native scanout.
      *
      * This intentionally follows the official vc4-kms-v3d overlay topology
      * but leaves optional VEC/DSI/DPI outputs disabled.  It is the smallest
