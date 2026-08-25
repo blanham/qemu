@@ -33,8 +33,10 @@ SCALER_DISPSTATX_EMPTY = 1 << 28
 SCALER_CTL0_END = 1 << 31
 SCALER_CTL0_VALID = 1 << 30
 SCALER_CTL0_RGBA_EXPAND_ROUND = 3 << 11
+SCALER_CTL0_ORDER_XRGB = 2 << 13
 SCALER_CTL0_ORDER_ABGR = 3 << 13
 SCALER_CTL0_UNITY = 1 << 4
+HVS_PIXEL_FORMAT_RGB565 = 4
 HVS_PIXEL_FORMAT_RGBA8888 = 7
 
 SCANOUT_CHANNEL = 2
@@ -44,6 +46,10 @@ SCANOUT_PITCH = SCANOUT_WIDTH * 4
 SCANOUT_LIST_WORD = 0x100
 SCANOUT_BUFFER_A = 0x00200000
 SCANOUT_BUFFER_B = 0x00201000
+RGB565_SCANOUT_PITCH = SCANOUT_WIDTH * 2
+RGB565_SCANOUT_LIST_WORD = 0x120
+RGB565_SCANOUT_BUFFER_A = 0x00202000
+RGB565_SCANOUT_BUFFER_B = 0x00203000
 
 
 class QMPClient:
@@ -180,6 +186,32 @@ def write_pattern(
             qtest.writel(base + y * SCANOUT_PITCH + x * 4, colors[quadrant])
 
 
+def write_rgb565_pattern(
+    qtest: Any,
+    base: int,
+    colors: tuple[int, int, int, int],
+) -> None:
+    if SCANOUT_WIDTH % 2:
+        raise RuntimeError("RGB565 smoke width must be even")
+
+    for y in range(SCANOUT_HEIGHT):
+        for x in range(0, SCANOUT_WIDTH, 2):
+            first_quadrant = (2 if y >= SCANOUT_HEIGHT // 2 else 0) + (
+                1 if x >= SCANOUT_WIDTH // 2 else 0
+            )
+            second_x = x + 1
+            second_quadrant = (2 if y >= SCANOUT_HEIGHT // 2 else 0) + (
+                1 if second_x >= SCANOUT_WIDTH // 2 else 0
+            )
+            packed = colors[first_quadrant] | (
+                colors[second_quadrant] << 16
+            )
+            qtest.writel(
+                base + y * RGB565_SCANOUT_PITCH + x * 2,
+                packed,
+            )
+
+
 def read_ppm(path: Path) -> tuple[int, int, bytes]:
     data = path.read_bytes()
     position = 0
@@ -306,6 +338,77 @@ def exercise_scanout(qtest: Any, qmp: QMPClient, temp: Path) -> None:
     expect_disabled_empty(qtest, SCANOUT_CHANNEL)
 
 
+def exercise_rgb565_scanout(
+    qtest: Any,
+    qmp: QMPClient,
+    temp: Path,
+) -> None:
+    colors_a = (0xF800, 0x07E0, 0x001F, 0xFFFF)
+    colors_b = (0xFFFF, 0x001F, 0x07E0, 0xF800)
+    expected_a = (
+        (248, 0, 0),
+        (0, 252, 0),
+        (0, 0, 248),
+        (248, 252, 248),
+    )
+    expected_b = (
+        (248, 252, 248),
+        (0, 0, 248),
+        (0, 252, 0),
+        (248, 0, 0),
+    )
+    dlist = SCALER_DLIST_START + RGB565_SCANOUT_LIST_WORD * 4
+    ctl0 = (
+        SCALER_CTL0_VALID
+        | (7 << 24)
+        | SCALER_CTL0_ORDER_XRGB
+        | SCALER_CTL0_RGBA_EXPAND_ROUND
+        | SCALER_CTL0_UNITY
+        | HVS_PIXEL_FORMAT_RGB565
+    )
+    element = (
+        ctl0,
+        0xFF000000,
+        (SCANOUT_HEIGHT << 16) | SCANOUT_WIDTH,
+        0xC0C0C0C0,
+        RGB565_SCANOUT_BUFFER_A,
+        0xC0C0C0C0,
+        RGB565_SCANOUT_PITCH,
+        SCALER_CTL0_END,
+    )
+
+    write_rgb565_pattern(qtest, RGB565_SCANOUT_BUFFER_A, colors_a)
+    write_rgb565_pattern(qtest, RGB565_SCANOUT_BUFFER_B, colors_b)
+    for index, value in enumerate(element):
+        qtest.writel(dlist + index * 4, value)
+
+    qtest.writel(
+        SCALER_DISPLIST[SCANOUT_CHANNEL],
+        RGB565_SCANOUT_LIST_WORD,
+    )
+    qtest.writel(
+        SCALER_DISPCTRLX[SCANOUT_CHANNEL],
+        SCALER_DISPCTRLX_ENABLE
+        | (SCANOUT_WIDTH << 12)
+        | SCANOUT_HEIGHT,
+    )
+
+    first = temp / "hvs-rgb565-scanout-a.ppm"
+    qmp.execute("screendump", {"filename": str(first)})
+    expect_pattern(first, expected_a)
+
+    qtest.writel(
+        dlist + 4 * 4,
+        RGB565_SCANOUT_BUFFER_B,
+    )
+    second = temp / "hvs-rgb565-scanout-b.ppm"
+    qmp.execute("screendump", {"filename": str(second)})
+    expect_pattern(second, expected_b)
+
+    qtest.writel(SCALER_DISPCTRLX[SCANOUT_CHANNEL], 0)
+    expect_disabled_empty(qtest, SCANOUT_CHANNEL)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -382,6 +485,7 @@ def main() -> int:
                     )
 
             exercise_scanout(qtest, qmp, temp)
+            exercise_rgb565_scanout(qtest, qmp, temp)
 
             for channel in range(3):
                 exercise_channel(qtest, channel)

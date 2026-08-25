@@ -4,7 +4,8 @@
  * The VC4 renderer and plane-list construction remain in the guest driver.
  * This device models the hardware-visible HVS register/DLIST window, the
  * display-list handoff needed by the CRTC vblank path, and the common native
- * KMS scanout contract: one full-screen, unity-scaled, linear RGBA8888 plane.
+ * KMS scanout contract: one full-screen, unity-scaled, linear RGB565 or
+ * RGBA8888 plane.
  * Unsupported compositions remain visible to the guest as programmed but do
  * not silently receive an incorrect software rendering approximation.
  *
@@ -59,6 +60,9 @@
 
 #define HVS_PIXEL_ORDER_ARGB         UINT32_C(2)
 #define HVS_PIXEL_ORDER_ABGR         UINT32_C(3)
+#define HVS_PIXEL_ORDER_XRGB         UINT32_C(2)
+#define HVS_PIXEL_ORDER_XBGR         UINT32_C(3)
+#define HVS_PIXEL_FORMAT_RGB565      UINT32_C(4)
 #define HVS_PIXEL_FORMAT_RGBA8888    UINT32_C(7)
 
 #define SCALER_POS0_START_Y_SHIFT    12
@@ -69,11 +73,11 @@
 #define SCALER_POS2_WIDTH_MASK       UINT32_C(0xfff)
 #define SCALER_SRC_PITCH_MASK        UINT32_C(0xffff)
 
-#define SCALER_RGBA8888_UNITY_WORDS  7
-#define SCALER_RGBA8888_POS0_WORD    1
-#define SCALER_RGBA8888_POS2_WORD    2
-#define SCALER_RGBA8888_POINTER_WORD 4
-#define SCALER_RGBA8888_PITCH_WORD   6
+#define SCALER_UNITY_PLANE_WORDS      7
+#define SCALER_UNITY_PLANE_POS0_WORD  1
+#define SCALER_UNITY_PLANE_POS2_WORD  2
+#define SCALER_UNITY_PLANE_PTR_WORD   4
+#define SCALER_UNITY_PLANE_PITCH_WORD 6
 
 #define SCALER_IRQ_ENABLE_MASK       UINT32_C(0x1f)
 
@@ -146,6 +150,10 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
     uint32_t element_words;
     uint32_t tiling;
     uint32_t order;
+    uint32_t format;
+    uint32_t bytes_per_pixel;
+    uint32_t bits_per_pixel;
+    uint32_t pixo;
     uint32_t pos0;
     uint32_t pos2;
     uint32_t width;
@@ -178,50 +186,69 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
              SCALER_CTL0_TILING_MASK;
     order = (ctl0 >> SCALER_CTL0_ORDER_SHIFT) &
             SCALER_CTL0_ORDER_MASK;
+    format = ctl0 & SCALER_CTL0_FORMAT_MASK;
 
     if ((ctl0 & (SCALER_CTL0_END | SCALER_CTL0_VALID)) !=
         SCALER_CTL0_VALID ||
-        element_words != SCALER_RGBA8888_UNITY_WORDS ||
+        element_words != SCALER_UNITY_PLANE_WORDS ||
         list_index + element_words >= BCM2835_HVS_REG_WORDS ||
         !(s->regs[list_index + element_words] & SCALER_CTL0_END) ||
         tiling != SCALER_CTL0_TILING_LINEAR ||
         ctl0 & (SCALER_CTL0_HFLIP | SCALER_CTL0_VFLIP) ||
-        !(ctl0 & SCALER_CTL0_UNITY) ||
-        (ctl0 & SCALER_CTL0_FORMAT_MASK) !=
-            HVS_PIXEL_FORMAT_RGBA8888 ||
-        (order != HVS_PIXEL_ORDER_ABGR &&
-         order != HVS_PIXEL_ORDER_ARGB)) {
+        !(ctl0 & SCALER_CTL0_UNITY)) {
         return false;
     }
 
-    pos0 = s->regs[list_index + SCALER_RGBA8888_POS0_WORD];
-    pos2 = s->regs[list_index + SCALER_RGBA8888_POS2_WORD];
+    switch (format) {
+    case HVS_PIXEL_FORMAT_RGB565:
+        if (order != HVS_PIXEL_ORDER_XRGB &&
+            order != HVS_PIXEL_ORDER_XBGR) {
+            return false;
+        }
+        bytes_per_pixel = sizeof(uint16_t);
+        bits_per_pixel = 16;
+        pixo = order == HVS_PIXEL_ORDER_XBGR ? 0 : 1;
+        break;
+    case HVS_PIXEL_FORMAT_RGBA8888:
+        if (order != HVS_PIXEL_ORDER_ARGB &&
+            order != HVS_PIXEL_ORDER_ABGR) {
+            return false;
+        }
+        bytes_per_pixel = sizeof(uint32_t);
+        bits_per_pixel = 32;
+        pixo = order == HVS_PIXEL_ORDER_ABGR ? 0 : 1;
+        break;
+    default:
+        return false;
+    }
+
+    pos0 = s->regs[list_index + SCALER_UNITY_PLANE_POS0_WORD];
+    pos2 = s->regs[list_index + SCALER_UNITY_PLANE_POS2_WORD];
     width = pos2 & SCALER_POS2_WIDTH_MASK;
     height = (pos2 >> SCALER_POS2_HEIGHT_SHIFT) &
              SCALER_POS2_HEIGHT_MASK;
-    pitch = s->regs[list_index + SCALER_RGBA8888_PITCH_WORD] &
+    pitch = s->regs[list_index + SCALER_UNITY_PLANE_PITCH_WORD] &
             SCALER_SRC_PITCH_MASK;
 
     if (((pos0 >> SCALER_POS0_START_Y_SHIFT) &
          SCALER_POS0_START_Y_MASK) != 0 ||
         (pos0 & SCALER_POS0_START_X_MASK) != 0 ||
         width != channel_width || height != channel_height ||
-        pitch < width * sizeof(uint32_t) ||
-        pitch % sizeof(uint32_t) != 0) {
+        pitch < width * bytes_per_pixel ||
+        pitch % bytes_per_pixel != 0) {
         return false;
     }
 
     *config = s->fb->config;
     config->xres = width;
     config->yres = height;
-    config->xres_virtual = pitch / sizeof(uint32_t);
+    config->xres_virtual = pitch / bytes_per_pixel;
     config->yres_virtual = height;
     config->xoffset = 0;
     config->yoffset = 0;
-    config->bpp = 32;
-    config->base = s->regs[
-        list_index + SCALER_RGBA8888_POINTER_WORD];
-    config->pixo = order == HVS_PIXEL_ORDER_ABGR ? 0 : 1;
+    config->bpp = bits_per_pixel;
+    config->base = s->regs[list_index + SCALER_UNITY_PLANE_PTR_WORD];
+    config->pixo = pixo;
     return true;
 }
 
