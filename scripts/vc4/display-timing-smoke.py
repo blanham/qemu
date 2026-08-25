@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise BCM2835 HDMI FIFO and pixel-valve completion timing."""
+"""Exercise BCM2835 HDMI FIFO and pixel-valve vblank/IRQ timing."""
 
 from __future__ import annotations
 
@@ -13,26 +13,33 @@ from typing import Any
 
 RPI3_PERIPHERAL_BASE = 0x3F000000
 HDMI_CORE_BASE = RPI3_PERIPHERAL_BASE + 0x00902000
-PIXELVALVE_BASES = (
-    RPI3_PERIPHERAL_BASE + 0x00206000,
-    RPI3_PERIPHERAL_BASE + 0x00207000,
-    RPI3_PERIPHERAL_BASE + 0x00807000,
+PIXELVALVES = (
+    (RPI3_PERIPHERAL_BASE + 0x00206000, 45),
+    (RPI3_PERIPHERAL_BASE + 0x00207000, 46),
+    (RPI3_PERIPHERAL_BASE + 0x00807000, 42),
 )
+INTERRUPT_CONTROLLER_BASE = RPI3_PERIPHERAL_BASE + 0x0000B200
 
 HDMI_FIFO_CTL = HDMI_CORE_BASE + 0x05C
 HDMI_FIFO_CTL_RECENTER = 1 << 6
 HDMI_FIFO_CTL_RECENTER_DONE = 1 << 14
 
-PV_V_CONTROL = 0x0C
+PV_CONTROL = 0x00
+PV_CONTROL_FIFO_CLR = 1 << 1
+PV_CONTROL_EN = 1 << 0
+PV_V_CONTROL = 0x04
+PV_VCONTROL_CONTINUOUS = 1 << 1
+PV_VCONTROL_VIDEN = 1 << 0
 PV_INTEN = 0x24
 PV_INTSTAT = 0x28
-PV_STAT = 0x2C
-PV_INT_VFP_START = 1 << 1
-PV_VCONTROL_VIDEN = 1 << 0
-PV_VCONTROL_CONTINUOUS = 1 << 1
-PV_STAT_VIDEN = 1 << 0
+PV_INT_VFP_START = 1 << 7
+
+IRQ_PENDING_2 = INTERRUPT_CONTROLLER_BASE + 0x08
+IRQ_ENABLE_2 = INTERRUPT_CONTROLLER_BASE + 0x14
+IRQ_DISABLE_2 = INTERRUPT_CONTROLLER_BASE + 0x20
 
 FRAME_STEP_NS = 20_000_000
+PIXELVALVE_IRQ_MASK = sum(1 << (irq - 32) for _base, irq in PIXELVALVES)
 
 
 def load_property_support() -> Any:
@@ -52,6 +59,12 @@ def expect_bits(actual: int, required: int, description: str) -> None:
         raise RuntimeError(
             f"{description}: 0x{actual:08x} lacks 0x{required:08x}"
         )
+
+
+def gpu_irq_bit(irq: int) -> int:
+    if not 32 <= irq < 64:
+        raise ValueError(f"IRQ {irq} is not in GPU pending register 2")
+    return 1 << (irq - 32)
 
 
 def exercise_hdmi(qtest: Any) -> None:
@@ -74,28 +87,42 @@ def exercise_hdmi(qtest: Any) -> None:
         )
 
 
-def exercise_pixelvalve(qtest: Any, base: int, index: int) -> None:
-    if qtest.readl(base + PV_STAT) != 0:
-        raise RuntimeError(f"pixel valve {index} active after reset")
-    if qtest.readl(base + PV_INTSTAT) != 0:
-        raise RuntimeError(f"pixel valve {index} interrupt pending after reset")
+def exercise_pixelvalve(qtest: Any, base: int, irq: int, index: int) -> None:
+    irq_mask = gpu_irq_bit(irq)
 
+    for offset in (PV_CONTROL, PV_V_CONTROL, PV_INTEN, PV_INTSTAT):
+        if qtest.readl(base + offset) != 0:
+            raise RuntimeError(
+                f"pixel valve {index} register 0x{offset:x} was not reset"
+            )
+
+    qtest.writel(base + PV_INTSTAT, 0xFFFFFFFF)
+    qtest.writel(IRQ_ENABLE_2, irq_mask)
     qtest.writel(base + PV_INTEN, PV_INT_VFP_START)
+
+    qtest.writel(base + PV_CONTROL, PV_CONTROL_FIFO_CLR | PV_CONTROL_EN)
+    control = qtest.readl(base + PV_CONTROL)
+    expect_bits(control, PV_CONTROL_EN, f"pixel valve {index} did not enable")
+    if control & PV_CONTROL_FIFO_CLR:
+        raise RuntimeError(
+            f"pixel valve {index} FIFO clear pulse did not self-clear"
+        )
+
     qtest.writel(
         base + PV_V_CONTROL,
-        PV_VCONTROL_VIDEN | PV_VCONTROL_CONTINUOUS,
+        PV_VCONTROL_CONTINUOUS | PV_VCONTROL_VIDEN,
     )
-    expect_bits(
-        qtest.readl(base + PV_STAT),
-        PV_STAT_VIDEN,
-        f"pixel valve {index} did not become active",
-    )
-
     qtest.command(f"clock_step {FRAME_STEP_NS}")
+
     expect_bits(
         qtest.readl(base + PV_INTSTAT),
         PV_INT_VFP_START,
         f"pixel valve {index} did not raise VFP-start",
+    )
+    expect_bits(
+        qtest.readl(IRQ_PENDING_2),
+        irq_mask,
+        f"pixel valve {index} did not reach BCM2835 interrupt controller",
     )
 
     qtest.writel(base + PV_INTSTAT, PV_INT_VFP_START)
@@ -103,16 +130,21 @@ def exercise_pixelvalve(qtest: Any, base: int, index: int) -> None:
         raise RuntimeError(
             f"pixel valve {index} VFP-start was not cleared by W1C"
         )
+    if qtest.readl(IRQ_PENDING_2) & irq_mask:
+        raise RuntimeError(
+            f"pixel valve {index} IRQ remained asserted after W1C"
+        )
 
     qtest.writel(base + PV_V_CONTROL, 0)
-    if qtest.readl(base + PV_STAT) & PV_STAT_VIDEN:
-        raise RuntimeError(f"pixel valve {index} did not stop immediately")
-
+    qtest.writel(base + PV_CONTROL, 0)
     qtest.command(f"clock_step {FRAME_STEP_NS}")
     if qtest.readl(base + PV_INTSTAT) & PV_INT_VFP_START:
         raise RuntimeError(
             f"pixel valve {index} generated VFP-start while disabled"
         )
+
+    qtest.writel(base + PV_INTEN, 0)
+    qtest.writel(IRQ_DISABLE_2, irq_mask)
 
 
 def main() -> int:
@@ -166,22 +198,26 @@ def main() -> int:
             )
             qmp = support.connect_when_ready(qmp_path, process, support.QMPClient)
 
+            # -S leaves the virtual clock disabled.  The qtest accelerator
+            # does not execute guest CPUs, so continuing is safe and permits
+            # clock_step to dispatch virtual frame timers deterministically.
+            qmp.execute("cont")
+
             exercise_hdmi(qtest)
-            for index, base in enumerate(PIXELVALVE_BASES):
-                exercise_pixelvalve(qtest, base, index)
+            for index, (base, irq) in enumerate(PIXELVALVES):
+                exercise_pixelvalve(qtest, base, irq, index)
 
             qmp.execute("system_reset")
             if qtest.readl(HDMI_FIFO_CTL) != 0:
                 raise RuntimeError("HDMI FIFO state survived system reset")
-            for index, base in enumerate(PIXELVALVE_BASES):
-                if qtest.readl(base + PV_STAT) != 0:
-                    raise RuntimeError(
-                        f"pixel valve {index} active state survived reset"
-                    )
-                if qtest.readl(base + PV_INTSTAT) != 0:
-                    raise RuntimeError(
-                        f"pixel valve {index} interrupt survived reset"
-                    )
+            if qtest.readl(IRQ_PENDING_2) & PIXELVALVE_IRQ_MASK:
+                raise RuntimeError("pixel-valve interrupt survived system reset")
+            for index, (base, _irq) in enumerate(PIXELVALVES):
+                for offset in (PV_CONTROL, PV_V_CONTROL, PV_INTEN, PV_INTSTAT):
+                    if qtest.readl(base + offset) != 0:
+                        raise RuntimeError(
+                            f"pixel valve {index} state survived system reset"
+                        )
         finally:
             if qmp is not None:
                 try:
@@ -208,7 +244,7 @@ def main() -> int:
                 f"QEMU exited with status {process.returncode}:\n{stderr}"
             )
 
-    print("BCM2835 HDMI and pixel-valve timing smoke test passed")
+    print("BCM2835 HDMI and pixel-valve timing/IRQ smoke test passed")
     return 0
 
 

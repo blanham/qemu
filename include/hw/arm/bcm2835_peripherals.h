@@ -17,6 +17,9 @@
 #include "hw/char/bcm2835_aux.h"
 #include "hw/display/bcm2835_fb.h"
 #include "hw/display/bcm2835_v3d.h"
+#include "hw/display/bcm2835_hdmi.h"
+#include "hw/display/bcm2835_hvs.h"
+#include "hw/display/bcm2835_pixelvalve.h"
 #include "hw/dma/bcm2835_dma.h"
 #include "hw/core/or-irq.h"
 #include "hw/intc/bcm2835_ic.h"
@@ -107,6 +110,9 @@ struct BCM2835PeripheralState {
     BCM2835RngState rng;
     Bcm2835ThermalState thermal;
     BCM2835GpioState gpio;
+    BCM2835HVSState hvs;
+    BCM2835HDMIState hdmi;
+    BCM2835PixelValveState pixelvalve[3];
 };
 
 void create_unimp(BCMSocPeripheralBaseState *ps,

@@ -1,5 +1,5 @@
 /*
- * BCM2835 HDMI controller
+ * Raspberry Pi BCM2835 HDMI controller
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -8,8 +8,8 @@
 #define HW_DISPLAY_BCM2835_HDMI_H
 
 #include "hw/core/sysbus.h"
-#include "system/memory.h"
 #include "qom/object.h"
+#include "system/memory.h"
 
 #define TYPE_BCM2835_HDMI "bcm2835-hdmi"
 OBJECT_DECLARE_SIMPLE_TYPE(BCM2835HDMIState, BCM2835_HDMI)
@@ -28,7 +28,6 @@ struct BCM2835HDMIState {
     MemoryRegion core_iomem;
     MemoryRegion hd_iomem;
     qemu_irq irq[BCM2835_HDMI_IRQ_COUNT];
-
     uint32_t core_regs[BCM2835_HDMI_CORE_REG_WORDS];
     uint32_t hd_regs[BCM2835_HDMI_HD_REG_WORDS];
 };

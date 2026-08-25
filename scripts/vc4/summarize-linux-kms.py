@@ -39,6 +39,18 @@ BIND_RE = re.compile(
     r"vc4-drm soc:gpu: bound (?P<device>\S+) "
     r"\(ops (?P<ops>\S+) \[vc4\]\)"
 )
+FLIP_TIMEOUT_RE = re.compile(
+    r"\[CRTC:(?P<id>\d+):(?P<name>[^\]]+)\]\s+flip_done timed out"
+)
+COMMIT_TIMEOUT_RE = re.compile(
+    r"\[(?P<object_type>[A-Z]+):(?P<id>\d+)"
+    r"(?::(?P<name>[^\]]+))?\]\s+commit wait timed out"
+)
+FBDEV_RE = re.compile(r"fb0:\s+vc4drmfb frame buffer device")
+HDMI_WAIT_RE = re.compile(
+    r"Timeout waiting for (?P<register>VC4_HDMI_[A-Z0-9_]+)"
+)
+GENERIC_COMMIT_TIMEOUT = "Timed out waiting for commit"
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,19 +78,39 @@ def parse_outcomes(values: list[str]) -> dict[str, str]:
     return outcomes
 
 
-def classify(markers: dict[str, bool], outcomes: dict[str, str]) -> str:
+def classify(
+    markers: dict[str, bool],
+    outcomes: dict[str, str],
+    flip_timeouts: list[dict[str, Any]],
+    commit_timeouts: list[dict[str, Any]],
+    generic_commit_timeout: bool,
+    fbdev_registered: bool,
+    hdmi_wait_timeouts: list[str],
+) -> str:
     failed_steps = [key for key, value in outcomes.items() if value != "success"]
     if failed_steps:
         return "workflow-" + "-".join(failed_steps) + "-failed"
 
     # The workflow proves module loading and SUBMIT_CL in a dedicated
-    # render-only boot.  Do not reinterpret absent render markers in
-    # the separate native-KMS boot as a renderer regression.
+    # render-only boot.  Do not reinterpret absent render markers in the
+    # separate native-KMS boot as a renderer regression.
     if "render_regression" not in outcomes:
         if not markers["VC4_LINUX_MODULE_CLOSURE_OK"]:
             return "vc4-module-closure-unavailable"
         if not markers["VC4_LINUX_DRM_SUBMIT_OK"]:
             return "vc4-render-submit-regression"
+
+    # Kernel atomic-commit evidence is deeper than the PID 1 topology probe.
+    # Preserve it before falling back to absent marker classifications.
+    if flip_timeouts:
+        return "vc4-kms-flip-done-timeout"
+    if commit_timeouts or generic_commit_timeout:
+        if fbdev_registered:
+            return "vc4-kms-commit-wait-timeout"
+        return "vc4-kms-pre-fbdev-commit-timeout"
+    if hdmi_wait_timeouts:
+        return "vc4-hdmi-register-wait-timeout"
+
     if not markers["VC4_LINUX_KMS_RESOURCES_OK"]:
         return "vc4-component-bind-frontier"
     if not markers["VC4_LINUX_KMS_CRTC_OK"]:
@@ -121,7 +153,36 @@ def main() -> int:
         for match in CONNECTOR_RE.finditer(serial)
     ]
     components = [match.groupdict() for match in BIND_RE.finditer(serial)]
-    classification = classify(markers, outcomes)
+    flip_timeouts = [
+        {
+            "id": int(match.group("id")),
+            "name": match.group("name"),
+        }
+        for match in FLIP_TIMEOUT_RE.finditer(serial)
+    ]
+    commit_timeouts = [
+        {
+            "object_type": match.group("object_type"),
+            "id": int(match.group("id")),
+            "name": match.group("name"),
+        }
+        for match in COMMIT_TIMEOUT_RE.finditer(serial)
+    ]
+    generic_commit_timeout = GENERIC_COMMIT_TIMEOUT in serial
+    fbdev_registered = FBDEV_RE.search(serial) is not None
+    hdmi_wait_timeouts = [
+        match.group("register") for match in HDMI_WAIT_RE.finditer(serial)
+    ]
+
+    classification = classify(
+        markers,
+        outcomes,
+        flip_timeouts,
+        commit_timeouts,
+        generic_commit_timeout,
+        fbdev_registered,
+        hdmi_wait_timeouts,
+    )
     passed = classification == "linux-vc4-kms-topology-clear"
     render_submission_preserved = (
         outcomes["render_regression"] == "success"
@@ -130,7 +191,7 @@ def main() -> int:
     )
 
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source_sha": args.source_sha,
         "run_id": args.run_id,
@@ -142,8 +203,15 @@ def main() -> int:
         "counts": counts,
         "components": components,
         "connectors": connectors,
+        "kernel_commit": {
+            "fbdev_registered": fbdev_registered,
+            "flip_done_timeouts": flip_timeouts,
+            "commit_wait_timeouts": commit_timeouts,
+            "generic_commit_timeout": generic_commit_timeout,
+            "hdmi_register_wait_timeouts": hdmi_wait_timeouts,
+        },
         "probe_result": result,
-        "serial_tail": serial.splitlines()[-320:],
+        "serial_tail": serial.splitlines()[-400:],
     }
     args.json.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 
@@ -155,7 +223,12 @@ def main() -> int:
         f"Frontier: **`{classification}`**",
         "",
         f"- Render submission preserved: `{render_submission_preserved}`",
-        f"- CRTC discovered: `{markers['VC4_LINUX_KMS_CRTC_OK']}`",
+        f"- Native VC4 fbdev registered: `{fbdev_registered}`",
+        f"- Flip-done timeouts: `{len(flip_timeouts)}`",
+        f"- Object commit-wait timeouts: `{len(commit_timeouts)}`",
+        f"- Generic commit timeout: `{generic_commit_timeout}`",
+        f"- HDMI register wait timeouts: `{len(hdmi_wait_timeouts)}`",
+        f"- CRTC discovered by witness: `{markers['VC4_LINUX_KMS_CRTC_OK']}`",
         f"- Physical connector discovered: `{markers['VC4_LINUX_KMS_PHYSICAL_CONNECTOR_OK']}`",
         f"- Physical connector connected: `{markers['VC4_LINUX_KMS_CONNECTED_OK']}`",
         f"- Display mode discovered: `{markers['VC4_LINUX_KMS_MODE_OK']}`",
@@ -169,6 +242,23 @@ def main() -> int:
         f"- Connected physical connectors: `{counts['connected']}`",
         f"- Modes on connected physical connectors: `{counts['modes']}`",
     ]
+    if hdmi_wait_timeouts:
+        lines.extend(("", "## HDMI hardware wait evidence", ""))
+        lines.extend(f"- `{register}`" for register in hdmi_wait_timeouts)
+    if flip_timeouts or commit_timeouts:
+        lines.extend(("", "## Kernel atomic-commit timeout evidence", ""))
+        lines.extend(
+            f"- CRTC `{item['id']}:{item['name']}`: `flip_done timed out`"
+            for item in flip_timeouts
+        )
+        lines.extend(
+            "- {object_type} `{id}{name}`: `commit wait timed out`".format(
+                object_type=item["object_type"],
+                id=item["id"],
+                name=f":{item['name']}" if item["name"] else "",
+            )
+            for item in commit_timeouts
+        )
     if components:
         lines.extend(("", "## Bound VC4 components", ""))
         lines.extend(

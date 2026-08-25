@@ -36,6 +36,14 @@
 
 #define BCM2835_HDMI_DDC_ADDRESS 0x50
 
+static const hwaddr bcm2835_pixelvalve_offsets[] = {
+    PIXV0_OFFSET, PIXV1_OFFSET, PIXV2_OFFSET,
+};
+
+static const unsigned int bcm2835_pixelvalve_irqs[] = {
+    INTERRUPT_PWA0, INTERRUPT_PWA1, INTERRUPT_PIXELVALVE1,
+};
+
 void create_unimp(BCMSocPeripheralBaseState *ps,
                   UnimplementedDeviceState *uds,
                   const char *name, hwaddr ofs, hwaddr size)
@@ -61,6 +69,21 @@ static void bcm2835_peripherals_init(Object *obj)
 
     /* GPIO */
     object_initialize_child(obj, "gpio", &s->gpio, TYPE_BCM2835_GPIO);
+
+    /* Native VideoCore display pipeline */
+    object_initialize_child(obj, "hvs", &s->hvs,
+                            TYPE_BCM2835_HVS);
+    object_initialize_child(obj, "hdmi", &s->hdmi,
+                            TYPE_BCM2835_HDMI);
+    object_initialize_child(obj, "pixelvalve0",
+                            &s->pixelvalve[0],
+                            TYPE_BCM2835_PIXELVALVE);
+    object_initialize_child(obj, "pixelvalve1",
+                            &s->pixelvalve[1],
+                            TYPE_BCM2835_PIXELVALVE);
+    object_initialize_child(obj, "pixelvalve2",
+                            &s->pixelvalve[2],
+                            TYPE_BCM2835_PIXELVALVE);
 
     object_property_add_const_link(OBJECT(&s->gpio), "sdbus-sdhci",
                                    OBJECT(&s_base->sdhci.sdbus));
@@ -217,6 +240,56 @@ static void bcm2835_peripherals_realize(DeviceState *dev, Error **errp)
     int n;
 
     bcm_soc_peripherals_common_realize(dev, errp);
+
+    /* Hardware Video Scaler register and display-list window. */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->hvs), errp)) {
+        return;
+    }
+    memory_region_add_subregion(
+        &s_base->peri_mr, HVS_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->hvs), 0));
+    sysbus_connect_irq(
+        SYS_BUS_DEVICE(&s->hvs), 0,
+        qdev_get_gpio_in_named(DEVICE(&s_base->ic),
+                               BCM2835_IC_GPU_IRQ,
+                               INTERRUPT_VIDEOSCALER));
+
+    /* HDMI core and HD register windows. */
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->hdmi), errp)) {
+        return;
+    }
+    memory_region_add_subregion(
+        &s_base->peri_mr, HDMI_CORE_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->hdmi), 0));
+    memory_region_add_subregion(
+        &s_base->peri_mr, HDMI_OFFSET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->hdmi), 1));
+    sysbus_connect_irq(
+        SYS_BUS_DEVICE(&s->hdmi), 0,
+        qdev_get_gpio_in_named(DEVICE(&s_base->ic),
+                               BCM2835_IC_GPU_IRQ,
+                               INTERRUPT_HDMI0));
+    sysbus_connect_irq(
+        SYS_BUS_DEVICE(&s->hdmi), 1,
+        qdev_get_gpio_in_named(DEVICE(&s_base->ic),
+                               BCM2835_IC_GPU_IRQ,
+                               INTERRUPT_HDMI1));
+
+    /* Three BCM2835 pixel valves and their GPU interrupt lines. */
+    for (n = 0; n < ARRAY_SIZE(s->pixelvalve); n++) {
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->pixelvalve[n]), errp)) {
+            return;
+        }
+        memory_region_add_subregion(
+            &s_base->peri_mr, bcm2835_pixelvalve_offsets[n],
+            sysbus_mmio_get_region(
+                SYS_BUS_DEVICE(&s->pixelvalve[n]), 0));
+        sysbus_connect_irq(
+            SYS_BUS_DEVICE(&s->pixelvalve[n]), 0,
+            qdev_get_gpio_in_named(DEVICE(&s_base->ic),
+                                   BCM2835_IC_GPU_IRQ,
+                                   bcm2835_pixelvalve_irqs[n]));
+    }
 
     /* Extended Mass Media Controller */
     sysbus_connect_irq(SYS_BUS_DEVICE(&s_base->sdhci), 0,

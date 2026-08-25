@@ -1,9 +1,9 @@
 /*
- * BCM2835 HDMI controller
+ * Raspberry Pi BCM2835 HDMI controller
  *
- * This slice models the visible HDMI and HD register windows needed by the
- * native VC4 KMS driver.  Most registers are latches.  FIFO recentering is a
- * synchronous hardware operation from the guest's point of view, so asserting
+ * This slice models the visible HDMI core and HD register windows needed by
+ * the native VC4 KMS driver.  Most registers are retained latches.  FIFO
+ * recentering is synchronous from the guest's point of view, so asserting
  * RECENTER immediately raises RECENTER_DONE.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -19,128 +19,137 @@
 #define HDMI_FIFO_CTL_RECENTER       BIT(6)
 #define HDMI_FIFO_CTL_RECENTER_DONE  BIT(14)
 
-#define REG_INDEX(offset) ((offset) >> 2)
+static unsigned bcm2835_hdmi_index(hwaddr offset)
+{
+    return offset / sizeof(uint32_t);
+}
 
-static uint64_t bcm2835_hdmi_core_read(void *opaque, hwaddr addr,
+static bool bcm2835_hdmi_valid_access(hwaddr offset, unsigned size,
+                                      hwaddr limit)
+{
+    return size == 4 && !(offset & 3) && offset < limit;
+}
+
+static uint64_t bcm2835_hdmi_core_read(void *opaque, hwaddr offset,
                                        unsigned size)
 {
     BCM2835HDMIState *s = opaque;
-    unsigned index = REG_INDEX(addr);
 
-    if (index >= BCM2835_HDMI_CORE_REG_WORDS) {
+    if (!bcm2835_hdmi_valid_access(offset, size,
+                                   BCM2835_HDMI_CORE_MMIO_SIZE)) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      TYPE_BCM2835_HDMI ": bad core read at 0x%"
-                      HWADDR_PRIx "\n", addr);
+                      TYPE_BCM2835_HDMI ": invalid core read at 0x%"
+                      HWADDR_PRIx " (size %u)\n", offset, size);
         return 0;
     }
 
-    return s->core_regs[index];
+    return s->core_regs[bcm2835_hdmi_index(offset)];
 }
 
-static void bcm2835_hdmi_core_write(void *opaque, hwaddr addr,
+static void bcm2835_hdmi_core_write(void *opaque, hwaddr offset,
                                     uint64_t value, unsigned size)
 {
     BCM2835HDMIState *s = opaque;
-    unsigned index = REG_INDEX(addr);
-    uint32_t v = value;
+    uint32_t val = value;
 
-    if (index >= BCM2835_HDMI_CORE_REG_WORDS) {
+    if (!bcm2835_hdmi_valid_access(offset, size,
+                                   BCM2835_HDMI_CORE_MMIO_SIZE)) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      TYPE_BCM2835_HDMI ": bad core write at 0x%"
-                      HWADDR_PRIx "\n", addr);
+                      TYPE_BCM2835_HDMI ": invalid core write at 0x%"
+                      HWADDR_PRIx " (size %u)\n", offset, size);
         return;
     }
 
-    if (addr == HDMI_FIFO_CTL) {
-        /*
-         * DONE is hardware-owned.  Clearing RECENTER clears the completion;
-         * asserting RECENTER completes immediately in this timing model.
-         */
-        v &= ~HDMI_FIFO_CTL_RECENTER_DONE;
-        if (v & HDMI_FIFO_CTL_RECENTER) {
-            v |= HDMI_FIFO_CTL_RECENTER_DONE;
+    if (offset == HDMI_FIFO_CTL) {
+        /* DONE is hardware-owned and follows the RECENTER command. */
+        val &= ~HDMI_FIFO_CTL_RECENTER_DONE;
+        if (val & HDMI_FIFO_CTL_RECENTER) {
+            val |= HDMI_FIFO_CTL_RECENTER_DONE;
         }
     }
 
-    s->core_regs[index] = v;
+    s->core_regs[bcm2835_hdmi_index(offset)] = val;
 }
 
-static uint64_t bcm2835_hdmi_hd_read(void *opaque, hwaddr addr,
+static uint64_t bcm2835_hdmi_hd_read(void *opaque, hwaddr offset,
                                      unsigned size)
 {
     BCM2835HDMIState *s = opaque;
-    unsigned index = REG_INDEX(addr);
 
-    if (index >= BCM2835_HDMI_HD_REG_WORDS) {
+    if (!bcm2835_hdmi_valid_access(offset, size,
+                                   BCM2835_HDMI_HD_MMIO_SIZE)) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      TYPE_BCM2835_HDMI ": bad HD read at 0x%"
-                      HWADDR_PRIx "\n", addr);
+                      TYPE_BCM2835_HDMI ": invalid HD read at 0x%"
+                      HWADDR_PRIx " (size %u)\n", offset, size);
         return 0;
     }
 
-    return s->hd_regs[index];
+    return s->hd_regs[bcm2835_hdmi_index(offset)];
 }
 
-static void bcm2835_hdmi_hd_write(void *opaque, hwaddr addr,
+static void bcm2835_hdmi_hd_write(void *opaque, hwaddr offset,
                                   uint64_t value, unsigned size)
 {
     BCM2835HDMIState *s = opaque;
-    unsigned index = REG_INDEX(addr);
 
-    if (index >= BCM2835_HDMI_HD_REG_WORDS) {
+    if (!bcm2835_hdmi_valid_access(offset, size,
+                                   BCM2835_HDMI_HD_MMIO_SIZE)) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      TYPE_BCM2835_HDMI ": bad HD write at 0x%"
-                      HWADDR_PRIx "\n", addr);
+                      TYPE_BCM2835_HDMI ": invalid HD write at 0x%"
+                      HWADDR_PRIx " (size %u)\n", offset, size);
         return;
     }
 
-    s->hd_regs[index] = value;
+    s->hd_regs[bcm2835_hdmi_index(offset)] = (uint32_t)value;
 }
 
 static const MemoryRegionOps bcm2835_hdmi_core_ops = {
     .read = bcm2835_hdmi_core_read,
     .write = bcm2835_hdmi_core_write,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
-    .valid.min_access_size = 4,
-    .valid.max_access_size = 4,
     .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false,
+    },
 };
 
 static const MemoryRegionOps bcm2835_hdmi_hd_ops = {
     .read = bcm2835_hdmi_hd_read,
     .write = bcm2835_hdmi_hd_write,
-    .impl.min_access_size = 4,
-    .impl.max_access_size = 4,
-    .valid.min_access_size = 4,
-    .valid.max_access_size = 4,
     .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false,
+    },
 };
 
 static void bcm2835_hdmi_reset(DeviceState *dev)
 {
     BCM2835HDMIState *s = BCM2835_HDMI(dev);
-    unsigned i;
+    unsigned index;
 
     memset(s->core_regs, 0, sizeof(s->core_regs));
     memset(s->hd_regs, 0, sizeof(s->hd_regs));
-    for (i = 0; i < BCM2835_HDMI_IRQ_COUNT; i++) {
-        qemu_set_irq(s->irq[i], 0);
+    for (index = 0; index < BCM2835_HDMI_IRQ_COUNT; index++) {
+        qemu_set_irq(s->irq[index], 0);
     }
 }
 
 static int bcm2835_hdmi_post_load(void *opaque, int version_id)
 {
     BCM2835HDMIState *s = opaque;
-    unsigned i;
+    unsigned index;
 
-    for (i = 0; i < BCM2835_HDMI_IRQ_COUNT; i++) {
-        qemu_set_irq(s->irq[i], 0);
+    (void)version_id;
+    for (index = 0; index < BCM2835_HDMI_IRQ_COUNT; index++) {
+        qemu_set_irq(s->irq[index], 0);
     }
     return 0;
 }
 
-static const VMStateDescription bcm2835_hdmi_vmstate = {
+static const VMStateDescription vmstate_bcm2835_hdmi = {
     .name = TYPE_BCM2835_HDMI,
     .version_id = 1,
     .minimum_version_id = 1,
@@ -151,13 +160,13 @@ static const VMStateDescription bcm2835_hdmi_vmstate = {
         VMSTATE_UINT32_ARRAY(hd_regs, BCM2835HDMIState,
                              BCM2835_HDMI_HD_REG_WORDS),
         VMSTATE_END_OF_LIST()
-    }
+    },
 };
 
 static void bcm2835_hdmi_init(Object *obj)
 {
     BCM2835HDMIState *s = BCM2835_HDMI(obj);
-    unsigned i;
+    unsigned index;
 
     memory_region_init_io(&s->core_iomem, obj, &bcm2835_hdmi_core_ops, s,
                           TYPE_BCM2835_HDMI "-core",
@@ -167,8 +176,8 @@ static void bcm2835_hdmi_init(Object *obj)
                           BCM2835_HDMI_HD_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->core_iomem);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->hd_iomem);
-    for (i = 0; i < BCM2835_HDMI_IRQ_COUNT; i++) {
-        sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq[i]);
+    for (index = 0; index < BCM2835_HDMI_IRQ_COUNT; index++) {
+        sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq[index]);
     }
 }
 
@@ -177,7 +186,8 @@ static void bcm2835_hdmi_class_init(ObjectClass *klass, const void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, bcm2835_hdmi_reset);
-    dc->vmsd = &bcm2835_hdmi_vmstate;
+    dc->vmsd = &vmstate_bcm2835_hdmi;
+    dc->desc = "BCM2835 HDMI controller";
 }
 
 static const TypeInfo bcm2835_hdmi_info = {

@@ -58,8 +58,9 @@
 #define BSC2_OFFSET             0x805000 /* BSC2 I2C/TWI */
 #define VECA_OFFSET             0x806000
 #define PIXV2_OFFSET            0x807000
-#define HDMI_OFFSET             0x808000
+#define HDMI_OFFSET             0x808000 /* HDMI HD register block */
 #define HDCP_OFFSET             0x809000
+#define HDMI_CORE_OFFSET        0x902000 /* HDMI core register block */
 #define ARBR0_OFFSET            0x80a000
 #define DBUS_OFFSET             0x900000
 #define AVE0_OFFSET             0x910000
