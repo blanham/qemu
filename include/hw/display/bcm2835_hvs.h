@@ -23,6 +23,8 @@ struct BCM2835HVSState {
     MemoryRegion iomem;
     qemu_irq irq;
     uint32_t regs[BCM2835_HVS_REG_WORDS];
+
+    struct BCM2835FBState *fb;
 };
 
 #endif /* HW_DISPLAY_BCM2835_HVS_H */

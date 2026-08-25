@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Exercise BCM2835 HVS channel state and display-list latching."""
+"""Exercise BCM2835 HVS channel state, display-list latching, and scanout."""
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 from typing import Any
@@ -28,6 +30,67 @@ SCALER_DISPSTATX_MODE_RUN = 2 << 30
 SCALER_DISPSTATX_FULL = 1 << 29
 SCALER_DISPSTATX_EMPTY = 1 << 28
 
+SCALER_CTL0_END = 1 << 31
+SCALER_CTL0_VALID = 1 << 30
+SCALER_CTL0_RGBA_EXPAND_ROUND = 3 << 11
+SCALER_CTL0_ORDER_ABGR = 3 << 13
+SCALER_CTL0_UNITY = 1 << 4
+HVS_PIXEL_FORMAT_RGBA8888 = 7
+
+SCANOUT_CHANNEL = 2
+SCANOUT_WIDTH = 8
+SCANOUT_HEIGHT = 4
+SCANOUT_PITCH = SCANOUT_WIDTH * 4
+SCANOUT_LIST_WORD = 0x100
+SCANOUT_BUFFER_A = 0x00200000
+SCANOUT_BUFFER_B = 0x00201000
+
+
+class QMPClient:
+    def __init__(self, path: Path) -> None:
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._sock.connect(str(path))
+        self._reader = self._sock.makefile("r", encoding="utf-8")
+        greeting = self._read_message()
+        if "QMP" not in greeting:
+            raise RuntimeError(f"unexpected QMP greeting: {greeting!r}")
+        self.execute("qmp_capabilities")
+
+    def close(self) -> None:
+        self._reader.close()
+        self._sock.close()
+
+    def _read_message(self) -> dict[str, Any]:
+        while True:
+            line = self._reader.readline()
+            if not line:
+                raise RuntimeError("QMP connection closed")
+            message = json.loads(line)
+            if isinstance(message, dict):
+                return message
+
+    def execute(
+        self,
+        command: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> Any:
+        request: dict[str, Any] = {
+            "execute": command,
+            "id": command,
+        }
+        if arguments is not None:
+            request["arguments"] = arguments
+        self._sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        while True:
+            response = self._read_message()
+            if response.get("id") != command:
+                continue
+            if "error" in response:
+                raise RuntimeError(
+                    f"QMP {command} failed: {response['error']!r}"
+                )
+            return response.get("return")
+
 
 def load_property_support() -> Any:
     support_path = Path(__file__).with_name("property-power-domain-smoke.py")
@@ -35,7 +98,9 @@ def load_property_support() -> Any:
         "vc4_property_smoke_support", support_path
     )
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load property smoke support: {support_path}")
+        raise RuntimeError(
+            f"cannot load property smoke support: {support_path}"
+        )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -102,6 +167,145 @@ def exercise_channel(qtest: Any, channel: int) -> None:
     expect_disabled_empty(qtest, channel)
 
 
+def write_pattern(
+    qtest: Any,
+    base: int,
+    colors: tuple[int, int, int, int],
+) -> None:
+    for y in range(SCANOUT_HEIGHT):
+        for x in range(SCANOUT_WIDTH):
+            quadrant = (2 if y >= SCANOUT_HEIGHT // 2 else 0) + (
+                1 if x >= SCANOUT_WIDTH // 2 else 0
+            )
+            qtest.writel(base + y * SCANOUT_PITCH + x * 4, colors[quadrant])
+
+
+def read_ppm(path: Path) -> tuple[int, int, bytes]:
+    data = path.read_bytes()
+    position = 0
+
+    def token() -> bytes:
+        nonlocal position
+        while position < len(data):
+            if data[position] == ord("#"):
+                newline = data.find(b"\n", position)
+                if newline < 0:
+                    raise RuntimeError(f"unterminated PPM comment in {path}")
+                position = newline + 1
+                continue
+            if data[position] in b" \t\r\n":
+                position += 1
+                continue
+            break
+        start = position
+        while position < len(data) and data[position] not in b" \t\r\n":
+            position += 1
+        if start == position:
+            raise RuntimeError(f"truncated PPM header in {path}")
+        return data[start:position]
+
+    if token() != b"P6":
+        raise RuntimeError(f"QEMU screendump is not binary PPM: {path}")
+    width = int(token())
+    height = int(token())
+    maximum = int(token())
+    if maximum != 255:
+        raise RuntimeError(f"unsupported PPM maximum {maximum} in {path}")
+    if position >= len(data) or data[position] not in b" \t\r\n":
+        raise RuntimeError(f"missing PPM payload separator in {path}")
+    if data[position:position + 2] == b"\r\n":
+        position += 2
+    else:
+        position += 1
+    pixels = data[position:]
+    expected = width * height * 3
+    if len(pixels) != expected:
+        raise RuntimeError(
+            f"PPM payload size mismatch in {path}: {len(pixels)} != {expected}"
+        )
+    return width, height, pixels
+
+
+def expect_pattern(
+    path: Path,
+    expected_colors: tuple[tuple[int, int, int], ...],
+) -> None:
+    width, height, pixels = read_ppm(path)
+    if (width, height) != (SCANOUT_WIDTH, SCANOUT_HEIGHT):
+        raise RuntimeError(
+            f"HVS scanout size mismatch: {(width, height)} != "
+            f"{(SCANOUT_WIDTH, SCANOUT_HEIGHT)}"
+        )
+
+    samples = (
+        (1, 1),
+        (width - 2, 1),
+        (1, height - 2),
+        (width - 2, height - 2),
+    )
+    for (x, y), expected in zip(samples, expected_colors, strict=True):
+        offset = (y * width + x) * 3
+        actual = tuple(pixels[offset:offset + 3])
+        if actual != expected:
+            raise RuntimeError(
+                f"HVS scanout pixel {(x, y)} is {actual}, expected {expected}"
+            )
+
+
+def exercise_scanout(qtest: Any, qmp: QMPClient, temp: Path) -> None:
+    colors_a = (0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFFFF)
+    colors_b = (0x00FFFFFF, 0x000000FF, 0x0000FF00, 0x00FF0000)
+    expected_a = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255))
+    expected_b = ((255, 255, 255), (0, 0, 255), (0, 255, 0), (255, 0, 0))
+    dlist = SCALER_DLIST_START + SCANOUT_LIST_WORD * 4
+    ctl0 = (
+        SCALER_CTL0_VALID
+        | (7 << 24)
+        | SCALER_CTL0_ORDER_ABGR
+        | SCALER_CTL0_RGBA_EXPAND_ROUND
+        | SCALER_CTL0_UNITY
+        | HVS_PIXEL_FORMAT_RGBA8888
+    )
+    element = (
+        ctl0,
+        0xFF000000,
+        (SCANOUT_HEIGHT << 16) | SCANOUT_WIDTH,
+        0xC0C0C0C0,
+        SCANOUT_BUFFER_A,
+        0xC0C0C0C0,
+        SCANOUT_PITCH,
+        SCALER_CTL0_END,
+    )
+
+    write_pattern(qtest, SCANOUT_BUFFER_A, colors_a)
+    write_pattern(qtest, SCANOUT_BUFFER_B, colors_b)
+    for index, value in enumerate(element):
+        qtest.writel(dlist + index * 4, value)
+
+    qtest.writel(SCALER_DISPLIST[SCANOUT_CHANNEL], SCANOUT_LIST_WORD)
+    qtest.writel(
+        SCALER_DISPCTRLX[SCANOUT_CHANNEL],
+        SCALER_DISPCTRLX_ENABLE
+        | (SCANOUT_WIDTH << 12)
+        | SCANOUT_HEIGHT,
+    )
+
+    first = temp / "hvs-scanout-a.ppm"
+    qmp.execute("screendump", {"filename": str(first)})
+    expect_pattern(first, expected_a)
+
+    qtest.writel(
+        dlist + 4 * 4,
+        SCANOUT_BUFFER_B,
+    )
+    second = temp / "hvs-scanout-b.ppm"
+    qmp.execute("screendump", {"filename": str(second)})
+    expect_pattern(second, expected_b)
+
+    qtest.writel(SCALER_DISPCTRLX[SCANOUT_CHANNEL], 0)
+    expect_disabled_empty(qtest, SCANOUT_CHANNEL)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -151,7 +355,8 @@ def main() -> int:
             qtest = support.connect_when_ready(
                 qtest_path, process, support.QTestClient
             )
-            qmp = support.connect_when_ready(qmp_path, process, support.QMPClient)
+            qmp = support.connect_when_ready(qmp_path, process, QMPClient)
+            qmp.execute("cont")
 
             if qtest.readl(SCALER_DISPCTRL) != 0:
                 raise RuntimeError("HVS global control did not reset to zero")
@@ -176,6 +381,8 @@ def main() -> int:
                         f"HVS DLIST RAM did not retain word {index}"
                     )
 
+            exercise_scanout(qtest, qmp, temp)
+
             for channel in range(3):
                 exercise_channel(qtest, channel)
 
@@ -190,7 +397,8 @@ def main() -> int:
                     )
                 if qtest.readl(SCALER_DISPLACT[channel]) != 0:
                     raise RuntimeError(
-                        f"HVS channel {channel} active list survived system reset"
+                        f"HVS channel {channel} active list survived "
+                        "system reset"
                     )
             if qtest.readl(SCALER_DLIST_START) != 0:
                 raise RuntimeError("HVS DLIST RAM survived system reset")
@@ -220,7 +428,7 @@ def main() -> int:
                 f"QEMU exited with status {process.returncode}:\n{stderr}"
             )
 
-    print("BCM2835 HVS display-list smoke test passed")
+    print("BCM2835 HVS display-list and linear scanout smoke test passed")
     return 0
 
 
