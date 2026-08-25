@@ -1,0 +1,139 @@
+name: WD40 subtractive log masks
+
+on:
+  push:
+    branches:
+      - wd40/qol-subtractive-log-masks
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-subtractive-log-masks
+  cancel-in-progress: false
+
+jobs:
+  transform-build-test-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply and validate the logging control
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/wd40/apply-rustless-build.py
+          python3 scripts/wd40/apply-amd-1tb-hole-control.py
+          python3 scripts/wd40/apply-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          git diff --check
+
+      - name: Install C build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build the logger and x86_64 without a Rust toolchain
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-log-mask
+          cd build-log-mask
+          ../configure \
+            --target-list=x86_64-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 tests/unit/test-logging qemu-system-x86_64
+          cd ..
+
+      - name: Run parser unit tests
+        run: |
+          set -Eeuo pipefail
+          ./build-log-mask/tests/unit/test-logging --tap -k
+
+      - name: Exercise command-line mask addition and subtraction
+        run: |
+          set -Eeuo pipefail
+
+          ./build-log-mask/qemu-system-x86_64 -d help \
+            > /tmp/wd40-log-help.txt 2>&1
+          grep -F "prefix '+' to add and '-' to remove" \
+            /tmp/wd40-log-help.txt
+
+          printf 'quit\n' | timeout 30 \
+            ./build-log-mask/qemu-system-x86_64 \
+              -machine none \
+              -display none \
+              -nodefaults \
+              -S \
+              -monitor stdio \
+              -d all,-tid,-int,-exec,-cpu \
+              -D /tmp/wd40-subtractive.log
+          test -f /tmp/wd40-subtractive.log
+
+          set +e
+          ./build-log-mask/qemu-system-x86_64 \
+            -machine none \
+            -display none \
+            -nodefaults \
+            -d all,-definitely-not-a-log-item \
+            > /tmp/wd40-invalid-mask.txt 2>&1
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 ]]; then
+            cat /tmp/wd40-invalid-mask.txt
+            echo "invalid subtractive log item unexpectedly succeeded" >&2
+            exit 1
+          fi
+
+      - name: Publish the validated logging implementation
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-log-mask
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          git diff --check
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Subtractive log-mask support already applied"
+            exit 0
+          fi
+          git commit -m "util/log: allow subtractive -d masks
+
+          Process log categories from left to right, accepting +item to add
+          and -item to remove a category. This permits broad diagnostic masks
+          such as all,-tid,-int,-exec,-cpu without interrupt or execution-log
+          floods, while preserving existing unprefixed command lines."
+          git push origin "HEAD:${GITHUB_REF_NAME}"
