@@ -32,6 +32,17 @@ ARM_STATUS = 0x3F00B444
 ARM_ID = 0x3F00B44C
 PM_PROC = 0x3F100110
 
+HVS_BASE = 0x3F400000
+HVS_DISPCTRL = HVS_BASE + 0x0000
+HVS_DISPSTAT = HVS_BASE + 0x0004
+HVS_DISPLIST = tuple(HVS_BASE + 0x0020 + index * 4 for index in range(3))
+HVS_DISPLACT = tuple(HVS_BASE + 0x0030 + index * 4 for index in range(3))
+HVS_DISPCTRLX = tuple(HVS_BASE + 0x0040 + index * 0x10 for index in range(3))
+HVS_DISPSTATX = tuple(HVS_BASE + 0x0048 + index * 0x10 for index in range(3))
+HVS_DLIST_START = HVS_BASE + 0x2000
+HVS_DLIST_CAPACITY_WORDS = 0x4000 // 4
+HVS_SNAPSHOT_WORDS = 32
+
 PC_RE = re.compile(r"(?:^|\s)pc=([0-9a-fA-F]+)")
 SR_RE = re.compile(r"(?:^|\s)sr=([0-9a-fA-F]+)")
 REG_RE = re.compile(r"\br([0-9]+)=([0-9a-fA-F]+)")
@@ -445,6 +456,40 @@ def progress_sample(qtest: QTest, qmp: QMP, elapsed: float) -> dict[str, Any]:
     return sample
 
 
+def hvs_snapshot(qtest: QTest) -> dict[str, Any]:
+    """Capture the live HVS channel handoff and a bounded active dlist."""
+    snapshot: dict[str, Any] = {
+        "global_control": f"0x{qtest.readl(HVS_DISPCTRL):08x}",
+        "global_status": f"0x{qtest.readl(HVS_DISPSTAT):08x}",
+        "channels": [],
+    }
+
+    channels: list[dict[str, Any]] = []
+    for channel in range(3):
+        list_word = qtest.readl(HVS_DISPLIST[channel])
+        active_word = qtest.readl(HVS_DISPLACT[channel])
+        record: dict[str, Any] = {
+            "channel": channel,
+            "list_word": f"0x{list_word:08x}",
+            "active_word": f"0x{active_word:08x}",
+            "control": f"0x{qtest.readl(HVS_DISPCTRLX[channel]):08x}",
+            "status": f"0x{qtest.readl(HVS_DISPSTATX[channel]):08x}",
+        }
+        if active_word < HVS_DLIST_CAPACITY_WORDS:
+            words = [
+                qtest.readl(HVS_DLIST_START + (active_word + index) * 4)
+                for index in range(HVS_SNAPSHOT_WORDS)
+            ]
+            record["active_dlist"] = [f"0x{word:08x}" for word in words]
+        else:
+            record["active_dlist_error"] = (
+                f"active word 0x{active_word:08x} exceeds HVS dlist RAM"
+            )
+        channels.append(record)
+
+    snapshot["channels"] = channels
+    return snapshot
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -494,7 +539,7 @@ def main() -> int:
         temp = Path(temp_s)
         command = build_command(args, temp, serial_path, image_path)
         result: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "mode": args.mode,
             "qemu_command": command,
             "seconds_requested": args.seconds,
@@ -588,6 +633,12 @@ def main() -> int:
                 qmp.execute("stop")
             except Exception:
                 pass
+            try:
+                result["hvs_snapshot"] = hvs_snapshot(qtest)
+            except Exception as exc:
+                result["hvs_snapshot_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
             try:
                 result["final_cpu_snapshot"] = cpu_snapshot(
                     qmp, full_registers=True
