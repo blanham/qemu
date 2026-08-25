@@ -1,0 +1,324 @@
+name: VC4 inherited-master native modeset probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-modeset-probe-v2.yml
+      - scripts/vc4/enable-linux-kms-modeset-probe.py
+      - tests/vc4/linux-kms-modeset-probe.inc.c
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-modeset-probe-v2
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-modeset-v2-official
+      MODULE_DIR: /tmp/vc4-modeset-v2-modules
+      INITRAMFS_DIR: /tmp/vc4-modeset-v2-initramfs
+      DTB_DIR: /tmp/vc4-modeset-v2-dtbs
+      PROBE_DIR: /tmp/vc4-modeset-v2-probe
+      EVIDENCE_DIR: vc4-kms-modeset-v2-evidence
+      STATUS_JSON: VC4_LINUX_KMS_MODESET_V2_STATUS.json
+      STATUS_MD: VC4_LINUX_KMS_MODESET_V2_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" "$DTB_DIR" \
+            "$PROBE_DIR" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$PROBE_DIR" "$EVIDENCE_DIR"
+
+      - name: Enable and validate the inherited-master witness
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/enable-linux-kms-modeset-probe.py
+          python3 -m py_compile \
+            scripts/vc4/enable-linux-kms-modeset-probe.py
+          git diff --check
+          grep -Fq '#include "linux-kms-modeset-probe.inc.c"' \
+            tests/vc4/linux-v3d-modular-init.c
+          grep -Fq 'vc4_kms_modeset_supervise(card.fd)' \
+            tests/vc4/linux-v3d-modular-init.c
+          grep -Fq 'resources.fb_id_ptr' \
+            tests/vc4/linux-kms-modeset-probe.inc.c
+          grep -Fq 'resources.encoder_id_ptr' \
+            tests/vc4/linux-kms-modeset-probe.inc.c
+
+      - name: Fetch pinned kernel, DTB, and corrected module roots
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target i2c-bcm2835 \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+
+          grep -Fq i2c-bcm2835 "$MODULE_DIR/MANIFEST"
+          grep -Fq vc4.ko "$MODULE_DIR/MANIFEST"
+          i2c_line=$(awk '/i2c-bcm2835/{print NR; exit}' \
+            "$MODULE_DIR/MANIFEST")
+          vc4_line=$(awk '/vc4[.]ko/{print NR; exit}' \
+            "$MODULE_DIR/MANIFEST")
+          test "$i2c_line" -lt "$vc4_line"
+
+      - name: Build the modeset initramfs and native-KMS DTB
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" \
+            2>&1 | tee "$EVIDENCE_DIR/initramfs.log"
+
+          for marker in \
+            VC4_LINUX_KMS_MODESET_START \
+            VC4_LINUX_KMS_MODESET_RESOURCES_OK \
+            VC4_LINUX_KMS_MODESET_SETCRTC_START \
+            VC4_LINUX_KMS_MODESET_SETCRTC_OK \
+            VC4_LINUX_KMS_MODESET_OK \
+            VC4_LINUX_KMS_MODESET_TIMEOUT; do
+            grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"
+          done
+
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/kms.dtbo" "$DTB_DIR/kms.dtb"
+
+      - name: Build QEMU and prove focused display regressions
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Run the bounded native modeset witness
+        run: |
+          set +e
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$PROBE_DIR" \
+            --seconds 110 --sample-interval 5 \
+            > "$PROBE_DIR/probe.stdout" 2>&1
+          rc=$?
+          printf '%s\n' "$rc" > "$PROBE_DIR/return-code"
+          cat "$PROBE_DIR/probe.stdout"
+          exit 0
+
+      - name: Record the exact modeset frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          serial_path = Path("/tmp/vc4-modeset-v2-probe/serial.log")
+          serial = (
+              serial_path.read_text(errors="replace")
+              if serial_path.is_file()
+              else ""
+          )
+          manifest_path = Path("/tmp/vc4-modeset-v2-modules/MANIFEST")
+          manifest = (
+              manifest_path.read_text(errors="replace")
+              if manifest_path.is_file()
+              else ""
+          )
+
+          failure = re.search(
+              r"VC4_LINUX_KMS_MODESET_FAILED "
+              r"stage=(\S+) errno=(\d+)",
+              serial,
+          )
+          module_ok = "VC4_LINUX_MODULE_CLOSURE_OK" in serial
+          topology_ok = "VC4_LINUX_KMS_TOPOLOGY_OK" in serial
+          submit_ok = "VC4_LINUX_DRM_SUBMIT_OK" in serial
+          supplier_ok = "i2c-bcm2835" in manifest
+          setcrtc_started = (
+              "VC4_LINUX_KMS_MODESET_SETCRTC_START" in serial
+          )
+          setcrtc_ok = "VC4_LINUX_KMS_MODESET_SETCRTC_OK" in serial
+          modeset_ok = "VC4_LINUX_KMS_MODESET_OK" in serial
+          timed_out = "VC4_LINUX_KMS_MODESET_TIMEOUT" in serial
+          supervisor_ok = (
+              "VC4_LINUX_KMS_MODESET_SUPERVISOR_OK" in serial
+          )
+
+          if not supplier_ok:
+              classification = "vc4-kms-ddc-supplier-fixture-missing"
+          elif not module_ok:
+              classification = "vc4-kms-module-closure-regression"
+          elif not topology_ok:
+              classification = "vc4-kms-topology-regression"
+          elif timed_out:
+              classification = "vc4-kms-modeset-timeout"
+          elif modeset_ok and setcrtc_ok and supervisor_ok:
+              classification = "linux-vc4-kms-modeset-clear"
+          elif failure:
+              classification = "vc4-kms-modeset-" + failure.group(1)
+          elif setcrtc_started:
+              classification = "vc4-kms-setcrtc-incomplete"
+          else:
+              classification = "vc4-kms-modeset-not-reached"
+
+          passed = all((
+              supplier_ok,
+              module_ok,
+              topology_ok,
+              submit_ok,
+              setcrtc_ok,
+              modeset_ok,
+              supervisor_ok,
+          ))
+          record = {
+              "schema_version": 2,
+              "source_sha": "${{ github.sha }}",
+              "run_id": "${{ github.run_id }}",
+              "run_attempt": "${{ github.run_attempt }}",
+              "passed": passed,
+              "classification": classification,
+              "ddc_supplier_root_present": supplier_ok,
+              "module_closure_ok": module_ok,
+              "native_kms_topology_clear": topology_ok,
+              "render_submission_preserved": submit_ok,
+              "setcrtc_started": setcrtc_started,
+              "setcrtc_ok": setcrtc_ok,
+              "modeset_ok": modeset_ok,
+              "supervisor_ok": supervisor_ok,
+              "timed_out": timed_out,
+              "failure_stage": failure.group(1) if failure else None,
+              "failure_errno": int(failure.group(2)) if failure else None,
+              "relevant_tail": [
+                  line
+                  for line in serial.splitlines()
+                  if "VC4_LINUX_KMS_MODESET" in line
+                  or "VC4_LINUX_KMS_TOPOLOGY" in line
+                  or "VC4_LINUX_DRM_SUBMIT" in line
+                  or "timeout" in line.lower()
+                  or "failed" in line.lower()
+              ][-500:],
+          }
+          Path("VC4_LINUX_KMS_MODESET_V2_STATUS.json").write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+          Path("VC4_LINUX_KMS_MODESET_V2_STATUS.md").write_text(
+              "\n".join((
+                  "# VC4 inherited-master native KMS modeset",
+                  "",
+                  f"Validation passed: **{'true' if passed else 'false'}**",
+                  "",
+                  f"Frontier: **`{classification}`**",
+                  "",
+                  f"- DDC supplier root present: `{supplier_ok}`",
+                  f"- Module closure loaded: `{module_ok}`",
+                  f"- Native topology clear: `{topology_ok}`",
+                  f"- Existing render submission preserved: `{submit_ok}`",
+                  f"- SETCRTC entered: `{setcrtc_started}`",
+                  f"- SETCRTC completed: `{setcrtc_ok}`",
+                  f"- Supervised modeset completed: `{modeset_ok}`",
+                  f"- Timeout: `{timed_out}`",
+                  f"- Failure stage: `{record['failure_stage']}`",
+                  f"- Failure errno: `{record['failure_errno']}`",
+                  "",
+                  "The child inherits the already-open primary-node FD, "
+                  "preserving DRM-master ownership. GETRESOURCES receives "
+                  "all four user arrays (FB, CRTC, connector, and encoder), "
+                  "eliminating the EFAULT in the first one-shot witness.",
+              )) + "\n"
+          )
+          PY
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cp -a "$PROBE_DIR" "$EVIDENCE_DIR/probe" || true
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs" || true
+          cp "$MODULE_DIR/MANIFEST" \
+            "$EVIDENCE_DIR/MODULE_MANIFEST" || true
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/" || true
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-kms-modeset-v2-${{ github.run_attempt }}
+          path: vc4-kms-modeset-v2-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the measured frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git restore --worktree --staged \
+            tests/vc4/linux-v3d-modular-init.c
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m "test/vc4: record inherited-master modeset frontier"
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+          fi
