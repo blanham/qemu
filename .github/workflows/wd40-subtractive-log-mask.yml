@@ -52,7 +52,7 @@ jobs:
             libglib2.0-dev \
             libpixman-1-dev
 
-      - name: Build the logger and x86_64 without a Rust toolchain
+      - name: Build system and user emulators without a Rust toolchain
         run: |
           set -Eeuo pipefail
           mkdir .wd40-poison
@@ -69,12 +69,15 @@ jobs:
           mkdir build-log-mask
           cd build-log-mask
           ../configure \
-            --target-list=x86_64-softmmu \
+            --target-list=x86_64-softmmu,x86_64-linux-user \
             --disable-rust \
             --enable-fdt=internal \
             --disable-docs \
             --disable-werror
-          ninja -j2 tests/unit/test-logging qemu-system-x86_64
+          ninja -j2 \
+            tests/unit/test-logging \
+            qemu-system-x86_64 \
+            qemu-x86_64
           cd ..
 
       - name: Run parser unit tests
@@ -82,14 +85,38 @@ jobs:
           set -Eeuo pipefail
           ./build-log-mask/tests/unit/test-logging --tap -k
 
-      - name: Exercise command-line mask addition and subtraction
+      - name: Exercise command-line and HMP masks
         run: |
           set -Eeuo pipefail
 
+          set +e
           ./build-log-mask/qemu-system-x86_64 -d help \
-            > /tmp/wd40-log-help.txt 2>&1
+            > /tmp/wd40-system-log-help.txt 2>&1
+          system_help_rc=$?
+          ./build-log-mask/qemu-x86_64 -d help \
+            > /tmp/wd40-user-log-help.txt 2>&1
+          user_help_rc=$?
+          set -e
+
           grep -F "prefix '+' to add and '-' to remove" \
-            /tmp/wd40-log-help.txt
+            /tmp/wd40-system-log-help.txt
+          grep -F "prefix '+' to add and '-' to remove" \
+            /tmp/wd40-user-log-help.txt
+          if [[ $system_help_rc -eq 0 || $user_help_rc -eq 0 ]]; then
+            echo "-d help unexpectedly continued into emulation" >&2
+            exit 1
+          fi
+
+          ./build-log-mask/qemu-x86_64 -h \
+            | grep -F "enable logging; prefix '-' to exclude an item"
+
+          printf 'log guest_errors,int,-int\nlog all,-tid,-int,-exec,-cpu\nquit\n' \
+            | timeout 30 ./build-log-mask/qemu-system-x86_64 \
+                -machine none \
+                -display none \
+                -nodefaults \
+                -S \
+                -monitor stdio
 
           printf 'quit\n' | timeout 30 \
             ./build-log-mask/qemu-system-x86_64 \
@@ -98,9 +125,7 @@ jobs:
               -nodefaults \
               -S \
               -monitor stdio \
-              -d all,-tid,-int,-exec,-cpu \
-              -D /tmp/wd40-subtractive.log
-          test -f /tmp/wd40-subtractive.log
+              -d all,-tid,-int,-exec,-cpu
 
           set +e
           ./build-log-mask/qemu-system-x86_64 \
@@ -109,9 +134,9 @@ jobs:
             -nodefaults \
             -d all,-definitely-not-a-log-item \
             > /tmp/wd40-invalid-mask.txt 2>&1
-          rc=$?
+          invalid_rc=$?
           set -e
-          if [[ $rc -eq 0 ]]; then
+          if [[ $invalid_rc -eq 0 ]]; then
             cat /tmp/wd40-invalid-mask.txt
             echo "invalid subtractive log item unexpectedly succeeded" >&2
             exit 1
