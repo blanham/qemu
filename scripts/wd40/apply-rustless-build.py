@@ -34,6 +34,11 @@ def replace_once(path: str, old: str, new: str) -> None:
     raise RuntimeError(f"{path}: expected one replacement site, found {count}")
 
 
+def normalize_final_newline(path: str) -> None:
+    file_path, text = load(path)
+    store(file_path, text.rstrip("\n") + "\n")
+
+
 def transform_meson() -> None:
     file_path, text = load("meson.build")
 
@@ -177,6 +182,7 @@ ssize_t rust_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
 #endif""",
         "",
     )
+    normalize_final_newline("util/log.c")
 
 
 if __name__ == "__main__":
