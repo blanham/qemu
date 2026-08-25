@@ -1,0 +1,37 @@
+diff --git a/hw/arm/bcm2835_peripherals.c b/hw/arm/bcm2835_peripherals.c
+--- a/hw/arm/bcm2835_peripherals.c
++++ b/hw/arm/bcm2835_peripherals.c
+@@ -38,6 +38,11 @@ static const unsigned int bcm2835_pixelvalve_irqs[] = {
+     INTERRUPT_PWA0, INTERRUPT_PWA1, INTERRUPT_PIXELVALVE1,
+ };
+ 
++/* PV0, PV1, and PV2 consume HVS channels 0, 2, and 1. */
++static const unsigned int bcm2835_pixelvalve_hvs_channels[] = {
++    0, 2, 1,
++};
++
+ void create_unimp(BCMSocPeripheralBaseState *ps,
+                   UnimplementedDeviceState *uds,
+                   const char *name, hwaddr ofs, hwaddr size)
+@@ -70,6 +75,8 @@ static void bcm2835_peripherals_init(Object *obj)
+     /* Native VideoCore display pipeline */
+     object_initialize_child(obj, "hvs", &s->hvs,
+                             TYPE_BCM2835_HVS);
++    object_property_add_const_link(OBJECT(&s->hvs), "fb",
++                                   OBJECT(&s_base->fb));
+     object_initialize_child(obj, "hdmi", &s->hdmi,
+                             TYPE_BCM2835_HDMI);
+     object_initialize_child(obj, "pixelvalve0",
+@@ -292,6 +299,12 @@ static void bcm2835_peripherals_realize(DeviceState *dev, Error **errp)
+             qdev_get_gpio_in_named(DEVICE(&s_base->ic),
+                                    BCM2835_IC_GPU_IRQ,
+                                    bcm2835_pixelvalve_irqs[n]));
++        qdev_connect_gpio_out_named(
++            DEVICE(&s->pixelvalve[n]), "vblank", 0,
++            qdev_get_gpio_in_named(
++                DEVICE(&s->hvs),
++                "vblank",
++                bcm2835_pixelvalve_hvs_channels[n]));
+     }
+ 
+     /* Extended Mass Media Controller */

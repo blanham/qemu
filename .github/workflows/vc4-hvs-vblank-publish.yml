@@ -1,0 +1,90 @@
+name: Publish VC4 HVS vblank display-list latch
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-hvs-vblank-publish.yml
+      - .github/vc4-hvs-vblank-publish/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-vblank-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      PATCH_DIR: .github/vc4-hvs-vblank-publish
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Install focused build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            ninja-build \
+            pkg-config \
+            python3
+
+      - name: Apply and validate the hardware-model change
+        run: |
+          set -euo pipefail
+          for patch in "$PATCH_DIR"/*.patch; do
+            git apply --check "$patch"
+            git apply "$patch"
+          done
+          git diff --check
+          python3 -m py_compile scripts/vc4/hvs-dlist-smoke.py
+
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs \
+            --disable-werror
+          ninja -C build qemu-system-aarch64
+
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the validated commit and remove the transient publisher
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+
+          git rm -r .github/vc4-hvs-vblank-publish
+          git rm .github/workflows/vc4-hvs-vblank-publish.yml
+          git add \
+            hw/arm/bcm2835_peripherals.c \
+            hw/display/bcm2835_hvs.c \
+            hw/display/bcm2835_pixelvalve.c \
+            include/hw/display/bcm2835_pixelvalve.h \
+            scripts/vc4/hvs-dlist-smoke.py
+
+          git diff --cached --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=no | \
+            grep '^.[^ ]' || true)"
+
+          git commit \
+            --author="VC4 Development <vc4-dev@users.noreply.github.com>" \
+            -m "hw/display: latch VC4 HVS display lists at vblank" \
+            -m "Wire each BCM2835 pixel valve frame boundary to its hardware HVS channel. Keep SCALER_DISPLIST pending while a channel runs, update hardware-owned SCALER_DISPLACT before the corresponding vblank interrupt, and preserve immediate in-place address updates for async flips. Resolve the framebuffer through explicit board wiring and cover initial activation, deferred normal flips, and immediate async flips in the focused smoke test."
+
+          git push origin "HEAD:${BRANCH}"
