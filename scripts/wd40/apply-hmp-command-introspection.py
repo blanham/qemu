@@ -82,7 +82,7 @@ def main() -> None:
 #
 # @coroutine: Whether the command handler runs in a coroutine.
 #
-# @has-subcommands: Whether the command has a nested command table.
+# @subcommands: Whether the command has a nested command table.
 #
 # @arch-mask: QEMU architecture bitmask; zero means unrestricted.
 #
@@ -101,7 +101,7 @@ def main() -> None:
       'phase-available': 'bool',
       'preconfig': 'bool',
       'coroutine': 'bool',
-      'has-subcommands': 'bool',
+      'subcommands': 'bool',
       'arch-mask': 'uint32'
   } }
 
@@ -214,7 +214,7 @@ static HMPCommandInfoList **hmp_command_info_collect(
         info->phase_available = phase_available;
         info->preconfig = cmd_can_preconfig(cmd);
         info->coroutine = cmd->coroutine;
-        info->has_subcommands = cmd->sub_table != NULL;
+        info->subcommands = cmd->sub_table != NULL;
         info->arch_mask = cmd->arch_bitmask;
 
         entry->value = info;
@@ -282,7 +282,7 @@ For example::
            "phase-available": true,
            "preconfig": false,
            "coroutine": false,
-           "has-subcommands": false,
+           "subcommands": false,
            "arch-mask": 0 },
          ...
        ] }
