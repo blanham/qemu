@@ -34,17 +34,28 @@ jobs:
         run: |
           set -Eeuo pipefail
           git fetch origin master
-          for commit in \
-            3386b05f8923b208805440f6e8b297741e01b95d \
-            caf2bf6002766c644a1fefff832d9fe02b7f4c05 \
-            a1cffdb7eda8cab773e6594aef1ba4a92b344261
-          do
-            if git merge-base --is-ancestor "$commit" HEAD; then
-              echo "$commit already present"
-            else
-              git cherry-pick "$commit"
-            fi
-          done
+
+          if test ! -f tests/vc4/aarch64-handoff.S; then
+            git cherry-pick 3386b05f8923b208805440f6e8b297741e01b95d
+          fi
+          if test ! -f tests/vc4/aarch64-handoff.ld; then
+            git cherry-pick caf2bf6002766c644a1fefff832d9fe02b7f4c05
+          fi
+          if test ! -f scripts/vc4/raspi3-arm-payload-probe.py; then
+            git cherry-pick a1cffdb7eda8cab773e6594aef1ba4a92b344261
+          fi
+
+      - name: Install C and probe build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
 
       - name: Validate the VC4 probe assets
         run: |
@@ -84,18 +95,6 @@ jobs:
           python3 scripts/ci/check-wd40-rustless.py
           python3 scripts/ci/check-wd40-amd-1tb-hole.py
           git diff --check
-
-      - name: Install C build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            binutils-aarch64-linux-gnu \
-            build-essential \
-            ninja-build \
-            pkg-config \
-            python3-venv \
-            libglib2.0-dev \
-            libpixman-1-dev
 
       - name: Build x86_64 and AArch64 without a Rust toolchain
         run: |
