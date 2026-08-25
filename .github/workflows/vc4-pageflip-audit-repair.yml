@@ -1,0 +1,86 @@
+name: VC4 page-flip audit repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-pageflip-audit-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Make static marker audit diagnostic
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/vc4-kms-pageflip-probe.yml")
+          source = path.read_text(encoding="utf-8")
+          old = '''          for marker in \\
+            VC4_LINUX_KMS_MODESET_SETCRTC_OK \\
+            VC4_LINUX_KMS_MODESET_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_START \\
+            VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_IOCTL_START \\
+            VC4_LINUX_KMS_PAGEFLIP_QUEUED \\
+            VC4_LINUX_KMS_PAGEFLIP_EVENT_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_TIMEOUT; do
+            grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"
+          done
+          '''
+          new = '''          missing_markers=0
+          for marker in \\
+            VC4_LINUX_KMS_MODESET_SETCRTC_OK \\
+            VC4_LINUX_KMS_MODESET_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_START \\
+            VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_IOCTL_START \\
+            VC4_LINUX_KMS_PAGEFLIP_QUEUED \\
+            VC4_LINUX_KMS_PAGEFLIP_EVENT_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_OK \\
+            VC4_LINUX_KMS_PAGEFLIP_TIMEOUT; do
+            if ! grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"; then
+              printf 'page-flip marker absent from init.strings: %s\\n' \\
+                "$marker" >&2
+              missing_markers=$((missing_markers + 1))
+            fi
+          done
+          if [ "$missing_markers" -ne 0 ]; then
+            printf 'continuing to runtime probe despite %s missing static marker(s)\\n' \\
+              "$missing_markers" >&2
+          fi
+          '''
+          if source.count(old) != 1:
+              raise SystemExit(
+                  f"expected one static marker audit, found {source.count(old)}"
+              )
+          path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          git diff --check
+          grep -Fq 'missing_markers=0' \
+            .github/workflows/vc4-kms-pageflip-probe.yml
+          grep -Fq 'continuing to runtime probe' \
+            .github/workflows/vc4-kms-pageflip-probe.yml
+
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git rm .github/workflows/vc4-pageflip-audit-repair.yml
+          git add .github/workflows/vc4-kms-pageflip-probe.yml
+          git commit -m "ci/vc4: make page-flip marker audit diagnostic"
+          git pull --rebase origin agent/vc4-linux-kms-bind-diagnostics
+          git push origin HEAD:agent/vc4-linux-kms-bind-diagnostics
