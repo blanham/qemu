@@ -1,0 +1,101 @@
+name: WD40 AMD 1 TiB hole control
+
+on:
+  push:
+    branches:
+      - wd40/qol-amd-1tb-hole-control
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-amd-1tb-hole-control
+  cancel-in-progress: false
+
+jobs:
+  transform-build-test-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply and validate the AMD 1 TiB-hole control
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/wd40/apply-rustless-build.py
+          python3 scripts/wd40/apply-amd-1tb-hole-control.py
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          git diff --check
+
+      - name: Install C build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build x86_64 without a Rust toolchain
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-amd
+          cd build-amd
+          ../configure \
+            --target-list=x86_64-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 qemu-system-x86_64
+          cd ..
+
+      - name: Exercise auto, on, and off memory layouts
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py build-amd
+
+      - name: Publish validated transformation
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-amd
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          git diff --check
+          git add -A
+          if git diff --cached --quiet; then
+            echo "AMD 1 TiB-hole control already applied"
+            exit 0
+          fi
+          git commit -m "hw/i386: add explicit AMD 1 TiB-hole control
+
+          Add amd-1tb-hole=auto|on|off to PC and Q35 machines. Auto keeps
+          each versioned machine's existing compatibility policy, while on
+          and off provide deliberate overrides for safe VFIO layouts and
+          operating-system-development or retro configurations."
+          git push origin "HEAD:${GITHUB_REF_NAME}"
