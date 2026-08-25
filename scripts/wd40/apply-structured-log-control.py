@@ -49,7 +49,8 @@ def main() -> None:
 #
 # @enabled: Whether the category is currently enabled.
 #
-# @sticky: Whether the category cannot be disabled after being enabled.
+# @sticky: Whether the category cannot be disabled after being
+#     enabled.
 #
 # Since: 11.2
 ##
