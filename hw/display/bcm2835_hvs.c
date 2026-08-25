@@ -4,8 +4,8 @@
  * The VC4 renderer and plane-list construction remain in the guest driver.
  * This device models the hardware-visible HVS register/DLIST window, the
  * display-list handoff needed by the CRTC vblank path, and the common native
- * KMS scanout contract: one full-screen, unity-scaled, linear RGB565 or
- * RGBA8888 plane.
+ * KMS scanout contract: one full-screen, unity-scaled, linear RGB565, RGB888,
+ * or RGBA8888 plane.
  * Unsupported compositions remain visible to the guest as programmed but do
  * not silently receive an incorrect software rendering approximation.
  *
@@ -63,6 +63,7 @@
 #define HVS_PIXEL_ORDER_XRGB         UINT32_C(2)
 #define HVS_PIXEL_ORDER_XBGR         UINT32_C(3)
 #define HVS_PIXEL_FORMAT_RGB565      UINT32_C(4)
+#define HVS_PIXEL_FORMAT_RGB888      UINT32_C(5)
 #define HVS_PIXEL_FORMAT_RGBA8888    UINT32_C(7)
 
 #define SCALER_POS0_START_Y_SHIFT    12
@@ -208,6 +209,16 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
         bytes_per_pixel = sizeof(uint16_t);
         bits_per_pixel = 16;
         pixo = order == HVS_PIXEL_ORDER_XBGR ? 0 : 1;
+        break;
+    case HVS_PIXEL_FORMAT_RGB888:
+        if (order != HVS_PIXEL_ORDER_XRGB &&
+            order != HVS_PIXEL_ORDER_XBGR) {
+            return false;
+        }
+        bytes_per_pixel = 3;
+        bits_per_pixel = 24;
+        /* DRM RGB888 is B,G,R in memory; BGR888 is R,G,B. */
+        pixo = order == HVS_PIXEL_ORDER_XRGB ? 0 : 1;
         break;
     case HVS_PIXEL_FORMAT_RGBA8888:
         if (order != HVS_PIXEL_ORDER_ARGB &&

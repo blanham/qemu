@@ -35,8 +35,10 @@ SCALER_CTL0_VALID = 1 << 30
 SCALER_CTL0_RGBA_EXPAND_ROUND = 3 << 11
 SCALER_CTL0_ORDER_XRGB = 2 << 13
 SCALER_CTL0_ORDER_ABGR = 3 << 13
+SCALER_CTL0_ORDER_XBGR = 3 << 13
 SCALER_CTL0_UNITY = 1 << 4
 HVS_PIXEL_FORMAT_RGB565 = 4
+HVS_PIXEL_FORMAT_RGB888 = 5
 HVS_PIXEL_FORMAT_RGBA8888 = 7
 
 SCANOUT_CHANNEL = 2
@@ -50,6 +52,10 @@ RGB565_SCANOUT_PITCH = SCANOUT_WIDTH * 2
 RGB565_SCANOUT_LIST_WORD = 0x120
 RGB565_SCANOUT_BUFFER_A = 0x00202000
 RGB565_SCANOUT_BUFFER_B = 0x00203000
+RGB888_SCANOUT_PITCH = SCANOUT_WIDTH * 3 + 12
+RGB888_SCANOUT_LIST_WORD = 0x140
+RGB888_SCANOUT_BUFFER_A = 0x00204000
+RGB888_SCANOUT_BUFFER_B = 0x00205000
 
 
 class QMPClient:
@@ -209,6 +215,41 @@ def write_rgb565_pattern(
             qtest.writel(
                 base + y * RGB565_SCANOUT_PITCH + x * 2,
                 packed,
+            )
+
+
+def write_rgb888_pattern(
+    qtest: Any,
+    base: int,
+    colors: tuple[tuple[int, int, int], ...],
+    order: int,
+) -> None:
+    row_bytes = SCANOUT_WIDTH * 3
+
+    if row_bytes % 4:
+        raise RuntimeError("RGB888 smoke rows must be qtest-word aligned")
+    if RGB888_SCANOUT_PITCH < row_bytes:
+        raise RuntimeError("RGB888 smoke pitch is smaller than one row")
+
+    for y in range(SCANOUT_HEIGHT):
+        row = bytearray()
+
+        for x in range(SCANOUT_WIDTH):
+            quadrant = (2 if y >= SCANOUT_HEIGHT // 2 else 0) + (
+                1 if x >= SCANOUT_WIDTH // 2 else 0
+            )
+            red, green, blue = colors[quadrant]
+            if order == SCALER_CTL0_ORDER_XRGB:
+                row.extend((blue, green, red))
+            elif order == SCALER_CTL0_ORDER_XBGR:
+                row.extend((red, green, blue))
+            else:
+                raise RuntimeError(f"unsupported RGB888 order 0x{order:x}")
+
+        for offset in range(0, len(row), 4):
+            qtest.writel(
+                base + y * RGB888_SCANOUT_PITCH + offset,
+                int.from_bytes(row[offset:offset + 4], "little"),
             )
 
 
@@ -409,6 +450,85 @@ def exercise_rgb565_scanout(
     expect_disabled_empty(qtest, SCANOUT_CHANNEL)
 
 
+def exercise_rgb888_scanout(
+    qtest: Any,
+    qmp: QMPClient,
+    temp: Path,
+) -> None:
+    colors_a = (
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 255),
+    )
+    colors_b = tuple(reversed(colors_a))
+    dlist = SCALER_DLIST_START + RGB888_SCANOUT_LIST_WORD * 4
+
+    for label, order in (
+        ("rgb888", SCALER_CTL0_ORDER_XRGB),
+        ("bgr888", SCALER_CTL0_ORDER_XBGR),
+    ):
+        ctl0 = (
+            SCALER_CTL0_VALID
+            | (7 << 24)
+            | order
+            | SCALER_CTL0_RGBA_EXPAND_ROUND
+            | SCALER_CTL0_UNITY
+            | HVS_PIXEL_FORMAT_RGB888
+        )
+        element = (
+            ctl0,
+            0xFF000000,
+            (SCANOUT_HEIGHT << 16) | SCANOUT_WIDTH,
+            0xC0C0C0C0,
+            RGB888_SCANOUT_BUFFER_A,
+            0xC0C0C0C0,
+            RGB888_SCANOUT_PITCH,
+            SCALER_CTL0_END,
+        )
+
+        write_rgb888_pattern(
+            qtest,
+            RGB888_SCANOUT_BUFFER_A,
+            colors_a,
+            order,
+        )
+        write_rgb888_pattern(
+            qtest,
+            RGB888_SCANOUT_BUFFER_B,
+            colors_b,
+            order,
+        )
+        for index, value in enumerate(element):
+            qtest.writel(dlist + index * 4, value)
+
+        qtest.writel(
+            SCALER_DISPLIST[SCANOUT_CHANNEL],
+            RGB888_SCANOUT_LIST_WORD,
+        )
+        qtest.writel(
+            SCALER_DISPCTRLX[SCANOUT_CHANNEL],
+            SCALER_DISPCTRLX_ENABLE
+            | (SCANOUT_WIDTH << 12)
+            | SCANOUT_HEIGHT,
+        )
+
+        first = temp / f"hvs-{label}-scanout-a.ppm"
+        qmp.execute("screendump", {"filename": str(first)})
+        expect_pattern(first, colors_a)
+
+        qtest.writel(
+            dlist + 4 * 4,
+            RGB888_SCANOUT_BUFFER_B,
+        )
+        second = temp / f"hvs-{label}-scanout-b.ppm"
+        qmp.execute("screendump", {"filename": str(second)})
+        expect_pattern(second, colors_b)
+
+        qtest.writel(SCALER_DISPCTRLX[SCANOUT_CHANNEL], 0)
+        expect_disabled_empty(qtest, SCANOUT_CHANNEL)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -486,6 +606,7 @@ def main() -> int:
 
             exercise_scanout(qtest, qmp, temp)
             exercise_rgb565_scanout(qtest, qmp, temp)
+            exercise_rgb888_scanout(qtest, qmp, temp)
 
             for channel in range(3):
                 exercise_channel(qtest, channel)

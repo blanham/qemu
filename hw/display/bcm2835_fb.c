@@ -83,10 +83,10 @@ static void draw_line_src16(void *opaque, uint8_t *dst, const uint8_t *src,
             src += 2;
             break;
         case 24:
-            rgb888 = ldl_le_p(src);
-            r = (rgb888 >> 0) & 0xff;
-            g = (rgb888 >> 8) & 0xff;
-            b = (rgb888 >> 16) & 0xff;
+            /* Do not read a fourth byte past a tightly packed scanline. */
+            r = src[0];
+            g = src[1];
+            b = src[2];
             src += 3;
             break;
         case 32:
