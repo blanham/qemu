@@ -32,23 +32,27 @@ jobs:
 
           path = Path('.github/workflows/vc4-kms-pageflip-probe.yml')
           source = path.read_text(encoding='utf-8')
-          anchor = '''      - .github/workflows/vc4-kms-pageflip-probe.yml
-      - scripts/vc4/enable-linux-kms-pageflip-probe.py
-'''
-          replacement = '''      - .github/workflows/vc4-kms-pageflip-probe.yml
-      - hw/arm/bcm2835_peripherals.c
-      - hw/display/bcm2835_*.c
-      - hw/misc/bcm2835_property.c
-      - include/hw/arm/bcm2835_peripherals.h
-      - include/hw/display/bcm2835_*.h
-      - scripts/vc4/build-linux-v3d-modular-initramfs.sh
-      - scripts/vc4/build-vc4-kms-linux-dtb.sh
-      - scripts/vc4/fetch-linux-vc4-modules.py
-      - scripts/vc4/enable-linux-kms-pageflip-probe.py
-      - tests/vc4/linux-v3d-modular-init.c
-      - tests/vc4/linux-kms-modeset-probe.inc.c
-      - tests/vc4/vc4-kms-frontier-overlay.dts
-'''
+          anchor = '\n'.join((
+              '      - .github/workflows/vc4-kms-pageflip-probe.yml',
+              '      - scripts/vc4/enable-linux-kms-pageflip-probe.py',
+              '',
+          ))
+          replacement = '\n'.join((
+              '      - .github/workflows/vc4-kms-pageflip-probe.yml',
+              '      - hw/arm/bcm2835_peripherals.c',
+              '      - hw/display/bcm2835_*.c',
+              '      - hw/misc/bcm2835_property.c',
+              '      - include/hw/arm/bcm2835_peripherals.h',
+              '      - include/hw/display/bcm2835_*.h',
+              '      - scripts/vc4/build-linux-v3d-modular-initramfs.sh',
+              '      - scripts/vc4/build-vc4-kms-linux-dtb.sh',
+              '      - scripts/vc4/fetch-linux-vc4-modules.py',
+              '      - scripts/vc4/enable-linux-kms-pageflip-probe.py',
+              '      - tests/vc4/linux-v3d-modular-init.c',
+              '      - tests/vc4/linux-kms-modeset-probe.inc.c',
+              '      - tests/vc4/vc4-kms-frontier-overlay.dts',
+              '',
+          ))
           if source.count(anchor) != 1:
               raise SystemExit('page-flip workflow path anchor changed')
           updated = source.replace(anchor, replacement, 1)
