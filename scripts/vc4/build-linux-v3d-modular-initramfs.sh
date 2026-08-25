@@ -6,12 +6,16 @@ out_dir=${1:-"$root_dir/build/vc4-linux-v3d-modular-initramfs"}
 module_bundle=${2:-"$root_dir/build/vc4-linux-v3d-modules"}
 cc=${AARCH64_CC:-aarch64-linux-gnu-gcc}
 libdrm_include=${LIBDRM_INCLUDE:-/usr/include/libdrm}
+init_source=${VC4_INIT_SOURCE:-tests/vc4/linux-v3d-modular-init.c}
 
 if [[ "$out_dir" != /* ]]; then
     out_dir="$PWD/$out_dir"
 fi
 if [[ "$module_bundle" != /* ]]; then
     module_bundle="$PWD/$module_bundle"
+fi
+if [[ "$init_source" != /* ]]; then
+    init_source="$root_dir/$init_source"
 fi
 
 for tool in "$cc" cpio file gzip sha256sum strings; do
@@ -22,12 +26,17 @@ for tool in "$cc" cpio file gzip sha256sum strings; do
     fi
 done
 if [ ! -f "$libdrm_include/drm.h" ] || \
-   [ ! -f "$libdrm_include/vc4_drm.h" ]; then
+   [ ! -f "$libdrm_include/vc4_drm.h" ] || \
+   [ ! -f "$libdrm_include/drm_mode.h" ]; then
     printf 'libdrm UAPI headers not found below %s\n' "$libdrm_include" >&2
     exit 1
 fi
 if [ ! -s "$module_bundle/MANIFEST" ]; then
     printf 'VC4 module bundle has no MANIFEST: %s\n' "$module_bundle" >&2
+    exit 1
+fi
+if [ ! -s "$init_source" ]; then
+    printf 'VC4 Linux init source not found: %s\n' "$init_source" >&2
     exit 1
 fi
 
@@ -50,7 +59,7 @@ mkdir -p \
     -I"$libdrm_include" \
     -Wl,--build-id=none \
     -o "$out_dir/root/init" \
-    "$root_dir/tests/vc4/linux-v3d-modular-init.c"
+    "$init_source"
 chmod 0755 "$out_dir/root/init"
 
 : > "$out_dir/root/etc/vc4-modules.manifest"
@@ -78,6 +87,7 @@ rm -f "$out_dir/module.file"
 test -s "$out_dir/root/etc/vc4-modules.manifest"
 cp "$module_bundle/MANIFEST" "$out_dir/MODULE_MANIFEST"
 cp "$module_bundle/PROVENANCE" "$out_dir/MODULE_PROVENANCE"
+printf '%s\n' "$init_source" > "$out_dir/INIT_SOURCE"
 
 # Avoid strings|grep -q under pipefail: a successful early grep exit can
 # deliver SIGPIPE to strings and turn marker validation into status 141.
@@ -121,5 +131,6 @@ sha256sum \
     "$out_dir/initramfs.cpio.gz" \
     > "$out_dir/SHA256SUMS"
 
-printf 'Built VC4 Linux modular DRM initramfs at %s\n' "$out_dir"
+printf 'Built VC4 Linux modular DRM initramfs from %s at %s\n' \
+    "$init_source" "$out_dir"
 cat "$out_dir/SHA256SUMS"
