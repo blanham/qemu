@@ -41,7 +41,7 @@ jobs:
             pkg-config \
             python3
 
-      - name: Rebase and validate the packed-RGB change
+      - name: Rebase the packed-RGB change
         run: |
           set -euo pipefail
           cat "$PATCH_DIR"/product.patch.part-* > /tmp/vc4-packed-rgb.patch
@@ -52,16 +52,30 @@ jobs:
             scripts/vc4/hvs-dlist-smoke.py \
             scripts/vc4/hvs-packed-rgb-smoke.py
 
+      - name: Build focused QEMU
+        run: |
+          set -euo pipefail
           ./configure \
             --target-list=aarch64-softmmu \
             --disable-docs \
             --disable-werror
           ninja -C build qemu-system-aarch64
 
+      - name: Run VC4 display-timing smoke
+        run: |
+          set -euo pipefail
           python3 scripts/vc4/display-timing-smoke.py \
             --qemu build/qemu-system-aarch64
+
+      - name: Run VC4 HVS display-list smoke
+        run: |
+          set -euo pipefail
           python3 scripts/vc4/hvs-dlist-smoke.py \
             --qemu build/qemu-system-aarch64
+
+      - name: Run VC4 HVS packed-RGB smoke
+        run: |
+          set -euo pipefail
           python3 scripts/vc4/hvs-packed-rgb-smoke.py \
             --qemu build/qemu-system-aarch64
 
