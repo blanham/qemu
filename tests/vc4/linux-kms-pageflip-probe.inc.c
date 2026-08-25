@@ -17,7 +17,8 @@
 
 #include "linux-kms-modeset-probe.inc.c"
 
-#define VC4_PAGEFLIP_TIMEOUT_SECONDS 30U
+#define VC4_PAGEFLIP_TIMEOUT_SECONDS     30U
+#define VC4_PAGEFLIP_VISUAL_HOLD_SECONDS 3U
 #define VC4_PAGEFLIP_POLL_ATTEMPTS   20U
 #define VC4_PAGEFLIP_POLL_TIMEOUT_MS 500
 #define VC4_PAGEFLIP_USER_DATA       UINT64_C(0x56433450464c4950)
@@ -262,6 +263,8 @@ static int vc4_pageflip_run(int fd)
         return vc4_pageflip_fail("current-fb-mismatch");
     }
     marker("VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK\n");
+    marker("VC4_LINUX_KMS_PAGEFLIP_VISUAL_READY\n");
+    sleep(VC4_PAGEFLIP_VISUAL_HOLD_SECONDS);
 
     /*
      * Keep the completed framebuffer and BO attached to the shared drm_file.
