@@ -2,7 +2,7 @@
 """Validate WD40's C-only QEMU build contract.
 
 This checks both source configuration and, when supplied, a configured build
-directory.  Rust sources may remain for upstream provenance, but no active build
+directory. Rust sources may remain for upstream provenance, but no active build
 rule may invoke Rust tooling or compile a .rs file.
 """
 
@@ -54,6 +54,18 @@ def check_source() -> None:
     forbid("util/log.c", "rust_fwrite", "CONFIG_HAVE_RUST")
 
 
+def match_context(text: str, pattern: str, *, limit: int = 8) -> list[str]:
+    """Return compact, line-numbered context for the first matching lines."""
+    regex = re.compile(pattern)
+    matches: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if regex.search(line):
+            matches.append(f"  {lineno}: {line[:500]}")
+            if len(matches) == limit:
+                break
+    return matches
+
+
 def check_build(build_dir: Path) -> None:
     if not build_dir.is_dir():
         raise SystemExit(f"build directory does not exist: {build_dir}")
@@ -62,12 +74,12 @@ def check_build(build_dir: Path) -> None:
         build_dir / "build.ninja",
         build_dir / "compile_commands.json",
     ]
-    text = "\n".join(
-        path.read_text(encoding="utf-8", errors="replace")
+    metadata: list[tuple[Path, str]] = [
+        (path, path.read_text(encoding="utf-8", errors="replace"))
         for path in candidates
         if path.exists()
-    )
-    if not text:
+    ]
+    if not metadata:
         raise SystemExit(f"no build metadata found below {build_dir}")
 
     forbidden_patterns = {
@@ -78,8 +90,17 @@ def check_build(build_dir: Path) -> None:
         "Rust source tree": r"(?:^|[\s\"'])rust/",
     }
     for label, pattern in forbidden_patterns.items():
-        if re.search(pattern, text, flags=re.MULTILINE):
-            raise SystemExit(f"{build_dir}: {label} present in active build graph")
+        findings: list[str] = []
+        for path, text in metadata:
+            contexts = match_context(text, pattern)
+            if contexts:
+                findings.append(f"{path}:")
+                findings.extend(contexts)
+        if findings:
+            details = "\n".join(findings)
+            raise SystemExit(
+                f"{build_dir}: {label} present in active build graph\n{details}"
+            )
 
     device_configs = list(build_dir.glob("*-config-devices.mak"))
     if not device_configs:
