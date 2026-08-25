@@ -87,9 +87,29 @@ jobs:
             /tmp/vc4-hvs-pixelvalve-tranche/tranche/apply.py \
             --repo "$GITHUB_WORKSPACE" --apply
           git diff --stat
+
+          set +e
           VC4_FULL_BUILD=1 bash -x \
             /tmp/vc4-hvs-pixelvalve-tranche/tranche/validate.sh \
-            "$GITHUB_WORKSPACE"
+            "$GITHUB_WORKSPACE" > /tmp/vc4-hvs-validation.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo '::group::VC4 HVS validation failure tail'
+            tail -n 600 /tmp/vc4-hvs-validation.log
+            echo '::endgroup::'
+            exit "$rc"
+          fi
+          cat /tmp/vc4-hvs-validation.log
+
+      - name: Upload validation transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-hvs-validation-${{ github.run_attempt }}
+          path: /tmp/vc4-hvs-validation.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Publish the validated model
         run: |
