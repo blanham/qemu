@@ -27,107 +27,72 @@ jobs:
       - name: Add bounded HVS state capture to the Linux probe
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("scripts/vc4/raspi3-linux-probe.py")
-          text = path.read_text(encoding="utf-8")
-
-          constants_anchor = "PM_PROC = 0x3F100110\n\nPC_RE ="
-          constants_replacement = """PM_PROC = 0x3F100110
-
-HVS_BASE = 0x3F400000
-HVS_DISPCTRL = HVS_BASE + 0x0000
-HVS_DISPSTAT = HVS_BASE + 0x0004
-HVS_DISPLIST = tuple(HVS_BASE + 0x0020 + index * 4 for index in range(3))
-HVS_DISPLACT = tuple(HVS_BASE + 0x0030 + index * 4 for index in range(3))
-HVS_DISPCTRLX = tuple(HVS_BASE + 0x0040 + index * 0x10 for index in range(3))
-HVS_DISPSTATX = tuple(HVS_BASE + 0x0048 + index * 0x10 for index in range(3))
-HVS_DLIST_START = HVS_BASE + 0x2000
-HVS_DLIST_CAPACITY_WORDS = 0x4000 // 4
-HVS_SNAPSHOT_WORDS = 32
-
-PC_RE ="""
-          if text.count(constants_anchor) != 1:
-              raise SystemExit("unexpected VC4 probe constants anchor")
-          text = text.replace(constants_anchor, constants_replacement, 1)
-
-          function_anchor = "\ndef main() -> int:\n"
-          function = r'''
-def hvs_snapshot(qtest: QTest) -> dict[str, Any]:
-    """Capture the live HVS channel handoff and a bounded active dlist."""
-    snapshot: dict[str, Any] = {
-        "global_control": f"0x{qtest.readl(HVS_DISPCTRL):08x}",
-        "global_status": f"0x{qtest.readl(HVS_DISPSTAT):08x}",
-        "channels": [],
-    }
-
-    channels: list[dict[str, Any]] = []
-    for channel in range(3):
-        list_word = qtest.readl(HVS_DISPLIST[channel])
-        active_word = qtest.readl(HVS_DISPLACT[channel])
-        record: dict[str, Any] = {
-            "channel": channel,
-            "list_word": f"0x{list_word:08x}",
-            "active_word": f"0x{active_word:08x}",
-            "control": f"0x{qtest.readl(HVS_DISPCTRLX[channel]):08x}",
-            "status": f"0x{qtest.readl(HVS_DISPSTATX[channel]):08x}",
-        }
-        if active_word < HVS_DLIST_CAPACITY_WORDS:
-            words = [
-                qtest.readl(HVS_DLIST_START + (active_word + index) * 4)
-                for index in range(HVS_SNAPSHOT_WORDS)
-            ]
-            record["active_dlist"] = [f"0x{word:08x}" for word in words]
-        else:
-            record["active_dlist_error"] = (
-                f"active word 0x{active_word:08x} exceeds HVS dlist RAM"
-            )
-        channels.append(record)
-
-    snapshot["channels"] = channels
-    return snapshot
-'''
-          if text.count(function_anchor) != 1:
-              raise SystemExit("unexpected VC4 probe main anchor")
-          text = text.replace(function_anchor, function + function_anchor, 1)
-
-          stop_anchor = '''            try:
-                qmp.execute("stop")
-            except Exception:
-                pass
-            try:
-                result["final_cpu_snapshot"] = cpu_snapshot(
-'''
-          stop_replacement = '''            try:
-                qmp.execute("stop")
-            except Exception:
-                pass
-            try:
-                result["hvs_snapshot"] = hvs_snapshot(qtest)
-            except Exception as exc:
-                result["hvs_snapshot_error"] = (
-                    f"{type(exc).__name__}: {exc}"
-                )
-            try:
-                result["final_cpu_snapshot"] = cpu_snapshot(
-'''
-          if text.count(stop_anchor) != 1:
-              raise SystemExit("unexpected VC4 probe stop anchor")
-          text = text.replace(stop_anchor, stop_replacement, 1)
-
-          schema_anchor = '            "schema_version": 1,\n'
-          if text.count(schema_anchor) != 1:
-              raise SystemExit("unexpected VC4 probe schema anchor")
-          text = text.replace(
-              schema_anchor,
-              '            "schema_version": 2,\n',
-              1,
-          )
-
-          path.write_text(text, encoding="utf-8")
+          base64 --decode > /tmp/add-hvs-snapshot.py <<'PY'
+          ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwYXRoID0gUGF0aCgic2NyaXB0cy92YzQvcmFzcGkz
+          LWxpbnV4LXByb2JlLnB5IikKdGV4dCA9IHBhdGgucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIp
+          Cgpjb25zdGFudHNfYW5jaG9yID0gJ1BNX1BST0MgPSAweDNGMTAwMTEwXG5cblBDX1JFID0nCmNv
+          bnN0YW50c19yZXBsYWNlbWVudCA9ICdQTV9QUk9DID0gMHgzRjEwMDExMFxuXG5IVlNfQkFTRSA9
+          IDB4M0Y0MDAwMDBcbkhWU19ESVNQQ1RSTCA9IEhWU19CQVNFICsgMHgwMDAwXG5IVlNfRElTUFNU
+          QVQgPSBIVlNfQkFTRSArIDB4MDAwNFxuSFZTX0RJU1BMSVNUID0gdHVwbGUoSFZTX0JBU0UgKyAw
+          eDAwMjAgKyBpbmRleCAqIDQgZm9yIGluZGV4IGluIHJhbmdlKDMpKVxuSFZTX0RJU1BMQUNUID0g
+          dHVwbGUoSFZTX0JBU0UgKyAweDAwMzAgKyBpbmRleCAqIDQgZm9yIGluZGV4IGluIHJhbmdlKDMp
+          KVxuSFZTX0RJU1BDVFJMWCA9IHR1cGxlKEhWU19CQVNFICsgMHgwMDQwICsgaW5kZXggKiAweDEw
+          IGZvciBpbmRleCBpbiByYW5nZSgzKSlcbkhWU19ESVNQU1RBVFggPSB0dXBsZShIVlNfQkFTRSAr
+          IDB4MDA0OCArIGluZGV4ICogMHgxMCBmb3IgaW5kZXggaW4gcmFuZ2UoMykpXG5IVlNfRExJU1Rf
+          U1RBUlQgPSBIVlNfQkFTRSArIDB4MjAwMFxuSFZTX0RMSVNUX0NBUEFDSVRZX1dPUkRTID0gMHg0
+          MDAwIC8vIDRcbkhWU19TTkFQU0hPVF9XT1JEUyA9IDMyXG5cblBDX1JFID0nCmlmIHRleHQuY291
+          bnQoY29uc3RhbnRzX2FuY2hvcikgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoInVuZXhwZWN0
+          ZWQgVkM0IHByb2JlIGNvbnN0YW50cyBhbmNob3IiKQp0ZXh0ID0gdGV4dC5yZXBsYWNlKGNvbnN0
+          YW50c19hbmNob3IsIGNvbnN0YW50c19yZXBsYWNlbWVudCwgMSkKCmZ1bmN0aW9uX2FuY2hvciA9
+          ICdcbmRlZiBtYWluKCkgLT4gaW50OlxuJwpmdW5jdGlvbiA9ICdcbmRlZiBodnNfc25hcHNob3Qo
+          cXRlc3Q6IFFUZXN0KSAtPiBkaWN0W3N0ciwgQW55XTpcbiAgICAiIiJDYXB0dXJlIHRoZSBsaXZl
+          IEhWUyBjaGFubmVsIGhhbmRvZmYgYW5kIGEgYm91bmRlZCBhY3RpdmUgZGxpc3QuIiIiXG4gICAg
+          c25hcHNob3Q6IGRpY3Rbc3RyLCBBbnldID0ge1xuICAgICAgICAiZ2xvYmFsX2NvbnRyb2wiOiBm
+          IjB4e3F0ZXN0LnJlYWRsKEhWU19ESVNQQ1RSTCk6MDh4fSIsXG4gICAgICAgICJnbG9iYWxfc3Rh
+          dHVzIjogZiIweHtxdGVzdC5yZWFkbChIVlNfRElTUFNUQVQpOjA4eH0iLFxuICAgICAgICAiY2hh
+          bm5lbHMiOiBbXSxcbiAgICB9XG5cbiAgICBjaGFubmVsczogbGlzdFtkaWN0W3N0ciwgQW55XV0g
+          PSBbXVxuICAgIGZvciBjaGFubmVsIGluIHJhbmdlKDMpOlxuICAgICAgICBsaXN0X3dvcmQgPSBx
+          dGVzdC5yZWFkbChIVlNfRElTUExJU1RbY2hhbm5lbF0pXG4gICAgICAgIGFjdGl2ZV93b3JkID0g
+          cXRlc3QucmVhZGwoSFZTX0RJU1BMQUNUW2NoYW5uZWxdKVxuICAgICAgICByZWNvcmQ6IGRpY3Rb
+          c3RyLCBBbnldID0ge1xuICAgICAgICAgICAgImNoYW5uZWwiOiBjaGFubmVsLFxuICAgICAgICAg
+          ICAgImxpc3Rfd29yZCI6IGYiMHh7bGlzdF93b3JkOjA4eH0iLFxuICAgICAgICAgICAgImFjdGl2
+          ZV93b3JkIjogZiIweHthY3RpdmVfd29yZDowOHh9IixcbiAgICAgICAgICAgICJjb250cm9sIjog
+          ZiIweHtxdGVzdC5yZWFkbChIVlNfRElTUENUUkxYW2NoYW5uZWxdKTowOHh9IixcbiAgICAgICAg
+          ICAgICJzdGF0dXMiOiBmIjB4e3F0ZXN0LnJlYWRsKEhWU19ESVNQU1RBVFhbY2hhbm5lbF0pOjA4
+          eH0iLFxuICAgICAgICB9XG4gICAgICAgIGlmIGFjdGl2ZV93b3JkIDwgSFZTX0RMSVNUX0NBUEFD
+          SVRZX1dPUkRTOlxuICAgICAgICAgICAgd29yZHMgPSBbXG4gICAgICAgICAgICAgICAgcXRlc3Qu
+          cmVhZGwoSFZTX0RMSVNUX1NUQVJUICsgKGFjdGl2ZV93b3JkICsgaW5kZXgpICogNClcbiAgICAg
+          ICAgICAgICAgICBmb3IgaW5kZXggaW4gcmFuZ2UoSFZTX1NOQVBTSE9UX1dPUkRTKVxuICAgICAg
+          ICAgICAgXVxuICAgICAgICAgICAgcmVjb3JkWyJhY3RpdmVfZGxpc3QiXSA9IFtmIjB4e3dvcmQ6
+          MDh4fSIgZm9yIHdvcmQgaW4gd29yZHNdXG4gICAgICAgIGVsc2U6XG4gICAgICAgICAgICByZWNv
+          cmRbImFjdGl2ZV9kbGlzdF9lcnJvciJdID0gKFxuICAgICAgICAgICAgICAgIGYiYWN0aXZlIHdv
+          cmQgMHh7YWN0aXZlX3dvcmQ6MDh4fSBleGNlZWRzIEhWUyBkbGlzdCBSQU0iXG4gICAgICAgICAg
+          ICApXG4gICAgICAgIGNoYW5uZWxzLmFwcGVuZChyZWNvcmQpXG5cbiAgICBzbmFwc2hvdFsiY2hh
+          bm5lbHMiXSA9IGNoYW5uZWxzXG4gICAgcmV0dXJuIHNuYXBzaG90XG4nCmlmIHRleHQuY291bnQo
+          ZnVuY3Rpb25fYW5jaG9yKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgidW5leHBlY3RlZCBW
+          QzQgcHJvYmUgbWFpbiBhbmNob3IiKQp0ZXh0ID0gdGV4dC5yZXBsYWNlKGZ1bmN0aW9uX2FuY2hv
+          ciwgZnVuY3Rpb24gKyBmdW5jdGlvbl9hbmNob3IsIDEpCgpzdG9wX2FuY2hvciA9ICcgICAgICAg
+          ICAgICB0cnk6XG4gICAgICAgICAgICAgICAgcW1wLmV4ZWN1dGUoInN0b3AiKVxuICAgICAgICAg
+          ICAgZXhjZXB0IEV4Y2VwdGlvbjpcbiAgICAgICAgICAgICAgICBwYXNzXG4gICAgICAgICAgICB0
+          cnk6XG4gICAgICAgICAgICAgICAgcmVzdWx0WyJmaW5hbF9jcHVfc25hcHNob3QiXSA9IGNwdV9z
+          bmFwc2hvdChcbicKc3RvcF9yZXBsYWNlbWVudCA9ICcgICAgICAgICAgICB0cnk6XG4gICAgICAg
+          ICAgICAgICAgcW1wLmV4ZWN1dGUoInN0b3AiKVxuICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlv
+          bjpcbiAgICAgICAgICAgICAgICBwYXNzXG4gICAgICAgICAgICB0cnk6XG4gICAgICAgICAgICAg
+          ICAgcmVzdWx0WyJodnNfc25hcHNob3QiXSA9IGh2c19zbmFwc2hvdChxdGVzdClcbiAgICAgICAg
+          ICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZXhjOlxuICAgICAgICAgICAgICAgIHJlc3VsdFsiaHZz
+          X3NuYXBzaG90X2Vycm9yIl0gPSAoXG4gICAgICAgICAgICAgICAgICAgIGYie3R5cGUoZXhjKS5f
+          X25hbWVfX306IHtleGN9IlxuICAgICAgICAgICAgICAgIClcbiAgICAgICAgICAgIHRyeTpcbiAg
+          ICAgICAgICAgICAgICByZXN1bHRbImZpbmFsX2NwdV9zbmFwc2hvdCJdID0gY3B1X3NuYXBzaG90
+          KFxuJwppZiB0ZXh0LmNvdW50KHN0b3BfYW5jaG9yKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhp
+          dCgidW5leHBlY3RlZCBWQzQgcHJvYmUgc3RvcCBhbmNob3IiKQp0ZXh0ID0gdGV4dC5yZXBsYWNl
+          KHN0b3BfYW5jaG9yLCBzdG9wX3JlcGxhY2VtZW50LCAxKQoKc2NoZW1hX2FuY2hvciA9ICcgICAg
+          ICAgICAgICAic2NoZW1hX3ZlcnNpb24iOiAxLFxuJwpzY2hlbWFfcmVwbGFjZW1lbnQgPSAnICAg
+          ICAgICAgICAgInNjaGVtYV92ZXJzaW9uIjogMixcbicKaWYgdGV4dC5jb3VudChzY2hlbWFfYW5j
+          aG9yKSAhPSAxOgogICAgcmFpc2UgU3lzdGVtRXhpdCgidW5leHBlY3RlZCBWQzQgcHJvYmUgc2No
+          ZW1hIGFuY2hvciIpCnRleHQgPSB0ZXh0LnJlcGxhY2Uoc2NoZW1hX2FuY2hvciwgc2NoZW1hX3Jl
+          cGxhY2VtZW50LCAxKQoKcGF0aC53cml0ZV90ZXh0KHRleHQsIGVuY29kaW5nPSJ1dGYtOCIpCg==
           PY
-
+          python3 /tmp/add-hvs-snapshot.py
           python3 -m py_compile scripts/vc4/raspi3-linux-probe.py
           git diff --check
           git diff -- scripts/vc4/raspi3-linux-probe.py
