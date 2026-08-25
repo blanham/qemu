@@ -1,0 +1,271 @@
+name: Stage validated VC4 atomic-KMS tranche
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-atomic-visual
+    paths:
+      - .github/workflows/vc4-atomic-stage.yml
+      - .github/vc4-atomic-stage.tar.gz
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-atomic-stage
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ARCHIVE_SHA256: 0c9ccee21d64e6c56d452f7255e89e9cc7b38b5fc424a4d6550a8f8f39d2b250
+      ARCHIVE_PATH: .github/vc4-atomic-stage.tar.gz
+      SOURCE_DIR: /tmp/vc4-atomic-source
+      MANIFEST_DIR: vc4-atomic-validated-blobs
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-atomic-visual
+          fetch-depth: 0
+
+      - name: Install validation dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc jq libdrm-dev pkg-config python3-yaml
+
+      - name: Extract and validate the atomic-KMS tranche
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "$ARCHIVE_PATH" | cut -d' ' -f1)" = \
+            "$ARCHIVE_SHA256"
+          rm -rf "$SOURCE_DIR" "$MANIFEST_DIR"
+          mkdir -p "$SOURCE_DIR" "$MANIFEST_DIR"
+          tar --extract --gzip --file "$ARCHIVE_PATH" \
+            --directory "$SOURCE_DIR"
+
+          expected_paths=(
+            .github/workflows/vc4-kms-atomic-probe.yml
+            scripts/vc4/enable-linux-kms-atomic-probe.py
+            scripts/vc4/kms-atomic-image.py
+            scripts/vc4/raspi3-kms-atomic-visual-probe.py
+            tests/vc4/linux-kms-atomic-probe.inc.c
+          )
+          for path in "${expected_paths[@]}"; do
+            test -s "$SOURCE_DIR/$path"
+          done
+          test "$(find "$SOURCE_DIR" -type f | wc -l)" -eq \
+            "${#expected_paths[@]}"
+
+          python3 -m py_compile \
+            "$SOURCE_DIR/scripts/vc4/enable-linux-kms-atomic-probe.py" \
+            "$SOURCE_DIR/scripts/vc4/kms-atomic-image.py" \
+            "$SOURCE_DIR/scripts/vc4/raspi3-kms-atomic-visual-probe.py"
+          python3 "$SOURCE_DIR/scripts/vc4/kms-atomic-image.py" --self-test
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          workflow = Path(
+              "/tmp/vc4-atomic-source/.github/workflows/"
+              "vc4-kms-atomic-probe.yml"
+          )
+          data = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+          assert isinstance(data, dict)
+          assert data.get("name") == "VC4 inherited-master atomic plane-flip probe"
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("/tmp/vc4-atomic-source")
+          failures = []
+          for path in sorted(item for item in root.rglob("*") if item.is_file()):
+              data = path.read_bytes()
+              if b"\r" in data:
+                  failures.append(f"{path}: CR byte")
+              if not data.endswith(b"\n"):
+                  failures.append(f"{path}: no final newline")
+              for number, line in enumerate(data.splitlines(), 1):
+                  if line.rstrip(b" \t") != line:
+                      failures.append(f"{path}:{number}: trailing whitespace")
+          if failures:
+              raise SystemExit("\n".join(failures))
+          PY
+
+          for token in \
+            DRM_IOCTL_SET_CLIENT_CAP \
+            DRM_CLIENT_CAP_ATOMIC \
+            DRM_IOCTL_MODE_ATOMIC \
+            DRM_MODE_ATOMIC_TEST_ONLY \
+            DRM_MODE_ATOMIC_NONBLOCK \
+            DRM_MODE_PAGE_FLIP_EVENT \
+            DRM_EVENT_FLIP_COMPLETE \
+            VC4_LINUX_KMS_ATOMIC_VISUAL_READY; do
+            grep -Fq "$token" \
+              "$SOURCE_DIR/tests/vc4/linux-kms-atomic-probe.inc.c"
+          done
+          grep -Fq 'linux-vc4-kms-atomic-flip-visual-clear' \
+            "$SOURCE_DIR/.github/workflows/vc4-kms-atomic-probe.yml"
+          grep -Fq 'raspi3-kms-atomic-visual-probe.py' \
+            "$SOURCE_DIR/.github/workflows/vc4-kms-atomic-probe.yml"
+
+          cat > /tmp/atomic-syntax.c <<'C'
+          #define _GNU_SOURCE
+          #include <drm.h>
+          #include <drm_mode.h>
+          #include <errno.h>
+          #include <signal.h>
+          #include <stdarg.h>
+          #include <stdbool.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <string.h>
+          #include <sys/ioctl.h>
+          #include <sys/mman.h>
+          #include <sys/types.h>
+          #include <sys/wait.h>
+          #include <time.h>
+          #include <unistd.h>
+
+          #define VC4_MODESET_DRM_FORMAT_XRGB8888 UINT32_C(0x34325258)
+          #define VC4_MODESET_POLL_NS 100000000L
+
+          struct vc4_modeset_selection {
+              uint32_t connector_id;
+              uint32_t crtc_id;
+              struct drm_mode_modeinfo mode;
+          };
+
+          static void marker(const char *message)
+          {
+              (void)message;
+          }
+
+          static void report(const char *format, ...)
+          {
+              (void)format;
+          }
+
+          static int vc4_modeset_select(
+              int fd, struct vc4_modeset_selection *selection)
+          {
+              (void)fd;
+              memset(selection, 0, sizeof(*selection));
+              return 0;
+          }
+
+          #define VC4_KMS_ATOMIC_STANDALONE 1
+          #include "tests/vc4/linux-kms-atomic-probe.inc.c"
+
+          int main(void)
+          {
+              return vc4_kms_atomic_supervise(-1);
+          }
+          C
+          gcc -std=gnu11 -Wall -Wextra -Werror -fsyntax-only \
+            $(pkg-config --cflags libdrm) \
+            -I"$SOURCE_DIR" /tmp/atomic-syntax.c
+
+          cat > /tmp/linux-v3d-modular-init.fixture.c <<'C'
+          static int probe_kms_topology(VC4DRMNode *card)
+          {
+              return card->fd;
+          }
+
+          int main(void)
+          {
+              VC4DRMNode card;
+              int kms_result;
+
+              if (card.fd >= 0 && card.vc4) {
+                  kms_result = probe_kms_topology(&card);
+              } else {
+                  kms_result = -1;
+              }
+              return kms_result;
+          }
+          C
+          python3 "$SOURCE_DIR/scripts/vc4/enable-linux-kms-atomic-probe.py" \
+            /tmp/linux-v3d-modular-init.fixture.c
+          grep -Fq '#include "linux-kms-atomic-probe.inc.c"' \
+            /tmp/linux-v3d-modular-init.fixture.c
+          grep -Fq 'vc4_kms_modeset_supervise(card.fd) == 0' \
+            /tmp/linux-v3d-modular-init.fixture.c
+          grep -Fq 'vc4_kms_pageflip_supervise(card.fd) == 0' \
+            /tmp/linux-v3d-modular-init.fixture.c
+          grep -Fq 'vc4_kms_atomic_supervise(card.fd)' \
+            /tmp/linux-v3d-modular-init.fixture.c
+          if python3 \
+              "$SOURCE_DIR/scripts/vc4/enable-linux-kms-atomic-probe.py" \
+              /tmp/linux-v3d-modular-init.fixture.c; then
+            echo "atomic source patch unexpectedly accepted twice" >&2
+            exit 1
+          fi
+
+      - name: Upload validated files as Git blobs
+        run: |
+          set -euo pipefail
+          records=/tmp/vc4-atomic-blobs.tsv
+          : > "$records"
+          paths=(
+            .github/workflows/vc4-kms-atomic-probe.yml
+            scripts/vc4/enable-linux-kms-atomic-probe.py
+            scripts/vc4/kms-atomic-image.py
+            scripts/vc4/raspi3-kms-atomic-visual-probe.py
+            tests/vc4/linux-kms-atomic-probe.inc.c
+          )
+          for path in "${paths[@]}"; do
+            encoded=$(base64 -w0 "$SOURCE_DIR/$path")
+            blob_sha=$(jq -n \
+              --arg content "$encoded" \
+              '{content: $content, encoding: "base64"}' | \
+              gh api --method POST \
+                "repos/$GITHUB_REPOSITORY/git/blobs" \
+                --input - --jq .sha)
+            test -n "$blob_sha"
+            test "$blob_sha" = "$(git hash-object "$SOURCE_DIR/$path")"
+            printf '%s\t100644\t%s\n' "$path" "$blob_sha" >> "$records"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import subprocess
+
+          records = []
+          for line in Path("/tmp/vc4-atomic-blobs.tsv").read_text().splitlines():
+              path, mode, sha = line.split("\t")
+              records.append({"path": path, "mode": mode, "sha": sha})
+
+          source_sha = os.environ["GITHUB_SHA"]
+          tree_sha = subprocess.check_output(
+              ["git", "rev-parse", f"{source_sha}^{{tree}}"], text=True
+          ).strip()
+          record = {
+              "schema_version": 1,
+              "source_sha": source_sha,
+              "source_tree_sha": tree_sha,
+              "archive_sha256": os.environ["ARCHIVE_SHA256"],
+              "files": records,
+          }
+          output = Path(os.environ["MANIFEST_DIR"]) / "manifest.json"
+          output.write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(output.read_text(encoding="utf-8"))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vc4-atomic-validated-blobs-${{ github.run_attempt }}
+          path: vc4-atomic-validated-blobs
+          if-no-files-found: error
+          retention-days: 14
