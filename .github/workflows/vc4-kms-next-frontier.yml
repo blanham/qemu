@@ -6,6 +6,7 @@ on:
       - agent/vc4-linux-kms-bind-diagnostics
     paths:
       - .github/workflows/vc4-kms-next-frontier.yml
+      - .github/vc4-kms-next-frontier.trigger
 
 permissions:
   contents: write
@@ -499,7 +500,9 @@ jobs:
               VC4_LINUX_KMS_NEXT_CONTRACT.md
             message="test/vc4: record next native KMS hardware contract"
           fi
-          git rm -- .github/workflows/vc4-kms-next-frontier.yml
+          git rm -f --ignore-unmatch -- \
+            .github/vc4-kms-next-frontier.trigger \
+            .github/workflows/vc4-kms-next-frontier.yml
           git commit -m "$message"
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"

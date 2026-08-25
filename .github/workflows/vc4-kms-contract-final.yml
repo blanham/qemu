@@ -6,6 +6,7 @@ on:
       - agent/vc4-linux-kms-bind-diagnostics
     paths:
       - .github/workflows/vc4-kms-contract-final.yml
+      - .github/vc4-kms-contract-final.trigger
 
 permissions:
   contents: write
@@ -281,7 +282,9 @@ jobs:
           git add -- \
             VC4_LINUX_KMS_CONTRACT_STATUS.json \
             VC4_LINUX_KMS_CONTRACT_STATUS.md
-          git rm -- .github/workflows/vc4-kms-contract-final.yml
+          git rm -f --ignore-unmatch -- \
+            .github/vc4-kms-contract-final.trigger \
+            .github/workflows/vc4-kms-contract-final.yml
           git commit -m "test/vc4: record clock and monitor KMS frontier"
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"

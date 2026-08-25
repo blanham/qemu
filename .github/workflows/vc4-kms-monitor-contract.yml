@@ -6,6 +6,7 @@ on:
       - agent/vc4-linux-kms-bind-diagnostics
     paths:
       - .github/workflows/vc4-kms-monitor-contract.yml
+      - .github/vc4-kms-monitor-contract.trigger
 
 permissions:
   contents: write
@@ -702,9 +703,13 @@ jobs:
             hw/arm/Kconfig \
             hw/arm/bcm2835_peripherals.c \
             hw/misc/bcm2835_property.c \
-            include/hw/misc/bcm2835_property.h \
-            scripts/vc4/property-expander-gpio-smoke.py
-          git rm -- .github/workflows/vc4-kms-monitor-contract.yml
+            include/hw/misc/bcm2835_property.h
+          if test -e scripts/vc4/property-expander-gpio-smoke.py; then
+            git add -- scripts/vc4/property-expander-gpio-smoke.py
+          fi
+          git rm -f --ignore-unmatch -- \
+            .github/vc4-kms-monitor-contract.trigger \
+            .github/workflows/vc4-kms-monitor-contract.yml
           git commit -m "test/vc4: measure deterministic HDMI monitor contract"
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
