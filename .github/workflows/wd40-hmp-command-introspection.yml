@@ -1,0 +1,109 @@
+name: WD40 HMP command introspection
+
+on:
+  push:
+    branches:
+      - wd40/qol-hmp-command-introspection
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-hmp-command-introspection
+  cancel-in-progress: false
+
+jobs:
+  transform-build-test-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply and validate structured HMP discovery
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/wd40/apply-rustless-build.py
+          python3 scripts/wd40/apply-amd-1tb-hole-control.py
+          python3 scripts/wd40/apply-subtractive-log-mask.py
+          python3 scripts/wd40/apply-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          git diff --check
+
+      - name: Install C build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build x86_64 and AArch64 without a Rust toolchain
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-hmp-introspection
+          cd build-hmp-introspection
+          ../configure \
+            --target-list=x86_64-softmmu,aarch64-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 qemu-system-x86_64 qemu-system-aarch64
+          cd ..
+
+      - name: Query both target registries and preconfig state
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py \
+            build-hmp-introspection
+
+      - name: Publish the validated introspection implementation
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-hmp-introspection
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          git diff --check
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Structured HMP command discovery already applied"
+            exit 0
+          fi
+          git commit -m "monitor: expose structured HMP command discovery
+
+          Add query-hmp-commands so QMP clients can discover canonical HMP
+          paths, aliases, parser grammar, implementation status, and separate
+          architecture and initialization-phase availability. This provides a
+          capability-driven foundation for TTYphoon and monitor v2 without
+          duplicating the HMP command registry or scraping help output."
+          git push origin "HEAD:${GITHUB_REF_NAME}"
