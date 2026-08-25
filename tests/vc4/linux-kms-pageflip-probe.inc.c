@@ -178,16 +178,20 @@ static int vc4_pageflip_run(int fd)
                            "getcrtc-before") < 0) {
         return -1;
     }
-    if (!current.mode_valid || current.fb_id == 0) {
+    if (!current.mode_valid || current.fb_id == 0 ||
+        current.mode.hdisplay == 0 || current.mode.vdisplay == 0) {
         errno = ENODEV;
         return vc4_pageflip_fail("crtc-not-active");
     }
-    report("VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK crtc=%u fb=%u\n",
-           current.crtc_id, current.fb_id);
+    report("VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK crtc=%u fb=%u "
+           "mode=%ux%u\n",
+           current.crtc_id, current.fb_id,
+           current.mode.hdisplay, current.mode.vdisplay);
     marker("VC4_LINUX_KMS_PAGEFLIP_ACTIVE_OK\n");
 
-    create.width = selection.mode.hdisplay;
-    create.height = selection.mode.vdisplay;
+    /* Build the replacement FB for the mode actually active on the CRTC. */
+    create.width = current.mode.hdisplay;
+    create.height = current.mode.vdisplay;
     create.bpp = 32;
     if (vc4_pageflip_ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create,
                            "create-dumb") < 0) {
@@ -264,7 +268,7 @@ static int vc4_pageflip_run(int fd)
      * The parent owns that file until the rest of the Linux witness ends.
      */
     (void)munmap(mapping, create.size);
-    marker("VC4_LINUX_KMS_PAGFLIP_OK\n");
+    marker("VC4_LINUX_KMS_PAGEFLIP_OK\n");
     return 0;
 }
 
@@ -290,19 +294,27 @@ static int vc4_kms_pageflip_supervise(int master_fd)
          iteration < VC4_PAGEFLIP_TIMEOUT_SECONDS * 10;
          iteration++) {
         int status;
-        pid_t result = waitpid(child, &status, WNOHANG);
+        pid_t result;
 
+        do {
+            result = waitpid(child, &status, WNOHANG);
+        } while (result < 0 && errno == EINTR);
         if (result == child) {
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                 marker("VC4_LINUX_KMS_PAGEFLIP_SUPERVISOR_OK\n");
                 return 0;
             }
             if (WIFEXITED(status)) {
-                report("VC4_LINUX_KMS_PAGFLIP_CHILD_EXIT status=%d\n",
+                report("VC4_LINUX_KMS_PAGEFLIP_CHILD_EXIT status=%d\n",
                        WEXITSTATUS(status));
             } else if (WIFSIGNALED(status)) {
-                report("VC4_LINUX_KMS_PAGFLIP_CHILD_SIGNAL signal=%d\n",
-                       WTERMSIG(status));
+                int signal = WTERMSIG(status);
+
+                report("VC4_LINUX_KMS_PAGEFLIP_CHILD_SIGNAL signal=%d\n",
+                       signal);
+                if (signal == SIGALRM) {
+                    marker("VC4_LINUX_KMS_PAGEFLIP_TIMEOUT\n");
+                }
             }
             marker("VC4_LINUX_KMS_PAGEFLIP_SUPERVISOR_FAILED\n");
             return -1;
@@ -315,6 +327,6 @@ static int vc4_kms_pageflip_supervise(int master_fd)
 
     (void)kill(child, SIGKILL);
     (void)waitpid(child, NULL, 0);
-    marker("VC4_LINUX_KMS_PAGFLIP_TIMEOUT\n");
+    marker("VC4_LINUX_KMS_PAGEFLIP_TIMEOUT\n");
     return -1;
 }
