@@ -23,7 +23,7 @@ REQUIRED_FIELDS = {
     "phase-available",
     "preconfig",
     "coroutine",
-    "has-subcommands",
+    "subcommands",
     "arch-mask",
 }
 
@@ -139,7 +139,7 @@ def validate_entries(
             "phase-available",
             "preconfig",
             "coroutine",
-            "has-subcommands",
+            "subcommands",
         ):
             if not isinstance(entry[field], bool):
                 raise SystemExit(f"{label}: {path}: {field} is not boolean")
@@ -160,7 +160,7 @@ def validate_entries(
         if path not in by_path:
             raise SystemExit(f"{label}: required command path {path!r} missing")
 
-    if not by_path["info"]["has-subcommands"]:
+    if not by_path["info"]["subcommands"]:
         raise SystemExit(f"{label}: info command did not expose its subtable")
     if not by_path["log"]["implemented"]:
         raise SystemExit(f"{label}: log command unexpectedly unimplemented")
@@ -221,6 +221,7 @@ def main() -> None:
         "# @HMPCommandInfo:",
         "'architecture-available': 'bool'",
         "'phase-available': 'bool'",
+        "'subcommands': 'bool'",
         "'command': 'query-hmp-commands'",
         "'allow-preconfig': true",
     )
@@ -232,7 +233,7 @@ def main() -> None:
         "static HMPCommandInfoList **hmp_command_info_collect",
         "HMPCommandInfoList *qmp_query_hmp_commands",
         "info->available = architecture_available && phase_available &&",
-        "info->has_subcommands = cmd->sub_table != NULL;",
+        "info->subcommands = cmd->sub_table != NULL;",
     )
     require(
         "docs/devel/index.rst",
