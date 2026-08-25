@@ -150,5 +150,6 @@ jobs:
           test -z "$(git diff --name-only "$upstream_sha..HEAD" \
                     | grep '^\.github/' || true)"
 
-          git push --force origin HEAD:"$target"
+          git push --force-with-lease=refs/heads/${target}:${source_sha} \
+            origin HEAD:"$target"
           git push --force origin "$upstream_sha":"$staging"
