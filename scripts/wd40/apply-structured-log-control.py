@@ -24,13 +24,12 @@ def store(file_path: Path, text: str) -> None:
 
 def replace_once(path: str, old: str, new: str) -> None:
     file_path, text = load(path)
+    if new in text:
+        return
     count = text.count(old)
-    if count == 1:
-        store(file_path, text.replace(old, new, 1))
-        return
-    if count == 0 and new in text:
-        return
-    raise RuntimeError(f"{path}: expected one replacement site, found {count}")
+    if count != 1:
+        raise RuntimeError(f"{path}: expected one replacement site, found {count}")
+    store(file_path, text.replace(old, new, 1))
 
 
 def main() -> None:
