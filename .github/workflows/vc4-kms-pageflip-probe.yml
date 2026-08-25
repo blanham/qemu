@@ -8,6 +8,8 @@ on:
       - .github/workflows/vc4-kms-pageflip-probe.yml
       - scripts/vc4/enable-linux-kms-pageflip-probe.py
       - tests/vc4/linux-kms-pageflip-probe.inc.c
+      - scripts/vc4/kms-pageflip-image.py
+      - scripts/vc4/raspi3-kms-pageflip-visual-probe.py
   workflow_dispatch:
 
 permissions:
@@ -61,7 +63,10 @@ jobs:
           set -euo pipefail
           python3 scripts/vc4/enable-linux-kms-pageflip-probe.py
           python3 -m py_compile \
-            scripts/vc4/enable-linux-kms-pageflip-probe.py
+            scripts/vc4/enable-linux-kms-pageflip-probe.py \
+            scripts/vc4/kms-pageflip-image.py \
+            scripts/vc4/raspi3-kms-pageflip-visual-probe.py
+          python3 scripts/vc4/kms-pageflip-image.py --self-test
           git diff --check
           grep -Fq '#include "linux-kms-pageflip-probe.inc.c"' \
             tests/vc4/linux-v3d-modular-init.c
@@ -72,6 +77,8 @@ jobs:
           grep -Fq 'DRM_IOCTL_MODE_PAGE_FLIP' \
             tests/vc4/linux-kms-pageflip-probe.inc.c
           grep -Fq 'DRM_EVENT_FLIP_COMPLETE' \
+            tests/vc4/linux-kms-pageflip-probe.inc.c
+          grep -Fq 'VC4_LINUX_KMS_PAGEFLIP_VISUAL_READY' \
             tests/vc4/linux-kms-pageflip-probe.inc.c
 
       - name: Fetch pinned kernel, DTB, and corrected module roots
@@ -115,6 +122,7 @@ jobs:
             VC4_LINUX_KMS_PAGEFLIP_QUEUED \
             VC4_LINUX_KMS_PAGEFLIP_EVENT_OK \
             VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK \
+            VC4_LINUX_KMS_PAGEFLIP_VISUAL_READY \
             VC4_LINUX_KMS_PAGEFLIP_OK \
             VC4_LINUX_KMS_PAGEFLIP_TIMEOUT; do
             grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"
@@ -155,7 +163,7 @@ jobs:
       - name: Run the bounded native page-flip witness
         run: |
           set +e
-          python3 scripts/vc4/raspi3-linux-probe.py \
+          python3 scripts/vc4/raspi3-kms-pageflip-visual-probe.py \
             --mode linux-direct \
             --qemu build/qemu-system-aarch64 \
             --kernel "$OFFICIAL_DIR/kernel8.img" \
@@ -190,6 +198,21 @@ jobs:
               if manifest_path.is_file()
               else ""
           )
+          image_path = Path(
+              "/tmp/vc4-pageflip-probe/pageflip-image.json"
+          )
+          image_present = image_path.is_file()
+          try:
+              image_record = (
+                  json.loads(image_path.read_text(errors="replace"))
+                  if image_present
+                  else {}
+              )
+          except (OSError, json.JSONDecodeError) as exc:
+              image_record = {
+                  "passed": False,
+                  "error": f"{type(exc).__name__}: {exc}",
+              }
 
           modeset_failure = re.search(
               r"VC4_LINUX_KMS_MODESET_FAILED "
@@ -216,6 +239,10 @@ jobs:
           current_fb_ok = (
               "VC4_LINUX_KMS_PAGEFLIP_CURRENT_FB_OK" in serial
           )
+          visual_ready = (
+              "VC4_LINUX_KMS_PAGEFLIP_VISUAL_READY" in serial
+          )
+          visual_ok = image_record.get("passed") is True
           pageflip_ok = "VC4_LINUX_KMS_PAGEFLIP_OK" in serial
           pageflip_supervisor_ok = (
               "VC4_LINUX_KMS_PAGEFLIP_SUPERVISOR_OK" in serial
@@ -249,7 +276,14 @@ jobs:
               pageflip_ok,
               pageflip_supervisor_ok,
           )):
-              classification = "linux-vc4-kms-pageflip-clear"
+              if not visual_ready:
+                  classification = "vc4-kms-pageflip-visual-not-ready"
+              elif not image_present:
+                  classification = "vc4-kms-pageflip-image-missing"
+              elif not visual_ok:
+                  classification = "vc4-kms-pageflip-image-mismatch"
+              else:
+                  classification = "linux-vc4-kms-pageflip-visual-clear"
           elif queued and not event_ok:
               classification = "vc4-kms-pageflip-event-incomplete"
           elif pageflip_started:
@@ -268,12 +302,14 @@ jobs:
               queued,
               event_ok,
               current_fb_ok,
+              visual_ready,
+              visual_ok,
               pageflip_ok,
               pageflip_supervisor_ok,
           ))
           failure = pageflip_failure or modeset_failure
           record = {
-              "schema_version": 1,
+              "schema_version": 2,
               "source_sha": "${{ github.sha }}",
               "run_id": "${{ github.run_id }}",
               "run_attempt": "${{ github.run_attempt }}",
@@ -290,6 +326,9 @@ jobs:
               "pageflip_queued": queued,
               "flip_event_ok": event_ok,
               "current_fb_ok": current_fb_ok,
+              "visual_ready": visual_ready,
+              "visual_pixels_ok": visual_ok,
+              "visual_image": image_record if image_present else None,
               "pageflip_ok": pageflip_ok,
               "pageflip_supervisor_ok": pageflip_supervisor_ok,
               "timed_out": timed_out,
@@ -326,6 +365,8 @@ jobs:
                   f"- Page flip queued: `{queued}`",
                   f"- Flip-complete event received: `{event_ok}`",
                   f"- GETCRTC reports the new FB: `{current_fb_ok}`",
+                  f"- Visual-ready hold reached: `{visual_ready}`",
+                  f"- Exact flipped pixels verified: `{visual_ok}`",
                   f"- Page-flip witness completed: `{pageflip_ok}`",
                   f"- Timeout: `{timed_out}`",
                   f"- Failure stage: `{record['failure_stage']}`",
@@ -335,7 +376,10 @@ jobs:
                   "shared drm_file. A second child creates a distinct "
                   "framebuffer, queues DRM_IOCTL_MODE_PAGE_FLIP with the "
                   "event flag, consumes DRM_EVENT_FLIP_COMPLETE, and checks "
-                  "that GETCRTC exposes the new framebuffer.",
+                  "that GETCRTC exposes the new framebuffer. The host "
+                  "then stops QEMU at the visual-ready marker and "
+                  "requires the captured PPM to match every pixel of "
+                  "the deterministic XRGB8888 witness pattern.",
               )) + "\n"
           )
           PY
