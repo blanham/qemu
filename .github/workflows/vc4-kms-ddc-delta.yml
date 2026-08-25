@@ -1,5 +1,6 @@
 name: VC4 native KMS HDMI DDC delta
 
+# Retrigger after repairing the one-shot KMS gate handoff chain.
 on:
   push:
     branches:
