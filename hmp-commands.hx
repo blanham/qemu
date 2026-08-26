@@ -285,6 +285,31 @@ ERST
 #endif
 
     {
+        .name       = "capture-output|save-output",
+        .args_type  = "append:-a,quiet:-q,filename:F,command:S",
+        .params     = "[-a] [-q] filename command...",
+        .help       = "capture a monitor command to a host text file",
+        .cmd        = hmp_capture_output,
+        .flags      = "p",
+    },
+
+SRST
+``capture-output`` or ``save-output`` [-a] [-q] *filename* *command*...
+  Execute *command* through the legacy human monitor and write its exact text
+  output to *filename*.  By default the file is replaced consistently and the
+  output is also displayed.  ``-a`` appends to an existing file; ``-q``
+  suppresses the captured text and prints only a byte-count confirmation.  The
+  selected CPU is inherited for commands such as ``info registers``.  Nested
+  capture commands are rejected.
+
+  For example::
+
+    (qemu) capture-output page-tables.txt info mem
+    (qemu) capture-output -q devices.txt info qom-tree
+    (qemu) capture-output -a trace-notes.txt info mtree
+ERST
+
+    {
         .name       = "logfile",
         .args_type  = "filename:F",
         .params     = "filename",

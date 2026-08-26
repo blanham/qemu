@@ -308,6 +308,33 @@ void hmp_info_history(Monitor *mon, const QDict *qdict)
     }
 }
 
+void hmp_capture_output(Monitor *mon, const QDict *qdict)
+{
+    const char *filename = qdict_get_str(qdict, "filename");
+    const char *command_line = qdict_get_str(qdict, "command");
+    bool append = qdict_get_try_bool(qdict, "append", false);
+    bool quiet = qdict_get_try_bool(qdict, "quiet", false);
+    int cpu_index = monitor_get_cpu_index(mon);
+    WD40TextCapture *capture;
+    Error *err = NULL;
+
+    capture = qmp_x_wd40_capture_hmp(command_line, cpu_index >= 0, cpu_index,
+                                     filename, true, append, true, !quiet,
+                                     &err);
+    if (hmp_handle_error(mon, err)) {
+        return;
+    }
+
+    if (quiet) {
+        monitor_printf(mon, "captured %" PRIu64 " bytes to '%s'%s\n",
+                       capture->bytes, filename,
+                       capture->append ? " (append)" : "");
+    } else {
+        monitor_puts(mon, capture->text);
+    }
+    qapi_free_WD40TextCapture(capture);
+}
+
 void hmp_logfile(Monitor *mon, const QDict *qdict)
 {
     Error *err = NULL;

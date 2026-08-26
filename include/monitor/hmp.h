@@ -163,6 +163,7 @@ void hmp_clear(Monitor *mon, const QDict *qdict);
 void hmp_info_help(Monitor *mon, const QDict *qdict);
 void hmp_info_sync_profile(Monitor *mon, const QDict *qdict);
 void hmp_info_history(Monitor *mon, const QDict *qdict);
+void hmp_capture_output(Monitor *mon, const QDict *qdict);
 void hmp_logfile(Monitor *mon, const QDict *qdict);
 void hmp_log(Monitor *mon, const QDict *qdict);
 void hmp_gdbserver(Monitor *mon, const QDict *qdict);

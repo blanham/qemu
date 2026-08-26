@@ -424,6 +424,58 @@
   'features': [ 'unstable' ] }
 
 ##
+# @WD40TextCapture:
+#
+# Captured human-monitor output.
+#
+# @text: captured text, omitted when ``return-text`` was false
+#
+# @bytes: number of bytes captured and, when requested, written
+#
+# @path: host path written by the command
+#
+# @append: whether output was appended instead of replacing @path
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40TextCapture',
+  'data': { '*text': 'str', 'bytes': 'uint64', '*path': 'str',
+            'append': 'bool' } }
+
+##
+# @x-wd40-capture-hmp:
+#
+# Execute a legacy HMP command and capture its exact text output.
+# Output may also be written to a host file.  This command is an
+# experimental bridge for WD40 frontends while commands migrate to
+# typed QMP services.
+#
+# @command-line: complete HMP command line to execute
+#
+# @cpu-index: CPU selected for commands that use the monitor's
+#     implicit CPU
+#
+# @path: host file to write; replacing it unless @append is true
+#
+# @append: append to @path instead of replacing it (default: false)
+#
+# @return-text: include captured text in the reply (default: true)
+#
+# Features:
+#
+# @unstable: This command is an experimental WD40 monitor foundation.
+#
+# Returns: capture metadata and, by default, the captured text
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-capture-hmp',
+  'data': { 'command-line': 'str', '*cpu-index': 'int', '*path': 'str',
+            '*append': 'bool', '*return-text': 'bool' },
+  'returns': 'WD40TextCapture',
+  'features': [ 'unstable' ] }
+
+##
 # @human-monitor-command:
 #
 # Execute a command on the human monitor and return the output.

@@ -14,6 +14,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/ctype.h"
 #include "qemu/sockets.h"
 #include "qemu/log.h"
 #include "monitor-internal.h"
@@ -284,6 +285,131 @@ char *qmp_human_monitor_command(const char *command_line, bool has_cpu_index,
 out:
     object_unref(hmp);
     return output;
+}
+
+static bool wd40_capture_in_progress;
+
+static bool wd40_capture_command_is_recursive(const char *command_line)
+{
+    const char *start = command_line;
+    const char *end;
+    g_autofree char *name = NULL;
+
+    while (qemu_isspace(*start)) {
+        start++;
+    }
+    end = start;
+    while (*end && !qemu_isspace(*end) && *end != '/') {
+        end++;
+    }
+    if (end == start) {
+        return false;
+    }
+
+    name = g_strndup(start, end - start);
+    return hmp_compare_cmd(name, "capture-output|save-output");
+}
+
+static bool wd40_write_capture_file(const char *path, bool append,
+                                      const char *text, size_t length,
+                                      Error **errp)
+{
+    GError *gerr = NULL;
+    int fd;
+    ssize_t written;
+    int saved_errno;
+
+    if (length > G_MAXSSIZE) {
+        error_setg(errp, "Captured output is too large to write");
+        return false;
+    }
+
+    if (!append) {
+        /* g_file_set_contents() uses a consistent whole-file replacement. */
+        if (!g_file_set_contents(path, text, (gssize)length, &gerr)) {
+            error_setg(errp, "Could not write '%s': %s",
+                       path, gerr->message);
+            g_error_free(gerr);
+            return false;
+        }
+        return true;
+    }
+
+    fd = qemu_create(path, O_WRONLY | O_BINARY | O_APPEND, 0666, errp);
+    if (fd < 0) {
+        return false;
+    }
+
+    written = qemu_write_full(fd, text, length);
+    if (written < 0 || (size_t)written != length) {
+        saved_errno = written < 0 ? errno : EIO;
+        qemu_close(fd);
+        error_setg_errno(errp, saved_errno, "Could not append to '%s'", path);
+        return false;
+    }
+
+    if (qemu_close(fd) < 0) {
+        error_setg_errno(errp, errno, "Could not close '%s'", path);
+        return false;
+    }
+    return true;
+}
+
+WD40TextCapture *qmp_x_wd40_capture_hmp(const char *command_line,
+                                         bool has_cpu_index,
+                                         int64_t cpu_index,
+                                         const char *path,
+                                         bool has_append, bool append,
+                                         bool has_return_text,
+                                         bool return_text,
+                                         Error **errp)
+{
+    g_autofree char *output = NULL;
+    WD40TextCapture *result;
+    bool keep_text = !has_return_text || return_text;
+    size_t length;
+
+    append = has_append && append;
+    if (!command_line[0]) {
+        error_setg(errp, "command-line must not be empty");
+        return NULL;
+    }
+    if (append && !path) {
+        error_setg(errp, "append requires path");
+        return NULL;
+    }
+    if (!path && !keep_text) {
+        error_setg(errp,
+                   "at least one output destination must be selected");
+        return NULL;
+    }
+    if (wd40_capture_command_is_recursive(command_line) ||
+        wd40_capture_in_progress) {
+        error_setg(errp, "nested WD40 output capture is not supported");
+        return NULL;
+    }
+
+    wd40_capture_in_progress = true;
+    output = qmp_human_monitor_command(command_line, has_cpu_index,
+                                       cpu_index, errp);
+    wd40_capture_in_progress = false;
+    if (!output) {
+        return NULL;
+    }
+    length = strlen(output);
+
+    if (path && !wd40_write_capture_file(path, append, output, length, errp)) {
+        return NULL;
+    }
+
+    result = g_new0(WD40TextCapture, 1);
+    result->bytes = length;
+    result->append = path && append;
+    result->path = g_strdup(path);
+    if (keep_text) {
+        result->text = g_steal_pointer(&output);
+    }
+    return result;
 }
 
 static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)

@@ -49,6 +49,17 @@ Each command also exposes an ``arguments`` array that decodes the internal
 and short-option metadata.  Clients can therefore construct command UIs
 without carrying a second copy of QEMU's HMP parser grammar.
 
+Text output capture
+-------------------
+
+``x-wd40-capture-hmp`` is a structured bridge for commands that still produce
+legacy monitor text.  It returns byte-counted output through QMP and can write
+the exact same bytes to a host file in consistent-replace or append mode.
+Setting ``return-text`` to false avoids returning a second copy after writing a
+large dump.  The HMP ``capture-output`` command is a thin frontend over this
+service; new typed WD40 commands should return structured QAPI objects instead.
+Nested capture is rejected at the shared service boundary.
+
 Structured log-category control
 -------------------------------
 
