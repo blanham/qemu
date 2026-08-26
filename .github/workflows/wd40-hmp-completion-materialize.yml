@@ -58,9 +58,15 @@ jobs:
           apply_contract
           git diff --no-ext-diff --binary \
             > /tmp/wd40-completion-pass2.diff
-          cmp \
-            /tmp/wd40-completion-pass1.diff \
-            /tmp/wd40-completion-pass2.diff
+          if ! cmp -s \
+              /tmp/wd40-completion-pass1.diff \
+              /tmp/wd40-completion-pass2.diff; then
+            echo "complete QoL replay changed the generated tree" >&2
+            diff -u \
+              /tmp/wd40-completion-pass1.diff \
+              /tmp/wd40-completion-pass2.diff || true
+            exit 1
+          fi
 
           python3 scripts/ci/check-wd40-rustless.py
           python3 scripts/ci/check-wd40-amd-1tb-hole.py
