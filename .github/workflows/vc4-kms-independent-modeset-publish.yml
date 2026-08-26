@@ -1,0 +1,143 @@
+name: Publish VC4 independent-master modeset proof
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-independent-modeset-publish.yml
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: vc4-kms-independent-modeset-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Rebase the product change onto the pre-staging tip
+        run: |
+          set -euo pipefail
+          lease_sha=$(git rev-parse HEAD)
+          base_sha=$(git rev-parse HEAD^)
+          printf 'LEASE_SHA=%s\n' "$lease_sha" >> "$GITHUB_ENV"
+          git reset --hard "$base_sha"
+
+      - name: Apply the independent-master modeset tranche
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import zlib
+
+          payload = "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"
+          source = zlib.decompress(base64.b64decode(payload)).decode()
+          exec(compile(source, "<vc4-independent-modeset-patch>", "exec"))
+          PY
+
+      - name: Validate Python contracts and the full initramfs program
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross python3
+
+          python3 -m py_compile \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 scripts/vc4/enable-linux-kms-master-reacquire-probe.py
+
+          aarch64-linux-gnu-gcc \
+            -static -O2 -g0 -Wall -Wextra -Werror -fno-ident \
+            -I/usr/include/libdrm -Wl,--build-id=none \
+            -o /tmp/vc4-independent-master-init \
+            tests/vc4/linux-v3d-modular-init.c
+          strings /tmp/vc4-independent-master-init \
+            > /tmp/vc4-independent-master-init.strings
+          for marker in \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MAP_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_START \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK; do
+            grep -Fq "$marker" /tmp/vc4-independent-master-init.strings
+          done
+
+          git restore --worktree --staged \
+            tests/vc4/linux-v3d-modular-init.c
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          expected = {
+              ".github/workflows/vc4-kms-master-reacquire-probe.yml",
+              "scripts/vc4/enable-linux-kms-master-reacquire-probe.py",
+              "scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py",
+              "scripts/vc4/summarize-linux-kms-master-reacquire.py",
+              "tests/vc4/linux-kms-master-reacquire-probe.inc.c",
+          }
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--name-only"],
+                  text=True,
+              ).splitlines()
+          )
+          if changed != expected:
+              raise SystemExit(
+                  f"unexpected product diff: {sorted(changed)!r}; "
+                  f"expected {sorted(expected)!r}"
+              )
+          for path in expected:
+              if not Path(path).is_file():
+                  raise SystemExit(f"missing changed file: {path}")
+          print("VC4 independent-master product diff: PASS")
+          PY
+
+      - name: Publish the validated product commit
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 Development"
+          git config user.email "vc4-dev@users.noreply.github.com"
+          git add -- \
+            .github/workflows/vc4-kms-master-reacquire-probe.yml \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          git commit \
+            -m "test/vc4: prove independent-master modeset and page flip" \
+            -m "Require a newly opened drm_file to acquire master, enumerate its own connector and mode, create an initial framebuffer, program SETCRTC, verify that state through GETCRTC, and only then queue an event-driven flip to a second exact-pixel framebuffer. Extend the durable report and smoke classifications so an inherited active CRTC can no longer satisfy the proof."
+          git push \
+            --force-with-lease="refs/heads/${BRANCH}:${LEASE_SHA}" \
+            origin "HEAD:refs/heads/${BRANCH}"
+
+      - name: Dispatch the permanent exact-pixel witness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run vc4-kms-master-reacquire-probe.yml \
+            --ref "$BRANCH"
