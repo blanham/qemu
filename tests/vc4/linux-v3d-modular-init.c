@@ -185,11 +185,12 @@ static int load_vc4_module_manifest(void)
 }
 
 /*
- * Detailed report() records are best-effort diagnostics: a busy serial tty
- * can reject a nonblocking write.  marker() has a /dev/kmsg fallback, so
- * repeat every semantically important successful stage as a plain marker.
- * These markers are emitted only after the corresponding aggregate helper
- * has returned success; they do not weaken the witness.
+ * Detailed report() records and semantic markers share a /dev/kmsg fallback,
+ * so both survive nonblocking serial pressure.  Repeat every semantically
+ * important successful stage as a plain marker as well: markers keep the
+ * classifier independent of diagnostic formatting.  They are emitted only
+ * after the corresponding aggregate helper has returned success and do not
+ * weaken the witness.
  */
 static void mark_module_success(void)
 {

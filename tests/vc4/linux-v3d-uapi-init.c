@@ -104,30 +104,42 @@ static int write_all(int fd, const char *text, size_t length)
             }
             return -1;
         }
+        if (written == 0) {
+            errno = EIO;
+            return -1;
+        }
         text += written;
         length -= (size_t)written;
     }
     return 0;
 }
 
+static void emit_text(const char *text, size_t length)
+{
+    int fd;
+
+    if (write_all(STDOUT_FILENO, text, length) == 0) {
+        return;
+    }
+
+    fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        (void)write_all(fd, text, length);
+        close(fd);
+    }
+}
+
 static void marker(const char *text)
 {
     int saved_errno = errno;
-    size_t length = strlen(text);
 
-    if (write_all(STDOUT_FILENO, text, length) < 0) {
-        int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
-
-        if (fd >= 0) {
-            (void)write_all(fd, text, length);
-            close(fd);
-        }
-    }
+    emit_text(text, strlen(text));
     errno = saved_errno;
 }
 
 static void report(const char *format, ...)
 {
+    int saved_errno = errno;
     char buffer[768];
     va_list arguments;
     int length;
@@ -135,13 +147,13 @@ static void report(const char *format, ...)
     va_start(arguments, format);
     length = vsnprintf(buffer, sizeof(buffer), format, arguments);
     va_end(arguments);
-    if (length <= 0) {
-        return;
+    if (length > 0) {
+        if ((size_t)length >= sizeof(buffer)) {
+            length = (int)sizeof(buffer) - 1;
+        }
+        emit_text(buffer, (size_t)length);
     }
-    if ((size_t)length >= sizeof(buffer)) {
-        length = (int)sizeof(buffer) - 1;
-    }
-    (void)write_all(STDOUT_FILENO, buffer, (size_t)length);
+    errno = saved_errno;
 }
 
 static void reopen_console(void)
