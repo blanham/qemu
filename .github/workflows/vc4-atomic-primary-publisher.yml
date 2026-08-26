@@ -64,20 +64,21 @@ jobs:
               "tests/vc4/linux-kms-master-reacquire-probe.inc.c"
           )
           source = path.read_text(encoding="utf-8")
-          anchor = """    resources.crtc_id_ptr = (uintptr_t)crtc_ids;
-          """
-          replacement = """    /*
-           * The count-only call also returns the sizes of the framebuffer,
-           * connector, and encoder arrays.  We are only providing storage for
-           * CRTC IDs here, so advertise zero capacity for every unused array.
-           * Otherwise drm_mode_getresources() quite correctly attempts to copy
-           * those IDs through our still-NULL pointers and returns EFAULT.
-           */
-          resources.count_fbs = 0;
-          resources.count_connectors = 0;
-          resources.count_encoders = 0;
-          resources.crtc_id_ptr = (uintptr_t)crtc_ids;
-          """
+          anchor = "    resources.crtc_id_ptr = (uintptr_t)crtc_ids;\n"
+          replacement = "\n".join((
+              "    /*",
+              "     * The count-only call also returns the sizes of the framebuffer,",
+              "     * connector, and encoder arrays.  We are only providing storage for",
+              "     * CRTC IDs here, so advertise zero capacity for every unused array.",
+              "     * Otherwise drm_mode_getresources() quite correctly attempts to copy",
+              "     * those IDs through our still-NULL pointers and returns EFAULT.",
+              "     */",
+              "    resources.count_fbs = 0;",
+              "    resources.count_connectors = 0;",
+              "    resources.count_encoders = 0;",
+              "    resources.crtc_id_ptr = (uintptr_t)crtc_ids;",
+              "",
+          ))
           if source.count(anchor) != 1:
               raise SystemExit(
                   f"expected one GETRESOURCES pointer anchor, "
