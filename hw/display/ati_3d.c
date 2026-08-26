@@ -2022,9 +2022,9 @@ bool ati_3d_draw_indexed(ATIVGAState *s, uint32_t address,
             goto out;
         }
         if ((tex_control & ATI_3D_TEXMAP_ENABLE) &&
-            fabsf(vertices[i].rhw) < 1.0e-20f) {
+            vertices[i].rhw <= 0.0f) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "ATI Rage 128 textured vertex has zero RHW\n");
+                          "ATI Rage 128 textured vertex has non-positive RHW\n");
             goto out;
         }
         vertices[i].x += window_x;
