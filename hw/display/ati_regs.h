@@ -192,6 +192,8 @@
 #define BRUSH_SCALE                             0x1470
 #define BRUSH_Y_X                               0x1474
 #define DP_BRUSH_BKGD_CLR                       0x1478
+#define BRUSH_DATA0                             0x1480
+#define BRUSH_DATA63                            0x157c
 #define DP_BRUSH_FRGD_CLR                       0x147c
 #define DST_WIDTH_X                             0x1588
 #define DST_HEIGHT_WIDTH_8                      0x158c
@@ -291,7 +293,9 @@
 #define GUI_ACTIVE                              0x80000000
 #define ENGINE_IDLE                             0x0
 
+#define PLL_INDEX_MASK                          0x0000003f
 #define PLL_WR_EN                               0x00000080
+#define PLL_DIV_SEL                             0x00000300
 
 #define CLK_PIN_CNTL                            0x01
 #define PPLL_CNTL                               0x02
@@ -403,7 +407,12 @@
 #define DP_SRC_DATATYPE                         0x00030000
 #define DP_BYTE_PIX_ORDER                       0x40000000
 
+#define BRUSH_8X8_MONO_FG_BG                   0x00000000
+#define BRUSH_8X8_MONO_FG_LA                   0x00000100
+#define BRUSH_32X1_MONO_FG_BG                  0x00000600
+#define BRUSH_32X1_MONO_FG_LA                  0x00000700
 #define BRUSH_SOLIDCOLOR                        0x00000d00
+#define BRUSH_NONE                              0x00000f00
 
 /* DP_GUI_MASTER_CNTL bit constants */
 #define GMC_SRC_PITCH_OFFSET_CNTL               0x00000001
@@ -418,7 +427,7 @@
 #define GMC_DP_SRC_RECT                         0x02000000
 #define GMC_3D_FCN_EN_CLR                       0x00000000
 #define GMC_AUX_CLIP_CLEAR                      0x20000000
-#define GMC_DST_CLR_CMP_FCN_CLEAR               0x10000000
+#define GMC_CLR_CMP_CNTL_DIS                    0x10000000
 #define GMC_WRITE_MASK_SET                      0x40000000
 #define GMC_DP_CONVERSION_TEMP_6500             0x00000000
 
@@ -451,12 +460,23 @@
 #define DST_RASTER_STALL                        0x00010000
 #define DST_POLY_EDGE                           0x00040000
 
+/* DP_CNTL_XDIR_YDIR_YMAJOR bit constants */
+#define DST_LINE_Y_MAJOR                        0x00000004
+#define DST_LINE_Y_TOP_TO_BOTTOM                0x00008000
+#define DST_LINE_X_LEFT_TO_RIGHT                0x80000000
+
 /* DP_MIX bit constants */
 #define DP_SRC_RECT                             0x00000200
 #define DP_SRC_HOST                             0x00000300
 #define DP_SRC_HOST_BYTEALIGN                   0x00000400
 #define DP_SRC_SOURCE                           0x00000700
 #define DP_ROP3                                 0x00ff0000
+
+/* CLR_CMP_CNTL bit constants. */
+#define CLR_CMP_FN_MASK                         0x00000007
+#define SRC_CMP_EQ_COLOR                        0x00000004
+#define SRC_CMP_NEQ_COLOR                       0x00000005
+#define CLR_CMP_SRC_SOURCE                      0x01000000
 
 /* LVDS_GEN_CNTL constants */
 #define LVDS_BL_MOD_LEVEL_MASK                  0x0000ff00
@@ -499,5 +519,118 @@
 
 /* used by ATI bug fix for hardware ROM */
 #define RAGE128_MPP_TB_CONFIG                   0x01c0
+
+/* Rage 128 CCE/PM4 registers not used by the original 2D-only model. */
+#define PM4_BUFFER_DL_WPTR_DELAY                 0x0718
+#define PM4_VC_DEBUG_CONFIG                      0x07a4
+#define PM4_VC_STAT                              0x07a8
+#define PM4_VC_TIMESTAMP0                        0x07b0
+#define PM4_VC_TIMESTAMP1                        0x07b4
+
+#define GUI_SCRATCH_REG0                        0x15e0
+#define GUI_SCRATCH_REG1                        0x15e4
+#define GUI_SCRATCH_REG2                        0x15e8
+#define GUI_SCRATCH_REG3                        0x15ec
+#define GUI_SCRATCH_REG4                        0x15f0
+#define GUI_SCRATCH_REG5                        0x15f4
+
+#define AUX_SC_CNTL                             0x1660
+#define AUX1_SC_LEFT                            0x1664
+#define AUX1_SC_RIGHT                           0x1668
+#define AUX1_SC_TOP                             0x166c
+#define AUX1_SC_BOTTOM                          0x1670
+#define AUX2_SC_LEFT                            0x1674
+#define AUX2_SC_RIGHT                           0x1678
+#define AUX2_SC_TOP                             0x167c
+#define AUX2_SC_BOTTOM                          0x1680
+#define AUX3_SC_LEFT                            0x1684
+#define AUX3_SC_RIGHT                           0x1688
+#define AUX3_SC_TOP                             0x168c
+#define AUX3_SC_BOTTOM                          0x1690
+
+#define RE_WIDTH_HEIGHT                         0x1c44
+#define Z_OFFSET_C                              0x1c90
+#define Z_PITCH_C                               0x1c94
+#define Z_STEN_CNTL_C                           0x1c98
+#define TEX_CNTL_C                              0x1c9c
+#define TEXTURE_CLR_CMP_CLR_C                   0x1ca4
+#define TEXTURE_CLR_CMP_MSK_C                   0x1ca8
+#define FOG_COLOR_C                             0x1cac
+#define PRIM_TEX_CNTL_C                         0x1cb0
+#define PRIM_TEX_COMBINE_CNTL_C                 0x1cb4
+#define TEX_SIZE_PITCH_C                        0x1cb8
+#define PRIM_TEX_0_OFFSET_C                     0x1cbc
+#define SEC_TEX_CNTL_C                          0x1d00
+#define SEC_TEX_COMBINE_CNTL_C                  0x1d04
+#define CONSTANT_COLOR_C                        0x1d34
+#define PRIM_TEXTURE_BORDER_COLOR_C             0x1d38
+#define SEC_TEXTURE_BORDER_COLOR_C              0x1d3c
+#define STEN_REF_MASK_C                         0x1d40
+#define PLANE_3D_MASK_C                         0x1d44
+#define RE_TOP_LEFT                             0x26c0
+
+/* CCE packet encoding. */
+#define R128_PM4_PACKET_TYPE_MASK               0xc0000000U
+#define R128_PM4_PACKET0                        0x00000000U
+#define R128_PM4_PACKET1                        0x40000000U
+#define R128_PM4_PACKET2                        0x80000000U
+#define R128_PM4_PACKET3                        0xc0000000U
+#define R128_PM4_PACKET_COUNT_MASK              0x3fff0000U
+#define R128_PM4_PACKET0_ONE_REG_WR             0x00008000U
+#define R128_PM4_PACKET0_REG_MASK               0x000007ffU
+#define R128_PM4_PACKET1_REG0_MASK              0x000007ffU
+#define R128_PM4_PACKET1_REG1_MASK              0x003ff800U
+#define R128_PM4_PACKET3_OPCODE_MASK            0x0000ff00U
+#define R128_PM4_PACKET3_NOP                    0x00001000U
+#define R128_PM4_CNTL_HOSTDATA_BLT              0x00009400U
+#define R128_PM4_CNTL_PAINT_MULTI               0x00009a00U
+#define R128_PM4_CNTL_BITBLT_MULTI              0x00009b00U
+#define R128_PM4_3D_RNDR_GEN_INDX_PRIM          0x00002300U
+#define R128_PM4_3D_RNDR_GEN_PRIM               0x00002500U
+
+/* CCE mode and status bits. */
+#define R128_PM4_NONPM4                         (0U << 28)
+#define R128_PM4_192PIO                         (1U << 28)
+#define R128_PM4_192BM                          (2U << 28)
+#define R128_PM4_128PIO_64INDBM                 (3U << 28)
+#define R128_PM4_128BM_64INDBM                  (4U << 28)
+#define R128_PM4_64PIO_128INDBM                 (5U << 28)
+#define R128_PM4_64BM_128INDBM                  (6U << 28)
+#define R128_PM4_64PIO_64VCBM_64INDBM           (7U << 28)
+#define R128_PM4_64BM_64VCBM_64INDBM            (8U << 28)
+#define R128_PM4_64PIO_64VCPIO_64INDPIO         (15U << 28)
+#define R128_PM4_BUFFER_CNTL_NOUPDATE           BIT(27)
+#define R128_PM4_BUFFER_DL_DONE                 BIT(31)
+#define R128_PM4_BUSY                           BIT(16)
+#define R128_PM4_GUI_ACTIVE                     BIT(31)
+#define R128_PM4_MICRO_FREERUN                  BIT(30)
+
+/* PM4 packet3 master-control bits. */
+#define R128_GMC_WR_MSK_DIS                     BIT(30)
+#define R128_GMC_AUX_CLIP_DIS                   BIT(29)
+#define R128_DST_TILE                           BIT(31)
+
+/* Vertex format and primitive-control values used by the historical DRI. */
+#define R128_CCE_VC_FRMT_RHW                    BIT(0)
+#define R128_CCE_VC_FRMT_DIFFUSE_BGR            BIT(1)
+#define R128_CCE_VC_FRMT_DIFFUSE_A              BIT(2)
+#define R128_CCE_VC_FRMT_DIFFUSE_ARGB           BIT(3)
+#define R128_CCE_VC_FRMT_SPEC_BGR               BIT(4)
+#define R128_CCE_VC_FRMT_SPEC_F                 BIT(5)
+#define R128_CCE_VC_FRMT_SPEC_FRGB              BIT(6)
+#define R128_CCE_VC_FRMT_S_T                    BIT(7)
+#define R128_CCE_VC_FRMT_S2_T2                  BIT(8)
+#define R128_CCE_VC_FRMT_RHW2                   BIT(9)
+#define R128_CCE_VC_CNTL_PRIM_TYPE_POINT        0x00000001U
+#define R128_CCE_VC_CNTL_PRIM_TYPE_LINE         0x00000002U
+#define R128_CCE_VC_CNTL_PRIM_TYPE_POLY_LINE    0x00000003U
+#define R128_CCE_VC_CNTL_PRIM_TYPE_TRI_LIST     0x00000004U
+#define R128_CCE_VC_CNTL_PRIM_TYPE_TRI_FAN      0x00000005U
+#define R128_CCE_VC_CNTL_PRIM_TYPE_TRI_STRIP    0x00000006U
+#define R128_CCE_VC_CNTL_PRIM_TYPE_TRI_TYPE2    0x00000007U
+#define R128_CCE_VC_CNTL_PRIM_WALK_IND          0x00000010U
+#define R128_CCE_VC_CNTL_PRIM_WALK_LIST         0x00000020U
+#define R128_CCE_VC_CNTL_PRIM_WALK_RING         0x00000030U
+#define R128_CCE_VC_CNTL_NUM_SHIFT              16
 
 #endif /* ATI_REGS_H */
