@@ -1,0 +1,72 @@
+name: Validate Rage 128 texture0 reference path
+
+on:
+  push:
+    branches:
+      - agent/rage128-texture0-reference
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply exact source and qtest edits
+        run: |
+          python3 .github/rage128-texture0-source-patch.py
+          python3 .github/rage128-texture0-test-patch.py
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libfdt-dev libslirp-dev
+
+      - name: Configure QEMU
+        run: |
+          mkdir build
+          cd build
+          ../configure \
+            --target-list=x86_64-softmmu,ppc-softmmu \
+            --enable-debug \
+            --disable-werror \
+            --disable-docs
+
+      - name: Build selected targets
+        run: |
+          ninja -C build -j2 \
+            qemu-system-x86_64 \
+            qemu-system-ppc \
+            tests/unit/test-ati-rop3 \
+            tests/qtest/display-vga-test \
+            tests/qtest/ati-rage128-pm4-test
+
+      - name: Run selected validation
+        run: |
+          build/pyvenv/bin/meson test -C build --no-rebuild \
+            test-ati-rop3 \
+            qtest-x86_64/display-vga-test \
+            qtest-x86_64/ati-rage128-pm4-test \
+            --print-errorlogs
+
+      - name: Commit validated source changes
+        if: github.actor != 'github-actions[bot]'
+        run: |
+          if ! git diff --quiet -- \
+              hw/display/ati_3d.c \
+              tests/qtest/ati-rage128-pm4-test.c; then
+            git config user.name github-actions[bot]
+            git config user.email \
+              41898282+github-actions[bot]@users.noreply.github.com
+            git add \
+              hw/display/ati_3d.c \
+              tests/qtest/ati-rage128-pm4-test.c
+            git commit -m \
+              'hw/display/ati: add Rage 128 texture0 reference sampling'
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
