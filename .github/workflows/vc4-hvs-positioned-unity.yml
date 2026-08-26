@@ -1,0 +1,115 @@
+name: VC4 HVS positioned unity-plane scanout
+
+on:
+  push:
+    branches:
+      - agent/vc4-hvs-positioned-unity
+    paths:
+      - .github/workflows/vc4-hvs-positioned-unity.yml
+      - scripts/vc4/apply-hvs-positioned-unity.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-positioned-unity
+  cancel-in-progress: false
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BRANCH: agent/vc4-hvs-positioned-unity
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-hvs-positioned-unity
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libpixman-1-dev meson ninja-build \
+            pkg-config python3 zlib1g-dev
+
+      - name: Apply the exact positioned-unity tranche
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/vc4/apply-hvs-positioned-unity.py")
+          source = path.read_text(encoding="utf-8")
+          old = '"void bcm2835_fb_reconfigure(BCM2835FBState *s,\\n",'
+          new = (
+              '"void bcm2835_fb_reconfigure(BCM2835FBState *s, '
+              'BCM2835FBConfig *newconfig)\\n",'
+          )
+          if source.count(old) != 1:
+              raise SystemExit(
+                  f"expected one reconfigure start anchor, found "
+                  f"{source.count(old)}"
+              )
+          path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          PY
+          python3 -m py_compile scripts/vc4/apply-hvs-positioned-unity.py
+          python3 scripts/vc4/apply-hvs-positioned-unity.py
+          git restore -- scripts/vc4/apply-hvs-positioned-unity.py
+          git diff --check
+          python3 -m py_compile scripts/vc4/hvs-dlist-smoke.py
+
+          mapfile -t changed < <(git diff --name-only | LC_ALL=C sort)
+          expected=(
+            hw/display/bcm2835_fb.c
+            hw/display/bcm2835_hvs.c
+            include/hw/display/bcm2835_fb.h
+            scripts/vc4/hvs-dlist-smoke.py
+          )
+          test "${#changed[@]}" -eq "${#expected[@]}"
+          for index in "${!expected[@]}"; do
+            test "${changed[$index]}" = "${expected[$index]}"
+          done
+
+      - name: Configure and build QEMU frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+
+      - name: Prove positioned scanout and preserve display regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the validated product commit
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 Development"
+          git config user.email "vc4-dev@users.noreply.github.com"
+          git add -- \
+            hw/display/bcm2835_fb.c \
+            hw/display/bcm2835_hvs.c \
+            include/hw/display/bcm2835_fb.h \
+            scripts/vc4/hvs-dlist-smoke.py
+          git commit -m \
+            "hw/display: position one VC4 HVS unity plane [skip ci]" \
+            -m \
+            "Retain the CRTC-sized output surface while scanning one smaller unity-scaled HVS element at its programmed nonnegative X/Y position. Clear uncovered pixels to black, keep mailbox framebuffer semantics separate, migrate the HVS scanout geometry with version-1 compatibility, and screenshot-check every source and background pixel."
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
