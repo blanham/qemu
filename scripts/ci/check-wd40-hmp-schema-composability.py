@@ -29,6 +29,8 @@ def main() -> None:
     exactly(qapi, "'arguments': [ 'HMPArgumentInfo' ]")
 
     monitor = "monitor/hmp.c"
+    exactly(monitor, "static char *hmp_command_canonical_component(")
+    exactly(monitor, "static HMPCommandInfoList **hmp_command_info_collect(")
     exactly(monitor, "HMPCommandInfoList *qmp_query_hmp_commands(")
     exactly(monitor, "static HMPArgumentInfoList *hmp_argument_info_collect(")
     exactly(monitor, "info->arguments = hmp_argument_info_collect(")
@@ -37,11 +39,17 @@ def main() -> None:
     exactly(transform, "owned_markers: tuple[str, ...] = ()")
     exactly(transform, '"{ \'struct\': \'HMPCommandInfo\',"')
     exactly(transform, '"{ \'command\': \'query-hmp-commands\',"')
+    exactly(transform, '"static char *hmp_command_canonical_component("')
+    exactly(transform, '"static HMPCommandInfoList **hmp_command_info_collect("')
+    exactly(transform, '"HMPCommandInfoList *qmp_query_hmp_commands("')
 
     hardener = "scripts/wd40/apply-hmp-command-introspection-hardening.py"
     exactly(hardener, "owned_markers: tuple[str, ...] = ()")
 
-    print("WD40 HMP schema composability: single command/argument schema validated")
+    print(
+        "WD40 HMP schema composability: single command/argument schema "
+        "and collector validated"
+    )
 
 
 if __name__ == "__main__":
