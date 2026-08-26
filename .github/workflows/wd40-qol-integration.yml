@@ -56,6 +56,7 @@ jobs:
             python3 scripts/wd40/apply-subtractive-log-mask.py
             python3 scripts/wd40/apply-hmp-command-introspection-hardening.py
             python3 scripts/wd40/apply-hmp-command-introspection.py
+            python3 scripts/wd40/apply-hmp-argument-introspection.py
             python3 scripts/wd40/apply-structured-log-control.py
             python3 scripts/wd40/apply-structured-log-control-hardening.py
             python3 scripts/wd40/apply-split-irq-exception-logs.py
@@ -71,6 +72,7 @@ jobs:
           python3 scripts/ci/check-wd40-amd-1tb-hole.py
           python3 scripts/ci/check-wd40-subtractive-log-mask.py
           python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-hmp-argument-introspection.py
           python3 scripts/ci/check-wd40-structured-log-control.py
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
           git diff --check
@@ -208,10 +210,12 @@ jobs:
           set -Eeuo pipefail
           python3 scripts/ci/check-wd40-amd-1tb-hole.py build-qol-integration
 
-      - name: Query HMP registries and initialization phases
+      - name: Query HMP registries, arguments, and initialization phases
         run: |
           set -Eeuo pipefail
           python3 scripts/ci/check-wd40-hmp-command-introspection.py \
+            build-qol-integration
+          python3 scripts/ci/check-wd40-hmp-argument-introspection.py \
             build-qol-integration
 
       - name: Publish the validated integration history
@@ -222,6 +226,7 @@ jobs:
           python3 scripts/ci/check-wd40-amd-1tb-hole.py
           python3 scripts/ci/check-wd40-subtractive-log-mask.py
           python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-hmp-argument-introspection.py
           python3 scripts/ci/check-wd40-structured-log-control.py
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
           git diff --check

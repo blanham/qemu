@@ -44,6 +44,11 @@ This API is deliberately read-only: command execution continues through QMP or
 HMP exactly as before.  It is an experimental foundation for capability-driven
 front ends such as TTYphoon and a future monitor v2.
 
+Each command also exposes an ``arguments`` array that decodes the internal
+``args-type`` mini-language into argument names, semantic kinds, optionality,
+and short-option metadata.  Clients can therefore construct command UIs
+without carrying a second copy of QEMU's HMP parser grammar.
+
 Structured log-category control
 -------------------------------
 
