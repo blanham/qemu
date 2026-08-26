@@ -400,6 +400,34 @@ def rebase_rgb565_expectations() -> None:
     )
 
 
+def finalize_runtime_contract() -> None:
+    packed_smoke = Path("scripts/vc4/hvs-packed-rgb-smoke.py")
+
+    # The split staging patch accidentally qualified one locally defined
+    # format constant through the imported support module.  Keep the format
+    # vocabulary local to this focused test, as intended by the other packed
+    # formats, and fail if the staging payload changes underneath us.
+    replace_once(
+        packed_smoke,
+        "hvs.SCALER_PIXEL_FORMAT_RGB332",
+        "HVS_PIXEL_FORMAT_RGB332",
+    )
+
+    # ROUND is endpoint-preserving and rounds intermediate components to the
+    # nearest eight-bit value.  Use the same integer expression in the device
+    # and in the independent expected-image generator.
+    replace_once(
+        Path("hw/display/bcm2835_fb.c"),
+        "return value * UINT8_MAX / maximum;",
+        "return (value * UINT8_MAX + maximum / 2) / maximum;",
+    )
+    replace_once(
+        packed_smoke,
+        "return value * 255 // maximum",
+        "return (value * 255 + maximum // 2) // maximum",
+    )
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit(f"usage: {sys.argv[0]} PRODUCT_PATCH")
@@ -421,14 +449,15 @@ def main() -> int:
     # the low destination bits.  Integer scaling by 255 / maximum is
     # exactly that bit-repetition mapping for the component widths here.
 """,
-        """    # Model the HVS ROUND path as a full-range component mapping
-    # from the source width to the eight-bit scanout component.
+        """    # Model the HVS ROUND path as an endpoint-preserving conversion
+    # rounded to the nearest eight-bit component value.
 """,
     )
     rebase_framebuffer_header()
     rebase_framebuffer_conversion()
     rebase_hvs_parser()
     rebase_rgb565_expectations()
+    finalize_runtime_contract()
     return 0
 
 
