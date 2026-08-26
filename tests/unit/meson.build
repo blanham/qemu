@@ -20,6 +20,7 @@ tests = {
   'test-string-input-visitor': [testqapi],
   'test-string-output-visitor': [testqapi],
   'test-visitor-serialization': [testqapi],
+  'test-ati-rop3': [],
   'test-bitmap': [],
   'test-resv-mem': [],
   # all code tested by test-x86-topo is inside topology.h
