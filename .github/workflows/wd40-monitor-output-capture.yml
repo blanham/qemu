@@ -1,0 +1,91 @@
+name: WD40 monitor output capture bootstrap
+
+on:
+  push:
+    branches:
+      - wd40/qol-monitor-output-capture
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-monitor-output-capture-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  materialize-output-capture:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply, replay, and validate output capture
+        run: |
+          set -Eeuo pipefail
+
+          apply_capture() {
+            python3 scripts/wd40/apply-monitor-output-capture.py
+            python3 scripts/wd40/apply-monitor-output-capture-hardening.py
+          }
+
+          apply_capture
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-capture-pass1.diff
+          apply_capture
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-capture-pass2.diff
+          cmp \
+            /tmp/wd40-capture-pass1.diff \
+            /tmp/wd40-capture-pass2.diff
+          python3 scripts/ci/check-wd40-monitor-output-capture.py
+          git diff --check
+
+      - name: Materialize the validated output-capture transform
+        run: |
+          set -Eeuo pipefail
+
+          expected="$(cat <<'EOF'
+          docs/devel/wd40-monitor-v2.rst
+          hmp-commands.hx
+          include/monitor/hmp.h
+          monitor/hmp-cmds.c
+          monitor/qmp-cmds.c
+          qapi/misc.json
+          scripts/wd40/apply-monitor-output-capture.py
+          EOF
+          )"
+          changed="$(git diff --name-only | LC_ALL=C sort)"
+
+          if test -z "$changed"; then
+            echo "WD40 output capture is already materialized"
+            exit 0
+          fi
+
+          if test "$changed" != "$expected"; then
+            echo "Unexpected generated changes:" >&2
+            git status --short >&2
+            exit 1
+          fi
+
+          git add \
+            docs/devel/wd40-monitor-v2.rst \
+            hmp-commands.hx \
+            include/monitor/hmp.h \
+            monitor/hmp-cmds.c \
+            monitor/qmp-cmds.c \
+            qapi/misc.json \
+            scripts/wd40/apply-monitor-output-capture.py
+          git diff --cached --check
+          git commit -m "monitor: materialize WD40 text output capture"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
