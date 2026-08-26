@@ -1,0 +1,51 @@
+name: Validate Rage 128 CCE and software 3D
+
+on:
+  push:
+    branches:
+      - agent/rage128-3d-validate-qemu
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libfdt-dev libslirp-dev
+
+      - name: Configure
+        run: |
+          mkdir build
+          cd build
+          ../configure \
+            --target-list=x86_64-softmmu,ppc-softmmu \
+            --enable-debug \
+            --disable-werror \
+            --disable-docs
+
+      - name: Build Rage 128 targets
+        run: |
+          ninja -C build -j2 \
+            qemu-system-x86_64 \
+            qemu-system-ppc \
+            tests/unit/test-ati-rop3 \
+            tests/qtest/display-vga-test \
+            tests/qtest/ati-rage128-pm4-test
+
+      - name: Run Rage 128 tests
+        run: |
+          meson test -C build \
+            test-ati-rop3 \
+            display-vga-test \
+            ati-rage128-pm4-test \
+            --print-errorlogs
