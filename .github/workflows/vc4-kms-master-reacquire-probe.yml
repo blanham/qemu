@@ -1,0 +1,311 @@
+name: VC4 independent DRM-master reacquisition probe
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-master-reacquire-probe.yml
+      - hw/arm/bcm2835_peripherals.c
+      - hw/arm/vc4_*.c
+      - hw/display/bcm2835_*.c
+      - hw/misc/bcm2835_property.c
+      - hw/vc4/bcm2835_vc4_intc.c
+      - include/hw/arm/bcm2835_peripherals.h
+      - include/hw/display/bcm2835_*.h
+      - include/hw/misc/bcm2835_property.h
+      - include/hw/raspi/raspi_platform.h
+      - scripts/vc4/bcm2835-hdmi-ddc-smoke.py
+      - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+      - scripts/vc4/build-vc4-kms-linux-dtb.sh
+      - scripts/vc4/display-timing-smoke.py
+      - scripts/vc4/enable-linux-kms-master-reacquire-probe.py
+      - scripts/vc4/fetch-linux-vc4-modules.py
+      - scripts/vc4/hvs-dlist-smoke.py
+      - scripts/vc4/kms-master-reacquire-image.py
+      - scripts/vc4/msync-smoke.py
+      - scripts/vc4/property-clock-enumeration-smoke.py
+      - scripts/vc4/property-power-domain-smoke.py
+      - scripts/vc4/raspi3-kms-master-reacquire-visual-probe.py
+      - scripts/vc4/summarize-linux-kms-master-reacquire.py
+      - scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+      - scripts/vc4/v3d-smoke.py
+      - tests/vc4/linux-kms-master-reacquire-probe.inc.c
+      - tests/vc4/linux-kms-modeset-probe.inc.c
+      - tests/vc4/linux-kms-pageflip-probe.inc.c
+      - tests/vc4/linux-v3d-modular-init.c
+      - tests/vc4/vc4-kms-frontier-overlay.dts
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-master-reacquire-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-master-reacquire-official
+      MODULE_DIR: /tmp/vc4-master-reacquire-modules
+      INITRAMFS_DIR: /tmp/vc4-master-reacquire-initramfs
+      DTB_DIR: /tmp/vc4-master-reacquire-dtbs
+      PROBE_DIR: /tmp/vc4-master-reacquire-probe
+      EVIDENCE_DIR: vc4-kms-master-reacquire-evidence
+      STATUS_JSON: VC4_LINUX_KMS_MASTER_REACQUIRE_STATUS.json
+      STATUS_MD: VC4_LINUX_KMS_MASTER_REACQUIRE_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Capture the exact source revision
+        run: |
+          set -euo pipefail
+          printf 'SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu cpio curl device-tree-compiler file \
+            gcc-aarch64-linux-gnu gzip libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+            libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$INITRAMFS_DIR" "$DTB_DIR" \
+            "$PROBE_DIR" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$PROBE_DIR" "$EVIDENCE_DIR"
+
+      - name: Validate the independent-master witness
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/enable-linux-kms-master-reacquire-probe.py
+          python3 -m py_compile \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/kms-master-reacquire-image.py \
+            scripts/vc4/raspi3-kms-master-reacquire-visual-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 scripts/vc4/kms-master-reacquire-image.py --self-test
+          python3 scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          git diff --check
+          grep -Fq '#include "linux-kms-master-reacquire-probe.inc.c"' \
+            tests/vc4/linux-v3d-modular-init.c
+          grep -Fq 'vc4_kms_modeset_supervise(card.fd) == 0' \
+            tests/vc4/linux-v3d-modular-init.c
+          grep -Fq 'vc4_kms_pageflip_supervise(card.fd) == 0' \
+            tests/vc4/linux-v3d-modular-init.c
+          grep -Fq 'vc4_kms_master_reacquire_supervise(card.fd)' \
+            tests/vc4/linux-v3d-modular-init.c
+          grep -Fq 'DRM_IOCTL_DROP_MASTER' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'DRM_IOCTL_SET_MASTER' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'close(inherited_master_fd)' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'open(VC4_MASTER_REACQUIRE_CARD_PATH' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'DRM_EVENT_FLIP_COMPLETE' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+
+      - name: Fetch pinned kernel, DTB, and corrected module roots
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          sha256sum "$OFFICIAL_DIR"/* > "$EVIDENCE_DIR/OFFICIAL_SHA256SUMS"
+
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target i2c-bcm2835 \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+
+          grep -Fq i2c-bcm2835 "$MODULE_DIR/MANIFEST"
+          grep -Fq vc4.ko "$MODULE_DIR/MANIFEST"
+          i2c_line=$(awk '/i2c-bcm2835/{print NR; exit}' \
+            "$MODULE_DIR/MANIFEST")
+          vc4_line=$(awk '/vc4[.]ko/{print NR; exit}' \
+            "$MODULE_DIR/MANIFEST")
+          test "$i2c_line" -lt "$vc4_line"
+
+      - name: Build the master-reacquisition initramfs and native-KMS DTB
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" \
+            2>&1 | tee "$EVIDENCE_DIR/initramfs.log"
+
+          for marker in \
+            VC4_LINUX_KMS_MODESET_SETCRTC_OK \
+            VC4_LINUX_KMS_MODESET_OK \
+            VC4_LINUX_KMS_PAGEFLIP_OK \
+            VC4_LINUX_KMS_PAGEFLIP_SUPERVISOR_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_START \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_DROPPED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_INHERITED_CLOSED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_OPEN_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_IOCTL_START \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_RESTORED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SUPERVISOR_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_TIMEOUT; do
+            grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"
+          done
+
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/kms.dtbo" \
+            tests/vc4/vc4-kms-frontier-overlay.dts
+          bash scripts/vc4/build-vc4-kms-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/kms.dtbo" "$DTB_DIR/kms.dtb"
+          sha256sum "$DTB_DIR"/* > "$EVIDENCE_DIR/DTB_SHA256SUMS"
+
+      - name: Build QEMU and prove focused display regressions
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Run the bounded independent-master witness
+        run: |
+          set +e
+          python3 scripts/vc4/raspi3-kms-master-reacquire-visual-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/kms.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$PROBE_DIR" \
+            --seconds 140 --sample-interval 5 \
+            > "$PROBE_DIR/probe.stdout" 2>&1
+          rc=$?
+          printf '%s\n' "$rc" > "$PROBE_DIR/return-code"
+          cat "$PROBE_DIR/probe.stdout"
+          exit 0
+
+      - name: Record the exact master-reacquisition frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            --serial "$PROBE_DIR/serial.log" \
+            --manifest "$MODULE_DIR/MANIFEST" \
+            --image "$PROBE_DIR/master-reacquire-image.json" \
+            --return-code "$PROBE_DIR/return-code" \
+            --json "$STATUS_JSON" \
+            --markdown "$STATUS_MD" \
+            --source-sha "$SOURCE_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cp -a "$PROBE_DIR" "$EVIDENCE_DIR/probe" || true
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs" || true
+          cp "$MODULE_DIR/MANIFEST" \
+            "$EVIDENCE_DIR/MODULE_MANIFEST" || true
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/" || true
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-kms-master-reacquire-${{ github.run_attempt }}
+          path: vc4-kms-master-reacquire-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the measured frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git restore --worktree --staged \
+            tests/vc4/linux-v3d-modular-init.c
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "test/vc4: record independent DRM-master frontier [skip ci]"
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+          fi
+
+      - name: Require the current independent-master proof
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - "$STATUS_JSON" "$SOURCE_SHA" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          expected_sha = sys.argv[2]
+          record = json.loads(path.read_text(encoding="utf-8"))
+          if record.get("source_sha") != expected_sha:
+              raise SystemExit(
+                  "master-reacquisition status source mismatch: "
+                  f"{record.get('source_sha')} != {expected_sha}"
+              )
+          if record.get("classification") != \
+                  "linux-vc4-kms-master-reacquire-visual-clear":
+              raise SystemExit(
+                  "master-reacquisition frontier is not clear: "
+                  f"{record.get('classification')}"
+              )
+          if record.get("passed") is not True:
+              raise SystemExit("master-reacquisition status did not pass")
+          print("VC4 independent DRM-master reacquisition: PASS")
+          PY
