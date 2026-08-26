@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize the pinned Linux VC4 independent DRM-master reacquisition witness."""
+"""Summarize the pinned Linux VC4 independent-master modeset/page-flip witness."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pathlib
 import re
 from typing import Any
 
-CLEAR = "linux-vc4-kms-master-reacquire-visual-clear"
+CLEAR = "linux-vc4-kms-independent-master-modeset-pageflip-visual-clear"
 
 MODESET_FAILURE_RE = re.compile(
     r"VC4_LINUX_KMS_MODESET_FAILED stage=(\S+) errno=(\d+)"
@@ -129,6 +129,16 @@ def classify(evidence: dict[str, Any]) -> str:
         return "vc4-kms-master-reacquire-reopen-incomplete"
     if not evidence["new_file_master"]:
         return "vc4-kms-master-reacquire-set-master-incomplete"
+    if not evidence["selection_ok"]:
+        return "vc4-kms-master-reacquire-selection-incomplete"
+    if not evidence["baseline_crtc_readable"]:
+        return "vc4-kms-master-reacquire-baseline-crtc-incomplete"
+    if not evidence["independent_setcrtc_ok"]:
+        return "vc4-kms-master-reacquire-setcrtc-incomplete"
+    if not evidence["independent_modeset_current_fb_ok"]:
+        return "vc4-kms-master-reacquire-modeset-current-fb-incomplete"
+    if not evidence["independent_modeset_ok"]:
+        return "vc4-kms-master-reacquire-independent-modeset-incomplete"
     if not evidence["active_crtc_ok"]:
         return "vc4-kms-master-reacquire-active-crtc-incomplete"
     if not evidence["pageflip_queued"]:
@@ -199,6 +209,23 @@ def measure(
         ),
         "new_file_master": marker(
             serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_OK"
+        ),
+        "selection_ok": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK"
+        ),
+        "baseline_crtc_readable": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE_OK"
+        ),
+        "independent_setcrtc_ok": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK"
+        ),
+        "independent_modeset_current_fb_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK",
+        ),
+        "independent_modeset_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK",
         ),
         "active_crtc_ok": marker(
             serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK"
@@ -284,7 +311,7 @@ def build_record(
     image_witness = image if image_present else None
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_sha": source_sha,
         "run_id": run_id,
         "run_attempt": run_attempt,
@@ -317,7 +344,12 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
         f"- Child closed the inherited descriptor: `{record['inherited_fd_closed']}`",
         f"- Child reopened card0: `{record['card_reopened']}`",
         f"- New drm_file acquired master: `{record['new_file_master']}`",
-        f"- Active CRTC visible from new file: `{record['active_crtc_ok']}`",
+        f"- Connector and mode selected on new file: `{record['selection_ok']}`",
+        f"- Baseline CRTC state read: `{record['baseline_crtc_readable']}`",
+        f"- New drm_file programmed SETCRTC: `{record['independent_setcrtc_ok']}`",
+        f"- GETCRTC reports its initial FB: `{record['independent_modeset_current_fb_ok']}`",
+        f"- Independent-file modeset completed: `{record['independent_modeset_ok']}`",
+        f"- Active CRTC reflects the new file: `{record['active_crtc_ok']}`",
         f"- Independent-file page flip queued: `{record['pageflip_queued']}`",
         f"- Flip-complete event received: `{record['flip_event_ok']}`",
         f"- GETCRTC reports the new FB: `{record['current_fb_ok']}`",
@@ -353,12 +385,15 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
             "baseline, PID 1 drops DRM master on its original card file. A "
             "bounded child closes that inherited descriptor before reopening "
             "/dev/dri/card0, explicitly acquires master on the new drm_file, "
-            "queues an event-driven page flip, consumes DRM_EVENT_FLIP_COMPLETE, "
-            "and verifies the CRTC's framebuffer ID. The host freezes QEMU at "
-            "the independent-file visual-ready marker and requires every "
-            "captured XRGB8888 pixel to match the reacquisition pattern. The "
-            "child then drops master and exits, after which the original "
-            "drm_file must reacquire master before the render witness continues.",
+            "enumerates the connector and mode, creates an initial framebuffer, "
+            "programs it with DRM_IOCTL_MODE_SETCRTC, and verifies GETCRTC. It "
+            "then creates a second framebuffer, queues an event-driven page "
+            "flip, consumes DRM_EVENT_FLIP_COMPLETE, and verifies the final "
+            "framebuffer ID. The host freezes QEMU at the independent-file "
+            "visual-ready marker and requires every captured XRGB8888 pixel to "
+            "match the final pattern. The child then drops master and exits, "
+            "after which the original drm_file must reacquire master before "
+            "the render witness continues.",
         )
     )
     path.write_text("\n".join(lines) + "\n")

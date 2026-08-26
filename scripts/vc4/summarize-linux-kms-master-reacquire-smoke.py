@@ -20,6 +20,15 @@ MARKERS = (
     "VC4_LINUX_KMS_MASTER_REACQUIRE_INHERITED_CLOSED",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_OPEN_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MAP_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_START",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK",
@@ -140,6 +149,20 @@ def main() -> int:
                 "VC4_LINUX_KMS_MASTER_REACQUIRE_FAILED "
                 "stage=set-master-new-file errno=13"
             ),
+        ),
+    )
+    expect(
+        module,
+        "vc4-kms-master-reacquire-setcrtc-incomplete",
+        serial=serial_without(
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK"
+        ),
+    )
+    expect(
+        module,
+        "vc4-kms-master-reacquire-modeset-current-fb-incomplete",
+        serial=serial_without(
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK"
         ),
     )
     expect(

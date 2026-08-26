@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enable the independent-drm_file VC4 master-reacquisition witness."""
+"""Enable the independent-drm_file VC4 modeset/page-flip witness."""
 
 from __future__ import annotations
 
@@ -19,6 +19,15 @@ MARKER_CONTRACT = (
     '    "VC4_LINUX_KMS_MASTER_REACQUIRE_INHERITED_CLOSED\\0"\n'
     '    "VC4_LINUX_KMS_MASTER_REACQUIRE_OPEN_OK\\0"\n'
     '    "VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MAP_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_START\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK\\0"\n'
+    '    "VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK\\0"\n'
     '    "VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK\\0"\n'
     '    "VC4_LINUX_KMS_MASTER_REACQUIRE_IOCTL_START\\0"\n'
     '    "VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED\\0"\n'
@@ -95,7 +104,7 @@ def main() -> int:
     args = parser.parse_args()
     patch_source(args.source)
     print(
-        "Enabled independent-drm_file VC4 master-reacquisition witness "
+        "Enabled independent-drm_file VC4 modeset/page-flip witness "
         f"in {args.source}"
     )
     return 0

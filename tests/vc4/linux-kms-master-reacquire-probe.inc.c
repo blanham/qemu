@@ -1,18 +1,18 @@
 /*
- * Independent drm_file master-reacquisition and native-KMS page-flip witness
- * for the pinned Linux VC4 fixture.
+ * Independent drm_file master-reacquisition, native-KMS modeset, and
+ * event-driven page-flip witness for the pinned Linux VC4 fixture.
  *
- * The prerequisite modeset and page-flip witnesses run first on the card
- * drm_file opened by PID 1.  This supervisor then explicitly drops master on
- * that original file.  Its bounded child closes the inherited descriptor
- * before reopening /dev/dri/card0, acquires master on the new drm_file, and
- * performs a distinct event-driven page flip.  The parent reacquires master
- * on the original file only after the child has closed the independent one.
+ * The prerequisite inherited-file modeset and page-flip witnesses remain as
+ * regression coverage.  This supervisor then drops master on PID 1's card
+ * file.  Its bounded child closes that inherited descriptor before reopening
+ * /dev/dri/card0, acquires master on the new drm_file, enumerates the physical
+ * connector and mode, creates its own initial framebuffer, programs the CRTC,
+ * and finally flips to a second exact-pixel framebuffer.
  *
  * Closing before reopening is intentional: the numeric descriptor may be
- * reused, but the kernel drm_file cannot be.  A successful witness therefore
- * cannot be satisfied by the inherited-file shortcut covered by
- * linux-kms-pageflip-probe.inc.c.
+ * reused, but the kernel drm_file cannot be.  Requiring SETCRTC before the
+ * page flip also prevents an already-active CRTC inherited from the original
+ * owner from satisfying the independent-file witness.
  */
 
 #include <fcntl.h>
@@ -180,12 +180,19 @@ static int vc4_master_reacquire_wait_event(int fd, uint32_t crtc_id,
 static int vc4_master_reacquire_run(int inherited_master_fd)
 {
     struct vc4_modeset_selection selection = { 0 };
+    struct drm_mode_crtc baseline = { 0 };
     struct drm_mode_crtc current = { 0 };
+    struct drm_mode_create_dumb initial_create = { 0 };
+    struct drm_mode_map_dumb initial_map = { 0 };
+    struct drm_mode_fb_cmd2 initial_framebuffer = { 0 };
     struct drm_mode_create_dumb create = { 0 };
     struct drm_mode_map_dumb map = { 0 };
     struct drm_mode_fb_cmd2 framebuffer = { 0 };
+    struct drm_mode_crtc crtc = { 0 };
     struct drm_mode_crtc_page_flip page_flip = { 0 };
+    void *initial_mapping = MAP_FAILED;
     void *mapping = MAP_FAILED;
+    uint32_t connector_id;
     int fd;
 
     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_START\n");
@@ -215,27 +222,122 @@ static int vc4_master_reacquire_run(int inherited_master_fd)
     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_OK\n");
 
     if (vc4_modeset_select(fd, &selection) < 0) {
-        return vc4_master_reacquire_fail("select-active-crtc");
+        return vc4_master_reacquire_fail("select-mode-new-file");
     }
+    report("VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK "
+           "connector=%u crtc=%u mode=%ux%u clock=%u\n",
+           selection.connector_id, selection.crtc_id,
+           selection.mode.hdisplay, selection.mode.vdisplay,
+           selection.mode.clock);
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK\n");
 
-    current.crtc_id = selection.crtc_id;
-    if (vc4_master_reacquire_ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &current,
-                                   "getcrtc-before") < 0) {
+    baseline.crtc_id = selection.crtc_id;
+    if (vc4_master_reacquire_ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &baseline,
+                                   "getcrtc-baseline") < 0) {
         return -1;
     }
-    if (!current.mode_valid || current.fb_id == 0 ||
-        current.mode.hdisplay == 0 || current.mode.vdisplay == 0) {
-        errno = ENODEV;
-        return vc4_master_reacquire_fail("crtc-not-active");
+    report("VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE "
+           "crtc=%u fb=%u mode_valid=%u mode=%ux%u\n",
+           baseline.crtc_id, baseline.fb_id, baseline.mode_valid,
+           baseline.mode.hdisplay, baseline.mode.vdisplay);
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE_OK\n");
+
+    initial_create.width = selection.mode.hdisplay;
+    initial_create.height = selection.mode.vdisplay;
+    initial_create.bpp = 32;
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_CREATE_DUMB, &initial_create,
+            "create-modeset-dumb") < 0) {
+        return -1;
     }
+    if (initial_create.handle == 0 || initial_create.pitch == 0 ||
+        initial_create.size == 0) {
+        errno = EIO;
+        return vc4_master_reacquire_fail("create-modeset-dumb-invalid");
+    }
+    report("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK "
+           "handle=%u pitch=%u size=%llu\n",
+           initial_create.handle, initial_create.pitch,
+           (unsigned long long)initial_create.size);
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK\n");
+
+    initial_map.handle = initial_create.handle;
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_MAP_DUMB, &initial_map,
+            "map-modeset-dumb") < 0) {
+        return -1;
+    }
+    initial_mapping = mmap(NULL, initial_create.size,
+                           PROT_READ | PROT_WRITE, MAP_SHARED,
+                           fd, (off_t)initial_map.offset);
+    if (initial_mapping == MAP_FAILED) {
+        return vc4_master_reacquire_fail("mmap-modeset-dumb");
+    }
+    vc4_modeset_fill_pattern(initial_mapping, initial_create.pitch,
+                             initial_create.width, initial_create.height);
+    __sync_synchronize();
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MAP_OK\n");
+
+    initial_framebuffer.width = initial_create.width;
+    initial_framebuffer.height = initial_create.height;
+    initial_framebuffer.pixel_format = VC4_MODESET_DRM_FORMAT_XRGB8888;
+    initial_framebuffer.handles[0] = initial_create.handle;
+    initial_framebuffer.pitches[0] = initial_create.pitch;
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_ADDFB2, &initial_framebuffer,
+            "addfb2-modeset") < 0) {
+        return -1;
+    }
+    report("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK "
+           "fb=%u baseline_fb=%u\n",
+           initial_framebuffer.fb_id, baseline.fb_id);
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK\n");
+
+    connector_id = selection.connector_id;
+    crtc.crtc_id = selection.crtc_id;
+    crtc.fb_id = initial_framebuffer.fb_id;
+    crtc.set_connectors_ptr = (uintptr_t)&connector_id;
+    crtc.count_connectors = 1;
+    crtc.mode = selection.mode;
+    crtc.mode_valid = 1;
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_START\n");
+    if (vc4_master_reacquire_ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &crtc,
+                                   "setcrtc-new-file") < 0) {
+        return -1;
+    }
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK\n");
+
+    current.crtc_id = selection.crtc_id;
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_GETCRTC, &current,
+            "getcrtc-after-setcrtc") < 0) {
+        return -1;
+    }
+    if (!current.mode_valid ||
+        current.fb_id != initial_framebuffer.fb_id ||
+        current.mode.hdisplay != selection.mode.hdisplay ||
+        current.mode.vdisplay != selection.mode.vdisplay) {
+        report("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MISMATCH "
+               "expected_fb=%u actual_fb=%u mode_valid=%u "
+               "expected_mode=%ux%u actual_mode=%ux%u\n",
+               initial_framebuffer.fb_id, current.fb_id,
+               current.mode_valid,
+               selection.mode.hdisplay, selection.mode.vdisplay,
+               current.mode.hdisplay, current.mode.vdisplay);
+        errno = EIO;
+        return vc4_master_reacquire_fail(
+            "modeset-current-fb-mismatch");
+    }
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK\n");
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK\n");
     report("VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK "
            "crtc=%u fb=%u mode=%ux%u\n",
            current.crtc_id, current.fb_id,
            current.mode.hdisplay, current.mode.vdisplay);
     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK\n");
 
-    create.width = current.mode.hdisplay;
-    create.height = current.mode.vdisplay;
+    create.width = selection.mode.hdisplay;
+    create.height = selection.mode.vdisplay;
     create.bpp = 32;
     if (vc4_master_reacquire_ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create,
                                    "create-dumb") < 0) {
@@ -275,7 +377,7 @@ static int vc4_master_reacquire_run(int inherited_master_fd)
         return -1;
     }
     report("VC4_LINUX_KMS_MASTER_REACQUIRE_FB_OK fb=%u old_fb=%u\n",
-           framebuffer.fb_id, current.fb_id);
+           framebuffer.fb_id, initial_framebuffer.fb_id);
     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_FB_OK\n");
 
     page_flip.crtc_id = selection.crtc_id;
@@ -318,6 +420,7 @@ static int vc4_master_reacquire_run(int inherited_master_fd)
     }
     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED\n");
     (void)munmap(mapping, create.size);
+    (void)munmap(initial_mapping, initial_create.size);
     if (close(fd) < 0) {
         return vc4_master_reacquire_fail("close-reopened-fd");
     }
