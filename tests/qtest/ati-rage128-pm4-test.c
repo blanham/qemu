@@ -50,6 +50,12 @@
 #define R128_Z_STEN_CNTL_C             0x1c98
 #define R128_TEX_CNTL_C                0x1c9c
 #define R128_MISC_3D_STATE_CNTL_REG    0x1ca0
+#define R128_PRIM_TEX_CNTL_C           0x1cb0
+#define R128_PRIM_TEXTURE_COMBINE_CNTL_C 0x1cb4
+#define R128_TEX_SIZE_PITCH_C          0x1cb8
+#define R128_PRIM_TEX_0_OFFSET_C       0x1cbc
+#define R128_CONSTANT_COLOR_C          0x1d34
+#define R128_PRIM_TEXTURE_BORDER_COLOR_C 0x1d38
 #define R128_PLANE_3D_MASK_C           0x1d44
 #define R128_SOLID_COLOR               0x1bc8
 #define R128_WINDOW_XY_OFFSET           0x1bcc
@@ -88,8 +94,10 @@
 #define R128_PM4_GUI_ACTIVE            (1U << 31)
 #define R128_SOFT_RESET_GUI            (1U << 0)
 
+#define R128_VC_FRMT_RHW               0x00000001U
 #define R128_VC_FRMT_DIFFUSE_ARGB      0x00000008U
 #define R128_VC_FRMT_SPEC_FRGB         0x00000040U
+#define R128_VC_FRMT_ST                0x00000080U
 #define R128_VC_PRIM_POINT             0x00000001U
 #define R128_VC_PRIM_LINE              0x00000002U
 #define R128_VC_PRIM_TRI_LIST          0x00000004U
@@ -98,6 +106,7 @@
 
 #define R128_TEX_Z_ENABLE              (1U << 0)
 #define R128_TEX_Z_WRITE_ENABLE        (1U << 1)
+#define R128_TEXMAP_ENABLE             (1U << 4)
 #define R128_TEX_ALPHA_ENABLE          (1U << 9)
 #define R128_TEX_ALPHA_TEST_ENABLE     (1U << 10)
 #define R128_TEX_SPEC_LIGHT_ENABLE     (1U << 11)
@@ -110,6 +119,28 @@
 #define R128_ALPHA_TEST_GREATER        (5U << 24)
 #define R128_ALPHA_TEST_ALWAYS         (7U << 24)
 
+#define R128_TEX_FILTER_LINEAR         (1U << 1)
+#define R128_TEX_MAG_FILTER_LINEAR     (1U << 4)
+#define R128_TEX_MIP_MAP_DISABLE       (1U << 7)
+#define R128_TEX_WRAP_S_MIRROR         (1U << 8)
+#define R128_TEX_WRAP_S_CLAMP          (2U << 8)
+#define R128_TEX_WRAP_S_BORDER         (3U << 8)
+#define R128_TEX_WRAP_T_CLAMP          (2U << 11)
+#define R128_TEX_PERSPECTIVE_DISABLE   (1U << 14)
+#define R128_TEX_FORMAT_RGB565         (4U << 16)
+#define R128_TEX_FORMAT_ARGB8888       (6U << 16)
+
+#define R128_COMB_DISABLE              0U
+#define R128_COMB_MODULATE             3U
+#define R128_COLOR_FACTOR_TEX          (4U << 4)
+#define R128_INPUT_FACTOR_INT_COLOR    (4U << 10)
+#define R128_COMB_ALPHA_DISABLE        (0U << 14)
+#define R128_COMB_ALPHA_MODULATE       (3U << 14)
+#define R128_ALPHA_FACTOR_TEX          (6U << 18)
+#define R128_INPUT_FACTOR_INT_ALPHA    (2U << 25)
+#define R128_COMB_REPLACE_RGBA         (R128_COMB_DISABLE |                                         R128_COLOR_FACTOR_TEX |                                         R128_INPUT_FACTOR_INT_COLOR |                                         R128_COMB_ALPHA_DISABLE |                                         R128_ALPHA_FACTOR_TEX |                                         R128_INPUT_FACTOR_INT_ALPHA)
+#define R128_COMB_MODULATE_RGBA        (R128_COMB_MODULATE |                                         R128_COLOR_FACTOR_TEX |                                         R128_INPUT_FACTOR_INT_COLOR |                                         R128_COMB_ALPHA_MODULATE |                                         R128_ALPHA_FACTOR_TEX |                                         R128_INPUT_FACTOR_INT_ALPHA)
+
 #define RING_PHYS                      0x00100000U
 #define VERTEX_PHYS                    0x00110000U
 #define RPTR_PHYS                      0x00120000U
@@ -117,6 +148,7 @@
 #define GART_PHYS                      0x00180000U
 #define GART_VIRT                      0x02000000U
 #define DEPTH_OFFSET                   0x00010000U
+#define TEXTURE_OFFSET                 0x00020000U
 #define RING_DWORDS                    1024U
 
 
@@ -428,6 +460,58 @@ static void write_vertices(Rage128PM4Test *test, uint32_t offset,
 {
     write_vertices_format(test, offset, xyz, colors, NULL, count,
                           R128_VC_FRMT_DIFFUSE_ARGB);
+}
+
+
+static void ring_set_texture0(RingBuilder *ring, uint32_t control,
+                              uint32_t combine, unsigned int pitch_log2,
+                              unsigned int height_log2, uint32_t offset,
+                              uint32_t border)
+{
+    uint32_t size_pitch = pitch_log2 |
+        (MAX(pitch_log2, height_log2) << 4) |
+        (height_log2 << 8) |
+        (MIN(pitch_log2, height_log2) << 12);
+
+    ring_packet0_one(ring, R128_PRIM_TEX_CNTL_C, control);
+    ring_packet0_one(ring, R128_PRIM_TEXTURE_COMBINE_CNTL_C, combine);
+    ring_packet0_one(ring, R128_TEX_SIZE_PITCH_C, size_pitch);
+    ring_packet0_one(ring, R128_PRIM_TEX_0_OFFSET_C, offset);
+    ring_packet0_one(ring, R128_CONSTANT_COLOR_C, UINT32_MAX);
+    ring_packet0_one(ring, R128_PRIM_TEXTURE_BORDER_COLOR_C, border);
+}
+
+static void write_textured_vertices(Rage128PM4Test *test, uint32_t offset,
+                                    const float (*xyz)[3],
+                                    const float *rhw,
+                                    const uint32_t *colors,
+                                    const float (*st)[2],
+                                    unsigned int count)
+{
+    const unsigned int stride = 7;
+    uint32_t *vertices = g_new0(uint32_t, count * stride);
+
+    for (unsigned int i = 0; i < count; i++) {
+        vertices[i * stride + 0] = cpu_to_le32(float_bits(xyz[i][0]));
+        vertices[i * stride + 1] = cpu_to_le32(float_bits(xyz[i][1]));
+        vertices[i * stride + 2] = cpu_to_le32(float_bits(xyz[i][2]));
+        vertices[i * stride + 3] = cpu_to_le32(float_bits(rhw[i]));
+        vertices[i * stride + 4] = cpu_to_le32(colors[i]);
+        vertices[i * stride + 5] = cpu_to_le32(float_bits(st[i][0]));
+        vertices[i * stride + 6] = cpu_to_le32(float_bits(st[i][1]));
+    }
+    qtest_memwrite(test->qts, VERTEX_PHYS + offset, vertices,
+                   count * stride * sizeof(uint32_t));
+    g_free(vertices);
+}
+
+static void write_texture32(Rage128PM4Test *test, uint32_t offset,
+                            const uint32_t *pixels, unsigned int count)
+{
+    for (unsigned int i = 0; i < count; i++) {
+        qpci_io_writel(test->dev, test->framebuffer,
+                       offset + i * sizeof(uint32_t), pixels[i]);
+    }
 }
 
 static void test_pm4_control_and_2d_packets(void)
@@ -1068,6 +1152,268 @@ static void test_pm4_shading_and_coverage(void)
     rage128_pm4_stop(test);
 }
 
+
+static void test_pm4_primary_texture(void)
+{
+    Rage128PM4Test *test = rage128_pm4_start();
+    const uint32_t vc_setup =
+        (1U << 0) | (3U << 1) | (3U << 3) | (2U << 5) | (1U << 8);
+    const uint32_t textured_format = R128_VC_FRMT_RHW |
+                                     R128_VC_FRMT_DIFFUSE_ARGB |
+                                     R128_VC_FRMT_ST;
+    const float square[6][3] = {
+        { 8.5f, 8.5f, 0.0f }, { 40.5f, 8.5f, 0.0f },
+        { 8.5f, 40.5f, 0.0f }, { 40.5f, 8.5f, 0.0f },
+        { 40.5f, 40.5f, 0.0f }, { 8.5f, 40.5f, 0.0f },
+    };
+    const float square_st[6][2] = {
+        { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f },
+        { 1.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 1.0f },
+    };
+    const float square_rhw[6] = { 1, 1, 1, 1, 1, 1 };
+    uint32_t square_colors[6];
+
+    load_microcode(test);
+    setup_gart(test);
+    for (unsigned int i = 0; i < 6; i++) {
+        square_colors[i] = UINT32_MAX;
+    }
+    write_textured_vertices(test, 0, square, square_rhw,
+                            square_colors, square_st, 6);
+
+    /* Level-zero ARGB8888 nearest sampling and REPLACE. */
+    {
+        RingBuilder ring = { 0 };
+        uint32_t texture[16];
+        const uint32_t row[4] = {
+            0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff,
+        };
+
+        for (unsigned int y = 0; y < 4; y++) {
+            memcpy(&texture[y * 4], row, sizeof(row));
+        }
+        write_texture32(test, TEXTURE_OFFSET, texture,
+                        G_N_ELEMENTS(texture));
+        ring_clear_surface(&ring, 0, false, 0xff000000);
+        ring_set_3d_state(&ring, R128_TEXMAP_ENABLE,
+                          R128_ALPHA_TEST_ALWAYS, UINT32_MAX, vc_setup);
+        ring_set_texture0(&ring,
+                          R128_TEX_MIP_MAP_DISABLE |
+                          R128_TEX_FORMAT_ARGB8888,
+                          R128_COMB_REPLACE_RGBA, 2, 2,
+                          TEXTURE_OFFSET, 0xff123456);
+        ring_draw_format(&ring, 0, 6, R128_VC_PRIM_TRI_LIST,
+                         textured_format);
+        execute_ring(test, &ring);
+        g_assert_cmphex(framebuffer_read(test, 12, 12), ==, 0xffff0000);
+        g_assert_cmphex(framebuffer_read(test, 20, 12), ==, 0xff00ff00);
+        g_assert_cmphex(framebuffer_read(test, 28, 12), ==, 0xff0000ff);
+        g_assert_cmphex(framebuffer_read(test, 36, 12), ==, 0xffffffff);
+    }
+
+    /* MODULATE combines the texture with interpolated diffuse color. */
+    {
+        RingBuilder ring = { 0 };
+        const uint32_t texture[16] = {
+            [0 ... 15] = 0xffff0000,
+        };
+
+        for (unsigned int i = 0; i < 6; i++) {
+            square_colors[i] = 0x80808080;
+        }
+        write_textured_vertices(test, 0, square, square_rhw,
+                                square_colors, square_st, 6);
+        write_texture32(test, TEXTURE_OFFSET, texture,
+                        G_N_ELEMENTS(texture));
+        ring_clear_surface(&ring, 0, false, 0xff000000);
+        ring_set_3d_state(&ring, R128_TEXMAP_ENABLE,
+                          R128_ALPHA_TEST_ALWAYS, UINT32_MAX, vc_setup);
+        ring_set_texture0(&ring,
+                          R128_TEX_MIP_MAP_DISABLE |
+                          R128_TEX_FORMAT_ARGB8888,
+                          R128_COMB_MODULATE_RGBA, 2, 2,
+                          TEXTURE_OFFSET, 0);
+        ring_draw_format(&ring, 0, 6, R128_VC_PRIM_TRI_LIST,
+                         textured_format);
+        execute_ring(test, &ring);
+        g_assert_cmphex(framebuffer_read(test, 20, 20), ==, 0x80800000);
+    }
+
+    /* Bilinear sampling averages all four texels at the texture center. */
+    {
+        RingBuilder ring = { 0 };
+        const uint32_t texture[4] = {
+            0xffff0000, 0xff00ff00,
+            0xff0000ff, 0xffffffff,
+        };
+        const float centered_st[6][2] = {
+            { 0.5f, 0.5f }, { 0.5f, 0.5f }, { 0.5f, 0.5f },
+            { 0.5f, 0.5f }, { 0.5f, 0.5f }, { 0.5f, 0.5f },
+        };
+
+        for (unsigned int i = 0; i < 6; i++) {
+            square_colors[i] = UINT32_MAX;
+        }
+        write_textured_vertices(test, 0, square, square_rhw,
+                                square_colors, centered_st, 6);
+        write_texture32(test, TEXTURE_OFFSET, texture,
+                        G_N_ELEMENTS(texture));
+        ring_clear_surface(&ring, 0, false, 0xff000000);
+        ring_set_3d_state(&ring, R128_TEXMAP_ENABLE,
+                          R128_ALPHA_TEST_ALWAYS, UINT32_MAX, vc_setup);
+        ring_set_texture0(&ring,
+                          R128_TEX_FILTER_LINEAR |
+                          R128_TEX_MAG_FILTER_LINEAR |
+                          R128_TEX_MIP_MAP_DISABLE |
+                          R128_TEX_FORMAT_ARGB8888,
+                          R128_COMB_REPLACE_RGBA, 1, 1,
+                          TEXTURE_OFFSET, 0);
+        ring_draw_format(&ring, 0, 6, R128_VC_PRIM_TRI_LIST,
+                         textured_format);
+        execute_ring(test, &ring);
+        g_assert_cmphex(framebuffer_read(test, 20, 20), ==, 0xff808080);
+    }
+
+    /* Repeat, mirror, clamp, and border address modes remain distinct. */
+    {
+        RingBuilder ring = { 0 };
+        const uint32_t texture[2] = { 0xffff0000, 0xff00ff00 };
+        const float points[4][3] = {
+            { 10.0f, 10.0f, 0.0f }, { 12.0f, 10.0f, 0.0f },
+            { 14.0f, 10.0f, 0.0f }, { 16.0f, 10.0f, 0.0f },
+        };
+        const float point_rhw[4] = { 1, 1, 1, 1 };
+        const uint32_t point_colors[4] = {
+            UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+        };
+        const float point_st[4][2] = {
+            { 1.25f, 0.5f }, { 1.25f, 0.5f },
+            { 1.25f, 0.5f }, { 1.25f, 0.5f },
+        };
+        const uint32_t wrap[4] = {
+            0, R128_TEX_WRAP_S_MIRROR,
+            R128_TEX_WRAP_S_CLAMP, R128_TEX_WRAP_S_BORDER,
+        };
+
+        write_textured_vertices(test, 0, points, point_rhw,
+                                point_colors, point_st, 4);
+        write_texture32(test, TEXTURE_OFFSET, texture,
+                        G_N_ELEMENTS(texture));
+        ring_clear_surface(&ring, 0, false, 0xff000000);
+        ring_set_3d_state(&ring, R128_TEXMAP_ENABLE,
+                          R128_ALPHA_TEST_ALWAYS, UINT32_MAX, vc_setup);
+        for (unsigned int i = 0; i < 4; i++) {
+            ring_set_texture0(&ring,
+                              R128_TEX_MIP_MAP_DISABLE |
+                              R128_TEX_WRAP_T_CLAMP | wrap[i] |
+                              R128_TEX_FORMAT_ARGB8888,
+                              R128_COMB_REPLACE_RGBA, 1, 0,
+                              TEXTURE_OFFSET, 0xff0000ff);
+            ring_draw_format(&ring, i * 7 * sizeof(uint32_t), 1,
+                             R128_VC_PRIM_POINT, textured_format);
+        }
+        execute_ring(test, &ring);
+        g_assert_cmphex(framebuffer_read(test, 10, 10), ==, 0xffff0000);
+        g_assert_cmphex(framebuffer_read(test, 12, 10), ==, 0xff00ff00);
+        g_assert_cmphex(framebuffer_read(test, 14, 10), ==, 0xff00ff00);
+        g_assert_cmphex(framebuffer_read(test, 16, 10), ==, 0xff0000ff);
+    }
+
+    /* RGB565 unpacking uses the same sampler and combine path. */
+    {
+        RingBuilder ring = { 0 };
+        const uint32_t texture = 0x07e0f800;
+        const float points[2][3] = {
+            { 18.0f, 10.0f, 0.0f }, { 20.0f, 10.0f, 0.0f },
+        };
+        const float point_rhw[2] = { 1, 1 };
+        const uint32_t point_colors[2] = { UINT32_MAX, UINT32_MAX };
+        const float point_st[2][2] = {
+            { 0.25f, 0.5f }, { 0.75f, 0.5f },
+        };
+
+        write_textured_vertices(test, 0, points, point_rhw,
+                                point_colors, point_st, 2);
+        qpci_io_writel(test->dev, test->framebuffer,
+                       TEXTURE_OFFSET, texture);
+        ring_clear_surface(&ring, 0, false, 0xff000000);
+        ring_set_3d_state(&ring, R128_TEXMAP_ENABLE,
+                          R128_ALPHA_TEST_ALWAYS, UINT32_MAX, vc_setup);
+        ring_set_texture0(&ring,
+                          R128_TEX_MIP_MAP_DISABLE |
+                          R128_TEX_WRAP_T_CLAMP |
+                          R128_TEX_FORMAT_RGB565,
+                          R128_COMB_REPLACE_RGBA, 1, 0,
+                          TEXTURE_OFFSET, 0);
+        ring_draw_format(&ring, 0, 2, R128_VC_PRIM_POINT,
+                         textured_format);
+        execute_ring(test, &ring);
+        g_assert_cmphex(framebuffer_read(test, 18, 10), ==, 0xffff0000);
+        g_assert_cmphex(framebuffer_read(test, 20, 10), ==, 0xff00ff00);
+    }
+
+    /* RHW drives perspective-correct S/T unless explicitly disabled. */
+    {
+        const float triangle[3][3] = {
+            { 8.0f, 8.0f, 0.0f },
+            { 56.0f, 8.0f, 0.0f },
+            { 8.0f, 56.0f, 0.0f },
+        };
+        const float triangle_rhw[3] = { 1.0f, 0.25f, 1.0f };
+        const uint32_t triangle_colors[3] = {
+            UINT32_MAX, UINT32_MAX, UINT32_MAX,
+        };
+        const float triangle_st[3][2] = {
+            { 0.0f, 0.5f }, { 1.0f, 0.5f }, { 0.0f, 0.5f },
+        };
+        const uint32_t texture[4] = {
+            0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff,
+        };
+
+        write_textured_vertices(test, 0, triangle, triangle_rhw,
+                                triangle_colors, triangle_st, 3);
+        write_texture32(test, TEXTURE_OFFSET, texture,
+                        G_N_ELEMENTS(texture));
+        {
+            RingBuilder ring = { 0 };
+
+            ring_clear_surface(&ring, 0, false, 0xff000000);
+            ring_set_3d_state(&ring, R128_TEXMAP_ENABLE,
+                              R128_ALPHA_TEST_ALWAYS, UINT32_MAX, vc_setup);
+            ring_set_texture0(&ring,
+                              R128_TEX_MIP_MAP_DISABLE |
+                              R128_TEX_WRAP_T_CLAMP |
+                              R128_TEX_FORMAT_ARGB8888,
+                              R128_COMB_REPLACE_RGBA, 2, 0,
+                              TEXTURE_OFFSET, 0);
+            ring_draw_format(&ring, 0, 3, R128_VC_PRIM_TRI_LIST,
+                             textured_format);
+            execute_ring(test, &ring);
+            g_assert_cmphex(framebuffer_read(test, 32, 16), ==, 0xffff0000);
+        }
+        {
+            RingBuilder ring = { 0 };
+
+            ring_clear_surface(&ring, 0, false, 0xff000000);
+            ring_set_3d_state(&ring, R128_TEXMAP_ENABLE,
+                              R128_ALPHA_TEST_ALWAYS, UINT32_MAX, vc_setup);
+            ring_set_texture0(&ring,
+                              R128_TEX_MIP_MAP_DISABLE |
+                              R128_TEX_WRAP_T_CLAMP |
+                              R128_TEX_PERSPECTIVE_DISABLE |
+                              R128_TEX_FORMAT_ARGB8888,
+                              R128_COMB_REPLACE_RGBA, 2, 0,
+                              TEXTURE_OFFSET, 0);
+            ring_draw_format(&ring, 0, 3, R128_VC_PRIM_TRI_LIST,
+                             textured_format);
+            execute_ring(test, &ring);
+            g_assert_cmphex(framebuffer_read(test, 32, 16), ==, 0xff0000ff);
+        }
+    }
+
+    rage128_pm4_stop(test);
+}
+
 static void test_pm4_signed_window_offset(void)
 {
     Rage128PM4Test *test = rage128_pm4_start();
@@ -1119,6 +1465,8 @@ int main(int argc, char **argv)
                     test_pm4_fixed_function_state);
     g_test_add_func("/ati/rage128/pm4-shading-and-coverage",
                     test_pm4_shading_and_coverage);
+    g_test_add_func("/ati/rage128/pm4-primary-texture",
+                    test_pm4_primary_texture);
     g_test_add_func("/ati/rage128/pm4-signed-window-offset",
                     test_pm4_signed_window_offset);
     return g_test_run();

@@ -283,6 +283,25 @@
 #define DP_GUI_MASTER_CNTL_C                    0x1c84
 #define SC_TOP_LEFT_C                           0x1c88
 #define SC_BOTTOM_RIGHT_C                       0x1c8c
+#define PRIM_TEX_CNTL_C                         0x1cb0
+#define PRIM_TEXTURE_COMBINE_CNTL_C             0x1cb4
+#define TEX_SIZE_PITCH_C                        0x1cb8
+#define PRIM_TEX_0_OFFSET_C                     0x1cbc
+#define PRIM_TEX_1_OFFSET_C                     0x1cc0
+#define PRIM_TEX_2_OFFSET_C                     0x1cc4
+#define PRIM_TEX_3_OFFSET_C                     0x1cc8
+#define PRIM_TEX_4_OFFSET_C                     0x1ccc
+#define PRIM_TEX_5_OFFSET_C                     0x1cd0
+#define PRIM_TEX_6_OFFSET_C                     0x1cd4
+#define PRIM_TEX_7_OFFSET_C                     0x1cd8
+#define PRIM_TEX_8_OFFSET_C                     0x1cdc
+#define PRIM_TEX_9_OFFSET_C                     0x1ce0
+#define PRIM_TEX_10_OFFSET_C                    0x1ce4
+#define SEC_TEX_CNTL_C                          0x1d00
+#define SEC_TEX_COMBINE_CNTL_C                  0x1d04
+#define CONSTANT_COLOR_C                        0x1d34
+#define PRIM_TEXTURE_BORDER_COLOR_C             0x1d38
+#define SEC_TEXTURE_BORDER_COLOR_C              0x1d3c
 
 #define CLR_CMP_MASK_3D                         0x1A28
 #define MISC_3D_STATE_CNTL_REG                  0x1CA0
