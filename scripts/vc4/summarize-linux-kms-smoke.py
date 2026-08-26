@@ -52,6 +52,54 @@ def expect(module: ModuleType, expected: str, *,
         raise AssertionError(f"expected {expected!r}, got {actual!r}")
 
 
+def expect_detail_parsers(module: ModuleType) -> None:
+    done_line = (
+        "VC4_LINUX_KMS_DONE crtcs=3 connector_objects=2 "
+        "physical=1 connected=1 modes=17"
+    )
+    done = module.KMS_DONE_RE.fullmatch(done_line)
+    if done is None:
+        raise AssertionError("KMS completion detail record did not parse")
+    counts = {key: int(value) for key, value in done.groupdict().items()}
+    expected_counts = {
+        "crtcs": 3,
+        "connector_objects": 2,
+        "physical": 1,
+        "connected": 1,
+        "modes": 17,
+    }
+    if counts != expected_counts:
+        raise AssertionError(
+            f"unexpected KMS completion detail fields: {counts!r}"
+        )
+
+    connector_line = (
+        "VC4_LINUX_KMS_CONNECTOR id=42 type=11 type_id=1 "
+        "connection=1 encoder=7 modes=17 encoders=1 props=12 physical=1"
+    )
+    connector = module.CONNECTOR_RE.fullmatch(connector_line)
+    if connector is None:
+        raise AssertionError("KMS connector detail record did not parse")
+    fields = {
+        key: int(value) for key, value in connector.groupdict().items()
+    }
+    expected_fields = {
+        "id": 42,
+        "type": 11,
+        "type_id": 1,
+        "connection": 1,
+        "encoder": 7,
+        "modes": 17,
+        "encoders": 1,
+        "props": 12,
+        "physical": 1,
+    }
+    if fields != expected_fields:
+        raise AssertionError(
+            f"unexpected KMS connector detail fields: {fields!r}"
+        )
+
+
 def visible_result() -> dict[str, Any]:
     return {
         "framebuffer_marker_seen": True,
@@ -80,6 +128,7 @@ def visible_result() -> dict[str, Any]:
 def main() -> int:
     module = load_summarizer()
 
+    expect_detail_parsers(module)
     expect(module, module.VISIBLE_CLEAR, result=visible_result())
 
     black = visible_result()
