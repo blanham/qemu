@@ -22,11 +22,11 @@ Frontier: **`linux-vc4-kms-visible-scanout-clear`**
 
 ## Resource counts
 
-- CRTCs: `None`
-- Connector objects: `None`
-- Physical connectors: `None`
-- Connected physical connectors: `None`
-- Modes on connected physical connectors: `None`
+- CRTCs: `4`
+- Connector objects: `1`
+- Physical connectors: `1`
+- Connected physical connectors: `1`
+- Modes on connected physical connectors: `14`
 
 ## Visible scanout samples
 
@@ -44,3 +44,7 @@ Frontier: **`linux-vc4-kms-visible-scanout-clear`**
 - `3f207000.pixelvalve` via `vc4_crtc_ops`
 - `3f807000.pixelvalve` via `vc4_crtc_ops`
 - `3fc00000.v3d` via `vc4_v3d_ops`
+
+## DRM connectors
+
+- id `35`, type `11:1`, connection `1`, modes `14`, physical `1`
