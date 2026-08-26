@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Exercise VC4 HVS packed-RGB layouts and component expansion."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+from pathlib import Path
+import subprocess
+import tempfile
+from typing import Any, Callable
+
+
+HVS_PIXEL_FORMAT_RGB332 = 0
+HVS_PIXEL_FORMAT_RGBA4444 = 1
+HVS_PIXEL_FORMAT_RGBA5551 = 3
+
+PACKED_SCANOUT_CHANNEL = 2
+PACKED_SCANOUT_LIST_WORD = 0x180
+PACKED_SCANOUT_BUFFER = 0x00208000
+
+Color = tuple[int, int, int]
+Encoder = Callable[[Color], int]
+
+
+class PackedFormat:
+    def __init__(
+        self,
+        label: str,
+        hvs_format: int,
+        order: int,
+        bytes_per_pixel: int,
+        bits: Color,
+        samples: tuple[Color, Color, Color, Color],
+        encode: Encoder,
+    ) -> None:
+        self.label = label
+        self.hvs_format = hvs_format
+        self.order = order
+        self.bytes_per_pixel = bytes_per_pixel
+        self.bits = bits
+        self.samples = samples
+        self.encode = encode
+
+
+SAMPLES_332 = (
+    (3, 0, 0),
+    (0, 5, 0),
+    (0, 0, 2),
+    (6, 2, 1),
+)
+SAMPLES_444 = (
+    (7, 0, 0),
+    (0, 10, 0),
+    (0, 0, 13),
+    (3, 9, 5),
+)
+SAMPLES_555 = (
+    (15, 0, 0),
+    (0, 23, 0),
+    (0, 0, 11),
+    (7, 25, 18),
+)
+SAMPLES_565 = (
+    (15, 0, 0),
+    (0, 31, 0),
+    (0, 0, 21),
+    (7, 45, 18),
+)
+
+
+def load_hvs_support() -> Any:
+    support_path = Path(__file__).with_name("hvs-dlist-smoke.py")
+    spec = importlib.util.spec_from_file_location(
+        "vc4_hvs_dlist_smoke_support", support_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load HVS smoke support: {support_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def expand_round(value: int, bits: int) -> int:
+    maximum = (1 << bits) - 1
+
+    if not 0 <= value <= maximum:
+        raise ValueError(f"{value} does not fit in {bits} bits")
+    # Model the HVS ROUND path as an endpoint-preserving conversion
+    # rounded to the nearest eight-bit component value.
+    return (value * 255 + maximum // 2) // maximum
+
+
+def expected_colors(fmt: PackedFormat) -> tuple[Color, Color, Color, Color]:
+    return tuple(
+        tuple(
+            expand_round(component, bits)
+            for component, bits in zip(color, fmt.bits, strict=True)
+        )
+        for color in fmt.samples
+    )
+
+
+def encode_rgb332(color: Color) -> int:
+    red, green, blue = color
+    return (red << 5) | (green << 2) | blue
+
+
+def encode_bgr233(color: Color) -> int:
+    red, green, blue = color
+    return (blue << 6) | (green << 3) | red
+
+
+def encode_rgb565(color: Color) -> int:
+    red, green, blue = color
+    return (red << 11) | (green << 5) | blue
+
+
+def encode_bgr565(color: Color) -> int:
+    red, green, blue = color
+    return (blue << 11) | (green << 5) | red
+
+
+def encode_xrgb4444(color: Color) -> int:
+    red, green, blue = color
+    return (red << 8) | (green << 4) | blue
+
+
+def encode_xbgr4444(color: Color) -> int:
+    red, green, blue = color
+    return (blue << 8) | (green << 4) | red
+
+
+def encode_rgbx4444(color: Color) -> int:
+    red, green, blue = color
+    return (red << 12) | (green << 8) | (blue << 4)
+
+
+def encode_bgrx4444(color: Color) -> int:
+    red, green, blue = color
+    return (blue << 12) | (green << 8) | (red << 4)
+
+
+def encode_xrgb1555(color: Color) -> int:
+    red, green, blue = color
+    return (red << 10) | (green << 5) | blue
+
+
+def packed_formats(hvs: Any) -> tuple[PackedFormat, ...]:
+    return (
+        PackedFormat(
+            "rgb565",
+            hvs.HVS_PIXEL_FORMAT_RGB565,
+            hvs.SCALER_CTL0_ORDER_XRGB,
+            2,
+            (5, 6, 5),
+            SAMPLES_565,
+            encode_rgb565,
+        ),
+        PackedFormat(
+            "bgr565",
+            hvs.HVS_PIXEL_FORMAT_RGB565,
+            hvs.SCALER_CTL0_ORDER_XBGR,
+            2,
+            (5, 6, 5),
+            SAMPLES_565,
+            encode_bgr565,
+        ),
+        PackedFormat(
+            "rgb332",
+            HVS_PIXEL_FORMAT_RGB332,
+            hvs.SCALER_CTL0_ORDER_ARGB,
+            1,
+            (3, 3, 2),
+            SAMPLES_332,
+            encode_rgb332,
+        ),
+        PackedFormat(
+            "bgr233",
+            HVS_PIXEL_FORMAT_RGB332,
+            hvs.SCALER_CTL0_ORDER_ABGR,
+            1,
+            (3, 3, 2),
+            SAMPLES_332,
+            encode_bgr233,
+        ),
+        PackedFormat(
+            "xrgb4444",
+            HVS_PIXEL_FORMAT_RGBA4444,
+            hvs.SCALER_CTL0_ORDER_ABGR,
+            2,
+            (4, 4, 4),
+            SAMPLES_444,
+            encode_xrgb4444,
+        ),
+        PackedFormat(
+            "xbgr4444",
+            HVS_PIXEL_FORMAT_RGBA4444,
+            hvs.SCALER_CTL0_ORDER_ARGB,
+            2,
+            (4, 4, 4),
+            SAMPLES_444,
+            encode_xbgr4444,
+        ),
+        PackedFormat(
+            "bgrx4444",
+            HVS_PIXEL_FORMAT_RGBA4444,
+            hvs.SCALER_CTL0_ORDER_RGBA,
+            2,
+            (4, 4, 4),
+            SAMPLES_444,
+            encode_bgrx4444,
+        ),
+        PackedFormat(
+            "rgbx4444",
+            HVS_PIXEL_FORMAT_RGBA4444,
+            hvs.SCALER_CTL0_ORDER_BGRA,
+            2,
+            (4, 4, 4),
+            SAMPLES_444,
+            encode_rgbx4444,
+        ),
+        PackedFormat(
+            "xrgb1555",
+            HVS_PIXEL_FORMAT_RGBA5551,
+            hvs.SCALER_CTL0_ORDER_ABGR,
+            2,
+            (5, 5, 5),
+            SAMPLES_555,
+            encode_xrgb1555,
+        ),
+    )
+
+
+def write_pattern(qtest: Any, hvs: Any, fmt: PackedFormat) -> int:
+    pitch = hvs.SCANOUT_WIDTH * fmt.bytes_per_pixel + 8
+
+    for y in range(hvs.SCANOUT_HEIGHT):
+        row = bytearray()
+        for x in range(hvs.SCANOUT_WIDTH):
+            quadrant = (2 if y >= hvs.SCANOUT_HEIGHT // 2 else 0) + (
+                1 if x >= hvs.SCANOUT_WIDTH // 2 else 0
+            )
+            value = fmt.encode(fmt.samples[quadrant])
+            row.extend(value.to_bytes(fmt.bytes_per_pixel, "little"))
+        row.extend(b"\x5a" * (pitch - len(row)))
+        if len(row) % 4:
+            raise RuntimeError(f"{fmt.label} row is not qtest-word aligned")
+        for offset in range(0, len(row), 4):
+            qtest.writel(
+                PACKED_SCANOUT_BUFFER + y * pitch + offset,
+                int.from_bytes(row[offset:offset + 4], "little"),
+            )
+
+    return pitch
+
+
+def exercise_format(
+    qtest: Any,
+    qmp: Any,
+    hvs: Any,
+    temp: Path,
+    fmt: PackedFormat,
+) -> None:
+    pitch = write_pattern(qtest, hvs, fmt)
+    dlist = hvs.SCALER_DLIST_START + PACKED_SCANOUT_LIST_WORD * 4
+    ctl0 = (
+        hvs.SCALER_CTL0_VALID
+        | (7 << 24)
+        | fmt.order
+        | hvs.SCALER_CTL0_RGBA_EXPAND_ROUND
+        | hvs.SCALER_CTL0_UNITY
+        | fmt.hvs_format
+    )
+    element = (
+        ctl0,
+        0xFF000000,
+        (hvs.SCANOUT_HEIGHT << 16) | hvs.SCANOUT_WIDTH,
+        0xC0C0C0C0,
+        PACKED_SCANOUT_BUFFER,
+        0xC0C0C0C0,
+        pitch,
+        hvs.SCALER_CTL0_END,
+    )
+
+    qtest.writel(hvs.SCALER_DISPCTRLX[PACKED_SCANOUT_CHANNEL], 0)
+    for index, value in enumerate(element):
+        qtest.writel(dlist + index * 4, value)
+    qtest.writel(
+        hvs.SCALER_DISPLIST[PACKED_SCANOUT_CHANNEL],
+        PACKED_SCANOUT_LIST_WORD,
+    )
+    qtest.writel(
+        hvs.SCALER_DISPCTRLX[PACKED_SCANOUT_CHANNEL],
+        hvs.SCALER_DISPCTRLX_ENABLE
+        | (hvs.SCANOUT_WIDTH << 12)
+        | hvs.SCANOUT_HEIGHT,
+    )
+
+    screenshot = temp / f"hvs-{fmt.label}.ppm"
+    qmp.execute("screendump", {"filename": str(screenshot)})
+    hvs.expect_pattern(screenshot, expected_colors(fmt))
+
+    qtest.writel(hvs.SCALER_DISPCTRLX[PACKED_SCANOUT_CHANNEL], 0)
+    hvs.expect_disabled_empty(qtest, PACKED_SCANOUT_CHANNEL)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--qemu",
+        type=Path,
+        default=Path("build/qemu-system-aarch64"),
+        help="path to qemu-system-aarch64",
+    )
+    args = parser.parse_args()
+
+    qemu = args.qemu.resolve()
+    if not qemu.is_file():
+        parser.error(f"QEMU binary does not exist: {qemu}")
+
+    hvs = load_hvs_support()
+    support = hvs.load_property_support()
+
+    with tempfile.TemporaryDirectory(prefix="vc4-hvs-packed-rgb-") as temp_dir:
+        temp = Path(temp_dir)
+        qtest_path = temp / "qtest.sock"
+        qmp_path = temp / "qmp.sock"
+        process = subprocess.Popen(
+            (
+                str(qemu),
+                "-M",
+                "raspi3b",
+                "-accel",
+                "qtest",
+                "-S",
+                "-display",
+                "none",
+                "-serial",
+                "none",
+                "-monitor",
+                "none",
+                "-qtest",
+                f"unix:{qtest_path},server=on,wait=off",
+                "-qmp",
+                f"unix:{qmp_path},server=on,wait=off",
+            ),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        qtest = None
+        qmp = None
+        try:
+            qtest = support.connect_when_ready(
+                qtest_path, process, support.QTestClient
+            )
+            qmp = support.connect_when_ready(qmp_path, process, hvs.QMPClient)
+            qmp.execute("cont")
+
+            for fmt in packed_formats(hvs):
+                exercise_format(qtest, qmp, hvs, temp, fmt)
+        finally:
+            if qmp is not None:
+                try:
+                    qmp.execute("quit")
+                except (OSError, RuntimeError):
+                    pass
+            if qtest is not None:
+                qtest.close()
+            if qmp is not None:
+                qmp.close()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
+        if process.returncode not in (0, None):
+            stderr = process.stderr.read() if process.stderr else ""
+            raise RuntimeError(
+                f"QEMU exited with status {process.returncode}:\n{stderr}"
+            )
+
+    print("BCM2835 HVS packed-RGB scanout smoke test passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

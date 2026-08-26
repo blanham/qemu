@@ -21,13 +21,22 @@
 OBJECT_DECLARE_SIMPLE_TYPE(BCM2835FBState, BCM2835_FB)
 
 /*
- * Framebuffer source-byte orders.  Values 0 and 1 retain the mailbox
- * ABI; values 2 and 3 describe the HVS-only 32-bit byte rotations.
+ * Framebuffer source layouts.  Values 0 and 1 retain the mailbox ABI;
+ * the remaining values describe HVS-only packed-RGB layouts.
  */
-#define BCM2835_FB_PIXEL_ORDER_BGR   0
-#define BCM2835_FB_PIXEL_ORDER_RGB   1
-#define BCM2835_FB_PIXEL_ORDER_RGBA  2
-#define BCM2835_FB_PIXEL_ORDER_BGRA  3
+#define BCM2835_FB_PIXEL_ORDER_BGR           0
+#define BCM2835_FB_PIXEL_ORDER_RGB           1
+#define BCM2835_FB_PIXEL_ORDER_RGBA          2
+#define BCM2835_FB_PIXEL_ORDER_BGRA          3
+#define BCM2835_FB_PIXEL_ORDER_HVS_RGB565    4
+#define BCM2835_FB_PIXEL_ORDER_HVS_BGR565    5
+#define BCM2835_FB_PIXEL_ORDER_HVS_RGB332    6
+#define BCM2835_FB_PIXEL_ORDER_HVS_BGR233    7
+#define BCM2835_FB_PIXEL_ORDER_HVS_XRGB4444  8
+#define BCM2835_FB_PIXEL_ORDER_HVS_XBGR4444  9
+#define BCM2835_FB_PIXEL_ORDER_HVS_BGRX4444 10
+#define BCM2835_FB_PIXEL_ORDER_HVS_RGBX4444 11
+#define BCM2835_FB_PIXEL_ORDER_HVS_XRGB1555 12
 
 /*
  * Configuration information about the fb which the guest can program

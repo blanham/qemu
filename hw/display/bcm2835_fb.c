@@ -53,12 +53,20 @@ static void fb_invalidate_display(void *opaque)
     s->invalidate = true;
 }
 
+static uint8_t bcm2835_fb_expand_component(uint32_t value, unsigned bits)
+{
+    uint32_t maximum = (UINT32_C(1) << bits) - 1;
+
+    return (value * UINT8_MAX + maximum / 2) / maximum;
+}
+
 static void draw_line_src16(void *opaque, uint8_t *dst, const uint8_t *src,
                             int width, int deststep)
 {
     BCM2835FBState *s = opaque;
     uint16_t rgb565;
     uint32_t rgb888;
+    uint8_t packed;
     uint8_t r, g, b;
     DisplaySurface *surface = qemu_console_surface(s->con);
     int bpp = surface_bits_per_pixel(surface);
@@ -66,21 +74,72 @@ static void draw_line_src16(void *opaque, uint8_t *dst, const uint8_t *src,
     while (width--) {
         switch (s->config.bpp) {
         case 8:
-            /* lookup palette starting at video ram base
-             * TODO: cache translation, rather than doing this each time!
-             */
-            rgb888 = ldl_le_phys(&s->dma_as, s->vcram_base + (*src << 2));
-            r = (rgb888 >> 0) & 0xff;
-            g = (rgb888 >> 8) & 0xff;
-            b = (rgb888 >> 16) & 0xff;
-            src++;
+            packed = *src++;
+            if (s->config.pixo == BCM2835_FB_PIXEL_ORDER_HVS_RGB332) {
+                r = bcm2835_fb_expand_component((packed >> 5) & 0x7, 3);
+                g = bcm2835_fb_expand_component((packed >> 2) & 0x7, 3);
+                b = bcm2835_fb_expand_component(packed & 0x3, 2);
+            } else if (s->config.pixo ==
+                       BCM2835_FB_PIXEL_ORDER_HVS_BGR233) {
+                r = bcm2835_fb_expand_component(packed & 0x7, 3);
+                g = bcm2835_fb_expand_component((packed >> 3) & 0x7, 3);
+                b = bcm2835_fb_expand_component((packed >> 6) & 0x3, 2);
+            } else {
+                /* lookup palette starting at video ram base
+                 * TODO: cache translation, rather than doing this each time!
+                 */
+                rgb888 = ldl_le_phys(&s->dma_as,
+                                     s->vcram_base + (packed << 2));
+                r = (rgb888 >> 0) & 0xff;
+                g = (rgb888 >> 8) & 0xff;
+                b = (rgb888 >> 16) & 0xff;
+            }
             break;
         case 16:
             rgb565 = lduw_le_p(src);
-            r = ((rgb565 >> 11) & 0x1f) << 3;
-            g = ((rgb565 >>  5) & 0x3f) << 2;
-            b = ((rgb565 >>  0) & 0x1f) << 3;
             src += 2;
+            switch (s->config.pixo) {
+            case BCM2835_FB_PIXEL_ORDER_HVS_RGB565:
+                r = bcm2835_fb_expand_component((rgb565 >> 11) & 0x1f, 5);
+                g = bcm2835_fb_expand_component((rgb565 >> 5) & 0x3f, 6);
+                b = bcm2835_fb_expand_component(rgb565 & 0x1f, 5);
+                break;
+            case BCM2835_FB_PIXEL_ORDER_HVS_BGR565:
+                r = bcm2835_fb_expand_component(rgb565 & 0x1f, 5);
+                g = bcm2835_fb_expand_component((rgb565 >> 5) & 0x3f, 6);
+                b = bcm2835_fb_expand_component((rgb565 >> 11) & 0x1f, 5);
+                break;
+            case BCM2835_FB_PIXEL_ORDER_HVS_XRGB4444:
+                r = bcm2835_fb_expand_component((rgb565 >> 8) & 0xf, 4);
+                g = bcm2835_fb_expand_component((rgb565 >> 4) & 0xf, 4);
+                b = bcm2835_fb_expand_component(rgb565 & 0xf, 4);
+                break;
+            case BCM2835_FB_PIXEL_ORDER_HVS_XBGR4444:
+                r = bcm2835_fb_expand_component(rgb565 & 0xf, 4);
+                g = bcm2835_fb_expand_component((rgb565 >> 4) & 0xf, 4);
+                b = bcm2835_fb_expand_component((rgb565 >> 8) & 0xf, 4);
+                break;
+            case BCM2835_FB_PIXEL_ORDER_HVS_BGRX4444:
+                r = bcm2835_fb_expand_component((rgb565 >> 4) & 0xf, 4);
+                g = bcm2835_fb_expand_component((rgb565 >> 8) & 0xf, 4);
+                b = bcm2835_fb_expand_component((rgb565 >> 12) & 0xf, 4);
+                break;
+            case BCM2835_FB_PIXEL_ORDER_HVS_RGBX4444:
+                r = bcm2835_fb_expand_component((rgb565 >> 12) & 0xf, 4);
+                g = bcm2835_fb_expand_component((rgb565 >> 8) & 0xf, 4);
+                b = bcm2835_fb_expand_component((rgb565 >> 4) & 0xf, 4);
+                break;
+            case BCM2835_FB_PIXEL_ORDER_HVS_XRGB1555:
+                r = bcm2835_fb_expand_component((rgb565 >> 10) & 0x1f, 5);
+                g = bcm2835_fb_expand_component((rgb565 >> 5) & 0x1f, 5);
+                b = bcm2835_fb_expand_component(rgb565 & 0x1f, 5);
+                break;
+            default:
+                r = ((rgb565 >> 11) & 0x1f) << 3;
+                g = ((rgb565 >> 5) & 0x3f) << 2;
+                b = (rgb565 & 0x1f) << 3;
+                break;
+            }
             break;
         case 24:
             /* Do not read a fourth byte past a tightly packed scanline. */
