@@ -55,6 +55,7 @@
 #define ATI_3D_TEX_FORMAT_RGB888      5U
 #define ATI_3D_TEX_FORMAT_ARGB8888    6U
 #define ATI_3D_TEX_FORMAT_RGB332      7U
+#define ATI_3D_TEX_FORMAT_RGB8        9U
 #define ATI_3D_TEX_FORMAT_ARGB4444    15U
 
 #define ATI_3D_COMB_COLOR_OP_MASK     0xfU
@@ -77,6 +78,7 @@
 #define ATI_3D_COMB_MODULATE2X        4U
 #define ATI_3D_COMB_MODULATE4X        5U
 #define ATI_3D_COMB_ADD               6U
+#define ATI_3D_COMB_BLEND_TEXTURE     9U
 
 #define ATI_3D_COLOR_FACTOR_CONST     0U
 #define ATI_3D_COLOR_FACTOR_NCONST    1U
@@ -185,6 +187,7 @@ typedef struct ATI3DTexture {
     uint32_t constant;
     unsigned int format;
     unsigned int bytes_per_pixel;
+    bool gart;
 } ATI3DTexture;
 
 typedef struct ATI3DRect {
@@ -538,6 +541,7 @@ static void ati_3d_unpack_texture_color(const ATI3DTexture *texture,
         ati_3d_unpack_argb8888(value, color);
         break;
     case ATI_3D_TEX_FORMAT_RGB332:
+    case ATI_3D_TEX_FORMAT_RGB8:
         color[0] = ((value >> 5) & 7) * (255.0f / 7.0f);
         color[1] = ((value >> 2) & 7) * (255.0f / 7.0f);
         color[2] = (value & 3) * (255.0f / 3.0f);
@@ -597,6 +601,7 @@ static bool ati_3d_texture_init(ATI3DFragmentContext *ctx)
 
     switch (texture->format) {
     case ATI_3D_TEX_FORMAT_RGB332:
+    case ATI_3D_TEX_FORMAT_RGB8:
         texture->bytes_per_pixel = 1;
         break;
     case ATI_3D_TEX_FORMAT_ARGB1555:
@@ -623,9 +628,19 @@ static bool ati_3d_texture_init(ATI3DFragmentContext *ctx)
     texture->stride = texture->width * texture->bytes_per_pixel;
     end = (uint64_t)texture->offset +
           (uint64_t)texture->height * texture->stride;
-    if (!texture->stride || end > ctx->s->vga.vram_size) {
+    if (!texture->stride) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "ATI Rage 128 texture surface exceeds VRAM\n");
+                      "ATI Rage 128 texture has invalid dimensions\n");
+        return false;
+    }
+    if (texture->offset >= ATI_RAGE128_GART_VIRT_BASE &&
+        end <= ATI_RAGE128_GART_VIRT_END) {
+        texture->gart = true;
+    } else if (end <= ctx->s->vga.vram_size) {
+        texture->gart = false;
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "ATI Rage 128 texture surface exceeds local VRAM/GART\n");
         return false;
     }
     return true;
@@ -675,6 +690,7 @@ static bool ati_3d_texture_fetch(const ATI3DFragmentContext *ctx,
                                     ATI_3D_TEX_CLAMP_S_SHIFT, 2);
     unsigned int wrap_t = extract32(texture->control,
                                     ATI_3D_TEX_CLAMP_T_SHIFT, 2);
+    uint8_t raw[4];
     uint64_t address;
     uint32_t value = 0;
     int tex_x;
@@ -688,14 +704,25 @@ static bool ati_3d_texture_fetch(const ATI3DFragmentContext *ctx,
     address = (uint64_t)texture->offset +
               (uint64_t)tex_y * texture->stride +
               (uint64_t)tex_x * texture->bytes_per_pixel;
-    if (address + texture->bytes_per_pixel > ctx->s->vga.vram_size) {
-        return false;
+    if (texture->gart) {
+        if (address + texture->bytes_per_pixel >
+                ATI_RAGE128_GART_VIRT_END ||
+            !ati_pm4_read_guest(ctx->s, address, raw,
+                                texture->bytes_per_pixel)) {
+            return false;
+        }
+    } else {
+        if (address + texture->bytes_per_pixel > ctx->s->vga.vram_size) {
+            return false;
+        }
+        memcpy(raw, ctx->s->vga.vram_ptr + address,
+               texture->bytes_per_pixel);
     }
     for (unsigned int byte = 0; byte < texture->bytes_per_pixel; byte++) {
         unsigned int shift = ctx->s->vga.big_endian_fb ?
             (texture->bytes_per_pixel - 1 - byte) * 8 : byte * 8;
 
-        value |= (uint32_t)ctx->s->vga.vram_ptr[address + byte] << shift;
+        value |= (uint32_t)raw[byte] << shift;
     }
     ati_3d_unpack_texture_color(texture, value, color);
     return true;
@@ -863,8 +890,18 @@ static bool ati_3d_texture_combine(const ATI3DFragmentContext *ctx,
         default:
             return false;
         }
-        if (!ati_3d_combine_value(color_op, input[channel], factor[channel],
-                                  &output[channel])) {
+        if (color_op == ATI_3D_COMB_BLEND_TEXTURE) {
+            float alpha;
+
+            if (color_factor != ATI_3D_COLOR_FACTOR_TEXTURE) {
+                return false;
+            }
+            alpha = texture_color[3] / 255.0f;
+            output[channel] = input[channel] * (1.0f - alpha) +
+                              texture_color[channel] * alpha;
+        } else if (!ati_3d_combine_value(color_op, input[channel],
+                                         factor[channel],
+                                         &output[channel])) {
             return false;
         }
     }
@@ -891,6 +928,9 @@ static bool ati_3d_texture_combine(const ATI3DFragmentContext *ctx,
     }
     if (!ati_3d_combine_value(alpha_op, input[3], factor[3], &output[3])) {
         return false;
+    }
+    for (unsigned int channel = 0; channel < 4; channel++) {
+        output[channel] = ati_3d_clamp_channel(output[channel]);
     }
     memcpy(fragment, output, sizeof(output));
     return true;

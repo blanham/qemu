@@ -16,8 +16,6 @@
 #define ATI_PM4_MAX_EXEC_DWORDS (1U << 20)
 #define ATI_PM4_MAX_SURFACE_PIXELS (16U * 1024U * 1024U)
 #define ATI_PM4_MAX_INDIRECT_DEPTH 4
-#define ATI_PM4_AGP_VIRT_BASE UINT32_C(0x02000000)
-#define ATI_PM4_AGP_VIRT_END  UINT32_C(0x04000000)
 
 static bool ati_pm4_bus_master_mode(uint32_t mode)
 {
@@ -116,8 +114,8 @@ static MemTxResult ati_pm4_dma_rw(ATIVGAState *s, dma_addr_t address,
         dma_addr_t physical = address;
         size_t chunk = length;
 
-        if (address >= ATI_PM4_AGP_VIRT_BASE &&
-            address < ATI_PM4_AGP_VIRT_END) {
+        if (address >= ATI_RAGE128_GART_VIRT_BASE &&
+            address < ATI_RAGE128_GART_VIRT_END) {
             uint32_t page_index;
             uint32_t page_entry;
             dma_addr_t page_table_address;
@@ -127,7 +125,7 @@ static MemTxResult ati_pm4_dma_rw(ATIVGAState *s, dma_addr_t address,
                 ati_pm4_fault(s, "AGP/PCI-GART access without a page table");
                 return MEMTX_ERROR;
             }
-            page_index = (address - ATI_PM4_AGP_VIRT_BASE) >> 12;
+            page_index = (address - ATI_RAGE128_GART_VIRT_BASE) >> 12;
             page_table_address = s->pm4.pci_gart_page + page_index * 4;
             if (ati_pm4_dma_read_direct(s, page_table_address,
                                         &page_entry, sizeof(page_entry)) !=
