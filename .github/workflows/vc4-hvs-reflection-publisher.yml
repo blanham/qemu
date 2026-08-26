@@ -1,0 +1,133 @@
+name: VC4 HVS reflection candidate publisher
+
+on:
+  push:
+    branches:
+      - agent/vc4-hvs-reflection-publisher
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-hvs-reflection-publisher
+  cancel-in-progress: false
+
+jobs:
+  validate-and-publish-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      TARGET_BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      CANDIDATE_BRANCH: agent/vc4-hvs-reflection-candidate
+      MINIMUM_TARGET_SHA: 148a5f71d2212a13f4beb488dcafc51bb9dbbf35
+      TRANSFORMER_SHA256: acc59853189676ac5c6ce381733be177fad0f30b32c384ec61c02bfde056f127
+      TRANSFORMER_BLOB: 8382918810be9f0185d1acd17d79dcb9ca9a41fd
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct the reviewed transformer
+        run: |
+          set -euo pipefail
+          cat .github/vc4-hvs-reflection/apply.py.gz.part* \
+            > /tmp/vc4-hvs-reflection-apply.py.gz
+          echo "${TRANSFORMER_SHA256}  /tmp/vc4-hvs-reflection-apply.py.gz" \
+            | sha256sum --check --strict
+          gzip -t /tmp/vc4-hvs-reflection-apply.py.gz
+          gzip -dc /tmp/vc4-hvs-reflection-apply.py.gz \
+            > /tmp/vc4-hvs-reflection-apply.py
+          test "$(git hash-object /tmp/vc4-hvs-reflection-apply.py)" = \
+            "$TRANSFORMER_BLOB"
+          python3 -m py_compile /tmp/vc4-hvs-reflection-apply.py
+
+      - name: Lease and transform the current target
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$TARGET_BRANCH"
+          git switch --detach "origin/$TARGET_BRANCH"
+          git merge-base --is-ancestor "$MINIMUM_TARGET_SHA" HEAD
+          printf 'TARGET_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" \
+            >> "$GITHUB_ENV"
+
+          while read -r expected path; do
+            actual=$(git hash-object "$path")
+            if [ "$actual" != "$expected" ]; then
+              printf 'stale reflection target: %s: %s != %s\n' \
+                "$path" "$actual" "$expected" >&2
+              exit 1
+            fi
+          done <<'EOF'
+          670f33e884179c06027db5f29f4c36b07aec2baa include/hw/display/bcm2835_fb.h
+          f63e2d84fc54bf4aed76e369d1a28097f80729f2 hw/display/bcm2835_fb.c
+          58c28d230656f55a68f5465de6fed31ecdc180e1 hw/display/bcm2835_hvs.c
+          b5aa71b70e8497d3f7b522458611ae9a6393c44b hw/misc/bcm2835_property.c
+          a28c6a0e2f564d9965e4f9d6fdda93fd981c1a9a scripts/vc4/hvs-dlist-smoke.py
+          EOF
+
+          python3 /tmp/vc4-hvs-reflection-apply.py --root "$GITHUB_WORKSPACE"
+          python3 -m py_compile scripts/vc4/hvs-dlist-smoke.py
+          git diff --check
+
+          test "$(git ls-files -s scripts/vc4/hvs-dlist-smoke.py \
+            | awk '{print $1}')" = 100755
+          grep -Fq BCM2835_FB_TRANSFORM_HFLIP \
+            include/hw/display/bcm2835_fb.h
+          grep -Fq '.pre_load = bcm2835_fb_pre_load' \
+            hw/display/bcm2835_fb.c
+          grep -Fq 'config->transform = transform;' \
+            hw/display/bcm2835_hvs.c
+          grep -Fq 'fbconfig.transform = 0;' \
+            hw/misc/bcm2835_property.c
+          grep -Fq 'def exercise_reflected_scanout(' \
+            scripts/vc4/hvs-dlist-smoke.py
+
+          git diff --name-only | LC_ALL=C sort > /tmp/changed
+          cat > /tmp/expected <<'EOF'
+          hw/display/bcm2835_fb.c
+          hw/display/bcm2835_hvs.c
+          hw/misc/bcm2835_property.c
+          include/hw/display/bcm2835_fb.h
+          scripts/vc4/hvs-dlist-smoke.py
+          EOF
+          diff -u /tmp/expected /tmp/changed
+
+      - name: Install focused build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libfdt-dev libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 zlib1g-dev
+
+      - name: Build QEMU and prove reflected scanout
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the validated candidate commit
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 Development"
+          git config user.email "vc4-dev@users.noreply.github.com"
+          git add -- \
+            include/hw/display/bcm2835_fb.h \
+            hw/display/bcm2835_fb.c \
+            hw/display/bcm2835_hvs.c \
+            hw/misc/bcm2835_property.c \
+            scripts/vc4/hvs-dlist-smoke.py
+          git commit -m "hw/display: support reflected VC4 HVS scanout" \
+            -m "Honor the HVS4 horizontal and vertical reflection bits for the supported unity-scaled linear RGB display element. Carry the transform through the framebuffer scanout configuration, normalize Linux vertical-reflection pointers from the final source row, use signed host destination strides, preserve dirty-row updates, reset firmware-mailbox scanout to an unreflected state, and migrate the new transform field compatibly. Extend the exact screenshot smoke test across horizontal, vertical, and combined reflection."
+          git diff HEAD^ --check
+          git push \
+            --force-with-lease="refs/heads/${CANDIDATE_BRANCH}:" \
+            origin "HEAD:refs/heads/${CANDIDATE_BRANCH}"
+          printf 'candidate=%s source=%s\n' \
+            "$(git rev-parse HEAD)" "$TARGET_SOURCE_SHA"
