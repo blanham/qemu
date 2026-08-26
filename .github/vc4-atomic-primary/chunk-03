@@ -1,0 +1,135 @@
+-        ("Child opened card0 before the drop", record["card_opened_before_drop"]),
+-        ("Pre-drop SET_MASTER returned EBUSY", record["set_master_busy_proved"]),
++        (
++            "Child opened card0 before the drop",
++            record["card_opened_before_drop"],
++        ),
++        (
++            "Pre-drop SET_MASTER returned EBUSY",
++            record["set_master_busy_proved"],
++        ),
+         ("Child reached the handoff gate", record["handoff_ready"]),
+         ("Original drm_file dropped master", record["original_master_dropped"]),
+         ("Same new drm_file acquired master", record["new_file_master"]),
+@@ -456,20 +549,45 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
+         ),
+         ("Independent SETCRTC started", record["setcrtc_started"]),
+         ("Independent SETCRTC completed", record["setcrtc_ok"]),
+-        ("GETCRTC verified independent modeset", record["modeset_current_fb_ok"]),
+-        ("Independent modeset witness completed", record["independent_modeset_ok"]),
++        (
++            "GETCRTC verified independent modeset",
++            record["modeset_current_fb_ok"],
++        ),
++        (
++            "Independent modeset witness completed",
++            record["independent_modeset_ok"],
++        ),
+         ("Page-flip dumb buffer created", record["pageflip_dumb_ok"]),
+         ("Page-flip dumb buffer mapped", record["pageflip_map_ok"]),
+         ("Page-flip framebuffer created", record["pageflip_fb_ok"]),
+-        ("Independent page-flip ioctl started", record["pageflip_ioctl_started"]),
++        (
++            "Independent page-flip ioctl started",
++            record["pageflip_ioctl_started"],
++        ),
+         ("Independent page flip queued", record["pageflip_queued"]),
+-        ("Flip-complete event received", record["flip_event_ok"]),
+-        ("GETCRTC reports flipped framebuffer", record["current_fb_ok"]),
++        ("Legacy flip-complete event received", record["flip_event_ok"]),
++        ("GETCRTC reports legacy-flipped framebuffer", record["current_fb_ok"]),
++        ("Atomic client capability enabled", record["atomic_caps_ok"]),
++        ("Active primary plane identified", record["atomic_primary_plane_ok"]),
++        ("Active CRTC property identified", record["atomic_crtc_active_ok"]),
++        ("Atomic replacement dumb buffer created", record["atomic_dumb_ok"]),
++        ("Atomic replacement dumb buffer mapped", record["atomic_map_ok"]),
++        ("Atomic replacement framebuffer created", record["atomic_fb_ok"]),
++        ("Atomic TEST_ONLY commit completed", record["atomic_test_only_ok"]),
++        ("Atomic primary-plane ioctl started", record["atomic_ioctl_started"]),
++        ("Atomic primary-plane update queued", record["atomic_queued"]),
++        ("Atomic flip-complete event received", record["atomic_event_ok"]),
++        ("GETCRTC reports atomic framebuffer", record["atomic_current_fb_ok"]),
++        ("Atomic visual-ready hold reached", record["atomic_visual_ready"]),
++        ("Atomic primary-plane witness completed", record["atomic_ok"]),
+         ("Visual-ready hold reached", record["visual_ready"]),
+         ("Exact final pixels verified", record["visual_pixels_ok"]),
+         ("Child explicitly dropped master", record["child_master_dropped"]),
+         ("Child witness completed", record["witness_ok"]),
+-        ("Original drm_file reacquired master", record["original_master_restored"]),
++        (
++            "Original drm_file reacquired master",
++            record["original_master_restored"],
++        ),
+         ("Runtime reported handoff order", record["handoff_order_reported"]),
+         ("Recorded marker order is valid", record["marker_order_valid"]),
+         ("Supervisor completed", record["supervisor_ok"]),
+@@ -478,7 +596,7 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
+         ("Failure errno", record["failure_errno"]),
+     )
+     lines = [
+-        "# VC4 explicit DRM-master handoff, modeset, and page flip",
++        "# VC4 explicit DRM-master handoff and atomic primary-plane flip",
+         "",
+         f"Validation passed: **{'true' if record['passed'] else 'false'}**",
+         "",
+@@ -510,10 +628,16 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
+             "explicitly acquire it. That new file independently enumerates "
+             "a connector and mode, creates a first framebuffer, programs "
+             "SETCRTC, and verifies the resulting CRTC state. It then creates "
+-            "a second framebuffer, queues an event-driven page flip, consumes "
+-            "DRM_EVENT_FLIP_COMPLETE, and verifies both GETCRTC and every "
+-            "captured XRGB8888 pixel. The child drops master before exiting, "
+-            "and PID 1 must reacquire it before the render witness continues.",
++            "a second framebuffer and completes a legacy event-driven page "
++            "flip. While still master on the same drm_file, it enables atomic "
++            "UAPI, identifies the active primary plane and its FB_ID property, "
++            "TEST_ONLY-validates a third framebuffer, then queues a "
++            "nonblocking "
++            "atomic primary-plane update with a flip-complete event. GETCRTC "
++            "and every captured XRGB8888 pixel must expose that third buffer. "
++            "The child drops master before exiting, and PID 1 must "
++            "reacquire it "
++            "before the render witness continues.",
+         )
+     )
+     path.write_text("\n".join(lines) + "\n")
+diff --git a/tests/vc4/linux-kms-master-reacquire-probe.inc.c b/tests/vc4/linux-kms-master-reacquire-probe.inc.c
+index c2501f2..2561323 100644
+--- a/tests/vc4/linux-kms-master-reacquire-probe.inc.c
++++ b/tests/vc4/linux-kms-master-reacquire-probe.inc.c
+@@ -24,6 +24,7 @@
+  */
+ 
+ #include <fcntl.h>
++#include <stdlib.h>
+ 
+ #include "linux-kms-pageflip-probe.inc.c"
+ 
+@@ -37,6 +38,12 @@
+ #define VC4_MASTER_REACQUIRE_GO_BYTE             UINT8_C(0x47)
+ #define VC4_MASTER_REACQUIRE_USER_DATA \
+     UINT64_C(0x5643344d41535452)
++#define VC4_MASTER_REACQUIRE_ATOMIC_USER_DATA \
++    UINT64_C(0x56433441544f4d43)
++#define VC4_MASTER_REACQUIRE_MAX_CRTCS      16U
++#define VC4_MASTER_REACQUIRE_MAX_PLANES     64U
++#define VC4_MASTER_REACQUIRE_MAX_PROPERTIES 96U
++#define VC4_MASTER_REACQUIRE_PRIMARY_PLANE  UINT64_C(1)
+ 
+ static int vc4_master_reacquire_fail(const char *stage)
+ {
+@@ -220,6 +227,12 @@ static int vc4_master_reacquire_expect_busy(int fd)
+ enum vc4_master_reacquire_buffer_kind {
+     VC4_MASTER_REACQUIRE_MODESET_BUFFER,
+     VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER,
++    VC4_MASTER_REACQUIRE_ATOMIC_BUFFER,
++};
++
++enum vc4_master_reacquire_event_kind {
++    VC4_MASTER_REACQUIRE_PAGEFLIP_EVENT,
++    VC4_MASTER_REACQUIRE_ATOMIC_EVENT,
+ };
+ 
+ struct vc4_master_reacquire_buffer {
+@@ -252,6 +265,26 @@ static void vc4_master_reacquire_fill_pageflip_pattern(
+         uint32_t *row =
