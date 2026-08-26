@@ -1,0 +1,141 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: VC4 Development <vc4-dev@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 07:45:00 +0000
+Subject: [PATCH] test/vc4: prove atomic primary-plane update
+
+After the explicit EBUSY-gated DRM-master handoff, enable the atomic KMS UAPI on that same reopened drm_file, identify the active primary plane and CRTC ACTIVE property, TEST_ONLY-validate a third framebuffer, and queue a nonblocking atomic FB_ID update with a flip-complete event. Preserve exact-pixel scanout verification, the original legacy modeset/page-flip witnesses, strict marker ordering, renderer submission, and master restoration on both success and failure paths.
+---
+ .../vc4-kms-master-reacquire-probe.yml        |  75 ++-
+ ...enable-linux-kms-master-reacquire-probe.py |  17 +-
+ ...marize-linux-kms-master-reacquire-smoke.py |  31 +-
+ .../summarize-linux-kms-master-reacquire.py   | 158 ++++-
+ .../linux-kms-master-reacquire-probe.inc.c    | 608 ++++++++++++++++--
+ 5 files changed, 805 insertions(+), 84 deletions(-)
+
+diff --git a/.github/workflows/vc4-kms-master-reacquire-probe.yml b/.github/workflows/vc4-kms-master-reacquire-probe.yml
+index 1e8edba..cc80aec 100644
+--- a/.github/workflows/vc4-kms-master-reacquire-probe.yml
++++ b/.github/workflows/vc4-kms-master-reacquire-probe.yml
+@@ -1,4 +1,4 @@
+-name: VC4 explicit DRM-master handoff, modeset, and page-flip probe
++name: VC4 explicit master handoff and atomic primary-plane probe
+ 
+ on:
+   push:
+@@ -88,7 +88,7 @@ jobs:
+           mkdir -p \
+             "$OFFICIAL_DIR" "$DTB_DIR" "$PROBE_DIR" "$EVIDENCE_DIR"
+ 
+-      - name: Validate the explicit handoff/modeset/page-flip witness
++      - name: Validate explicit handoff and atomic primary-plane witness
+         run: |
+           set -euo pipefail
+           python3 scripts/vc4/enable-linux-kms-master-reacquire-probe.py
+@@ -121,6 +121,20 @@ jobs:
+             tests/vc4/linux-kms-master-reacquire-probe.inc.c
+           grep -Fq 'VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER' \
+             tests/vc4/linux-kms-master-reacquire-probe.inc.c
++          grep -Fq 'VC4_MASTER_REACQUIRE_ATOMIC_BUFFER' \
++            tests/vc4/linux-kms-master-reacquire-probe.inc.c
++          grep -Fq 'DRM_CLIENT_CAP_ATOMIC' \
++            tests/vc4/linux-kms-master-reacquire-probe.inc.c
++          grep -Fq 'DRM_IOCTL_MODE_ATOMIC' \
++            tests/vc4/linux-kms-master-reacquire-probe.inc.c
++          grep -Fq 'atomic-primary-test-only' \
++            tests/vc4/linux-kms-master-reacquire-probe.inc.c
++          grep -Fq 'atomic-primary-commit' \
++            tests/vc4/linux-kms-master-reacquire-probe.inc.c
++          grep -Fq 'DRM_MODE_OBJECT_CRTC' \
++            tests/vc4/linux-kms-master-reacquire-probe.inc.c
++          grep -Fq 'VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK' \
++            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+           grep -Fq 'VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK' \
+             tests/vc4/linux-kms-master-reacquire-probe.inc.c
+           grep -Fq 'close(inherited_master_fd)' \
+@@ -170,6 +184,7 @@ jobs:
+               "setcrtc-independent-file",
+               "VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER",
+               "DRM_IOCTL_MODE_PAGE_FLIP",
++              "vc4_master_reacquire_atomic_swap",
+           )
+           parent_order = (
+               '"wait-handoff-ready"',
+@@ -192,7 +207,7 @@ jobs:
+                   raise SystemExit(
+                       f"{label} handoff order invalid: {positions}"
+                   )
+-          print("VC4 explicit handoff/modeset/page-flip source order: PASS")
++          print("VC4 explicit handoff/atomic-primary source order: PASS")
+           PY
+ 
+       - name: Fetch pinned kernel, DTB, and corrected module roots
+@@ -225,7 +240,7 @@ jobs:
+             "$MODULE_DIR/MANIFEST")
+           test "$i2c_line" -lt "$vc4_line"
+ 
+-      - name: Build the handoff/modeset initramfs and native-KMS DTB
++      - name: Build the handoff/atomic initramfs and native-KMS DTB
+         run: |
+           set -euo pipefail
+           bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+@@ -260,7 +275,20 @@ jobs:
+             VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED \
+             VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK \
+             VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY \
+             VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY \
++            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK \
+             VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED \
+             VC4_LINUX_KMS_MASTER_REACQUIRE_OK \
+             VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_RESTORED \
+@@ -303,7 +331,7 @@ jobs:
+           python3 scripts/vc4/v3d-smoke.py \
+             --qemu build/qemu-system-aarch64
+ 
+-      - name: Run the bounded explicit handoff/modeset witness
++      - name: Run bounded explicit handoff and atomic-plane witness
+         run: |
+           set +e
+           python3 scripts/vc4/raspi3-kms-master-reacquire-visual-probe.py \
+@@ -313,14 +341,14 @@ jobs:
+             --dtb "$DTB_DIR/kms.dtb" \
+             --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+             --out-dir "$PROBE_DIR" \
+-            --seconds 140 --sample-interval 5 \
++            --seconds 150 --sample-interval 5 \
+             > "$PROBE_DIR/probe.stdout" 2>&1
+           rc=$?
+           printf '%s\n' "$rc" > "$PROBE_DIR/return-code"
+           cat "$PROBE_DIR/probe.stdout"
+           exit 0
+ 
+-      - name: Record the exact handoff/modeset/page-flip frontier
++      - name: Record the explicit handoff/atomic-plane frontier
+         if: always()
+         run: |
+           set -euo pipefail
+@@ -366,12 +394,12 @@ jobs:
+           git add -- "$STATUS_JSON" "$STATUS_MD"
+           if ! git diff --cached --quiet; then
+             git commit -m \
+-              "test/vc4: record explicit DRM-master handoff/modeset frontier [skip ci]"
++              "test/vc4: record atomic primary-plane frontier [skip ci]"
+             git pull --rebase origin "$BRANCH"
+             git push origin HEAD:"$BRANCH"
+           fi
+ 
+-      - name: Require the current explicit handoff/modeset proof
++      - name: Require explicit handoff and atomic primary-plane proof
+         if: always()
+         run: |
