@@ -1,0 +1,146 @@
+           set -euo pipefail
+@@ -385,20 +413,20 @@ jobs:
+           record = json.loads(path.read_text(encoding="utf-8"))
+           expected_classification = (
+               "linux-vc4-kms-explicit-master-handoff-"
+-              "modeset-pageflip-visual-clear"
++              "atomic-primary-pageflip-visual-clear"
+           )
+           if record.get("source_sha") != expected_sha:
+               raise SystemExit(
+-                  "explicit handoff/modeset status source mismatch: "
++                  "explicit handoff/atomic status source mismatch: "
+                   f"{record.get('source_sha')} != {expected_sha}"
+               )
+           if record.get("classification") != expected_classification:
+               raise SystemExit(
+-                  "explicit handoff/modeset frontier is not clear: "
++                  "explicit handoff/atomic frontier is not clear: "
+                   f"{record.get('classification')}"
+               )
+           if record.get("passed") is not True:
+-              raise SystemExit("explicit handoff/modeset status did not pass")
++              raise SystemExit("explicit handoff/atomic status did not pass")
+           required = (
+               "card_opened_before_drop",
+               "set_master_busy_proved",
+@@ -421,6 +449,19 @@ jobs:
+               "pageflip_queued",
+               "flip_event_ok",
+               "current_fb_ok",
++              "atomic_caps_ok",
++              "atomic_primary_plane_ok",
++              "atomic_crtc_active_ok",
++              "atomic_dumb_ok",
++              "atomic_map_ok",
++              "atomic_fb_ok",
++              "atomic_test_only_ok",
++              "atomic_ioctl_started",
++              "atomic_queued",
++              "atomic_event_ok",
++              "atomic_current_fb_ok",
++              "atomic_visual_ready",
++              "atomic_ok",
+               "visual_pixels_ok",
+               "child_master_dropped",
+               "original_master_restored",
+@@ -431,13 +472,13 @@ jobs:
+           missing = [name for name in required if record.get(name) is not True]
+           if missing:
+               raise SystemExit(
+-                  "explicit handoff/modeset evidence missing: "
++                  "explicit handoff/atomic evidence missing: "
+                   + ", ".join(missing)
+               )
+-          if record.get("schema_version") != 3:
++          if record.get("schema_version") != 4:
+               raise SystemExit(
+-                  "unexpected handoff/modeset status schema: "
++                  "unexpected handoff/atomic status schema: "
+                   f"{record.get('schema_version')}"
+               )
+-          print("VC4 explicit DRM-master handoff/modeset/page flip: PASS")
++          print("VC4 explicit master handoff/atomic primary plane: PASS")
+           PY
+diff --git a/scripts/vc4/enable-linux-kms-master-reacquire-probe.py b/scripts/vc4/enable-linux-kms-master-reacquire-probe.py
+index ddf4d32..b9f9edd 100755
+--- a/scripts/vc4/enable-linux-kms-master-reacquire-probe.py
++++ b/scripts/vc4/enable-linux-kms-master-reacquire-probe.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Enable the explicit VC4 DRM-master handoff, modeset, and page-flip witness."""
++"""Enable explicit VC4 DRM-master handoff and atomic-primary witness."""
+ 
+ from __future__ import annotations
+ 
+@@ -35,7 +35,20 @@ MARKERS = (
+     "VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED",
+     "VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK",
+     "VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY",
+     "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK",
+     "VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED",
+     "VC4_LINUX_KMS_MASTER_REACQUIRE_OK",
+     "VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_RESTORED",
+@@ -115,7 +128,7 @@ def main() -> int:
+     patch_source(args.source)
+     print(
+         "Enabled explicit VC4 DRM-master handoff, independent modeset, "
+-        f"and page-flip witness in {args.source}"
++        f"legacy page flip, and atomic primary-plane witness in {args.source}"
+     )
+     return 0
+ 
+diff --git a/scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py b/scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+index 478851a..bae31ff 100755
+--- a/scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
++++ b/scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env python3
+-"""Exercise durable VC4 explicit-master handoff/modeset classifications."""
++"""Exercise explicit VC4 master-handoff and atomic-primary classifications."""
+ 
+ from __future__ import annotations
+ 
+@@ -64,6 +64,32 @@ MISSING_CLASSIFICATIONS = {
+         "vc4-kms-master-handoff-event-incomplete",
+     "VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK":
+         "vc4-kms-master-handoff-current-fb-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK":
++        "vc4-kms-master-handoff-atomic-caps-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK":
++        "vc4-kms-master-handoff-atomic-primary-plane-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK":
++        "vc4-kms-master-handoff-atomic-crtc-active-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK":
++        "vc4-kms-master-handoff-atomic-dumb-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK":
++        "vc4-kms-master-handoff-atomic-map-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK":
++        "vc4-kms-master-handoff-atomic-fb-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK":
++        "vc4-kms-master-handoff-atomic-test-only-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START":
++        "vc4-kms-master-handoff-atomic-ioctl-not-started",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED":
++        "vc4-kms-master-handoff-atomic-not-queued",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK":
++        "vc4-kms-master-handoff-atomic-event-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK":
++        "vc4-kms-master-handoff-atomic-current-fb-incomplete",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY":
++        "vc4-kms-master-handoff-atomic-visual-not-ready",
++    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK":
++        "vc4-kms-master-handoff-atomic-incomplete",
