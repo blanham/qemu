@@ -505,6 +505,16 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
             resplen = 4;
             break;
         }
+        case RPI_FWREQ_FRAMEBUFFER_GET_GPIOVIRTBUF:
+            stl_le_phys(&s->dma_as, value + 12, s->gpio_virtbuf);
+            resplen = sizeof(s->gpio_virtbuf);
+            break;
+        case RPI_FWREQ_FRAMEBUFFER_SET_GPIOVIRTBUF:
+            s->gpio_virtbuf = ldl_le_phys(&s->dma_as, value + 12);
+            /* The firmware returns zero in the request word on success. */
+            stl_le_phys(&s->dma_as, value + 12, 0);
+            resplen = sizeof(s->gpio_virtbuf);
+            break;
         case RPI_FWREQ_FRAMEBUFFER_GET_NUM_DISPLAYS:
             stl_le_phys(&s->dma_as, value + 12, 1);
             resplen = 4;
@@ -712,7 +722,7 @@ static const MemoryRegionOps bcm2835_property_ops = {
 
 static const VMStateDescription vmstate_bcm2835_property = {
     .name = TYPE_BCM2835_PROPERTY,
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_MACADDR(macaddr, BCM2835PropertyState),
@@ -724,6 +734,7 @@ static const VMStateDescription vmstate_bcm2835_property = {
         VMSTATE_UINT32_V(exp_gpio_term_en, BCM2835PropertyState, 3),
         VMSTATE_UINT32_V(exp_gpio_term_pull_up, BCM2835PropertyState, 3),
         VMSTATE_UINT32_V(exp_gpio_state, BCM2835PropertyState, 3),
+        VMSTATE_UINT32_V(gpio_virtbuf, BCM2835PropertyState, 4),
         VMSTATE_BOOL(pending, BCM2835PropertyState),
         VMSTATE_END_OF_LIST()
     }
@@ -758,6 +769,7 @@ static void bcm2835_property_reset(DeviceState *dev)
     s->exp_gpio_term_en = 0;
     s->exp_gpio_term_pull_up = 0;
     s->exp_gpio_state = BCM2835_PROPERTY_EXP_GPIO_RESET_STATE;
+    s->gpio_virtbuf = 0;
 }
 
 static void bcm2835_property_realize(DeviceState *dev, Error **errp)
