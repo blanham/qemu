@@ -5,6 +5,7 @@ on:
     branches:
       - wd40/qol-integration
       - wd40/qol-transform-composition-fix
+      - wd40/qol-output-capture-integration
   workflow_dispatch:
 
 permissions:
@@ -63,6 +64,8 @@ jobs:
             python3 scripts/wd40/apply-structured-log-control.py
             python3 scripts/wd40/apply-structured-log-control-hardening.py
             python3 scripts/wd40/apply-split-irq-exception-logs.py
+            python3 scripts/wd40/apply-monitor-output-capture.py
+            python3 scripts/wd40/apply-monitor-output-capture-hardening.py
           }
 
           apply_contract
@@ -84,6 +87,7 @@ jobs:
           python3 scripts/ci/check-wd40-transform-composability.py
           python3 scripts/ci/check-wd40-structured-log-control.py
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
+          python3 scripts/ci/check-wd40-monitor-output-capture.py
           git diff --check
 
       - name: Install C and probe build dependencies
@@ -230,6 +234,12 @@ jobs:
             build-qol-integration
           python3 scripts/ci/check-wd40-hmp-schema-composability.py
 
+      - name: Exercise QMP and HMP output capture
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-monitor-output-capture.py \
+            build-qol-integration
+
       - name: Publish the validated integration history
         if: github.ref_name == 'wd40/qol-integration'
         run: |
@@ -244,6 +254,7 @@ jobs:
           python3 scripts/ci/check-wd40-transform-composability.py
           python3 scripts/ci/check-wd40-structured-log-control.py
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
+          python3 scripts/ci/check-wd40-monitor-output-capture.py
           git diff --check
           git status --short
           test -z "$(git status --porcelain)"
