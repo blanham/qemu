@@ -16,9 +16,12 @@ jobs:
 
       - name: Apply exact source and qtest edits
         run: |
-          python3 .github/rage128-texture0-patch-bootstrap.py
-          python3 .github/rage128-texture0-source-patch.py
-          python3 .github/rage128-texture0-test-patch.py
+          if ! grep -q 'typedef struct ATI3DTexture' hw/display/ati_3d.c; then
+            python3 .github/rage128-texture0-patch-bootstrap.py
+            python3 .github/rage128-texture0-source-patch.py
+            python3 .github/rage128-texture0-test-patch.py
+          fi
+          python3 .github/rage128-texture0-refine-patch.py
           git diff --check
 
       - name: Install build dependencies
@@ -68,6 +71,6 @@ jobs:
               hw/display/ati_3d.c \
               tests/qtest/ati-rage128-pm4-test.c
             git commit -m \
-              'hw/display/ati: add Rage 128 texture0 reference sampling'
+              'hw/display/ati: harden and cover texture0 sampling'
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
