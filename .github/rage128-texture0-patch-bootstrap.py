@@ -74,9 +74,12 @@ replacement = '''    if (tex_control & (ATI_3D_SEC_TEXMAP_ENABLE |
     }
 '''
 if replacement not in text:
-    if text.count(start_marker) != 1 or text.count(end_marker) != 1:
-        raise SystemExit("texture-enable markers are not unique")
+    if text.count(start_marker) != 1:
+        raise SystemExit("texture-enable start marker is not unique")
     start = text.index(start_marker)
-    end = text.index(end_marker, start)
+    try:
+        end = text.index(end_marker, start)
+    except ValueError as exc:
+        raise SystemExit("texture-enable end marker was not found") from exc
     source.write_text(text[:start] + replacement + text[end:],
                       encoding="utf-8")
