@@ -1,0 +1,147 @@
+name: VC4 continuation materializer 4091
+
+on:
+  push:
+    branches:
+      - agent/vc4-continuation-materialize-4091
+    paths:
+      - .github/workflows/vc4-continuation-materialize-4091.yml
+      - .github/vc4-materialize-4091/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-continuation-materialize-4091
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PRODUCT_BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      BASE_SHA: 4091f35aa25ed4c784459497e750ccd6a9a17ecb
+      PAYLOAD_SHA256: e19eaf1cc980b37f75040361e29c50e7ee09b78f23f3bac9e73cc2852a363e13
+      PAYLOAD_DIR: /tmp/vc4-continuation-materialize-4091
+
+    steps:
+      - name: Check out the materializer
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and verify the reviewed payload
+        run: |
+          set -euo pipefail
+          rm -rf "$PAYLOAD_DIR"
+          mkdir -p "$PAYLOAD_DIR"
+          cat .github/vc4-materialize-4091/payload.b64.* \
+            | base64 --decode > "$PAYLOAD_DIR/payload.zip"
+          printf '%s  %s\n' "$PAYLOAD_SHA256" "$PAYLOAD_DIR/payload.zip" \
+            | sha256sum --check --strict
+          unzip -q "$PAYLOAD_DIR/payload.zip" -d "$PAYLOAD_DIR/unpacked"
+          test -s "$PAYLOAD_DIR/unpacked/atomic.patch"
+          test -s "$PAYLOAD_DIR/unpacked/reflection_apply.py"
+          test -s "$PAYLOAD_DIR/unpacked/reflection-base-blobs"
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            git libglib2.0-dev libpixman-1-dev ninja-build pkg-config \
+            python3 python3-yaml unzip zlib1g-dev
+
+      - name: Materialize the two reviewed product commits
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 Development"
+          git config user.email "vc4-dev@users.noreply.github.com"
+          git fetch origin "$PRODUCT_BRANCH"
+          git switch -C vc4-product "origin/$PRODUCT_BRANCH"
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          test -z "$(git status --porcelain)"
+
+          git am "$PAYLOAD_DIR/unpacked/atomic.patch"
+          test "$(git log -1 --format=%s)" = \
+            "test/vc4: prove full atomic modeset"
+          python3 -m py_compile \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path('.github/workflows/vc4-kms-master-reacquire-probe.yml')
+          yaml.safe_load(path.read_text(encoding='utf-8'))
+          print('VC4 full atomic-modeset workflow YAML: PASS')
+          PY
+          git diff --check "$BASE_SHA"..HEAD
+
+          while read -r expected path; do
+            test -n "$expected"
+            test -n "$path"
+            actual=$(git hash-object -- "$path")
+            if [ "$actual" != "$expected" ]; then
+              printf 'reflection base mismatch: %s: %s != %s\n' \
+                "$path" "$actual" "$expected" >&2
+              exit 1
+            fi
+          done < "$PAYLOAD_DIR/unpacked/reflection-base-blobs"
+
+          python3 "$PAYLOAD_DIR/unpacked/reflection_apply.py" --root "$PWD"
+          python3 -m py_compile scripts/vc4/hvs-dlist-smoke.py
+          grep -Fq BCM2835_FB_TRANSFORM_HFLIP \
+            include/hw/display/bcm2835_fb.h
+          grep -Fq 'VMSTATE_UINT32_V(config.transform' \
+            hw/display/bcm2835_fb.c
+          grep -Fq 'config->transform = transform;' \
+            hw/display/bcm2835_hvs.c
+          grep -Fq 'fbconfig.transform = 0;' \
+            hw/misc/bcm2835_property.c
+          grep -Fq 'def exercise_reflected_scanout(' \
+            scripts/vc4/hvs-dlist-smoke.py
+          git diff --check
+
+          git add -- \
+            include/hw/display/bcm2835_fb.h \
+            hw/display/bcm2835_fb.c \
+            hw/display/bcm2835_hvs.c \
+            hw/misc/bcm2835_property.c \
+            scripts/vc4/hvs-dlist-smoke.py
+          git commit -m "hw/display: support reflected VC4 HVS scanout"
+          test "$(git rev-list --count "$BASE_SHA"..HEAD)" = 2
+          test -z "$(git status --porcelain)"
+
+      - name: Build QEMU and run focused display regressions
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish directly with an exact-base lease
+        run: |
+          set -euo pipefail
+          git fetch origin "$PRODUCT_BRANCH"
+          remote_sha=$(git rev-parse "origin/$PRODUCT_BRANCH")
+          if [ "$remote_sha" != "$BASE_SHA" ]; then
+            printf 'product branch advanced: %s != %s\n' \
+              "$remote_sha" "$BASE_SHA" >&2
+            exit 1
+          fi
+          git push origin "HEAD:$PRODUCT_BRANCH"
+          {
+            echo '## VC4 continuation published'
+            echo
+            echo "- Base: \`$BASE_SHA\`"
+            echo "- Atomic modeset: \`$(git rev-parse HEAD~1)\`"
+            echo "- HVS reflection: \`$(git rev-parse HEAD)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
