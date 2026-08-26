@@ -1,0 +1,171 @@
+             (uint32_t *)((uint8_t *)mapping + (size_t)y * pitch);
+ 
++        for (uint32_t x = 0; x < width; x++) {
++            uint32_t checker = ((x / 28) ^ (y / 20)) & 1;
++            uint32_t red = checker ? 0x32 : 0xd8;
++            uint32_t green = width > 1 ?
++                             255 - x * 255 / (width - 1) : 0xff;
++            uint32_t blue = height > 1 ?
++                            255 - y * 255 / (height - 1) : 0xff;
++
++            row[x] = (red << 16) | (green << 8) | blue;
++        }
++    }
++}
++
++static void vc4_master_reacquire_fill_atomic_pattern(
++    void *mapping, uint32_t pitch, uint32_t width, uint32_t height)
++{
++    for (uint32_t y = 0; y < height; y++) {
++        uint32_t *row =
++            (uint32_t *)((uint8_t *)mapping + (size_t)y * pitch);
++
+         for (uint32_t x = 0; x < width; x++) {
+             uint32_t checker = ((x / 40) ^ (y / 24)) & 1;
+             uint32_t red = width > 1 ?
+@@ -271,15 +304,64 @@ static int vc4_master_reacquire_create_buffer(
+     struct vc4_master_reacquire_buffer *buffer)
+ {
+     struct drm_mode_map_dumb map = { 0 };
+-    const bool modeset = kind == VC4_MASTER_REACQUIRE_MODESET_BUFFER;
+-    const char *create_stage = modeset ?
+-        "create-independent-modeset-dumb" : "create-pageflip-dumb";
+-    const char *map_stage = modeset ?
+-        "map-independent-modeset-dumb" : "map-pageflip-dumb";
+-    const char *mmap_stage = modeset ?
+-        "mmap-independent-modeset-dumb" : "mmap-pageflip-dumb";
+-    const char *addfb_stage = modeset ?
+-        "addfb2-independent-modeset" : "addfb2-pageflip";
++    const char *create_stage;
++    const char *map_stage;
++    const char *mmap_stage;
++    const char *addfb_stage;
++    const char *invalid_dumb_stage;
++    const char *invalid_fb_stage;
++    const char *dumb_marker;
++    const char *map_marker;
++    const char *fb_marker;
++    const char *label;
++
++    switch (kind) {
++    case VC4_MASTER_REACQUIRE_MODESET_BUFFER:
++        create_stage = "create-independent-modeset-dumb";
++        map_stage = "map-independent-modeset-dumb";
++        mmap_stage = "mmap-independent-modeset-dumb";
++        addfb_stage = "addfb2-independent-modeset";
++        invalid_dumb_stage = "independent-modeset-dumb-invalid";
++        invalid_fb_stage = "independent-modeset-fb-invalid";
++        dumb_marker =
++            "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK\n";
++        map_marker =
++            "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MAP_OK\n";
++        fb_marker =
++            "VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK\n";
++        label = "MODESET";
++        break;
++    case VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER:
++        create_stage = "create-pageflip-dumb";
++        map_stage = "map-pageflip-dumb";
++        mmap_stage = "mmap-pageflip-dumb";
++        addfb_stage = "addfb2-pageflip";
++        invalid_dumb_stage = "pageflip-dumb-invalid";
++        invalid_fb_stage = "pageflip-fb-invalid";
++        dumb_marker = "VC4_LINUX_KMS_MASTER_REACQUIRE_DUMB_OK\n";
++        map_marker = "VC4_LINUX_KMS_MASTER_REACQUIRE_MAP_OK\n";
++        fb_marker = "VC4_LINUX_KMS_MASTER_REACQUIRE_FB_OK\n";
++        label = "PAGEFLIP";
++        break;
++    case VC4_MASTER_REACQUIRE_ATOMIC_BUFFER:
++        create_stage = "create-atomic-dumb";
++        map_stage = "map-atomic-dumb";
++        mmap_stage = "mmap-atomic-dumb";
++        addfb_stage = "addfb2-atomic";
++        invalid_dumb_stage = "atomic-dumb-invalid";
++        invalid_fb_stage = "atomic-fb-invalid";
++        dumb_marker =
++            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK\n";
++        map_marker =
++            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK\n";
++        fb_marker =
++            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK\n";
++        label = "ATOMIC";
++        break;
++    default:
++        errno = EINVAL;
++        return vc4_master_reacquire_fail("invalid-buffer-kind");
++    }
+ 
+     if (buffer == NULL || width == 0 || height == 0) {
+         errno = EINVAL;
+@@ -298,23 +380,13 @@ static int vc4_master_reacquire_create_buffer(
+     if (buffer->create.handle == 0 || buffer->create.pitch == 0 ||
+         buffer->create.size == 0) {
+         errno = EIO;
+-        return vc4_master_reacquire_fail(
+-            modeset ? "independent-modeset-dumb-invalid" :
+-                      "pageflip-dumb-invalid");
+-    }
+-    if (modeset) {
+-        report("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK "
+-               "handle=%u pitch=%u size=%llu\n",
+-               buffer->create.handle, buffer->create.pitch,
+-               (unsigned long long)buffer->create.size);
+-        marker("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK\n");
+-    } else {
+-        report("VC4_LINUX_KMS_MASTER_REACQUIRE_DUMB_OK "
+-               "handle=%u pitch=%u size=%llu\n",
+-               buffer->create.handle, buffer->create.pitch,
+-               (unsigned long long)buffer->create.size);
+-        marker("VC4_LINUX_KMS_MASTER_REACQUIRE_DUMB_OK\n");
++        return vc4_master_reacquire_fail(invalid_dumb_stage);
+     }
++    report("VC4_LINUX_KMS_MASTER_REACQUIRE_%s_DUMB "
++           "handle=%u pitch=%u size=%llu\n",
++           label, buffer->create.handle, buffer->create.pitch,
++           (unsigned long long)buffer->create.size);
++    marker(dumb_marker);
+ 
+     map.handle = buffer->create.handle;
+     if (vc4_master_reacquire_ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map,
+@@ -327,16 +399,24 @@ static int vc4_master_reacquire_create_buffer(
+     if (buffer->mapping == MAP_FAILED) {
+         return vc4_master_reacquire_fail(mmap_stage);
+     }
+-    if (modeset) {
++    switch (kind) {
++    case VC4_MASTER_REACQUIRE_MODESET_BUFFER:
+         vc4_master_reacquire_fill_modeset_pattern(
+             buffer->mapping, buffer->create.pitch, width, height);
+-        marker("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MAP_OK\n");
+-    } else {
++        break;
++    case VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER:
+         vc4_master_reacquire_fill_pageflip_pattern(
+             buffer->mapping, buffer->create.pitch, width, height);
+-        marker("VC4_LINUX_KMS_MASTER_REACQUIRE_MAP_OK\n");
++        break;
++    case VC4_MASTER_REACQUIRE_ATOMIC_BUFFER:
++        vc4_master_reacquire_fill_atomic_pattern(
++            buffer->mapping, buffer->create.pitch, width, height);
++        break;
++    default:
++        abort();
+     }
+     __sync_synchronize();
++    marker(map_marker);
+ 
+     buffer->framebuffer.width = width;
+     buffer->framebuffer.height = height;
+@@ -350,19 +430,11 @@ static int vc4_master_reacquire_create_buffer(
+     }
+     if (buffer->framebuffer.fb_id == 0) {
+         errno = EIO;
+-        return vc4_master_reacquire_fail(
+-            modeset ? "independent-modeset-fb-invalid" :
+-                      "pageflip-fb-invalid");
+-    }
+-    if (modeset) {
+-        report("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK "
+-               "fb=%u\n", buffer->framebuffer.fb_id);
+-        marker("VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK\n");
+-    } else {
