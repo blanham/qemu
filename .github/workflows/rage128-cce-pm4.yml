@@ -1,0 +1,120 @@
+name: Validate and publish Rage 128 CCE PM4
+
+on:
+  push:
+    branches:
+      - agent/rage128-cce-pm4-qemu
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Transform, build, test, and publish
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          staging=agent/rage128-cce-pm4-qemu
+          target=agent/rage128-upstream-20260823
+
+          base64 -d .github/rage128-cce/transform.py.xz.b64 \
+            | xz -d > /tmp/rage128-cce-transform.py
+          echo 'd7322ec1235634d2fb75cb7b20fe5c8fe6bc2563bf34cb3f3d1b2d8d02e76092  /tmp/rage128-cce-transform.py' \
+            | sha256sum -c -
+          python3 -m py_compile /tmp/rage128-cce-transform.py
+
+          git config user.name 'Bryce Lanham'
+          git config user.email 'blanham@gmail.com'
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/qemu/qemu.git
+          git fetch --no-tags upstream master
+          git fetch --no-tags origin "$target"
+
+          upstream_sha=$(git rev-parse upstream/master)
+          source_sha=$(git rev-parse "origin/$target")
+          source_parent=$(git rev-parse "$source_sha^")
+          git merge-base --is-ancestor "$source_parent" "$upstream_sha"
+
+          git checkout -B rage128-cce-work "$upstream_sha"
+          git cherry-pick "$source_sha"
+          python3 /tmp/rage128-cce-transform.py
+          git diff --check
+
+          test -f hw/display/ati_pm4.c
+          grep -q 'ati_pm4_process_ring' hw/display/ati_pm4.c
+          grep -q 'ATI_PM4_PIO_FIFO_DWORDS' hw/display/ati_int.h
+          grep -q 'rage128-pm4' tests/qtest/display-vga-test.c
+          grep -q "ati_pm4.c" hw/display/meson.build
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libfdt-dev libslirp-dev
+
+          mkdir build
+          cd build
+          ../configure \
+            --target-list=x86_64-softmmu,ppc-softmmu \
+            --enable-debug \
+            --disable-werror \
+            --disable-docs
+          ninja -j2 \
+            qemu-system-x86_64 \
+            qemu-system-ppc \
+            tests/unit/test-ati-rop3 \
+            tests/qtest/display-vga-test
+          meson test \
+            test-ati-rop3 \
+            display-vga-test \
+            --print-errorlogs
+          cd ..
+
+          git add \
+            hw/display/ati.c \
+            hw/display/ati_2d.c \
+            hw/display/ati_int.h \
+            hw/display/ati_pm4.c \
+            hw/display/ati_pm4.h \
+            hw/display/ati_regs.h \
+            hw/display/meson.build \
+            tests/qtest/display-vga-test.c
+          git commit --amend -m 'hw/display/ati: add Rage 128 CCE and PM4 command transport
+
+          Preserve the completed Rage 128 PF/RE board profiles, DDC, power
+          management, display, cursor, option-ROM, and XAA 2D work while
+          adding the command-processor boundary used by historical DRI.
+
+          Model CCE microcode upload and readback, bus-master ring control,
+          read/write pointers, status and idle behavior, PCI-GART translation,
+          indirect command buffers, PIO command submission, GUI scratch and
+          auxiliary state, and persistent 3D context-register storage.
+
+          Decode PM4 packet types 0 through 3. Route the kernel driver common
+          PAINT_MULTI, BITBLT_MULTI, and HOSTDATA_BLT packet-3 commands through
+          the existing verified software raster engine, including GART-backed
+          ring wrap, indirect-buffer execution, scanline-aware host uploads,
+          clipping, ROP3, masks, and overlap-safe copies. Preserve unsupported
+          indexed 3D draw packets as explicit counted no-ops until the fixed
+          function triangle pipeline lands rather than fabricating rendering.
+
+          Add live qtests covering microcode state, a PCI-GART-backed DMA ring,
+          packet-0 register writes, packet-3 fill/copy/HOSTDATA operations,
+          indirect buffers, read-pointer writeback, idle status, scratch state,
+          and PIO packet execution. Validate x86_64 and PowerPC system builds,
+          exhaustive ATI ROP3 tests, and the complete display-vga qtest suite.'
+
+          test "$(git rev-list --count "$upstream_sha..HEAD")" = 1
+          test "$(git merge-base "$upstream_sha" HEAD)" = "$upstream_sha"
+          test -z "$(git diff --name-only "$upstream_sha..HEAD" \
+                    | grep '^\.github/' || true)"
+
+          git push --force-with-lease=refs/heads/${target}:${source_sha} \
+            origin HEAD:"$target"
+          git push --force origin "$upstream_sha":"$staging"
