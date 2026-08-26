@@ -1,0 +1,147 @@
+name: Publish VC4 independent-master product files
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-kms-independent-modeset-publish-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-kms-independent-modeset-publish-v2
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      WORKFLOW_NEXT: VC4_KMS_MASTER_REACQUIRE_WORKFLOW_NEXT.yml
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-linux-kms-bind-diagnostics
+          fetch-depth: 0
+
+      - name: Capture the branch lease
+        run: |
+          set -euo pipefail
+          printf 'LEASE_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Apply the already validated product transform
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          import re
+          import zlib
+
+          staging = Path(
+              ".github/workflows/vc4-kms-independent-modeset-publish.yml"
+          ).read_text(encoding="utf-8")
+          match = re.search(
+              r'^\s*payload = "([A-Za-z0-9+/=]+)"\s*$',
+              staging,
+              re.MULTILINE,
+          )
+          if match is None:
+              raise SystemExit("validated independent-modeset payload not found")
+          source = zlib.decompress(base64.b64decode(match.group(1))).decode()
+          exec(compile(source, "<vc4-independent-modeset-patch>", "exec"))
+          PY
+
+      - name: Revalidate contracts and the complete AArch64 initramfs
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu libdrm-dev \
+            libc6-dev-arm64-cross linux-libc-dev-arm64-cross python3
+
+          python3 -m py_compile \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 scripts/vc4/enable-linux-kms-master-reacquire-probe.py
+
+          aarch64-linux-gnu-gcc \
+            -static -O2 -g0 -Wall -Wextra -Werror -fno-ident \
+            -I/usr/include/libdrm -Wl,--build-id=none \
+            -o /tmp/vc4-independent-master-init \
+            tests/vc4/linux-v3d-modular-init.c
+          strings /tmp/vc4-independent-master-init \
+            > /tmp/vc4-independent-master-init.strings
+          for marker in \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MAP_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_START \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK; do
+            grep -Fq "$marker" /tmp/vc4-independent-master-init.strings
+          done
+
+      - name: Export the protected workflow and publish ordinary files
+        run: |
+          set -euo pipefail
+          cp .github/workflows/vc4-kms-master-reacquire-probe.yml \
+            "$WORKFLOW_NEXT"
+          git restore --worktree --staged \
+            .github/workflows/vc4-kms-master-reacquire-probe.yml \
+            tests/vc4/linux-v3d-modular-init.c
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          expected = {
+              "VC4_KMS_MASTER_REACQUIRE_WORKFLOW_NEXT.yml",
+              "scripts/vc4/enable-linux-kms-master-reacquire-probe.py",
+              "scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py",
+              "scripts/vc4/summarize-linux-kms-master-reacquire.py",
+              "tests/vc4/linux-kms-master-reacquire-probe.inc.c",
+          }
+          changed = set(
+              subprocess.check_output(
+                  ["git", "status", "--short"],
+                  text=True,
+              ).splitlines()
+          )
+          changed = {line[3:] for line in changed if len(line) >= 4}
+          if changed != expected:
+              raise SystemExit(
+                  f"unexpected publication set: {sorted(changed)!r}; "
+                  f"expected {sorted(expected)!r}"
+              )
+          for path in expected:
+              if not Path(path).is_file():
+                  raise SystemExit(f"missing publication file: {path}")
+          print("VC4 independent-master ordinary publication set: PASS")
+          PY
+
+          git config user.name "VC4 Development"
+          git config user.email "vc4-dev@users.noreply.github.com"
+          git add -- \
+            "$WORKFLOW_NEXT" \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          git commit \
+            -m "test/vc4: stage independent-master modeset product [skip ci]" \
+            -m "Publish the validated C witness and durable classification changes without modifying protected workflow paths. The connected GitHub writer installs the exported permanent workflow as the final publication step."
+          git push \
+            --force-with-lease="refs/heads/${BRANCH}:${LEASE_SHA}" \
+            origin "HEAD:refs/heads/${BRANCH}"
