@@ -77,6 +77,12 @@ def validate_static() -> None:
     )
 
 
+def describe_bytes(data: bytes, limit: int = 160) -> str:
+    preview = data[:limit]
+    suffix = "" if len(data) <= limit else "..."
+    return f"len={len(data)} data={preview!r}{suffix}"
+
+
 def run_qmp(binary: Path, workdir: Path, messages: list[dict]) -> dict[str, dict]:
     command = [
         str(binary),
@@ -123,6 +129,42 @@ def run_qmp(binary: Path, workdir: Path, messages: list[dict]) -> dict[str, dict
     return replies
 
 
+def qmp_session(binary: Path, workdir: Path, *requests: dict) -> dict[str, dict]:
+    return run_qmp(
+        binary,
+        workdir,
+        [
+            {"execute": "qmp_capabilities", "id": "cap"},
+            *requests,
+            {"execute": "quit", "id": "quit"},
+        ],
+    )
+
+
+def capture_result(
+    replies: dict[str, dict], identifier: str, *, expect_text: bool
+) -> tuple[dict, bytes | None]:
+    result = replies[identifier].get("return")
+    if not isinstance(result, dict):
+        raise SystemExit(f"{identifier}: malformed result: {replies[identifier]!r}")
+
+    text = result.get("text")
+    if expect_text:
+        if not isinstance(text, str):
+            raise SystemExit(f"{identifier}: missing returned text: {result!r}")
+        text_bytes: bytes | None = text.encode("utf-8")
+        if result.get("bytes") != len(text_bytes):
+            raise SystemExit(f"{identifier}: byte count mismatch: {result!r}")
+    else:
+        if "text" in result:
+            raise SystemExit(f"{identifier}: return-text=false was ignored: {result!r}")
+        text_bytes = None
+        if not isinstance(result.get("bytes"), int) or result["bytes"] < 0:
+            raise SystemExit(f"{identifier}: invalid byte count: {result!r}")
+
+    return result, text_bytes
+
+
 def expect_error(replies: dict[str, dict], identifier: str, fragment: str) -> None:
     reply = replies[identifier]
     error = reply.get("error")
@@ -134,15 +176,15 @@ def expect_error(replies: dict[str, dict], identifier: str, fragment: str) -> No
 
 def validate_qmp(binary: Path, workdir: Path) -> None:
     capture_path = workdir / "qmp-capture.txt"
+    no_text_path = workdir / "qmp-no-text.txt"
     nested_path = workdir / "nested.txt"
 
-    # Prove that the first operation replaces rather than appends: after the
-    # following replace+append batch, the file must contain exactly two fresh
-    # captures and none of this sentinel content.
+    # Validate replacement before issuing another command so the test compares
+    # the file against the exact response that produced it.
     capture_path.write_bytes(b"stale-output\n")
-
-    messages = [
-        {"execute": "qmp_capabilities", "id": "cap"},
+    replies = qmp_session(
+        binary,
+        workdir,
         {
             "execute": "x-wd40-capture-hmp",
             "arguments": {
@@ -151,6 +193,52 @@ def validate_qmp(binary: Path, workdir: Path) -> None:
             },
             "id": "replace",
         },
+    )
+    first, first_bytes = capture_result(replies, "replace", expect_text=True)
+    assert first_bytes is not None
+    if first.get("path") != str(capture_path) or first.get("append") is not False:
+        raise SystemExit(f"replace: path/append mismatch: {first!r}")
+    actual = capture_path.read_bytes()
+    if actual != first_bytes:
+        raise SystemExit(
+            "replace: file bytes do not match returned text; "
+            f"file={describe_bytes(actual)}; "
+            f"returned={describe_bytes(first_bytes)}"
+        )
+
+    # Return the second capture as well, avoiding any assumption that repeated
+    # monitor commands must happen to produce byte-identical output.
+    replies = qmp_session(
+        binary,
+        workdir,
+        {
+            "execute": "x-wd40-capture-hmp",
+            "arguments": {
+                "command-line": "info version",
+                "path": str(capture_path),
+                "append": True,
+            },
+            "id": "append",
+        },
+    )
+    second, second_bytes = capture_result(replies, "append", expect_text=True)
+    assert second_bytes is not None
+    if second.get("path") != str(capture_path) or second.get("append") is not True:
+        raise SystemExit(f"append: path/append mismatch: {second!r}")
+    expected = first_bytes + second_bytes
+    actual = capture_path.read_bytes()
+    if actual != expected:
+        raise SystemExit(
+            "append: file bytes do not equal the two returned captures; "
+            f"file={describe_bytes(actual)}; "
+            f"expected={describe_bytes(expected)}"
+        )
+
+    # With returned text disabled, prove append preserved the existing prefix
+    # and extended the file by exactly the API-reported byte count.
+    replies = qmp_session(
+        binary,
+        workdir,
         {
             "execute": "x-wd40-capture-hmp",
             "arguments": {
@@ -159,8 +247,50 @@ def validate_qmp(binary: Path, workdir: Path) -> None:
                 "append": True,
                 "return-text": False,
             },
-            "id": "append",
+            "id": "append-no-text",
         },
+    )
+    third, _ = capture_result(replies, "append-no-text", expect_text=False)
+    if third.get("path") != str(capture_path) or third.get("append") is not True:
+        raise SystemExit(f"append-no-text: path/append mismatch: {third!r}")
+    actual = capture_path.read_bytes()
+    if not actual.startswith(expected) or len(actual) != len(expected) + third["bytes"]:
+        raise SystemExit(
+            "append-no-text: existing bytes were not preserved or the file "
+            "growth disagrees with the result; "
+            f"before={describe_bytes(expected)}; "
+            f"after={describe_bytes(actual)}; result={third!r}"
+        )
+
+    # Also exercise replacement where the file, rather than the QMP response,
+    # is the sole output destination.
+    no_text_path.write_bytes(b"stale-no-text\n")
+    replies = qmp_session(
+        binary,
+        workdir,
+        {
+            "execute": "x-wd40-capture-hmp",
+            "arguments": {
+                "command-line": "info version",
+                "path": str(no_text_path),
+                "return-text": False,
+            },
+            "id": "replace-no-text",
+        },
+    )
+    no_text, _ = capture_result(replies, "replace-no-text", expect_text=False)
+    no_text_data = no_text_path.read_bytes()
+    if no_text.get("path") != str(no_text_path) or no_text.get("append") is not False:
+        raise SystemExit(f"replace-no-text: path/append mismatch: {no_text!r}")
+    if len(no_text_data) != no_text["bytes"] or no_text_data.startswith(b"stale-"):
+        raise SystemExit(
+            "replace-no-text: replacement or byte count failed; "
+            f"file={describe_bytes(no_text_data)}; result={no_text!r}"
+        )
+
+    replies = qmp_session(
+        binary,
+        workdir,
         {
             "execute": "x-wd40-capture-hmp",
             "arguments": {"command-line": "info version"},
@@ -191,38 +321,13 @@ def validate_qmp(binary: Path, workdir: Path) -> None:
             },
             "id": "nested",
         },
-        {"execute": "quit", "id": "quit"},
-    ]
-    replies = run_qmp(binary, workdir, messages)
-
-    first = replies["replace"].get("return")
-    if not isinstance(first, dict) or not isinstance(first.get("text"), str):
-        raise SystemExit(f"replace: malformed result: {replies['replace']!r}")
-    first_bytes = first["text"].encode("utf-8")
-    if first.get("bytes") != len(first_bytes):
-        raise SystemExit(f"replace: byte count mismatch: {first!r}")
-    if first.get("path") != str(capture_path) or first.get("append") is not False:
-        raise SystemExit(f"replace: path/append mismatch: {first!r}")
-
-    second = replies["append"].get("return")
-    if not isinstance(second, dict) or "text" in second:
-        raise SystemExit(f"append: return-text=false was ignored: {second!r}")
-    if second.get("bytes") != len(first_bytes):
-        raise SystemExit(f"append: byte count mismatch: {second!r}")
-    if second.get("path") != str(capture_path) or second.get("append") is not True:
-        raise SystemExit(f"append: path/append mismatch: {second!r}")
-    if capture_path.read_bytes() != first_bytes + first_bytes:
-        raise SystemExit(
-            "replace/append: file does not contain exactly two fresh captures"
-        )
-
-    memory = replies["response-only"].get("return")
-    if not isinstance(memory, dict) or not isinstance(memory.get("text"), str):
-        raise SystemExit(f"response-only: malformed result: {memory!r}")
+    )
+    memory, memory_bytes = capture_result(
+        replies, "response-only", expect_text=True
+    )
+    assert memory_bytes is not None
     if "path" in memory or memory.get("append") is not False:
         raise SystemExit(f"response-only: unexpected file metadata: {memory!r}")
-    if memory.get("bytes") != len(memory["text"].encode("utf-8")):
-        raise SystemExit(f"response-only: byte count mismatch: {memory!r}")
 
     expect_error(replies, "bad-append", "append requires path")
     expect_error(replies, "no-destination", "at least one output destination")
