@@ -17,6 +17,9 @@ jobs:
       - name: Apply exact source and qtest edits
         run: |
           python3 .github/rage128-texture0-run.py
+          if test -f .github/rage128-texture0-pro-followup.py; then
+            python3 .github/rage128-texture0-pro-followup.py
+          fi
           git diff --check
 
       - name: Install build dependencies
