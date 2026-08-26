@@ -403,14 +403,14 @@ def rebase_rgb565_expectations() -> None:
 def finalize_runtime_contract() -> None:
     packed_smoke = Path("scripts/vc4/hvs-packed-rgb-smoke.py")
 
-    # The split staging patch accidentally qualified one locally defined
-    # format constant through the imported support module.  Keep the format
-    # vocabulary local to this focused test, as intended by the other packed
-    # formats, and fail if the staging payload changes underneath us.
+    # The staged test contains a duplicated RGB332 format argument before the
+    # BGR233 order argument.  Remove the complete surplus argument and fail if
+    # the staging payload changes underneath this semantic repair.
     replace_once(
         packed_smoke,
-        "hvs.SCALER_PIXEL_FORMAT_RGB332",
-        "HVS_PIXEL_FORMAT_RGB332",
+        """            hvs.SCALER_PIXEL_FORMAT_RGB332,
+""",
+        "",
     )
 
     # ROUND is endpoint-preserving and rounds intermediate components to the
