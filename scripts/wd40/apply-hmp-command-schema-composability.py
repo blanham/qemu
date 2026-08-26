@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Make HMP command-schema generation composable with argument metadata.
 
-The HMP command-introspection transform owns ``HMPCommandInfo`` and
-``query-hmp-commands``.  The later argument-introspection tranche extends that
-schema in place, so exact generated-block matching is no longer a valid replay
-signal.  This repair teaches the base transform and its hardening template to
-recognize stable schema ownership markers instead.
+The HMP command-introspection transform owns ``HMPCommandInfo``,
+``query-hmp-commands``, and their monitor-side collector.  The later
+argument-introspection tranche extends both generated blocks in place, so exact
+block matching is no longer a valid replay signal.  This repair teaches the
+base transform and its hardening template to recognize stable ownership
+markers instead.
 """
 
 from __future__ import annotations
@@ -90,6 +91,31 @@ NEW_QAPI_TAIL = '''{ 'command': 'query-hmp-commands',
         "monitor/hmp.c",
 '''
 
+OLD_MONITOR_TAIL = '''    return list;
+}
+
+static void help_cmd_dump_one(Monitor *mon,
+""",
+    )
+    replace_once(
+        "docs/devel/index.rst",
+'''
+
+NEW_MONITOR_TAIL = '''    return list;
+}
+
+static void help_cmd_dump_one(Monitor *mon,
+""",
+        owned_markers=(
+            "static char *hmp_command_canonical_component(",
+            "static HMPCommandInfoList **hmp_command_info_collect(",
+            "HMPCommandInfoList *qmp_query_hmp_commands(",
+        ),
+    )
+    replace_once(
+        "docs/devel/index.rst",
+'''
+
 OLD_HARDENER_REPLACE = "NEW_REPLACE = '''" + OLD_REPLACE + "'''"
 NEW_HARDENER_REPLACE = "NEW_REPLACE = '''" + NEW_REPLACE + "'''"
 
@@ -109,6 +135,7 @@ def main() -> None:
     transform = "scripts/wd40/apply-hmp-command-introspection.py"
     replace_once(transform, OLD_REPLACE, NEW_REPLACE)
     replace_once(transform, OLD_QAPI_TAIL, NEW_QAPI_TAIL)
+    replace_once(transform, OLD_MONITOR_TAIL, NEW_MONITOR_TAIL)
 
     hardener = "scripts/wd40/apply-hmp-command-introspection-hardening.py"
     replace_once(hardener, OLD_HARDENER_REPLACE, NEW_HARDENER_REPLACE)
