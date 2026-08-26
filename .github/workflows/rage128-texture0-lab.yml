@@ -58,6 +58,8 @@ jobs:
         run: |
           if ! git diff --quiet -- \
               hw/display/ati_3d.c \
+              hw/display/ati_int.h \
+              hw/display/ati_pm4.c \
               hw/display/ati_regs.h \
               tests/qtest/ati-rage128-pm4-test.c; then
             git config user.name github-actions[bot]
@@ -65,9 +67,11 @@ jobs:
               41898282+github-actions[bot]@users.noreply.github.com
             git add \
               hw/display/ati_3d.c \
+              hw/display/ati_int.h \
+              hw/display/ati_pm4.c \
               hw/display/ati_regs.h \
               tests/qtest/ati-rage128-pm4-test.c
             git commit -m \
-              'hw/display/ati: add Rage 128 primary texture sampling'
+              'hw/display/ati: complete Rage 128 texture0 compatibility'
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
