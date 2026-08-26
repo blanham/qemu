@@ -22,14 +22,32 @@ def store(file_path: Path, text: str) -> None:
     file_path.write_text(text, encoding="utf-8")
 
 
-def replace_once(path: str, old: str, new: str) -> None:
+def replace_once(path: str, old: str, new: str,
+                 owned_markers: tuple[str, ...] = ()) -> None:
     file_path, text = load(path)
-    if new in text:
+    new_count = text.count(new)
+    if new_count == 1:
         return
+    if new_count > 1:
+        raise RuntimeError(f"{path}: generated block appears {new_count} times")
+    if owned_markers:
+        marker_counts = [text.count(marker) for marker in owned_markers]
+        if all(count == 1 for count in marker_counts):
+            return
+        if any(marker_counts):
+            raise RuntimeError(
+                f"{path}: partially applied generated block: "
+                f"marker counts={marker_counts}"
+            )
     if new.endswith(old):
         owned_prefix = new[:-len(old)]
-        if owned_prefix and owned_prefix in text:
+        prefix_count = text.count(owned_prefix) if owned_prefix else 0
+        if prefix_count == 1:
             return
+        if prefix_count > 1:
+            raise RuntimeError(
+                f"{path}: generated prefix appears {prefix_count} times"
+            )
     count = text.count(old)
     if count != 1:
         raise RuntimeError(f"{path}: expected one replacement site, found {count}")
@@ -136,6 +154,10 @@ def main() -> None:
 ##
 # @human-monitor-command:
 """,
+        owned_markers=(
+            "{ 'struct': 'HMPCommandInfo',",
+            "{ 'command': 'query-hmp-commands',",
+        ),
     )
     replace_once(
         "monitor/hmp.c",
@@ -246,6 +268,11 @@ HMPCommandInfoList *qmp_query_hmp_commands(Error **errp)
 
 static void help_cmd_dump_one(Monitor *mon,
 """,
+        owned_markers=(
+            "static char *hmp_command_canonical_component(",
+            "static HMPCommandInfoList **hmp_command_info_collect(",
+            "HMPCommandInfoList *qmp_query_hmp_commands(",
+        ),
     )
     replace_once(
         "docs/devel/index.rst",

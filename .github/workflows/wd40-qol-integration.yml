@@ -4,14 +4,15 @@ on:
   push:
     branches:
       - wd40/qol-integration
+      - wd40/qol-transform-composition-fix
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: wd40-qol-integration
-  cancel-in-progress: false
+  group: wd40-qol-integration-${{ github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   integrate-build-test-and-publish:
@@ -54,6 +55,7 @@ jobs:
             python3 scripts/wd40/apply-amd-1tb-hole-control-hardening.py
             python3 scripts/wd40/apply-amd-1tb-hole-control.py
             python3 scripts/wd40/apply-subtractive-log-mask.py
+            python3 scripts/wd40/apply-hmp-command-schema-composability.py
             python3 scripts/wd40/apply-hmp-command-introspection-hardening.py
             python3 scripts/wd40/apply-hmp-command-introspection.py
             python3 scripts/wd40/apply-hmp-argument-introspection.py
@@ -64,16 +66,21 @@ jobs:
           }
 
           apply_contract
-          git diff --no-ext-diff --binary > /tmp/wd40-integration-pass1.diff
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-integration-pass1.diff
           apply_contract
-          git diff --no-ext-diff --binary > /tmp/wd40-integration-pass2.diff
-          cmp /tmp/wd40-integration-pass1.diff /tmp/wd40-integration-pass2.diff
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-integration-pass2.diff
+          cmp \
+            /tmp/wd40-integration-pass1.diff \
+            /tmp/wd40-integration-pass2.diff
 
           python3 scripts/ci/check-wd40-rustless.py
           python3 scripts/ci/check-wd40-amd-1tb-hole.py
           python3 scripts/ci/check-wd40-subtractive-log-mask.py
           python3 scripts/ci/check-wd40-hmp-command-introspection.py
           python3 scripts/ci/check-wd40-hmp-argument-introspection.py
+          python3 scripts/ci/check-wd40-hmp-schema-composability.py
           python3 scripts/ci/check-wd40-transform-composability.py
           python3 scripts/ci/check-wd40-structured-log-control.py
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
@@ -124,6 +131,7 @@ jobs:
             | grep -F "There are no relocations in this file."
 
       - name: Build system and user emulators without a Rust toolchain
+        timeout-minutes: 90
         run: |
           set -Eeuo pipefail
           mkdir .wd40-poison
@@ -145,11 +153,12 @@ jobs:
             --enable-fdt=internal \
             --disable-docs \
             --disable-werror
-          ninja -j2 \
-            tests/unit/test-logging \
-            qemu-system-x86_64 \
-            qemu-system-aarch64 \
-            qemu-x86_64
+          timeout --foreground --signal=TERM --kill-after=5m 75m \
+            ninja -j2 \
+              tests/unit/test-logging \
+              qemu-system-x86_64 \
+              qemu-system-aarch64 \
+              qemu-x86_64
           cd ..
 
       - name: Exercise logging front ends and structured control
@@ -219,8 +228,10 @@ jobs:
             build-qol-integration
           python3 scripts/ci/check-wd40-hmp-argument-introspection.py \
             build-qol-integration
+          python3 scripts/ci/check-wd40-hmp-schema-composability.py
 
       - name: Publish the validated integration history
+        if: github.ref_name == 'wd40/qol-integration'
         run: |
           set -Eeuo pipefail
           rm -rf .wd40-poison build-qol-integration
@@ -229,6 +240,7 @@ jobs:
           python3 scripts/ci/check-wd40-subtractive-log-mask.py
           python3 scripts/ci/check-wd40-hmp-command-introspection.py
           python3 scripts/ci/check-wd40-hmp-argument-introspection.py
+          python3 scripts/ci/check-wd40-hmp-schema-composability.py
           python3 scripts/ci/check-wd40-transform-composability.py
           python3 scripts/ci/check-wd40-structured-log-control.py
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
