@@ -30,10 +30,10 @@ Frontier: **`linux-vc4-kms-visible-scanout-clear`**
 
 ## Visible scanout samples
 
-- `red`: RGB `[248, 0, 0]`, matched `True`
-- `green`: RGB `[0, 252, 0]`, matched `True`
-- `blue`: RGB `[0, 0, 248]`, matched `True`
-- `white`: RGB `[248, 252, 248]`, matched `True`
+- `red`: RGB `[255, 0, 0]`, matched `True`
+- `green`: RGB `[0, 255, 0]`, matched `True`
+- `blue`: RGB `[0, 0, 255]`, matched `True`
+- `white`: RGB `[255, 255, 255]`, matched `True`
 
 ## Bound VC4 components
 
