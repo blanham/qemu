@@ -331,6 +331,65 @@ static bool hmp_command_implemented(const HMPCommand *cmd)
     return cmd->cmd || cmd->cmd_info_hrt || cmd->sub_table;
 }
 
+static HMPArgumentKind hmp_argument_kind(char type)
+{
+    switch (type) {
+    case 'F': return HMP_ARGUMENT_KIND_FILENAME;
+    case 'B': return HMP_ARGUMENT_KIND_BLOCK_DEVICE;
+    case 's': return HMP_ARGUMENT_KIND_STRING;
+    case 'S': return HMP_ARGUMENT_KIND_REST_OF_LINE;
+    case 'O': return HMP_ARGUMENT_KIND_OPTIONS;
+    case '/': return HMP_ARGUMENT_KIND_FORMAT;
+    case 'i': case 'l': return HMP_ARGUMENT_KIND_INTEGER;
+    case 'o': return HMP_ARGUMENT_KIND_SIZE;
+    case 'M': return HMP_ARGUMENT_KIND_MEGABYTES;
+    case 'T': return HMP_ARGUMENT_KIND_TIME;
+    case 'b': return HMP_ARGUMENT_KIND_BOOLEAN;
+    case '-': return HMP_ARGUMENT_KIND_OPTION;
+    default: return HMP_ARGUMENT_KIND_UNKNOWN;
+    }
+}
+
+static HMPArgumentInfoList *hmp_argument_info_collect(const char *types)
+{
+    HMPArgumentInfoList *head = NULL;
+    HMPArgumentInfoList **tail = &head;
+
+    while (types && *types) {
+        const char *start = types;
+        const char *colon = strchr(types, ':');
+        const char *comma;
+        HMPArgumentInfo *info;
+        HMPArgumentInfoList *entry;
+        char type;
+
+        if (!colon) {
+            break;
+        }
+        comma = strchr(colon + 1, ',');
+        if (!comma) {
+            comma = colon + strlen(colon);
+        }
+        type = colon[1];
+        info = g_new0(HMPArgumentInfo, 1);
+        entry = g_new0(HMPArgumentInfoList, 1);
+        info->name = g_strndup(start, colon - start);
+        info->kind = hmp_argument_kind(type);
+        info->optional = memchr(colon + 2, '?', comma - (colon + 2)) != NULL;
+        info->raw_type = g_strndup(colon + 1, comma - (colon + 1));
+        if (type == '-' && colon + 2 < comma) {
+            info->option = g_strdup_printf("-%c", colon[2]);
+            info->has_takes_value = true;
+            info->takes_value = colon + 3 < comma && colon[3] == 's';
+        }
+        entry->value = info;
+        *tail = entry;
+        tail = &entry->next;
+        types = *comma ? comma + 1 : comma;
+    }
+    return head;
+}
+
 static HMPCommandInfoList **hmp_command_info_collect(
     const HMPCommand *table, const char *prefix, HMPCommandInfoList **tail)
 {
@@ -351,6 +410,7 @@ static HMPCommandInfoList **hmp_command_info_collect(
         info->path = g_strdup(path);
         info->names = g_strdup(cmd->name);
         info->args_type = g_strdup(cmd->args_type ?: "");
+        info->arguments = hmp_argument_info_collect(cmd->args_type ?: "");
         info->parameters = g_strdup(cmd->params ?: "");
         info->help = g_strdup(cmd->help ?: "");
         info->available = architecture_available && phase_available &&

@@ -207,6 +207,63 @@
   'features': [ 'unstable' ] }
 
 ##
+# @HMPArgumentKind:
+#
+# Semantic kind of an HMP command argument.
+#
+# @filename: filesystem path or filename
+#
+# @block-device: block backend or device name
+#
+# @string: one shell-like string token
+#
+# @rest-of-line: all remaining command text
+#
+# @options: QemuOpts-style option string
+#
+# @format: HMP examine/print format specification
+#
+# @integer: integer or expression value
+#
+# @size: byte size with an optional scale suffix
+#
+# @megabytes: positive value expressed in MiB by HMP
+#
+# @time: floating-point time value with an optional unit suffix
+#
+# @boolean: ``on`` or ``off``
+#
+# @option: short HMP option such as ``-f``
+#
+# @unknown: parser type not recognized by this experimental decoder
+#
+# Since: 11.2
+##
+{ 'enum': 'HMPArgumentKind',
+  'data': [ 'filename', 'block-device', 'string', 'rest-of-line',
+            'options', 'format', 'integer', 'size', 'megabytes', 'time',
+            'boolean', 'option', 'unknown' ] }
+
+##
+# @HMPArgumentInfo:
+#
+# Structured description of one HMP parser argument.
+#
+# @name: QDict key populated by the HMP parser
+# @kind: semantic argument kind
+# @optional: whether the argument may be omitted
+# @option: short option spelling, including ``-``
+# @takes-value: whether an option consumes a following string
+# @raw-type: original parser fragment
+#
+# Since: 11.2
+##
+{ 'struct': 'HMPArgumentInfo',
+  'data': { 'name': 'str', 'kind': 'HMPArgumentKind',
+            'optional': 'bool', '*option': 'str',
+            '*takes-value': 'bool', 'raw-type': 'str' } }
+
+##
 # @HMPCommandInfo:
 #
 # Structured metadata for a human-monitor command.
@@ -217,6 +274,8 @@
 # @names: Pipe-separated aliases for this command component.
 #
 # @args-type: Internal HMP argument-parser grammar.
+#
+# @arguments: Parsed argument descriptors corresponding to @args-type.
 #
 # @parameters: Human-readable parameter syntax.
 #
@@ -250,6 +309,7 @@
       'path': 'str',
       'names': 'str',
       'args-type': 'str',
+      'arguments': [ 'HMPArgumentInfo' ],
       'parameters': 'str',
       'help': 'str',
       'available': 'bool',
