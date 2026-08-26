@@ -43,3 +43,36 @@ current target architecture.
 This API is deliberately read-only: command execution continues through QMP or
 HMP exactly as before.  It is an experimental foundation for capability-driven
 front ends such as TTYphoon and a future monitor v2.
+
+Structured log-category control
+-------------------------------
+
+``query-log-categories`` returns the same category registry used by ``-d`` and
+the HMP ``log`` command, together with each category's current enabled state.
+``set-log-categories`` applies an explicit ``replace``, ``enable``, or
+``disable`` operation and returns the resulting registry.
+
+For example::
+
+  -> { "execute": "set-log-categories",
+       "arguments": { "action": "replace",
+                      "categories": [ "guest_errors", "unimp" ] } }
+  <- { "return": [
+         { "name": "guest_errors",
+           "help": "log when the guest OS does something invalid ...",
+           "enabled": true,
+           "sticky": false },
+         ...
+       ] }
+
+The commands are available during preconfiguration.  Unknown category names
+are rejected atomically: no logging state changes unless every supplied name
+is valid.  The ``tid`` category is reported as sticky because its state is
+fixed at process startup.  It must be enabled with both a ``-D`` ``%d``
+filename template and ``-d tid``; QMP rejects attempts either to enable it
+later or to disable it after startup, rather than silently misreporting a
+transition the logger cannot perform.
+
+Trace-event patterns remain managed through QEMU's tracing interfaces.  This
+API covers the ordinary named categories in ``qemu_log_items`` and deliberately
+reuses ``qemu_set_log()`` for all state changes.

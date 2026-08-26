@@ -34,13 +34,16 @@ def replace_once(path: str, old: str, new: str) -> None:
     raise RuntimeError(f"{path}: expected one replacement site, found {count}")
 
 
-def create_once(path: str, content: str) -> None:
+def create_extensible(path: str, content: str) -> None:
     file_path = ROOT / path
     if file_path.exists():
         existing = file_path.read_text(encoding="utf-8")
-        if existing == content:
+        if existing == content or existing.startswith(content + "\n"):
             return
-        raise RuntimeError(f"{path}: existing content differs from WD40 template")
+        raise RuntimeError(
+            f"{path}: existing file is not the WD40 base or an append-only "
+            "extension"
+        )
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(content, encoding="utf-8")
 
@@ -180,7 +183,7 @@ OS requirements""",
 
 OS requirements""",
     )
-    create_once(
+    create_extensible(
         "docs/system/i386/wd40-qol.rst",
         """WD40 x86 quality-of-life controls
 ===================================

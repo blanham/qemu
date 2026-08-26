@@ -19,6 +19,14 @@ def require(path: str, *needles: str) -> None:
             raise SystemExit(f"{path}: required marker missing: {needle!r}")
 
 
+def require_count(path: str, needle: str, expected: int = 1) -> None:
+    count = text(path).count(needle)
+    if count != expected:
+        raise SystemExit(
+            f"{path}: expected {expected} copies of {needle!r}, found {count}"
+        )
+
+
 def forbid(path: str, *needles: str) -> None:
     contents = text(path)
     for needle in needles:
@@ -63,11 +71,25 @@ def main() -> None:
     )
     require(
         "tests/unit/test-logging.c",
+        "static int all_log_items_mask(void)",
         "static void test_parse_log_mask(void)",
+        'int int_mask = qemu_str_to_log_mask("int");',
         'qemu_str_to_log_mask("all,-int")',
         'qemu_str_to_log_mask("all,-int,+int")',
         'qemu_str_to_log_mask("-all,guest_errors")',
         'g_test_add_func("/logging/parse_mask", test_parse_log_mask);',
+    )
+    require_count("tests/unit/test-logging.c", "static int all_log_items_mask(void)")
+    require_count("tests/unit/test-logging.c", "static void test_parse_log_mask(void)")
+    require_count(
+        "tests/unit/test-logging.c",
+        'g_test_add_func("/logging/parse_mask", test_parse_log_mask);',
+    )
+    require(
+        "scripts/wd40/apply-subtractive-log-mask.py",
+        "def ensure_parse_mask_tests() -> None:",
+        "transformed replacement appears",
+        "Preserve the canonical block and any one-copy downstream extension.",
     )
 
 

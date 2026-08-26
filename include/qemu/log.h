@@ -124,6 +124,7 @@ typedef struct QEMULogItem {
 extern const QEMULogItem qemu_log_items[];
 
 bool qemu_set_log(int log_flags, Error **errp);
+unsigned qemu_get_log_mask(void);
 bool qemu_set_log_filename(const char *filename, Error **errp);
 bool qemu_set_log_filename_flags(const char *name, int flags, Error **errp);
 void qemu_set_dfilter_ranges(const char *ranges, Error **errp);

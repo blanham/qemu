@@ -15,6 +15,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/sockets.h"
+#include "qemu/log.h"
 #include "monitor-internal.h"
 #include "monitor/qdev.h"
 #include "monitor/qmp-helpers.h"
@@ -32,6 +33,103 @@
 #include "hw/mem/memory-device.h"
 #include "hw/intc/intc.h"
 #include "migration/misc.h"
+
+static LogCategoryInfoList *qmp_log_category_info_list(void)
+{
+    const QEMULogItem *item;
+    LogCategoryInfoList *list = NULL;
+    LogCategoryInfoList **tail = &list;
+    unsigned mask = qemu_get_log_mask();
+
+    for (item = qemu_log_items; item->mask != 0; item++) {
+        LogCategoryInfo *info = g_new0(LogCategoryInfo, 1);
+        LogCategoryInfoList *entry = g_new0(LogCategoryInfoList, 1);
+
+        info->name = g_strdup(item->name);
+        info->help = g_strdup(item->help);
+        info->enabled = (mask & item->mask) != 0;
+        info->sticky = item->mask == LOG_PER_THREAD;
+        entry->value = info;
+        *tail = entry;
+        tail = &entry->next;
+    }
+
+    return list;
+}
+
+static bool qmp_log_category_mask(strList *categories, unsigned *mask,
+                                  Error **errp)
+{
+    strList *category;
+    unsigned result = 0;
+
+    for (category = categories; category; category = category->next) {
+        const QEMULogItem *item;
+
+        for (item = qemu_log_items; item->mask != 0; item++) {
+            if (g_str_equal(category->value, item->name)) {
+                result |= item->mask;
+                break;
+            }
+        }
+        if (item->mask == 0) {
+            error_setg(errp, "Unknown log category '%s'", category->value);
+            return false;
+        }
+    }
+
+    *mask = result;
+    return true;
+}
+
+LogCategoryInfoList *qmp_query_log_categories(Error **errp)
+{
+    return qmp_log_category_info_list();
+}
+
+LogCategoryInfoList *qmp_set_log_categories(LogCategoryAction action,
+                                             strList *categories,
+                                             Error **errp)
+{
+    unsigned current = qemu_get_log_mask();
+    unsigned selected;
+    unsigned target;
+
+    if (!qmp_log_category_mask(categories, &selected, errp)) {
+        return NULL;
+    }
+
+    switch (action) {
+    case LOG_CATEGORY_ACTION_REPLACE:
+        target = selected;
+        break;
+    case LOG_CATEGORY_ACTION_ENABLE:
+        target = current | selected;
+        break;
+    case LOG_CATEGORY_ACTION_DISABLE:
+        target = current & ~selected;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    if ((current ^ target) & LOG_PER_THREAD) {
+        if (current & LOG_PER_THREAD) {
+            error_setg(errp,
+                       "The 'tid' log category cannot be disabled once set");
+        } else {
+            error_setg(errp,
+                       "The 'tid' log category can only be selected at "
+                       "process startup with a '%%d' logfile template");
+        }
+        return NULL;
+    }
+    if (!qemu_set_log(target, errp)) {
+        return NULL;
+    }
+
+    return qmp_log_category_info_list();
+}
 
 NameInfo *qmp_query_name(Error **errp)
 {
