@@ -1,0 +1,119 @@
++        return vc4_master_reacquire_fail("atomic-crtc-not-active");
++    }
++    report("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC "
++           "crtc=%u active_prop=%u active=%llu\n",
++           selection->crtc_id, active_property,
++           (unsigned long long)active_value);
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK\n");
++
++    if (vc4_master_reacquire_create_buffer(
++            fd, selection->mode.hdisplay, selection->mode.vdisplay,
++            VC4_MASTER_REACQUIRE_ATOMIC_BUFFER, atomic_buffer) < 0) {
++        return -1;
++    }
++
++    object_ids[0] = primary.plane_id;
++    object_ids[1] = selection->crtc_id;
++    property_ids[0] = primary.fb_id_property;
++    property_ids[1] = active_property;
++    property_values[0] = atomic_buffer->framebuffer.fb_id;
++    property_values[1] = active_value;
++    atomic.count_objs = 2;
++    atomic.objs_ptr = (uintptr_t)object_ids;
++    atomic.count_props_ptr = (uintptr_t)property_counts;
++    atomic.props_ptr = (uintptr_t)property_ids;
++    atomic.prop_values_ptr = (uintptr_t)property_values;
++    atomic.flags = DRM_MODE_ATOMIC_TEST_ONLY;
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_ATOMIC, &atomic,
++            "atomic-primary-test-only") < 0) {
++        return -1;
++    }
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK\n");
++
++    atomic.flags = DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT;
++    atomic.user_data = VC4_MASTER_REACQUIRE_ATOMIC_USER_DATA;
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START\n");
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_ATOMIC, &atomic,
++            "atomic-primary-commit") < 0) {
++        return -1;
++    }
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED\n");
++
++    if (vc4_master_reacquire_wait_event(
++            fd, selection->crtc_id,
++            VC4_MASTER_REACQUIRE_ATOMIC_USER_DATA) < 0) {
++        return -1;
++    }
++
++    current.crtc_id = selection->crtc_id;
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_GETCRTC, &current,
++            "getcrtc-after-atomic-primary") < 0) {
++        return -1;
++    }
++    if (current.fb_id != atomic_buffer->framebuffer.fb_id) {
++        report("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_MISMATCH "
++               "expected=%u actual=%u\n",
++               atomic_buffer->framebuffer.fb_id, current.fb_id);
++        errno = EIO;
++        return vc4_master_reacquire_fail(
++            "atomic-primary-current-fb-mismatch");
++    }
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK\n");
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY\n");
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY\n");
++    sleep(VC4_MASTER_REACQUIRE_VISUAL_HOLD_SECONDS);
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK\n");
++    return 0;
++}
++
+ static int vc4_master_reacquire_run(int inherited_master_fd,
+                                     int ready_fd, int gate_fd)
+ {
+@@ -481,6 +983,9 @@ static int vc4_master_reacquire_run(int inherited_master_fd,
+     struct vc4_master_reacquire_buffer pageflip_buffer = {
+         .mapping = MAP_FAILED,
+     };
++    struct vc4_master_reacquire_buffer atomic_buffer = {
++        .mapping = MAP_FAILED,
++    };
+     uint32_t connector_id;
+     int fd;
+ 
+@@ -657,13 +1162,20 @@ static int vc4_master_reacquire_run(int inherited_master_fd,
+         goto mastered_fail;
+     }
+     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK\n");
+-    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY\n");
+-    sleep(VC4_MASTER_REACQUIRE_VISUAL_HOLD_SECONDS);
+-
+     if (vc4_master_reacquire_unmap_buffer(
+             &pageflip_buffer, "munmap-pageflip-dumb") < 0) {
+         goto mastered_fail;
+     }
++
++    if (vc4_master_reacquire_atomic_swap(
++            fd, &selection, current.fb_id, &atomic_buffer) < 0) {
++        goto mastered_fail;
++    }
++    if (vc4_master_reacquire_unmap_buffer(
++            &atomic_buffer, "munmap-atomic-dumb") < 0) {
++        goto mastered_fail;
++    }
++
+     if (vc4_master_reacquire_ioctl0(fd, DRM_IOCTL_DROP_MASTER,
+                                     "drop-master-new-file") < 0) {
+         goto mastered_fail;
+@@ -691,6 +1203,10 @@ mastered_fail:
+             (void)munmap(pageflip_buffer.mapping, pageflip_buffer.create.size);
+             pageflip_buffer.mapping = MAP_FAILED;
+         }
++        if (atomic_buffer.mapping != MAP_FAILED) {
++            (void)munmap(atomic_buffer.mapping, atomic_buffer.create.size);
++            atomic_buffer.mapping = MAP_FAILED;
++        }
+         do {
+             drop_result = ioctl(fd, DRM_IOCTL_DROP_MASTER, 0);
+         } while (drop_result < 0 && errno == EINTR);
