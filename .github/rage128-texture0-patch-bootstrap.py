@@ -63,7 +63,14 @@ try:
     end = text.index(next_operation, start)
 except ValueError as exc:
     raise SystemExit("next source patch operation was not found") from exc
-patch.write_text(text[:start] + text[end:], encoding="utf-8")
+text = text[:start] + text[end:]
+
+bad_diagnostic = r'"ATI Rage 128 textured vertex has zero RHW\n"'
+good_diagnostic = r'"ATI Rage 128 textured vertex has zero RHW\\n"'
+if text.count(bad_diagnostic) != 1:
+    raise SystemExit("RHW diagnostic escape is not unique")
+text = text.replace(bad_diagnostic, good_diagnostic, 1)
+patch.write_text(text, encoding="utf-8")
 
 source = Path("hw/display/ati_3d.c")
 text = source.read_text(encoding="utf-8")
