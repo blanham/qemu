@@ -46,7 +46,24 @@ new = '''def replace_once(path: Path, old: str, new: str) -> None:
 '''
 if text.count(old) != 1:
     raise SystemExit("source patch helper is not in the expected form")
-patch.write_text(text.replace(old, new, 1), encoding="utf-8")
+text = text.replace(old, new, 1)
+
+obsolete_start = '''replace_once(
+    source,
+    """    if (tex_control & (ATI_3D_TEXMAP_ENABLE |
+'''
+next_operation = '''replace_once(
+    source,
+    """        if (!ati_3d_read_vertex(s,
+'''
+if text.count(obsolete_start) != 1:
+    raise SystemExit("obsolete texture-enable patch operation is not unique")
+start = text.index(obsolete_start)
+try:
+    end = text.index(next_operation, start)
+except ValueError as exc:
+    raise SystemExit("next source patch operation was not found") from exc
+patch.write_text(text[:start] + text[end:], encoding="utf-8")
 
 source = Path("hw/display/ati_3d.c")
 text = source.read_text(encoding="utf-8")
