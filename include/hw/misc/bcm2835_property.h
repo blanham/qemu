@@ -39,6 +39,7 @@ struct BCM2835PropertyState {
     uint32_t exp_gpio_term_en;
     uint32_t exp_gpio_term_pull_up;
     uint32_t exp_gpio_state;
+    uint32_t gpio_virtbuf;
     char *command_line;
     bool pending;
 };
