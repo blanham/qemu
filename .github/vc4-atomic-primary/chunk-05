@@ -1,0 +1,193 @@
+-        report("VC4_LINUX_KMS_MASTER_REACQUIRE_FB_OK fb=%u\n",
+-               buffer->framebuffer.fb_id);
+-        marker("VC4_LINUX_KMS_MASTER_REACQUIRE_FB_OK\n");
++        return vc4_master_reacquire_fail(invalid_fb_stage);
+     }
++    report("VC4_LINUX_KMS_MASTER_REACQUIRE_%s_FB fb=%u\n",
++           label, buffer->framebuffer.fb_id);
++    marker(fb_marker);
+     return 0;
+ }
+ 
+@@ -446,15 +518,21 @@ static int vc4_master_reacquire_wait_event(int fd, uint32_t crtc_id,
+                 struct drm_event_vblank vblank;
+ 
+                 memcpy(&vblank, event_bytes + offset, sizeof(vblank));
+-                report("VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT "
++                const bool atomic = expected_user_data ==
++                    VC4_MASTER_REACQUIRE_ATOMIC_USER_DATA;
++
++                report("VC4_LINUX_KMS_MASTER_REACQUIRE_%s_EVENT "
+                        "type=%u length=%u user=0x%016llx "
+                        "sequence=%u crtc=%u\n",
++                       atomic ? "ATOMIC" : "PAGEFLIP",
+                        vblank.base.type, vblank.base.length,
+                        (unsigned long long)vblank.user_data,
+                        vblank.sequence, vblank.crtc_id);
+                 if (vblank.user_data == expected_user_data &&
+                     (vblank.crtc_id == 0 || vblank.crtc_id == crtc_id)) {
+-                    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK\n");
++                    marker(atomic ?
++                        "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK\n" :
++                        "VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK\n");
+                     return 0;
+                 }
+             }
+@@ -467,6 +545,430 @@ static int vc4_master_reacquire_wait_event(int fd, uint32_t crtc_id,
+     return vc4_master_reacquire_fail("wait-event-timeout");
+ }
+ 
++
++struct vc4_master_reacquire_plane_properties {
++    bool type_found;
++    bool fb_id_found;
++    bool crtc_id_found;
++    uint64_t type_value;
++    uint32_t fb_id_property;
++    uint64_t fb_id_value;
++    uint64_t crtc_id_value;
++};
++
++struct vc4_master_reacquire_primary_plane {
++    uint32_t plane_id;
++    uint32_t fb_id_property;
++};
++
++static int vc4_master_reacquire_crtc_index(int fd, uint32_t crtc_id,
++                                            uint32_t *crtc_index)
++{
++    struct drm_mode_card_res resources = { 0 };
++    uint32_t *crtc_ids = NULL;
++    int result = -1;
++
++    if (crtc_id == 0 || crtc_index == NULL) {
++        errno = EINVAL;
++        return vc4_master_reacquire_fail("invalid-crtc-index-request");
++    }
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_GETRESOURCES, &resources,
++            "atomic-getresources-count") < 0) {
++        return -1;
++    }
++    if (resources.count_crtcs == 0 ||
++        resources.count_crtcs > VC4_MASTER_REACQUIRE_MAX_CRTCS) {
++        errno = resources.count_crtcs == 0 ? ENODEV : EOVERFLOW;
++        return vc4_master_reacquire_fail("atomic-crtc-count");
++    }
++
++    crtc_ids = calloc(resources.count_crtcs, sizeof(*crtc_ids));
++    if (crtc_ids == NULL) {
++        return vc4_master_reacquire_fail("atomic-allocate-crtcs");
++    }
++    resources.crtc_id_ptr = (uintptr_t)crtc_ids;
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_GETRESOURCES, &resources,
++            "atomic-getresources-ids") < 0) {
++        goto out;
++    }
++    for (uint32_t index = 0; index < resources.count_crtcs; index++) {
++        if (crtc_ids[index] == crtc_id) {
++            *crtc_index = index;
++            result = 0;
++            goto out;
++        }
++    }
++
++    errno = ENODEV;
++    (void)vc4_master_reacquire_fail("atomic-crtc-index-not-found");
++
++out:
++    free(crtc_ids);
++    return result;
++}
++
++static int vc4_master_reacquire_plane_properties(
++    int fd, uint32_t plane_id,
++    struct vc4_master_reacquire_plane_properties *result)
++{
++    struct drm_mode_obj_get_properties properties = {
++        .obj_id = plane_id,
++        .obj_type = DRM_MODE_OBJECT_PLANE,
++    };
++    uint32_t *property_ids = NULL;
++    uint64_t *property_values = NULL;
++    int status = -1;
++
++    if (plane_id == 0 || result == NULL) {
++        errno = EINVAL;
++        return vc4_master_reacquire_fail(
++            "invalid-plane-property-request");
++    }
++    memset(result, 0, sizeof(*result));
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &properties,
++            "atomic-get-plane-property-count") < 0) {
++        return -1;
++    }
++    if (properties.count_props == 0 ||
++        properties.count_props > VC4_MASTER_REACQUIRE_MAX_PROPERTIES) {
++        errno = properties.count_props == 0 ? ENODEV : EOVERFLOW;
++        return vc4_master_reacquire_fail("atomic-plane-property-count");
++    }
++
++    property_ids = calloc(properties.count_props, sizeof(*property_ids));
++    property_values = calloc(properties.count_props,
++                             sizeof(*property_values));
++    if (property_ids == NULL || property_values == NULL) {
++        (void)vc4_master_reacquire_fail(
++            "atomic-allocate-plane-properties");
++        goto out;
++    }
++    properties.props_ptr = (uintptr_t)property_ids;
++    properties.prop_values_ptr = (uintptr_t)property_values;
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &properties,
++            "atomic-get-plane-properties") < 0) {
++        goto out;
++    }
++
++    for (uint32_t index = 0; index < properties.count_props; index++) {
++        struct drm_mode_get_property property = {
++            .prop_id = property_ids[index],
++        };
++
++        if (vc4_master_reacquire_ioctl(
++                fd, DRM_IOCTL_MODE_GETPROPERTY, &property,
++                "atomic-get-property-metadata") < 0) {
++            goto out;
++        }
++        property.name[DRM_PROP_NAME_LEN - 1] = '\0';
++        if (strcmp(property.name, "type") == 0) {
++            result->type_found = true;
++            result->type_value = property_values[index];
++        } else if (strcmp(property.name, "FB_ID") == 0) {
++            result->fb_id_found = true;
++            result->fb_id_property = property.prop_id;
++            result->fb_id_value = property_values[index];
++        } else if (strcmp(property.name, "CRTC_ID") == 0) {
++            result->crtc_id_found = true;
++            result->crtc_id_value = property_values[index];
++        }
++    }
++
++    if (!result->type_found || !result->fb_id_found ||
++        !result->crtc_id_found) {
++        errno = ENOENT;
++        (void)vc4_master_reacquire_fail(
++            "atomic-required-plane-property-missing");
++        goto out;
++    }
++    status = 0;
++
++out:
++    free(property_values);
++    free(property_ids);
++    return status;
++}
++
++
++static int vc4_master_reacquire_object_property(
++    int fd, uint32_t object_id, uint32_t object_type, const char *name,
++    uint32_t *property_id, uint64_t *property_value)
++{
++    struct drm_mode_obj_get_properties properties = {
