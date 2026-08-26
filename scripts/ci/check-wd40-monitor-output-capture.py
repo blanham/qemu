@@ -386,9 +386,12 @@ def validate_hmp(binary: Path, workdir: Path) -> None:
         )
     if counts[0] != counts[1] or data[: counts[0]] != data[counts[0] :]:
         raise SystemExit("HMP: append did not preserve two identical captures")
-    if "nested WD40 output capture is not supported" not in run.stderr:
+    # HMP command errors use the monitor chardev.  With ``-monitor stdio`` that
+    # channel is stdout; process stderr remains available for host diagnostics.
+    if "nested WD40 output capture is not supported" not in run.stdout:
         raise SystemExit(
-            f"HMP: nested capture was not rejected: stderr={run.stderr!r}"
+            "HMP: nested capture was not rejected on the monitor channel; "
+            f"stdout={run.stdout!r}; stderr={run.stderr!r}"
         )
     if nested_path.exists():
         raise SystemExit("HMP: nested capture unexpectedly created a file")
