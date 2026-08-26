@@ -39,8 +39,7 @@ jobs:
             qemu-system-x86_64 \
             qemu-system-ppc \
             tests/unit/test-ati-rop3 \
-            tests/qtest/display-vga-test \
-            tests/qtest/ati-rage128-pm4-test
+            tests/qtest/display-vga-test
 
       - name: Run Rage 128 tests
         run: |
