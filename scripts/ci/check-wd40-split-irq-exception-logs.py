@@ -10,9 +10,12 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-IMAGE = base64.b64decode(
-    "+jHAjtiOwI7QvAB8xwYYAH98oxoAxwaAAI58o4IAsBHmIOh5AOag6HQAsCDmIehtALAo5qHoZgCwBOYh6F8AsALmoehYALAB5iHoUQDmoehMALD+5iGw/+ahsDbmQ7icLuZAiODmQA8L+/SAPqV8AHT4sETm6br0ALAQ7vTr/VNQsEXm6ViJ44NHAgJbz1DGBqV8AbBJ5umwIOYgWM9QMcDmgFjDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVao="
+BOOT_CODE = base64.b64decode(
+    "+jHAjtiOwI7QvAB8xwYYAH98oxoAxwaAAI58o4IAsBHmIOh5AOag6HQAsCDmIehtALAo5qHoZgCwBOYh6F8AsALmoehYALAB5iHoUQDmoehMALD+5iGw/+ahsDbmQ7icLuZAiODmQA8L+/SAPqV8AHT4sETm6br0ALAQ7vTr/VNQsEXm6ViJ44NHAgJbz1DGBqV8AbBJ5umwIOYgWM9QMcDmgFjDAA=="
 )
+if len(BOOT_CODE) > 510:
+    raise SystemExit(f"x86 log-split smoke guest is too large: {len(BOOT_CODE)} bytes")
+IMAGE = BOOT_CODE.ljust(510, b"\0") + b"\x55\xaa"
 
 
 def source(path):
@@ -27,6 +30,8 @@ def need(path, *markers):
 
 
 def validate_static():
+    if len(IMAGE) != 512 or IMAGE[510:] != b"\x55\xaa":
+        raise SystemExit("x86 log-split smoke image is not a valid 512-byte boot sector")
     need("include/qemu/log.h", "CPU_LOG_IRQ        (1u << 24)",
          "CPU_LOG_EXCEPTION  (1u << 25)", "CPU_LOG_INT_ALL",
          "CPU_LOG_INT | CPU_LOG_IRQ | CPU_LOG_EXCEPTION")
@@ -99,20 +104,42 @@ def qmp_aliases(binary):
             raise SystemExit(f"{ident}: enabled {sorted(enabled)}, expected {sorted(wanted)}")
 
 
+def read_diagnostic(path, *, encoding="utf-8"):
+    if not path.is_file():
+        return "<missing>"
+    return path.read_text(encoding=encoding, errors="replace")
+
+
 def smoke(binary, image, directory, name, mask):
     log = directory / f"{name}.log"
     witness = directory / f"{name}.debug"
-    run = subprocess.run([
+    command = [
         str(binary), "-machine", "pc,accel=tcg", "-cpu", "qemu64", "-m", "16M",
         "-drive", f"if=floppy,format=raw,file={image}", "-boot", "a",
         "-display", "none", "-serial", "none", "-monitor", "none", "-no-reboot",
         "-chardev", f"file,id=debug,path={witness}",
         "-device", "isa-debugcon,iobase=0xe9,chardev=debug",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-        "-d", mask, "-D", str(log)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45, check=False)
-    if run.returncode != 33 or witness.read_text(encoding="ascii") != "EID":
-        raise SystemExit(f"{name}: guest witness failed, rc={run.returncode}")
+        "-d", mask, "-D", str(log),
+    ]
+    try:
+        run = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=45, check=False)
+    except subprocess.TimeoutExpired as exc:
+        debug = read_diagnostic(witness, encoding="ascii")
+        log_tail = read_diagnostic(log)[-4000:]
+        stderr = (exc.stderr or b"").decode("utf-8", errors="replace")
+        raise SystemExit(
+            f"{name}: guest timed out; witness={debug!r}; "
+            f"stderr={stderr!r}; log-tail={log_tail!r}"
+        ) from exc
+    debug = read_diagnostic(witness, encoding="ascii")
+    if run.returncode != 33 or debug != "EID":
+        raise SystemExit(
+            f"{name}: guest witness failed, rc={run.returncode}, "
+            f"witness={debug!r}, stderr={run.stderr.decode(errors='replace')!r}"
+        )
     return log.read_text(encoding="utf-8", errors="replace")
 
 
