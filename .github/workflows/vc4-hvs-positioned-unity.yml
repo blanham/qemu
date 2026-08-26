@@ -45,17 +45,30 @@ jobs:
 
           path = Path("scripts/vc4/apply-hvs-positioned-unity.py")
           source = path.read_text(encoding="utf-8")
-          old = '"void bcm2835_fb_reconfigure(BCM2835FBState *s,\\n",'
-          new = (
+
+          old_anchor = (
+              '"void bcm2835_fb_reconfigure(BCM2835FBState *s,\\n",'
+          )
+          new_anchor = (
               '"void bcm2835_fb_reconfigure(BCM2835FBState *s, '
               'BCM2835FBConfig *newconfig)\\n",'
           )
-          if source.count(old) != 1:
+          if source.count(old_anchor) != 1:
               raise SystemExit(
                   f"expected one reconfigure start anchor, found "
-                  f"{source.count(old)}"
+                  f"{source.count(old_anchor)}"
               )
-          path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          source = source.replace(old_anchor, new_anchor, 1)
+
+          old_escape = '"%ux%u+%u+%u in %ux%u\\n",'
+          new_escape = '"%ux%u+%u+%u in %ux%u\\\\n",'
+          if source.count(old_escape) != 1:
+              raise SystemExit(
+                  f"expected one scanout log escape, found "
+                  f"{source.count(old_escape)}"
+              )
+          source = source.replace(old_escape, new_escape, 1)
+          path.write_text(source, encoding="utf-8")
           PY
           python3 -m py_compile scripts/vc4/apply-hvs-positioned-unity.py
           python3 scripts/vc4/apply-hvs-positioned-unity.py
