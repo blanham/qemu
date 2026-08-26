@@ -1,0 +1,147 @@
+name: WD40 HMP completion materialization
+
+on:
+  push:
+    branches:
+      - wd40/qol-hmp-completion-service
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-hmp-completion-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  materialize-build-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply and replay the complete QoL contract
+        run: |
+          set -Eeuo pipefail
+
+          apply_contract() {
+            python3 scripts/wd40/apply-rustless-build.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control-hardening.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control.py
+            python3 scripts/wd40/apply-subtractive-log-mask.py
+            python3 scripts/wd40/apply-hmp-command-schema-composability.py
+            python3 scripts/wd40/apply-hmp-command-introspection-hardening.py
+            python3 scripts/wd40/apply-hmp-command-introspection.py
+            python3 scripts/wd40/apply-hmp-argument-introspection.py
+            python3 scripts/wd40/apply-structured-log-control-composability.py
+            python3 scripts/wd40/apply-structured-log-control.py
+            python3 scripts/wd40/apply-structured-log-control-hardening.py
+            python3 scripts/wd40/apply-split-irq-exception-logs.py
+            python3 scripts/wd40/apply-monitor-output-capture.py
+            python3 scripts/wd40/apply-monitor-output-capture-hardening.py
+            python3 scripts/wd40/apply-hmp-completion.py
+          }
+
+          apply_contract
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-completion-pass1.diff
+          apply_contract
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-completion-pass2.diff
+          cmp \
+            /tmp/wd40-completion-pass1.diff \
+            /tmp/wd40-completion-pass2.diff
+
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-hmp-argument-introspection.py
+          python3 scripts/ci/check-wd40-hmp-schema-composability.py
+          python3 scripts/ci/check-wd40-transform-composability.py
+          python3 scripts/ci/check-wd40-structured-log-control.py
+          python3 scripts/ci/check-wd40-split-irq-exception-logs.py
+          python3 scripts/ci/check-wd40-monitor-output-capture.py
+          python3 scripts/ci/check-wd40-hmp-completion.py
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build x86_64 system emulation without Rust
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-wd40-completion
+          cd build-wd40-completion
+          ../configure \
+            --target-list=x86_64-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 qemu-system-x86_64
+          cd ..
+
+      - name: Exercise monitor discovery, capture, and completion
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py \
+            build-wd40-completion
+          python3 scripts/ci/check-wd40-hmp-argument-introspection.py \
+            build-wd40-completion
+          python3 scripts/ci/check-wd40-monitor-output-capture.py \
+            build-wd40-completion
+          python3 scripts/ci/check-wd40-hmp-completion.py \
+            build-wd40-completion
+
+      - name: Materialize the validated service
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-wd40-completion
+          python3 scripts/ci/check-wd40-hmp-completion.py
+          git diff --check
+
+          git add \
+            docs/devel/wd40-monitor-v2.rst \
+            monitor/hmp.c \
+            qapi/misc.json
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "HMP completion service is already materialized"
+          else
+            git commit -m "monitor: materialize WD40 HMP completion service"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+          git status --short
+          test -z "$(git status --porcelain)"
