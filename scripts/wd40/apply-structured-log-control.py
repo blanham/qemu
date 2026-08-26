@@ -24,12 +24,29 @@ def store(file_path: Path, text: str) -> None:
 
 def replace_once(path: str, old: str, new: str) -> None:
     file_path, text = load(path)
-    if new in text:
+    new_count = text.count(new)
+    if new_count == 1:
         return
+    if new_count > 1:
+        raise RuntimeError(f"{path}: generated block appears {new_count} times")
     if new.endswith(old):
         owned_prefix = new[:-len(old)]
-        if owned_prefix and owned_prefix in text:
+        prefix_count = text.count(owned_prefix) if owned_prefix else 0
+        if prefix_count == 1:
             return
+        if prefix_count > 1:
+            raise RuntimeError(
+                f"{path}: generated prefix appears {prefix_count} times"
+            )
+    if new.startswith(old):
+        owned_suffix = new[len(old):]
+        suffix_count = text.count(owned_suffix) if owned_suffix else 0
+        if suffix_count == 1:
+            return
+        if suffix_count > 1:
+            raise RuntimeError(
+                f"{path}: generated suffix appears {suffix_count} times"
+            )
     count = text.count(old)
     if count != 1:
         raise RuntimeError(f"{path}: expected one replacement site, found {count}")

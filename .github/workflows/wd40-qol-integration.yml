@@ -57,6 +57,7 @@ jobs:
             python3 scripts/wd40/apply-hmp-command-introspection-hardening.py
             python3 scripts/wd40/apply-hmp-command-introspection.py
             python3 scripts/wd40/apply-hmp-argument-introspection.py
+            python3 scripts/wd40/apply-structured-log-control-composability.py
             python3 scripts/wd40/apply-structured-log-control.py
             python3 scripts/wd40/apply-structured-log-control-hardening.py
             python3 scripts/wd40/apply-split-irq-exception-logs.py
@@ -73,6 +74,7 @@ jobs:
           python3 scripts/ci/check-wd40-subtractive-log-mask.py
           python3 scripts/ci/check-wd40-hmp-command-introspection.py
           python3 scripts/ci/check-wd40-hmp-argument-introspection.py
+          python3 scripts/ci/check-wd40-transform-composability.py
           python3 scripts/ci/check-wd40-structured-log-control.py
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
           git diff --check
@@ -227,6 +229,7 @@ jobs:
           python3 scripts/ci/check-wd40-subtractive-log-mask.py
           python3 scripts/ci/check-wd40-hmp-command-introspection.py
           python3 scripts/ci/check-wd40-hmp-argument-introspection.py
+          python3 scripts/ci/check-wd40-transform-composability.py
           python3 scripts/ci/check-wd40-structured-log-control.py
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
           git diff --check
