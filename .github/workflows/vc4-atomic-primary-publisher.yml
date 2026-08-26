@@ -1,0 +1,237 @@
+name: Publish validated VC4 atomic primary-plane witness
+
+on:
+  push:
+    branches:
+      - agent/vc4-atomic-primary-publisher
+    paths:
+      - .github/workflows/vc4-atomic-primary-publisher.yml
+      - .github/vc4-atomic-primary/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-atomic-primary-publisher
+  cancel-in-progress: false
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      TARGET_BRANCH: agent/vc4-linux-kms-bind-diagnostics
+      EXPECTED_BASE: ed887d026fdaf7d26bbe68db2ab8006fad275b7c
+      PATCH_SHA256: a77f24f2ba2b2772a030743b4901b8316edb3cf85049e923badeb92f572007fe
+      PATCH_PATH: /tmp/vc4-atomic-primary.patch
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-atomic-primary-publisher
+          fetch-depth: 0
+
+      - name: Install validation dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            clang \
+            gcc-aarch64-linux-gnu \
+            libdrm-dev \
+            libc6-dev-arm64-cross \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            linux-libc-dev-arm64-cross \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-yaml \
+            zlib1g-dev
+
+      - name: Reconstruct and verify exact product patch
+        run: |
+          set -euo pipefail
+          cat .github/vc4-atomic-primary/chunk-* > "$PATCH_PATH"
+          printf '%s  %s\n' "$PATCH_SHA256" "$PATCH_PATH" | sha256sum -c -
+          test "$(wc -c < "$PATCH_PATH")" -eq 53545
+
+          git fetch --no-tags origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          actual=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
+          test "$actual" = "$EXPECTED_BASE"
+
+          git checkout --detach "$EXPECTED_BASE"
+          git apply --check "$PATCH_PATH"
+          git apply "$PATCH_PATH"
+          git diff --check
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          expected = {
+              ".github/workflows/vc4-kms-master-reacquire-probe.yml":
+                  "cc80aec53487e9a25d6e0b3287fc511c19a79087",
+              "scripts/vc4/enable-linux-kms-master-reacquire-probe.py":
+                  "b9f9eddb34f973fc070e1833de8473d33739b947",
+              "scripts/vc4/summarize-linux-kms-master-reacquire.py":
+                  "50c66458cbc1de42c3798868495fd16b6b240b71",
+              "scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py":
+                  "bae31ff880782390ad10b5cf484043186f371908",
+              "tests/vc4/linux-kms-master-reacquire-probe.inc.c":
+                  "2561323b934756e4940dc98d0ba142e3e4b75637",
+          }
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only"], text=True
+          ).splitlines()
+          if changed != sorted(expected):
+              raise SystemExit(
+                  f"unexpected product file set: {changed!r}"
+              )
+          for path, wanted in expected.items():
+              if not Path(path).is_file():
+                  raise SystemExit(f"missing patched file: {path}")
+              actual = subprocess.check_output(
+                  ["git", "hash-object", path], text=True
+              ).strip()
+              if actual != wanted:
+                  raise SystemExit(
+                      f"postimage mismatch for {path}: {actual} != {wanted}"
+                  )
+          print("VC4 atomic-primary exact postimages: PASS")
+          PY
+
+      - name: Validate witness and durable classifier
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          workflow = Path(
+              ".github/workflows/vc4-kms-master-reacquire-probe.yml"
+          )
+          yaml.safe_load(workflow.read_text(encoding="utf-8"))
+
+          source = Path(
+              "tests/vc4/linux-kms-master-reacquire-probe.inc.c"
+          ).read_text(encoding="utf-8")
+          ordered = (
+              "vc4_master_reacquire_expect_busy(fd)",
+              "set-master-after-drop",
+              "setcrtc-independent-file",
+              "DRM_IOCTL_MODE_PAGE_FLIP",
+              "vc4_master_reacquire_atomic_swap",
+              "DRM_MODE_ATOMIC_TEST_ONLY",
+              "DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT",
+              "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY",
+          )
+          positions = [source.find(token) for token in ordered]
+          if any(position < 0 for position in positions):
+              raise SystemExit(f"atomic source token missing: {positions}")
+          if positions != sorted(positions):
+              raise SystemExit(f"atomic source order invalid: {positions}")
+          print("VC4 explicit-handoff/atomic source order: PASS")
+          PY
+
+      - name: Compile complete static AArch64 guest witness
+        run: |
+          set -euo pipefail
+          cp tests/vc4/linux-v3d-modular-init.c /tmp/vc4-atomic-init.c
+          python3 scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            /tmp/vc4-atomic-init.c
+          aarch64-linux-gnu-gcc \
+            -static -O2 -g0 -Wall -Wextra -Werror -fno-ident \
+            -I/usr/include/libdrm -Itests/vc4 \
+            -Wl,--build-id=none \
+            -o /tmp/vc4-atomic-init \
+            /tmp/vc4-atomic-init.c
+          file /tmp/vc4-atomic-init
+          strings /tmp/vc4-atomic-init > /tmp/vc4-atomic-init.strings
+          for marker in \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_BUSY_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK; do
+            grep -Fq "$marker" /tmp/vc4-atomic-init.strings
+          done
+
+      - name: Build both QEMU frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64 qemu-system-vc4
+
+      - name: Run focused BCM2835 and VC4 regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/bcm2835-hdmi-ddc-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/display-timing-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/hvs-dlist-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Create one clean product commit
+        id: product
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 Development"
+          git config user.email "vc4-dev@users.noreply.github.com"
+          git add -- \
+            .github/workflows/vc4-kms-master-reacquire-probe.yml \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          git commit -m "test/vc4: prove atomic primary-plane update" -m \
+            "After the explicit EBUSY-gated DRM-master handoff, enable the atomic KMS UAPI on that same reopened drm_file, identify the active primary plane and CRTC ACTIVE property, TEST_ONLY-validate a third framebuffer, and queue a nonblocking atomic FB_ID update with a flip-complete event. Preserve exact-pixel scanout verification, the original legacy modeset/page-flip witnesses, strict marker ordering, renderer submission, and master restoration on both success and failure paths."
+          product_sha=$(git rev-parse HEAD)
+          printf 'product_sha=%s\n' "$product_sha" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$product_sha" > /tmp/vc4-atomic-product-sha
+
+      - name: Publish with an exact ref lease
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          actual=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
+          test "$actual" = "$EXPECTED_BASE"
+          git push \
+            --force-with-lease="refs/heads/${TARGET_BRANCH}:${EXPECTED_BASE}" \
+            origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          printf 'Published product commit `%s` to `%s`.\n' \
+            "${{ steps.product.outputs.product_sha }}" "$TARGET_BRANCH" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload publisher evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-atomic-primary-publisher-${{ github.run_attempt }}
+          path: |
+            /tmp/vc4-atomic-product-sha
+            /tmp/vc4-atomic-init.strings
+          if-no-files-found: warn
+          retention-days: 14
