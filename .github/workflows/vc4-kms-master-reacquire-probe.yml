@@ -1,4 +1,4 @@
-name: VC4 independent DRM-master modeset and page-flip probe
+name: VC4 explicit DRM-master handoff, modeset, and page-flip probe
 
 on:
   push:
@@ -88,7 +88,7 @@ jobs:
           mkdir -p \
             "$OFFICIAL_DIR" "$DTB_DIR" "$PROBE_DIR" "$EVIDENCE_DIR"
 
-      - name: Validate the independent-master witness
+      - name: Validate the explicit handoff/modeset/page-flip witness
         run: |
           set -euo pipefail
           python3 scripts/vc4/enable-linux-kms-master-reacquire-probe.py
@@ -115,12 +115,85 @@ jobs:
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'DRM_IOCTL_MODE_SETCRTC' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'setcrtc-independent-file' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'VC4_MASTER_REACQUIRE_MODESET_BUFFER' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'close(inherited_master_fd)' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'open(VC4_MASTER_REACQUIRE_CARD_PATH' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'vc4_master_reacquire_expect_busy(fd)' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'set-master-before-drop' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'set-master-after-drop' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'vc4_master_reacquire_pipe(ready_pipe' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'VC4_MASTER_REACQUIRE_READY_BYTE' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'VC4_MASTER_REACQUIRE_GO_BYTE' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'DRM_EVENT_FLIP_COMPLETE' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          if grep -Fq 'VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK' \
+              tests/vc4/linux-kms-master-reacquire-probe.inc.c; then
+            echo "obsolete inherited-active-CRTC marker remains" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path(
+              "tests/vc4/linux-kms-master-reacquire-probe.inc.c"
+          ).read_text(encoding="utf-8")
+          child = source[
+              source.index("static int vc4_master_reacquire_run"):
+              source.index("static int vc4_master_reacquire_restore_original")
+          ]
+          parent = source[source.index(
+              "static int vc4_kms_master_reacquire_supervise"
+          ):]
+          child_order = (
+              "open(VC4_MASTER_REACQUIRE_CARD_PATH",
+              "vc4_master_reacquire_expect_busy(fd)",
+              "VC4_MASTER_REACQUIRE_READY_BYTE",
+              "VC4_MASTER_REACQUIRE_GO_BYTE",
+              "set-master-after-drop",
+              "vc4_modeset_select(fd, &selection)",
+              "VC4_MASTER_REACQUIRE_MODESET_BUFFER",
+              "setcrtc-independent-file",
+              "VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER",
+              "DRM_IOCTL_MODE_PAGE_FLIP",
+          )
+          parent_order = (
+              '"wait-handoff-ready"',
+              '"drop-original-master"',
+              "VC4_MASTER_REACQUIRE_GO_BYTE",
+          )
+          for label, text, tokens in (
+              ("child", child, child_order),
+              ("parent", parent, parent_order),
+          ):
+              positions = [text.find(token) for token in tokens]
+              if any(position < 0 for position in positions):
+                  raise SystemExit(
+                      f"{label} handoff token missing: {positions}"
+                  )
+              if (
+                  positions != sorted(positions)
+                  or len(set(positions)) != len(positions)
+              ):
+                  raise SystemExit(
+                      f"{label} handoff order invalid: {positions}"
+                  )
+          print("VC4 explicit handoff/modeset/page-flip source order: PASS")
+          PY
 
       - name: Fetch pinned kernel, DTB, and corrected module roots
         run: |
@@ -152,7 +225,7 @@ jobs:
             "$MODULE_DIR/MANIFEST")
           test "$i2c_line" -lt "$vc4_line"
 
-      - name: Build the master-reacquisition initramfs and native-KMS DTB
+      - name: Build the handoff/modeset initramfs and native-KMS DTB
         run: |
           set -euo pipefail
           bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
@@ -165,9 +238,11 @@ jobs:
             VC4_LINUX_KMS_PAGEFLIP_OK \
             VC4_LINUX_KMS_PAGEFLIP_SUPERVISOR_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_START \
-            VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_DROPPED \
             VC4_LINUX_KMS_MASTER_REACQUIRE_INHERITED_CLOSED \
             VC4_LINUX_KMS_MASTER_REACQUIRE_OPEN_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_BUSY_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_HANDOFF_READY \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_DROPPED \
             VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE_OK \
@@ -178,7 +253,9 @@ jobs:
             VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK \
-            VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_DUMB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MAP_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_FB_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_IOCTL_START \
             VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED \
             VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK \
@@ -187,6 +264,7 @@ jobs:
             VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED \
             VC4_LINUX_KMS_MASTER_REACQUIRE_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_RESTORED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_HANDOFF_ORDER_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_SUPERVISOR_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_TIMEOUT; do
             grep -Fq "$marker" "$INITRAMFS_DIR/init.strings"
@@ -225,7 +303,7 @@ jobs:
           python3 scripts/vc4/v3d-smoke.py \
             --qemu build/qemu-system-aarch64
 
-      - name: Run the bounded independent-master witness
+      - name: Run the bounded explicit handoff/modeset witness
         run: |
           set +e
           python3 scripts/vc4/raspi3-kms-master-reacquire-visual-probe.py \
@@ -242,7 +320,7 @@ jobs:
           cat "$PROBE_DIR/probe.stdout"
           exit 0
 
-      - name: Record the exact master-reacquisition frontier
+      - name: Record the exact handoff/modeset/page-flip frontier
         if: always()
         run: |
           set -euo pipefail
@@ -288,12 +366,12 @@ jobs:
           git add -- "$STATUS_JSON" "$STATUS_MD"
           if ! git diff --cached --quiet; then
             git commit -m \
-              "test/vc4: record independent DRM-master modeset frontier [skip ci]"
+              "test/vc4: record explicit DRM-master handoff/modeset frontier [skip ci]"
             git pull --rebase origin "$BRANCH"
             git push origin HEAD:"$BRANCH"
           fi
 
-      - name: Require the current independent-master proof
+      - name: Require the current explicit handoff/modeset proof
         if: always()
         run: |
           set -euo pipefail
@@ -305,18 +383,61 @@ jobs:
           path = Path(sys.argv[1])
           expected_sha = sys.argv[2]
           record = json.loads(path.read_text(encoding="utf-8"))
+          expected_classification = (
+              "linux-vc4-kms-explicit-master-handoff-"
+              "modeset-pageflip-visual-clear"
+          )
           if record.get("source_sha") != expected_sha:
               raise SystemExit(
-                  "master-reacquisition status source mismatch: "
+                  "explicit handoff/modeset status source mismatch: "
                   f"{record.get('source_sha')} != {expected_sha}"
               )
-          if record.get("classification") != \
-                  "linux-vc4-kms-independent-master-modeset-pageflip-visual-clear":
+          if record.get("classification") != expected_classification:
               raise SystemExit(
-                  "master-reacquisition frontier is not clear: "
+                  "explicit handoff/modeset frontier is not clear: "
                   f"{record.get('classification')}"
               )
           if record.get("passed") is not True:
-              raise SystemExit("master-reacquisition status did not pass")
-          print("VC4 independent DRM-master modeset/page flip: PASS")
+              raise SystemExit("explicit handoff/modeset status did not pass")
+          required = (
+              "card_opened_before_drop",
+              "set_master_busy_proved",
+              "handoff_ready",
+              "original_master_dropped",
+              "new_file_master",
+              "selection_ok",
+              "baseline_state_read",
+              "independent_modeset_dumb_ok",
+              "independent_modeset_map_ok",
+              "independent_modeset_fb_ok",
+              "setcrtc_started",
+              "setcrtc_ok",
+              "modeset_current_fb_ok",
+              "independent_modeset_ok",
+              "pageflip_dumb_ok",
+              "pageflip_map_ok",
+              "pageflip_fb_ok",
+              "pageflip_ioctl_started",
+              "pageflip_queued",
+              "flip_event_ok",
+              "current_fb_ok",
+              "visual_pixels_ok",
+              "child_master_dropped",
+              "original_master_restored",
+              "handoff_order_reported",
+              "marker_order_valid",
+              "supervisor_ok",
+          )
+          missing = [name for name in required if record.get(name) is not True]
+          if missing:
+              raise SystemExit(
+                  "explicit handoff/modeset evidence missing: "
+                  + ", ".join(missing)
+              )
+          if record.get("schema_version") != 3:
+              raise SystemExit(
+                  "unexpected handoff/modeset status schema: "
+                  f"{record.get('schema_version')}"
+              )
+          print("VC4 explicit DRM-master handoff/modeset/page flip: PASS")
           PY
