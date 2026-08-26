@@ -174,7 +174,7 @@ WD40HMPCompletion *qmp_x_wd40_complete_hmp(const char *command_line,
 
     insert_before_once(
         "docs/devel/wd40-monitor-v2.rst",
-        """Text output capture\n-------------------\n""",
+        """Structured log-category control\n-------------------------------\n""",
         """Context-sensitive HMP completion\n--------------------------------\n\n``x-wd40-complete-hmp`` exposes the exact completion engine used by interactive\nHMP.  It covers command aliases, nested command tables, filename and block\nbackend arguments, and command-specific dynamic providers such as device,\nchardev, migration, trace-event, and snapshot names.  Availability filtering\ntherefore remains identical to the active target and machine phase.\n\nThe request accepts an optional byte cursor so a frontend can complete text in\nthe middle of an editor buffer.  The response identifies the active token's\nreplacement span and returns sorted complete candidate strings; text after the\ncursor is never inspected or discarded.  Offsets are UTF-8 byte offsets, and\nthe cursor must fall on a character boundary.\n\nThe result also reports when HMP's fixed completion capacity was filled and how\nmany filesystem candidates could not be represented as QMP UTF-8 strings.\nThis lets TTYphoon and other monitor-v2 clients reuse QEMU's live knowledge\nwithout embedding another completion implementation.\n\n""",
         owned_markers=(
             "Context-sensitive HMP completion",
