@@ -43,7 +43,7 @@ jobs:
 
       - name: Run Rage 128 tests
         run: |
-          meson test -C build \
+          build/pyvenv/bin/meson test -C build \
             test-ati-rop3 \
             display-vga-test \
             ati-rage128-pm4-test \
