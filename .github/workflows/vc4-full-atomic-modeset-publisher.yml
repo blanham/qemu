@@ -1,0 +1,109 @@
+name: Publish VC4 full atomic modeset
+
+on:
+  push:
+    branches:
+      - agent/vc4-full-atomic-modeset-publisher
+    paths:
+      - .github/workflows/vc4-full-atomic-modeset-publisher.yml
+      - .github/vc4-full-atomic-modeset-publisher/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-full-atomic-modeset-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BASE_SHA: 4091f35aa25ed4c784459497e750ccd6a9a17ecb
+      PRODUCT_BRANCH: agent/vc4-full-atomic-modeset-product
+      PAYLOAD_DIR: .github/vc4-full-atomic-modeset-publisher
+      PATCH_SHA256: d4483f5ead819555c066eb4d563dd8e95d98a6ad5e6689e352a3d2c61e034d49
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-full-atomic-modeset-publisher
+          fetch-depth: 0
+
+      - name: Verify and reconstruct the reviewed patch
+        run: |
+          set -euo pipefail
+          cd "$PAYLOAD_DIR"
+          sha256sum -c <<'SUMS'
+          19d13b1e46647d7d4a45c2e0998246329f1f29688d5ab2df093d7fdf37db04f4  part-00.b64
+          b4ef8043d6370cef29ada9735b7c951f051b3e12d232214669547ba89b819772  part-01.b64
+          2f890c5eedcc6bedf5ab751b9e9a536194f07c58154795d63c4537486406272a  part-02.b64
+          f9cd410e57773a940bd680b8af2d06204d8cc46e0e18dfe6830f1e6c1f542b51  part-03.b64
+          325bac398eabe7c40734b5dfecc7e2d1c779d08319a8cf7672870f92e334c6a8  part-04.b64
+          906081b288ea2cbcba4ea5043a277fc1e447641dcf5150cae5e9a9b430992bc0  part-05.b64
+          727242007d9942f7e52154a6a27026459662405d637e5300eca1cf7405dedeca  part-06.b64
+          22356e4664820bcc5501dd2b1d74da556005b14e57a93880c936d683a489055c  part-07.b64
+          ded0f3edd4a18cb3dce8f28dbfc2d337332b10b02666e084580bca90d66397d3  part-08.b64
+          6ba2104cd8313dafb0e21b202c7101dcb92bd3c9065ea37b4c7e5e3b2b0a8db3  part-09.b64
+          89afa311b5441d8f764514e5e5b9167f8dcc5fb52b16de4f37cdd361ae4f6735  part-10.b64
+          149c23c747305c9eac20af4b4609db41f329ac519c316bd5e4fa6532dcb5624f  part-11.b64
+          SUMS
+          cat part-{00,01,02,03,04,05,06,07,08,09,10,11}.b64 \
+            > /tmp/vc4-full-atomic.patch.b64
+          printf '%s  %s\n' \
+            ccb57168d9fbc5f64454ec356e55722f685a3d350050f00874799854eaf554ee \
+            /tmp/vc4-full-atomic.patch.b64 | sha256sum -c -
+          base64 --decode /tmp/vc4-full-atomic.patch.b64 \
+            > /tmp/vc4-full-atomic.patch
+          printf '%s  %s\n' "$PATCH_SHA256" /tmp/vc4-full-atomic.patch | \
+            sha256sum -c -
+
+      - name: Apply and validate the clean product commit
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BASE_SHA^{commit}"
+          git checkout --detach "$BASE_SHA"
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git am /tmp/vc4-full-atomic.patch
+
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          test "$(git log -1 --format=%s)" = \
+            "test/vc4: prove full atomic modeset"
+          test "$(git diff-tree --no-commit-id --name-only -r HEAD | wc -l)" = 5
+          git diff-tree --no-commit-id --name-only -r HEAD | diff -u - <(cat <<'FILES'
+          .github/workflows/vc4-kms-master-reacquire-probe.yml
+          scripts/vc4/enable-linux-kms-master-reacquire-probe.py
+          scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          scripts/vc4/summarize-linux-kms-master-reacquire.py
+          tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          FILES
+          )
+
+          test "$(git rev-parse HEAD:.github/workflows/vc4-kms-master-reacquire-probe.yml)" = \
+            38d83b31cb415e1193cb09152fcf5e3e50a7b343
+          test "$(git rev-parse HEAD:scripts/vc4/enable-linux-kms-master-reacquire-probe.py)" = \
+            0690c1409b0d9c8a1757dbdb855377b6887a0334
+          test "$(git rev-parse HEAD:scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py)" = \
+            132e080687bc06df5a2ffe962d476783b526fb42
+          test "$(git rev-parse HEAD:scripts/vc4/summarize-linux-kms-master-reacquire.py)" = \
+            352b9334077ac45f63f5896cc35c97ad1061fcb1
+          test "$(git rev-parse HEAD:tests/vc4/linux-kms-master-reacquire-probe.inc.c)" = \
+            0db00870cfd633d2367d3f62a9a23ccc01ce062d
+
+          python3 -m py_compile \
+            scripts/vc4/enable-linux-kms-master-reacquire-probe.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py \
+            scripts/vc4/summarize-linux-kms-master-reacquire.py
+          python3 scripts/vc4/summarize-linux-kms-master-reacquire-smoke.py
+          git diff --check "$BASE_SHA" HEAD
+          printf 'PRODUCT_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Publish the clean commit to the product branch
+        run: |
+          set -euo pipefail
+          git push --force origin "HEAD:${PRODUCT_BRANCH}"
+          printf 'Published validated VC4 full atomic-modeset commit %s\n' \
+            "$PRODUCT_SHA"
