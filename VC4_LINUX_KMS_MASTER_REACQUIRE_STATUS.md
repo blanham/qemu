@@ -1,34 +1,45 @@
-# VC4 independent DRM-master reacquisition
+# VC4 explicit DRM-master handoff, modeset, and page flip
 
 Validation passed: **true**
 
-Frontier: **`linux-vc4-kms-independent-master-modeset-pageflip-visual-clear`**
+Frontier: **`linux-vc4-kms-explicit-master-handoff-modeset-pageflip-visual-clear`**
 
 - Probe return code: `0`
 - DDC supplier root present: `True`
 - Module closure loaded: `True`
 - Native topology clear: `True`
 - Existing render submission preserved: `True`
-- Initial modeset completed: `True`
+- Initial inherited-file modeset completed: `True`
 - Inherited-file page flip completed: `True`
+- Child closed inherited descriptor: `True`
+- Child opened card0 before the drop: `True`
+- Pre-drop SET_MASTER returned EBUSY: `True`
+- Child reached the handoff gate: `True`
 - Original drm_file dropped master: `True`
-- Child closed the inherited descriptor: `True`
-- Child reopened card0: `True`
-- New drm_file acquired master: `True`
-- Connector and mode selected on new file: `True`
-- Baseline CRTC state read: `True`
-- New drm_file programmed SETCRTC: `True`
-- GETCRTC reports its initial FB: `True`
-- Independent-file modeset completed: `True`
-- Active CRTC reflects the new file: `True`
-- Independent-file page flip queued: `True`
+- Same new drm_file acquired master: `True`
+- New drm_file selected connector/mode: `True`
+- Pre-modeset CRTC state read: `True`
+- Independent modeset dumb buffer created: `True`
+- Independent modeset dumb buffer mapped: `True`
+- Independent modeset framebuffer created: `True`
+- Independent SETCRTC started: `True`
+- Independent SETCRTC completed: `True`
+- GETCRTC verified independent modeset: `True`
+- Independent modeset witness completed: `True`
+- Page-flip dumb buffer created: `True`
+- Page-flip dumb buffer mapped: `True`
+- Page-flip framebuffer created: `True`
+- Independent page-flip ioctl started: `True`
+- Independent page flip queued: `True`
 - Flip-complete event received: `True`
-- GETCRTC reports the new FB: `True`
+- GETCRTC reports flipped framebuffer: `True`
 - Visual-ready hold reached: `True`
-- Exact reacquired-master pixels verified: `True`
+- Exact final pixels verified: `True`
 - Child explicitly dropped master: `True`
-- Reacquisition witness completed: `True`
+- Child witness completed: `True`
 - Original drm_file reacquired master: `True`
+- Runtime reported handoff order: `True`
+- Recorded marker order is valid: `True`
 - Supervisor completed: `True`
 - Timeout: `False`
 - Failure stage: `None`
@@ -44,4 +55,4 @@ Frontier: **`linux-vc4-kms-independent-master-modeset-pageflip-visual-clear`**
 - Matching fraction: `1.0`
 - SHA-256: `a25ac477ac4beff66504925905fa056dea2a75b4c48b77e8f81d5c8e80c33aa8`
 
-After the established inherited-file modeset and page-flip baseline, PID 1 drops DRM master on its original card file. A bounded child closes that inherited descriptor before reopening /dev/dri/card0, explicitly acquires master on the new drm_file, enumerates the connector and mode, creates an initial framebuffer, programs it with DRM_IOCTL_MODE_SETCRTC, and verifies GETCRTC. It then creates a second framebuffer, queues an event-driven page flip, consumes DRM_EVENT_FLIP_COMPLETE, and verifies the final framebuffer ID. The host freezes QEMU at the independent-file visual-ready marker and requires every captured XRGB8888 pixel to match the final pattern. The child then drops master and exits, after which the original drm_file must reacquire master before the render witness continues.
+The child opens the primary DRM node while PID 1 still owns master and proves that SET_MASTER fails with EBUSY. PID 1 then drops master, and the same already-open child drm_file must explicitly acquire it. That new file independently enumerates a connector and mode, creates a first framebuffer, programs SETCRTC, and verifies the resulting CRTC state. It then creates a second framebuffer, queues an event-driven page flip, consumes DRM_EVENT_FLIP_COMPLETE, and verifies both GETCRTC and every captured XRGB8888 pixel. The child drops master before exiting, and PID 1 must reacquire it before the render witness continues.
