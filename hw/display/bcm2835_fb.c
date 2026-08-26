@@ -180,29 +180,27 @@ static void draw_line_src16(void *opaque, uint8_t *dst, const uint8_t *src,
 
         switch (bpp) {
         case 8:
-            *dst++ = rgb_to_pixel8(r, g, b);
+            *dst = rgb_to_pixel8(r, g, b);
             break;
         case 15:
             *(uint16_t *)dst = rgb_to_pixel15(r, g, b);
-            dst += 2;
             break;
         case 16:
             *(uint16_t *)dst = rgb_to_pixel16(r, g, b);
-            dst += 2;
             break;
         case 24:
             rgb888 = rgb_to_pixel24(r, g, b);
-            *dst++ = rgb888 & 0xff;
-            *dst++ = (rgb888 >> 8) & 0xff;
-            *dst++ = (rgb888 >> 16) & 0xff;
+            dst[0] = rgb888 & 0xff;
+            dst[1] = (rgb888 >> 8) & 0xff;
+            dst[2] = (rgb888 >> 16) & 0xff;
             break;
         case 32:
             *(uint32_t *)dst = rgb_to_pixel32(r, g, b);
-            dst += 4;
             break;
         default:
             return;
         }
+        dst += deststep;
     }
 }
 
@@ -225,7 +223,8 @@ static bool fb_update_display(void *opaque)
     int first = 0;
     int last = 0;
     int src_width = 0;
-    int dest_width = 0;
+    int dest_row_pitch;
+    int dest_col_pitch;
     uint32_t xoff = 0, yoff = 0;
 
     if (s->lock || !s->config.xres) {
@@ -238,28 +237,27 @@ static bool fb_update_display(void *opaque)
         yoff = s->config.yoffset;
     }
 
-    dest_width = s->config.xres;
-
     switch (surface_bits_per_pixel(surface)) {
     case 0:
         return true;
     case 8:
-        break;
     case 15:
-        dest_width *= 2;
-        break;
     case 16:
-        dest_width *= 2;
-        break;
     case 24:
-        dest_width *= 3;
-        break;
     case 32:
-        dest_width *= 4;
         break;
     default:
         hw_error("bcm2835_fb: bad color depth\n");
-        break;
+        return true;
+    }
+
+    dest_row_pitch = surface_stride(surface);
+    dest_col_pitch = surface_bytes_per_pixel(surface);
+    if (s->config.transform & BCM2835_FB_TRANSFORM_HFLIP) {
+        dest_col_pitch = -dest_col_pitch;
+    }
+    if (s->config.transform & BCM2835_FB_TRANSFORM_VFLIP) {
+        dest_row_pitch = -dest_row_pitch;
     }
 
     if (s->invalidate) {
@@ -271,11 +269,20 @@ static bool fb_update_display(void *opaque)
 
     framebuffer_update_display(surface, &s->fbsection,
                                s->config.xres, s->config.yres,
-                               src_width, dest_width, 0, s->invalidate,
-                               draw_line_src16, s, &first, &last);
+                               src_width, dest_row_pitch, dest_col_pitch,
+                               s->invalidate, draw_line_src16, s,
+                               &first, &last);
 
     if (first >= 0) {
-        qemu_console_update(s->con, 0, first, s->config.xres, last - first + 1);
+        int update_first = first;
+        int update_last = last;
+
+        if (s->config.transform & BCM2835_FB_TRANSFORM_VFLIP) {
+            update_first = s->config.yres - 1 - last;
+            update_last = s->config.yres - 1 - first;
+        }
+        qemu_console_update(s->con, 0, update_first, s->config.xres,
+                            update_last - update_first + 1);
     }
 
     s->invalidate = false;
@@ -284,6 +291,8 @@ static bool fb_update_display(void *opaque)
 
 void bcm2835_fb_validate_config(BCM2835FBConfig *config)
 {
+    config->transform &= BCM2835_FB_TRANSFORM_MASK;
+
     /*
      * Validate the config, and clip any bogus values into range,
      * as the hardware does. Note that fb_update_display() relies on
@@ -326,6 +335,7 @@ void bcm2835_fb_reconfigure(BCM2835FBState *s, BCM2835FBConfig *newconfig)
     s->lock = true;
 
     s->config = *newconfig;
+    s->config.transform &= BCM2835_FB_TRANSFORM_MASK;
 
     s->invalidate = true;
     qemu_console_resize(s->con, s->config.xres, s->config.yres);
@@ -336,7 +346,7 @@ static void bcm2835_fb_mbox_push(BCM2835FBState *s, uint32_t value)
 {
     uint32_t pitch;
     uint32_t size;
-    BCM2835FBConfig newconf;
+    BCM2835FBConfig newconf = { 0 };
 
     value &= ~0xf;
 
@@ -353,6 +363,7 @@ static void bcm2835_fb_mbox_push(BCM2835FBState *s, uint32_t value)
     /* Copy fields which we don't want to change from the existing config */
     newconf.pixo = s->config.pixo;
     newconf.alpha = s->config.alpha;
+    newconf.transform = 0;
 
     bcm2835_fb_validate_config(&newconf);
 
@@ -420,10 +431,20 @@ static const MemoryRegionOps bcm2835_fb_ops = {
     .valid.max_access_size = 4,
 };
 
+static int bcm2835_fb_pre_load(void *opaque)
+{
+    BCM2835FBState *s = opaque;
+
+    /* Version 1 streams predate native-HVS reflection state. */
+    s->config.transform = 0;
+    return 0;
+}
+
 static const VMStateDescription vmstate_bcm2835_fb = {
     .name = TYPE_BCM2835_FB,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .pre_load = bcm2835_fb_pre_load,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(lock, BCM2835FBState),
         VMSTATE_BOOL(invalidate, BCM2835FBState),
@@ -439,6 +460,7 @@ static const VMStateDescription vmstate_bcm2835_fb = {
         VMSTATE_UNUSED(8), /* Was pitch and size */
         VMSTATE_UINT32(config.pixo, BCM2835FBState),
         VMSTATE_UINT32(config.alpha, BCM2835FBState),
+        VMSTATE_UINT32_V(config.transform, BCM2835FBState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -488,6 +510,7 @@ static void bcm2835_fb_realize(DeviceState *dev, Error **errp)
     s->initial_config.xoffset = 0;
     s->initial_config.yoffset = 0;
     s->initial_config.base = s->vcram_base + BCM2835_FB_OFFSET;
+    s->initial_config.transform = 0;
 
     s->dma_mr = MEMORY_REGION(obj);
     address_space_init(&s->dma_as, s->dma_mr, TYPE_BCM2835_FB "-memory");

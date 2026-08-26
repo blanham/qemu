@@ -44,6 +44,8 @@ FRAME_STEP_NS = 20_000_000
 
 SCALER_CTL0_END = 1 << 31
 SCALER_CTL0_VALID = 1 << 30
+SCALER_CTL0_HFLIP = 1 << 16
+SCALER_CTL0_VFLIP = 1 << 15
 SCALER_CTL0_RGBA_EXPAND_ROUND = 3 << 11
 SCALER_CTL0_ORDER_RGBA = 0 << 13
 SCALER_CTL0_ORDER_BGRA = 1 << 13
@@ -75,6 +77,8 @@ RGB888_SCANOUT_BUFFER_B = 0x00205000
 RGBA8888_SCANOUT_LIST_WORD = 0x160
 RGBA8888_SCANOUT_BUFFER_A = 0x00206000
 RGBA8888_SCANOUT_BUFFER_B = 0x00207000
+REFLECT_SCANOUT_LIST_WORD = 0x180
+REFLECT_SCANOUT_BUFFER = 0x00208000
 
 
 class QMPClient:
@@ -502,6 +506,103 @@ def exercise_scanout(qtest: Any, qmp: QMPClient, temp: Path) -> None:
     expect_disabled_empty(qtest, SCANOUT_CHANNEL)
 
 
+def reflected_quadrants(
+    colors: tuple[tuple[int, int, int], ...],
+    *,
+    hflip: bool,
+    vflip: bool,
+) -> tuple[tuple[int, int, int], ...]:
+    rows = [list(colors[:2]), list(colors[2:])]
+
+    if hflip:
+        rows = [list(reversed(row)) for row in rows]
+    if vflip:
+        rows.reverse()
+    return tuple(color for row in rows for color in row)
+
+
+def exercise_reflected_scanout(
+    qtest: Any,
+    qmp: QMPClient,
+    temp: Path,
+) -> None:
+    packed_colors = (
+        0x00FF0000,
+        0x0000FF00,
+        0x000000FF,
+        0x00FFFFFF,
+    )
+    expected_colors = (
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 255),
+    )
+    dlist = SCALER_DLIST_START + REFLECT_SCANOUT_LIST_WORD * 4
+
+    write_pattern(qtest, REFLECT_SCANOUT_BUFFER, packed_colors)
+    for label, flags, hflip, vflip in (
+        ("hflip", SCALER_CTL0_HFLIP, True, False),
+        ("vflip", SCALER_CTL0_VFLIP, False, True),
+        (
+            "hflip-vflip",
+            SCALER_CTL0_HFLIP | SCALER_CTL0_VFLIP,
+            True,
+            True,
+        ),
+    ):
+        pointer = REFLECT_SCANOUT_BUFFER
+        if vflip:
+            # Linux's linear Y-reflection list starts at the final row.
+            pointer += (SCANOUT_HEIGHT - 1) * SCANOUT_PITCH
+        ctl0 = (
+            SCALER_CTL0_VALID
+            | (7 << 24)
+            | SCALER_CTL0_ORDER_ABGR
+            | SCALER_CTL0_RGBA_EXPAND_ROUND
+            | SCALER_CTL0_UNITY
+            | HVS_PIXEL_FORMAT_RGBA8888
+            | flags
+        )
+        element = (
+            ctl0,
+            0xFF000000,
+            (SCANOUT_HEIGHT << 16) | SCANOUT_WIDTH,
+            0xC0C0C0C0,
+            pointer,
+            0xC0C0C0C0,
+            SCANOUT_PITCH,
+            SCALER_CTL0_END,
+        )
+        for index, value in enumerate(element):
+            qtest.writel(dlist + index * 4, value)
+
+        qtest.writel(
+            SCALER_DISPLIST[SCANOUT_CHANNEL],
+            REFLECT_SCANOUT_LIST_WORD,
+        )
+        qtest.writel(
+            SCALER_DISPCTRLX[SCANOUT_CHANNEL],
+            SCALER_DISPCTRLX_ENABLE
+            | (SCANOUT_WIDTH << 12)
+            | SCANOUT_HEIGHT,
+        )
+
+        image = temp / f"hvs-reflected-{label}.ppm"
+        qmp.execute("screendump", {"filename": str(image)})
+        expect_pattern(
+            image,
+            reflected_quadrants(
+                expected_colors,
+                hflip=hflip,
+                vflip=vflip,
+            ),
+        )
+
+        qtest.writel(SCALER_DISPCTRLX[SCANOUT_CHANNEL], 0)
+        expect_disabled_empty(qtest, SCANOUT_CHANNEL)
+
+
 def exercise_rgb565_scanout(
     qtest: Any,
     qmp: QMPClient,
@@ -809,6 +910,7 @@ def main() -> int:
                     )
 
             exercise_scanout(qtest, qmp, temp)
+            exercise_reflected_scanout(qtest, qmp, temp)
             exercise_rgb565_scanout(qtest, qmp, temp)
             exercise_rgb888_scanout(qtest, qmp, temp)
             exercise_rgba8888_orders(qtest, qmp, temp)

@@ -102,6 +102,9 @@ static void bcm2835_property_mbox_push(BCM2835PropertyState *s, uint32_t value)
      * it at the end.
      */
     BCM2835FBConfig fbconfig = s->fbdev->config;
+
+    /* Firmware framebuffer requests replace any native HVS reflection. */
+    fbconfig.transform = 0;
     bool fbconfig_updated = false;
 
     value &= ~0xf;

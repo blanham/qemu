@@ -38,6 +38,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(BCM2835FBState, BCM2835_FB)
 #define BCM2835_FB_PIXEL_ORDER_HVS_RGBX4444 11
 #define BCM2835_FB_PIXEL_ORDER_HVS_XRGB1555 12
 
+/* Host-surface transforms requested by an HVS display element. */
+#define BCM2835_FB_TRANSFORM_HFLIP UINT32_C(0x1)
+#define BCM2835_FB_TRANSFORM_VFLIP UINT32_C(0x2)
+#define BCM2835_FB_TRANSFORM_MASK \
+    (BCM2835_FB_TRANSFORM_HFLIP | BCM2835_FB_TRANSFORM_VFLIP)
+
 /*
  * Configuration information about the fb which the guest can program
  * via the mailbox property interface.
@@ -50,6 +56,7 @@ typedef struct {
     uint32_t base;
     uint32_t pixo;
     uint32_t alpha;
+    uint32_t transform;
 } BCM2835FBConfig;
 
 struct BCM2835FBState {

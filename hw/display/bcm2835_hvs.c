@@ -5,7 +5,8 @@
  * This device models the hardware-visible HVS register/DLIST window, the
  * display-list handoff needed by the CRTC vblank path, and the common native
  * KMS scanout contract: one full-screen, unity-scaled, linear packed-RGB
- * plane using a layout advertised by the Linux VC4 driver.
+ * plane using a layout advertised by the Linux VC4 driver, including the
+ * horizontal and vertical reflection bits programmed in the display list.
  * Unsupported compositions remain visible to the guest as programmed but do
  * not silently receive an incorrect software rendering approximation.
  *
@@ -169,6 +170,9 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
     uint32_t width;
     uint32_t height;
     uint32_t pitch;
+    uint32_t transform;
+    uint32_t base;
+    uint64_t last_row_offset;
 
     if (!(control & SCALER_DISPCTRLX_ENABLE) || !s->fb) {
         return false;
@@ -206,7 +210,6 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
         list_index + element_words >= BCM2835_HVS_REG_WORDS ||
         !(s->regs[list_index + element_words] & SCALER_CTL0_END) ||
         tiling != SCALER_CTL0_TILING_LINEAR ||
-        ctl0 & (SCALER_CTL0_HFLIP | SCALER_CTL0_VFLIP) ||
         !(ctl0 & SCALER_CTL0_UNITY)) {
         return false;
     }
@@ -304,6 +307,14 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
         return false;
     }
 
+    transform = 0;
+    if (ctl0 & SCALER_CTL0_HFLIP) {
+        transform |= BCM2835_FB_TRANSFORM_HFLIP;
+    }
+    if (ctl0 & SCALER_CTL0_VFLIP) {
+        transform |= BCM2835_FB_TRANSFORM_VFLIP;
+    }
+
     pos0 = s->regs[list_index + SCALER_UNITY_PLANE_POS0_WORD];
     pos2 = s->regs[list_index + SCALER_UNITY_PLANE_POS2_WORD];
     width = pos2 & SCALER_POS2_WIDTH_MASK;
@@ -321,6 +332,20 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
         return false;
     }
 
+    base = s->regs[list_index + SCALER_UNITY_PLANE_PTR_WORD];
+    if (transform & BCM2835_FB_TRANSFORM_VFLIP) {
+        /*
+         * Linux points a reflected linear element at its final source row.
+         * The generic framebuffer helper walks source rows forward and
+         * reflects the host destination, so normalize back to row zero.
+         */
+        last_row_offset = (uint64_t)(height - 1) * pitch;
+        if (base < last_row_offset) {
+            return false;
+        }
+        base -= last_row_offset;
+    }
+
     *config = s->fb->config;
     config->xres = width;
     config->yres = height;
@@ -329,8 +354,9 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
     config->xoffset = 0;
     config->yoffset = 0;
     config->bpp = bits_per_pixel;
-    config->base = s->regs[list_index + SCALER_UNITY_PLANE_PTR_WORD];
+    config->base = base;
     config->pixo = pixo;
+    config->transform = transform;
     return true;
 }
 
