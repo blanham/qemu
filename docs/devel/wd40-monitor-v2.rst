@@ -76,3 +76,8 @@ transition the logger cannot perform.
 Trace-event patterns remain managed through QEMU's tracing interfaces.  This
 API covers the ordinary named categories in ``qemu_log_items`` and deliberately
 reuses ``qemu_set_log()`` for all state changes.
+
+Composite aliases are reported as enabled only when all constituent bits are
+active. Consequently, selecting x86 ``irq`` alone does not misreport the
+compatible aggregate ``int`` as enabled; selecting ``int`` enables and reports
+``int``, ``irq``, and ``exception`` together.

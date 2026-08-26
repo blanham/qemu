@@ -1,0 +1,133 @@
+name: WD40 x86 IRQ and exception log split
+
+on:
+  push:
+    branches:
+      - wd40/qol-split-irq-exception-logs
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-split-irq-exception-logs
+  cancel-in-progress: false
+
+jobs:
+  transform-build-test-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply, replay, and validate the logging contract
+        run: |
+          set -Eeuo pipefail
+
+          apply_contract() {
+            python3 scripts/wd40/apply-rustless-build.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control-hardening.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control.py
+            python3 scripts/wd40/apply-subtractive-log-mask.py
+            python3 scripts/wd40/apply-hmp-command-introspection-hardening.py
+            python3 scripts/wd40/apply-hmp-command-introspection.py
+            python3 scripts/wd40/apply-structured-log-control.py
+            python3 scripts/wd40/apply-structured-log-control-hardening.py
+            python3 scripts/wd40/apply-split-irq-exception-logs.py
+          }
+
+          apply_contract
+          git diff --no-ext-diff --binary > /tmp/wd40-split-pass1.diff
+          apply_contract
+          git diff --no-ext-diff --binary > /tmp/wd40-split-pass2.diff
+          cmp /tmp/wd40-split-pass1.diff /tmp/wd40-split-pass2.diff
+
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-structured-log-control.py
+          python3 scripts/ci/check-wd40-split-irq-exception-logs.py
+          git diff --check
+
+      - name: Install C build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build x86_64, AArch64, and logging tests without Rust
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-split-logs
+          cd build-split-logs
+          ../configure \
+            --target-list=x86_64-softmmu,aarch64-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 \
+            tests/unit/test-logging \
+            qemu-system-x86_64 \
+            qemu-system-aarch64
+          cd ..
+
+      - name: Exercise parser, QMP aliases, and x86 guest routing
+        run: |
+          set -Eeuo pipefail
+          ./build-split-logs/tests/unit/test-logging --tap -k
+          python3 scripts/ci/check-wd40-rustless.py build-split-logs
+          python3 scripts/ci/check-wd40-structured-log-control.py build-split-logs
+          python3 scripts/ci/check-wd40-split-irq-exception-logs.py build-split-logs
+
+      - name: Publish the validated split
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-split-logs
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-structured-log-control.py
+          python3 scripts/ci/check-wd40-split-irq-exception-logs.py
+          git diff --check
+          git add -A
+          if git diff --cached --quiet; then
+            echo "x86 IRQ/exception log split already applied"
+            exit 0
+          fi
+          git commit -m "target/i386: split IRQ and exception logging
+
+          Preserve -d int as a compatible aggregate while adding provenance-
+          aware irq and exception categories. Route asynchronous x86 delivery
+          and synchronous faults separately, report composite QMP aliases
+          exactly, and validate the split with a real-mode #UD plus PIT IRQ0
+          smoke guest."
+          git push origin "HEAD:${GITHUB_REF_NAME}"

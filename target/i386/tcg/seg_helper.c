@@ -1203,8 +1203,9 @@ void do_interrupt_all(X86CPU *cpu, int intno, int is_int,
 {
     CPUX86State *env = &cpu->env;
     uint64_t last_pc = env->eip + env->segs[R_CS].base;
+    int log_mask = is_hw ? CPU_LOG_IRQ : CPU_LOG_EXCEPTION;
 
-    if (qemu_loglevel_mask(CPU_LOG_INT)) {
+    if (qemu_loglevel_mask(log_mask)) {
         if ((env->cr[0] & CR0_PE_MASK)) {
             static int count;
 

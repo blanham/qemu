@@ -184,7 +184,7 @@ unsigned qemu_get_log_mask(void)
 
         info->name = g_strdup(item->name);
         info->help = g_strdup(item->help);
-        info->enabled = (mask & item->mask) != 0;
+        info->enabled = (mask & item->mask) == item->mask;
         info->sticky = item->mask == LOG_PER_THREAD;
         entry->value = info;
         *tail = entry;

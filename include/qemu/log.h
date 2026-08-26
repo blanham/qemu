@@ -39,6 +39,16 @@ bool qemu_log_separate(void);
 #define LOG_TB_OP_PLUGIN   (1u << 22)
 #define LOG_INVALID_MEM    (1u << 23)
 
+/*
+ * CPU_LOG_INT is the legacy mixed interrupt/exception category. New code
+ * with reliable provenance should use one of the specific bits below; the
+ * user-facing "int" selector remains their compatible aggregate.
+ */
+#define CPU_LOG_IRQ        (1u << 24)
+#define CPU_LOG_EXCEPTION  (1u << 25)
+#define CPU_LOG_INT_ALL \
+    (CPU_LOG_INT | CPU_LOG_IRQ | CPU_LOG_EXCEPTION)
+
 /* Lock/unlock output. */
 
 /**
