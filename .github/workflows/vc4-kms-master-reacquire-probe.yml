@@ -1,4 +1,4 @@
-name: VC4 explicit DRM-master handoff, modeset, and page-flip probe
+name: VC4 explicit master handoff and atomic primary-plane probe
 
 on:
   push:
@@ -88,7 +88,7 @@ jobs:
           mkdir -p \
             "$OFFICIAL_DIR" "$DTB_DIR" "$PROBE_DIR" "$EVIDENCE_DIR"
 
-      - name: Validate the explicit handoff/modeset/page-flip witness
+      - name: Validate explicit handoff and atomic primary-plane witness
         run: |
           set -euo pipefail
           python3 scripts/vc4/enable-linux-kms-master-reacquire-probe.py
@@ -120,6 +120,20 @@ jobs:
           grep -Fq 'VC4_MASTER_REACQUIRE_MODESET_BUFFER' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'VC4_MASTER_REACQUIRE_ATOMIC_BUFFER' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'DRM_CLIENT_CAP_ATOMIC' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'DRM_IOCTL_MODE_ATOMIC' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'atomic-primary-test-only' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'atomic-primary-commit' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'DRM_MODE_OBJECT_CRTC' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
@@ -170,6 +184,7 @@ jobs:
               "setcrtc-independent-file",
               "VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER",
               "DRM_IOCTL_MODE_PAGE_FLIP",
+              "vc4_master_reacquire_atomic_swap",
           )
           parent_order = (
               '"wait-handoff-ready"',
@@ -192,7 +207,7 @@ jobs:
                   raise SystemExit(
                       f"{label} handoff order invalid: {positions}"
                   )
-          print("VC4 explicit handoff/modeset/page-flip source order: PASS")
+          print("VC4 explicit handoff/atomic-primary source order: PASS")
           PY
 
       - name: Fetch pinned kernel, DTB, and corrected module roots
@@ -225,7 +240,7 @@ jobs:
             "$MODULE_DIR/MANIFEST")
           test "$i2c_line" -lt "$vc4_line"
 
-      - name: Build the handoff/modeset initramfs and native-KMS DTB
+      - name: Build the handoff/atomic initramfs and native-KMS DTB
         run: |
           set -euo pipefail
           bash scripts/vc4/build-linux-v3d-modular-initramfs.sh \
@@ -260,7 +275,20 @@ jobs:
             VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED \
             VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY \
             VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED \
             VC4_LINUX_KMS_MASTER_REACQUIRE_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_RESTORED \
@@ -303,7 +331,7 @@ jobs:
           python3 scripts/vc4/v3d-smoke.py \
             --qemu build/qemu-system-aarch64
 
-      - name: Run the bounded explicit handoff/modeset witness
+      - name: Run bounded explicit handoff and atomic-plane witness
         run: |
           set +e
           python3 scripts/vc4/raspi3-kms-master-reacquire-visual-probe.py \
@@ -313,14 +341,14 @@ jobs:
             --dtb "$DTB_DIR/kms.dtb" \
             --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
             --out-dir "$PROBE_DIR" \
-            --seconds 140 --sample-interval 5 \
+            --seconds 150 --sample-interval 5 \
             > "$PROBE_DIR/probe.stdout" 2>&1
           rc=$?
           printf '%s\n' "$rc" > "$PROBE_DIR/return-code"
           cat "$PROBE_DIR/probe.stdout"
           exit 0
 
-      - name: Record the exact handoff/modeset/page-flip frontier
+      - name: Record the explicit handoff/atomic-plane frontier
         if: always()
         run: |
           set -euo pipefail
@@ -366,12 +394,12 @@ jobs:
           git add -- "$STATUS_JSON" "$STATUS_MD"
           if ! git diff --cached --quiet; then
             git commit -m \
-              "test/vc4: record explicit DRM-master handoff/modeset frontier [skip ci]"
+              "test/vc4: record atomic primary-plane frontier [skip ci]"
             git pull --rebase origin "$BRANCH"
             git push origin HEAD:"$BRANCH"
           fi
 
-      - name: Require the current explicit handoff/modeset proof
+      - name: Require explicit handoff and atomic primary-plane proof
         if: always()
         run: |
           set -euo pipefail
@@ -385,20 +413,20 @@ jobs:
           record = json.loads(path.read_text(encoding="utf-8"))
           expected_classification = (
               "linux-vc4-kms-explicit-master-handoff-"
-              "modeset-pageflip-visual-clear"
+              "atomic-primary-pageflip-visual-clear"
           )
           if record.get("source_sha") != expected_sha:
               raise SystemExit(
-                  "explicit handoff/modeset status source mismatch: "
+                  "explicit handoff/atomic status source mismatch: "
                   f"{record.get('source_sha')} != {expected_sha}"
               )
           if record.get("classification") != expected_classification:
               raise SystemExit(
-                  "explicit handoff/modeset frontier is not clear: "
+                  "explicit handoff/atomic frontier is not clear: "
                   f"{record.get('classification')}"
               )
           if record.get("passed") is not True:
-              raise SystemExit("explicit handoff/modeset status did not pass")
+              raise SystemExit("explicit handoff/atomic status did not pass")
           required = (
               "card_opened_before_drop",
               "set_master_busy_proved",
@@ -421,6 +449,19 @@ jobs:
               "pageflip_queued",
               "flip_event_ok",
               "current_fb_ok",
+              "atomic_caps_ok",
+              "atomic_primary_plane_ok",
+              "atomic_crtc_active_ok",
+              "atomic_dumb_ok",
+              "atomic_map_ok",
+              "atomic_fb_ok",
+              "atomic_test_only_ok",
+              "atomic_ioctl_started",
+              "atomic_queued",
+              "atomic_event_ok",
+              "atomic_current_fb_ok",
+              "atomic_visual_ready",
+              "atomic_ok",
               "visual_pixels_ok",
               "child_master_dropped",
               "original_master_restored",
@@ -431,13 +472,13 @@ jobs:
           missing = [name for name in required if record.get(name) is not True]
           if missing:
               raise SystemExit(
-                  "explicit handoff/modeset evidence missing: "
+                  "explicit handoff/atomic evidence missing: "
                   + ", ".join(missing)
               )
-          if record.get("schema_version") != 3:
+          if record.get("schema_version") != 4:
               raise SystemExit(
-                  "unexpected handoff/modeset status schema: "
+                  "unexpected handoff/atomic status schema: "
                   f"{record.get('schema_version')}"
               )
-          print("VC4 explicit DRM-master handoff/modeset/page flip: PASS")
+          print("VC4 explicit master handoff/atomic primary plane: PASS")
           PY

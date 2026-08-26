@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize the explicit VC4 DRM-master handoff/modeset/page-flip witness."""
+"""Summarize explicit VC4 master handoff and atomic-primary scanout."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 CLEAR = (
     "linux-vc4-kms-explicit-master-handoff-"
-    "modeset-pageflip-visual-clear"
+    "atomic-primary-pageflip-visual-clear"
 )
 
 MODESET_FAILURE_RE = re.compile(
@@ -48,7 +48,20 @@ WITNESS_MARKER_ORDER = (
     "VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_RESTORED",
@@ -211,6 +224,32 @@ def classify(evidence: dict[str, Any]) -> str:
         return "vc4-kms-master-handoff-event-incomplete"
     if not evidence["current_fb_ok"]:
         return "vc4-kms-master-handoff-current-fb-incomplete"
+    if not evidence["atomic_caps_ok"]:
+        return "vc4-kms-master-handoff-atomic-caps-incomplete"
+    if not evidence["atomic_primary_plane_ok"]:
+        return "vc4-kms-master-handoff-atomic-primary-plane-incomplete"
+    if not evidence["atomic_crtc_active_ok"]:
+        return "vc4-kms-master-handoff-atomic-crtc-active-incomplete"
+    if not evidence["atomic_dumb_ok"]:
+        return "vc4-kms-master-handoff-atomic-dumb-incomplete"
+    if not evidence["atomic_map_ok"]:
+        return "vc4-kms-master-handoff-atomic-map-incomplete"
+    if not evidence["atomic_fb_ok"]:
+        return "vc4-kms-master-handoff-atomic-fb-incomplete"
+    if not evidence["atomic_test_only_ok"]:
+        return "vc4-kms-master-handoff-atomic-test-only-incomplete"
+    if not evidence["atomic_ioctl_started"]:
+        return "vc4-kms-master-handoff-atomic-ioctl-not-started"
+    if not evidence["atomic_queued"]:
+        return "vc4-kms-master-handoff-atomic-not-queued"
+    if not evidence["atomic_event_ok"]:
+        return "vc4-kms-master-handoff-atomic-event-incomplete"
+    if not evidence["atomic_current_fb_ok"]:
+        return "vc4-kms-master-handoff-atomic-current-fb-incomplete"
+    if not evidence["atomic_visual_ready"]:
+        return "vc4-kms-master-handoff-atomic-visual-not-ready"
+    if not evidence["atomic_ok"]:
+        return "vc4-kms-master-handoff-atomic-incomplete"
     if not evidence["visual_ready"]:
         return "vc4-kms-master-handoff-visual-not-ready"
     if not evidence["image_present"]:
@@ -335,6 +374,51 @@ def measure(
         "current_fb_ok": marker(
             serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK"
         ),
+        "atomic_caps_ok": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK"
+        ),
+        "atomic_primary_plane_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK",
+        ),
+        "atomic_crtc_active_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK",
+        ),
+        "atomic_dumb_ok": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK"
+        ),
+        "atomic_map_ok": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK"
+        ),
+        "atomic_fb_ok": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK"
+        ),
+        "atomic_test_only_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK",
+        ),
+        "atomic_ioctl_started": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START",
+        ),
+        "atomic_queued": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED"
+        ),
+        "atomic_event_ok": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK"
+        ),
+        "atomic_current_fb_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK",
+        ),
+        "atomic_visual_ready": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY",
+        ),
+        "atomic_ok": marker(
+            serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK"
+        ),
         "visual_ready": marker(
             serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY"
         ),
@@ -411,7 +495,7 @@ def build_record(
     image_witness = image if image_present else None
 
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "source_sha": source_sha,
         "run_id": run_id,
         "run_attempt": run_attempt,
@@ -431,12 +515,21 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
         ("DDC supplier root present", record["ddc_supplier_root_present"]),
         ("Module closure loaded", record["module_closure_ok"]),
         ("Native topology clear", record["native_kms_topology_clear"]),
-        ("Existing render submission preserved", record["render_submission_preserved"]),
+        (
+            "Existing render submission preserved",
+            record["render_submission_preserved"],
+        ),
         ("Initial inherited-file modeset completed", record["modeset_ok"]),
         ("Inherited-file page flip completed", record["baseline_pageflip_ok"]),
         ("Child closed inherited descriptor", record["inherited_fd_closed"]),
-        ("Child opened card0 before the drop", record["card_opened_before_drop"]),
-        ("Pre-drop SET_MASTER returned EBUSY", record["set_master_busy_proved"]),
+        (
+            "Child opened card0 before the drop",
+            record["card_opened_before_drop"],
+        ),
+        (
+            "Pre-drop SET_MASTER returned EBUSY",
+            record["set_master_busy_proved"],
+        ),
         ("Child reached the handoff gate", record["handoff_ready"]),
         ("Original drm_file dropped master", record["original_master_dropped"]),
         ("Same new drm_file acquired master", record["new_file_master"]),
@@ -456,20 +549,45 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
         ),
         ("Independent SETCRTC started", record["setcrtc_started"]),
         ("Independent SETCRTC completed", record["setcrtc_ok"]),
-        ("GETCRTC verified independent modeset", record["modeset_current_fb_ok"]),
-        ("Independent modeset witness completed", record["independent_modeset_ok"]),
+        (
+            "GETCRTC verified independent modeset",
+            record["modeset_current_fb_ok"],
+        ),
+        (
+            "Independent modeset witness completed",
+            record["independent_modeset_ok"],
+        ),
         ("Page-flip dumb buffer created", record["pageflip_dumb_ok"]),
         ("Page-flip dumb buffer mapped", record["pageflip_map_ok"]),
         ("Page-flip framebuffer created", record["pageflip_fb_ok"]),
-        ("Independent page-flip ioctl started", record["pageflip_ioctl_started"]),
+        (
+            "Independent page-flip ioctl started",
+            record["pageflip_ioctl_started"],
+        ),
         ("Independent page flip queued", record["pageflip_queued"]),
-        ("Flip-complete event received", record["flip_event_ok"]),
-        ("GETCRTC reports flipped framebuffer", record["current_fb_ok"]),
+        ("Legacy flip-complete event received", record["flip_event_ok"]),
+        ("GETCRTC reports legacy-flipped framebuffer", record["current_fb_ok"]),
+        ("Atomic client capability enabled", record["atomic_caps_ok"]),
+        ("Active primary plane identified", record["atomic_primary_plane_ok"]),
+        ("Active CRTC property identified", record["atomic_crtc_active_ok"]),
+        ("Atomic replacement dumb buffer created", record["atomic_dumb_ok"]),
+        ("Atomic replacement dumb buffer mapped", record["atomic_map_ok"]),
+        ("Atomic replacement framebuffer created", record["atomic_fb_ok"]),
+        ("Atomic TEST_ONLY commit completed", record["atomic_test_only_ok"]),
+        ("Atomic primary-plane ioctl started", record["atomic_ioctl_started"]),
+        ("Atomic primary-plane update queued", record["atomic_queued"]),
+        ("Atomic flip-complete event received", record["atomic_event_ok"]),
+        ("GETCRTC reports atomic framebuffer", record["atomic_current_fb_ok"]),
+        ("Atomic visual-ready hold reached", record["atomic_visual_ready"]),
+        ("Atomic primary-plane witness completed", record["atomic_ok"]),
         ("Visual-ready hold reached", record["visual_ready"]),
         ("Exact final pixels verified", record["visual_pixels_ok"]),
         ("Child explicitly dropped master", record["child_master_dropped"]),
         ("Child witness completed", record["witness_ok"]),
-        ("Original drm_file reacquired master", record["original_master_restored"]),
+        (
+            "Original drm_file reacquired master",
+            record["original_master_restored"],
+        ),
         ("Runtime reported handoff order", record["handoff_order_reported"]),
         ("Recorded marker order is valid", record["marker_order_valid"]),
         ("Supervisor completed", record["supervisor_ok"]),
@@ -478,7 +596,7 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
         ("Failure errno", record["failure_errno"]),
     )
     lines = [
-        "# VC4 explicit DRM-master handoff, modeset, and page flip",
+        "# VC4 explicit DRM-master handoff and atomic primary-plane flip",
         "",
         f"Validation passed: **{'true' if record['passed'] else 'false'}**",
         "",
@@ -510,10 +628,16 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
             "explicitly acquire it. That new file independently enumerates "
             "a connector and mode, creates a first framebuffer, programs "
             "SETCRTC, and verifies the resulting CRTC state. It then creates "
-            "a second framebuffer, queues an event-driven page flip, consumes "
-            "DRM_EVENT_FLIP_COMPLETE, and verifies both GETCRTC and every "
-            "captured XRGB8888 pixel. The child drops master before exiting, "
-            "and PID 1 must reacquire it before the render witness continues.",
+            "a second framebuffer and completes a legacy event-driven page "
+            "flip. While still master on the same drm_file, it enables atomic "
+            "UAPI, identifies the active primary plane and its FB_ID property, "
+            "TEST_ONLY-validates a third framebuffer, then queues a "
+            "nonblocking "
+            "atomic primary-plane update with a flip-complete event. GETCRTC "
+            "and every captured XRGB8888 pixel must expose that third buffer. "
+            "The child drops master before exiting, and PID 1 must "
+            "reacquire it "
+            "before the render witness continues.",
         )
     )
     path.write_text("\n".join(lines) + "\n")

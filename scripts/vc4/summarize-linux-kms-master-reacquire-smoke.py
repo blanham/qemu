@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise durable VC4 explicit-master handoff/modeset classifications."""
+"""Exercise explicit VC4 master-handoff and atomic-primary classifications."""
 
 from __future__ import annotations
 
@@ -64,6 +64,32 @@ MISSING_CLASSIFICATIONS = {
         "vc4-kms-master-handoff-event-incomplete",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK":
         "vc4-kms-master-handoff-current-fb-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK":
+        "vc4-kms-master-handoff-atomic-caps-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK":
+        "vc4-kms-master-handoff-atomic-primary-plane-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK":
+        "vc4-kms-master-handoff-atomic-crtc-active-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK":
+        "vc4-kms-master-handoff-atomic-dumb-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK":
+        "vc4-kms-master-handoff-atomic-map-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK":
+        "vc4-kms-master-handoff-atomic-fb-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK":
+        "vc4-kms-master-handoff-atomic-test-only-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START":
+        "vc4-kms-master-handoff-atomic-ioctl-not-started",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED":
+        "vc4-kms-master-handoff-atomic-not-queued",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK":
+        "vc4-kms-master-handoff-atomic-event-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK":
+        "vc4-kms-master-handoff-atomic-current-fb-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY":
+        "vc4-kms-master-handoff-atomic-visual-not-ready",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK":
+        "vc4-kms-master-handoff-atomic-incomplete",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY":
         "vc4-kms-master-handoff-visual-not-ready",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED":
@@ -270,7 +296,8 @@ def main() -> int:
     )
 
     print(
-        "VC4 explicit DRM-master handoff/modeset classifications: PASS"
+        "VC4 explicit DRM-master handoff/atomic-primary "
+        "classifications: PASS"
     )
     return 0
 

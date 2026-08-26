@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enable the explicit VC4 DRM-master handoff, modeset, and page-flip witness."""
+"""Enable explicit VC4 DRM-master handoff and atomic-primary witness."""
 
 from __future__ import annotations
 
@@ -35,7 +35,20 @@ MARKERS = (
     "VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_CURRENT_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CRTC_ACTIVE_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_DUMB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MAP_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_TEST_ONLY_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_IOCTL_START",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_QUEUED",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_RESTORED",
@@ -115,7 +128,7 @@ def main() -> int:
     patch_source(args.source)
     print(
         "Enabled explicit VC4 DRM-master handoff, independent modeset, "
-        f"and page-flip witness in {args.source}"
+        f"legacy page flip, and atomic primary-plane witness in {args.source}"
     )
     return 0
 
