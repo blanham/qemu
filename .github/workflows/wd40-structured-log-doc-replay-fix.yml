@@ -69,10 +69,12 @@ jobs:
       - name: Publish validated transformer repair
         run: |
           set -Eeuo pipefail
+          # GitHub Actions tokens cannot publish workflow-file changes.  The
+          # connected repository writer lands that reviewed integration-CI
+          # update separately; this job publishes only ordinary source files.
           git add \
             scripts/wd40/apply-structured-log-control.py \
-            scripts/wd40/apply-structured-log-control-hardening.py \
-            .github/workflows/wd40-qol-integration.yml
+            scripts/wd40/apply-structured-log-control-hardening.py
           if git diff --cached --quiet; then
             echo "Transformer repair already published"
             exit 0
