@@ -587,6 +587,16 @@ static int vc4_master_reacquire_crtc_index(int fd, uint32_t crtc_id,
     if (crtc_ids == NULL) {
         return vc4_master_reacquire_fail("atomic-allocate-crtcs");
     }
+    /*
+     * The count-only call also returns the sizes of the framebuffer,
+     * connector, and encoder arrays.  We are only providing storage for
+     * CRTC IDs here, so advertise zero capacity for every unused array.
+     * Otherwise drm_mode_getresources() quite correctly attempts to copy
+     * those IDs through our still-NULL pointers and returns EFAULT.
+     */
+    resources.count_fbs = 0;
+    resources.count_connectors = 0;
+    resources.count_encoders = 0;
     resources.crtc_id_ptr = (uintptr_t)crtc_ids;
     if (vc4_master_reacquire_ioctl(
             fd, DRM_IOCTL_MODE_GETRESOURCES, &resources,
