@@ -1,0 +1,65 @@
+name: VC4 firmware virtual-GPIO gate
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-kms-bind-diagnostics
+    paths:
+      - .github/workflows/vc4-property-virtgpio.yml
+      - hw/misc/bcm2835_property.c
+      - include/hw/misc/bcm2835_property.h
+      - scripts/vc4/property-power-domain-smoke.py
+      - scripts/vc4/property-virtgpio-smoke.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vc4-property-virtgpio
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config python3 \
+            zlib1g-dev
+
+      - name: Validate source contract
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/property-virtgpio-smoke.py
+          grep -Fq RPI_FWREQ_FRAMEBUFFER_GET_GPIOVIRTBUF \
+            hw/misc/bcm2835_property.c
+          grep -Fq RPI_FWREQ_FRAMEBUFFER_SET_GPIOVIRTBUF \
+            hw/misc/bcm2835_property.c
+          grep -Fq 'VMSTATE_UINT32_V(gpio_virtbuf' \
+            hw/misc/bcm2835_property.c
+          grep -Fq 'uint32_t gpio_virtbuf;' \
+            include/hw/misc/bcm2835_property.h
+          git diff --check
+
+      - name: Build AArch64 QEMU
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Exercise firmware virtual-GPIO registration
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/property-virtgpio-smoke.py \
+            --qemu build/qemu-system-aarch64
