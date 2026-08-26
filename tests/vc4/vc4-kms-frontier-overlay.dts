@@ -12,6 +12,11 @@
      * The probe also snapshots the live HVS channel and active display list,
      * keeping topology success distinct from successful native scanout.
      *
+     * Legacy modeset, inherited and explicit DRM-master handoff, page-flip,
+     * and atomic primary-plane witnesses all use this exact graph.  Keeping
+     * one shared topology prevents a later gate from passing only because a
+     * test-specific device-tree variant silently enabled different hardware.
+     *
      * This intentionally follows the official vc4-kms-v3d overlay topology
      * but leaves optional VEC/DSI/DPI outputs disabled.  It is the smallest
      * physical-scanout frontier above the already-proven HVS/TXP/V3D render
