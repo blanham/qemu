@@ -151,8 +151,8 @@ void do_smm_enter(X86CPU *cpu)
 {
     CPUX86State *env = &cpu->env;
 
-    qemu_log_mask(CPU_LOG_INT, "SMM: enter\n");
-    log_cpu_state_mask(CPU_LOG_INT, CPU(cpu), CPU_DUMP_CCOP);
+    qemu_log_mask(CPU_LOG_IRQ, "SMM: enter\n");
+    log_cpu_state_mask(CPU_LOG_IRQ, CPU(cpu), CPU_DUMP_CCOP);
 
     env->msr_smi_count++;
     env->hflags |= HF_SMM_MASK;
@@ -348,6 +348,6 @@ void helper_rsm(CPUX86State *env)
     env->hflags2 &= ~HF2_SMM_INSIDE_NMI_MASK;
     env->hflags &= ~HF_SMM_MASK;
 
-    qemu_log_mask(CPU_LOG_INT, "SMM: after RSM\n");
-    log_cpu_state_mask(CPU_LOG_INT, CPU(cpu), CPU_DUMP_CCOP);
+    qemu_log_mask(CPU_LOG_IRQ, "SMM: after RSM\n");
+    log_cpu_state_mask(CPU_LOG_IRQ, CPU(cpu), CPU_DUMP_CCOP);
 }

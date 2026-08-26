@@ -5137,6 +5137,15 @@ SRST
     interrupt logging, and the two highest-volume execution streams::
 
         -d all,-tid,-int,-exec,-cpu
+
+    On x86 TCG, ``int`` remains the compatible aggregate. Use ``irq`` for
+    asynchronous IRQ, NMI, and SMI delivery, and ``exception`` for synchronous
+    exceptions, traps, software interrupts, and machine checks. For example::
+
+        -d int,-irq
+
+    keeps x86 exception logs and legacy target logs while suppressing x86
+    asynchronous interrupt delivery.
 ERST
 
 DEF("D", HAS_ARG, QEMU_OPTION_D, \

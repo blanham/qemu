@@ -104,6 +104,16 @@ static void test_parse_log_mask(void)
     int int_mask = qemu_str_to_log_mask("int");
 
     g_assert_cmpint(int_mask, !=, 0);
+    g_assert_cmpint(int_mask, ==, CPU_LOG_INT_ALL);
+    g_assert_cmpint(qemu_str_to_log_mask("irq"), ==, CPU_LOG_IRQ);
+    g_assert_cmpint(qemu_str_to_log_mask("exception"), ==,
+                    CPU_LOG_EXCEPTION);
+    g_assert_cmpint(qemu_str_to_log_mask("irq,exception"), ==,
+                    CPU_LOG_IRQ | CPU_LOG_EXCEPTION);
+    g_assert_cmpint(qemu_str_to_log_mask("int,-irq"), ==,
+                    CPU_LOG_INT | CPU_LOG_EXCEPTION);
+    g_assert_cmpint(qemu_str_to_log_mask("int,-exception"), ==,
+                    CPU_LOG_INT | CPU_LOG_IRQ);
     g_assert_cmpint(qemu_str_to_log_mask("+int,guest_errors"), ==,
                     int_mask | LOG_GUEST_ERROR);
     g_assert_cmpint(qemu_str_to_log_mask("all,-int"), ==,

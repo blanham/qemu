@@ -33,3 +33,27 @@ Examples::
 
   qemu-system-x86_64 -machine q35,amd-1tb-hole=off -cpu EPYC ...
   qemu-system-x86_64 -machine pc-q35-7.0,amd-1tb-hole=on -cpu EPYC ...
+
+
+Interrupt and exception logging
+-------------------------------
+
+The legacy ``-d int`` selector remains compatible. On the x86 TCG path it is
+an aggregate of the legacy mixed category and two provenance-aware categories:
+
+``irq``
+  Asynchronous hardware and virtual IRQ delivery, NMI delivery, and SMM
+  transitions caused by SMI.
+
+``exception``
+  Synchronous exceptions, traps, software interrupts, and machine-check
+  delivery.
+
+This makes periodic interrupt traffic removable without discarding fault
+information. For example::
+
+  qemu-system-x86_64 ... -d int,-irq
+
+keeps x86 exception logs and still enables legacy ``int`` sites on targets
+that have not yet been migrated. Selecting ``irq`` or ``exception`` alone
+only enables the corresponding provenance-aware sites.
