@@ -1,0 +1,81 @@
+name: VC4 virtual-GPIO product publisher
+
+on:
+  push:
+    branches:
+      - agent/vc4-virtgpio-buffer
+    paths:
+      - .github/workflows/vc4-property-virtgpio-publisher.yml
+      - scripts/vc4/apply-property-virtgpio.py
+      - scripts/vc4/property-virtgpio-smoke.py
+      - .github/workflows/vc4-property-virtgpio.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-property-virtgpio-publisher
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/vc4-virtgpio-buffer
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config python3 \
+            zlib1g-dev
+
+      - name: Apply and validate the product change
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/apply-property-virtgpio.py
+          python3 -m py_compile \
+            scripts/vc4/apply-property-virtgpio.py \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/property-virtgpio-smoke.py
+          grep -Fq RPI_FWREQ_FRAMEBUFFER_GET_GPIOVIRTBUF \
+            hw/misc/bcm2835_property.c
+          grep -Fq RPI_FWREQ_FRAMEBUFFER_SET_GPIOVIRTBUF \
+            hw/misc/bcm2835_property.c
+          grep -Fq 'VMSTATE_UINT32_V(gpio_virtbuf' \
+            hw/misc/bcm2835_property.c
+          grep -Fq 'uint32_t gpio_virtbuf;' \
+            include/hw/misc/bcm2835_property.h
+          git diff --check
+
+      - name: Build and run the focused QTest
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+          python3 scripts/vc4/property-virtgpio-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish the validated product tree
+        run: |
+          set -euo pipefail
+          git rm \
+            .github/workflows/vc4-property-virtgpio-publisher.yml \
+            scripts/vc4/apply-property-virtgpio.py
+          git add \
+            .github/workflows/vc4-property-virtgpio.yml \
+            hw/misc/bcm2835_property.c \
+            include/hw/misc/bcm2835_property.h \
+            scripts/vc4/property-virtgpio-smoke.py
+          git config user.name "VC4 Development"
+          git config user.email "vc4-dev@users.noreply.github.com"
+          git commit -m "hw/misc: model Raspberry Pi virtual GPIO buffer"
+          git push origin HEAD:agent/vc4-virtgpio-buffer
