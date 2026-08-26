@@ -1,4 +1,4 @@
-name: VC4 independent DRM-master reacquisition probe
+name: VC4 independent DRM-master modeset and page-flip probe
 
 on:
   push:
@@ -113,6 +113,8 @@ jobs:
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'DRM_IOCTL_SET_MASTER' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
+          grep -Fq 'DRM_IOCTL_MODE_SETCRTC' \
+            tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'close(inherited_master_fd)' \
             tests/vc4/linux-kms-master-reacquire-probe.inc.c
           grep -Fq 'open(VC4_MASTER_REACQUIRE_CARD_PATH' \
@@ -167,6 +169,15 @@ jobs:
             VC4_LINUX_KMS_MASTER_REACQUIRE_INHERITED_CLOSED \
             VC4_LINUX_KMS_MASTER_REACQUIRE_OPEN_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_SET_MASTER_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SELECTION_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_BASELINE_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_DUMB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_MAP_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_START \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_SETCRTC_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_MODESET_CURRENT_FB_OK \
+            VC4_LINUX_KMS_MASTER_REACQUIRE_INDEPENDENT_MODESET_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_ACTIVE_OK \
             VC4_LINUX_KMS_MASTER_REACQUIRE_IOCTL_START \
             VC4_LINUX_KMS_MASTER_REACQUIRE_QUEUED \
@@ -277,7 +288,7 @@ jobs:
           git add -- "$STATUS_JSON" "$STATUS_MD"
           if ! git diff --cached --quiet; then
             git commit -m \
-              "test/vc4: record independent DRM-master frontier [skip ci]"
+              "test/vc4: record independent DRM-master modeset frontier [skip ci]"
             git pull --rebase origin "$BRANCH"
             git push origin HEAD:"$BRANCH"
           fi
@@ -300,12 +311,12 @@ jobs:
                   f"{record.get('source_sha')} != {expected_sha}"
               )
           if record.get("classification") != \
-                  "linux-vc4-kms-master-reacquire-visual-clear":
+                  "linux-vc4-kms-independent-master-modeset-pageflip-visual-clear":
               raise SystemExit(
                   "master-reacquisition frontier is not clear: "
                   f"{record.get('classification')}"
               )
           if record.get("passed") is not True:
               raise SystemExit("master-reacquisition status did not pass")
-          print("VC4 independent DRM-master reacquisition: PASS")
+          print("VC4 independent DRM-master modeset/page flip: PASS")
           PY
