@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,10 +27,16 @@ def require(path: str, *needles: str) -> None:
             raise SystemExit(f"{path}: required marker missing: {needle!r}")
 
 
-def qmp_messages() -> list[dict[str, Any]]:
+def ordinary_qmp_messages() -> list[dict[str, Any]]:
     return [
         {"execute": "qmp_capabilities", "id": "capabilities"},
         {"execute": "query-log-categories", "id": "initial"},
+        {
+            "execute": "set-log-categories",
+            "arguments": {"action": "enable", "categories": ["tid"]},
+            "id": "tid-no-template",
+        },
+        {"execute": "query-log-categories", "id": "after-tid-no-template"},
         {
             "execute": "set-log-categories",
             "arguments": {
@@ -70,22 +77,60 @@ def qmp_messages() -> list[dict[str, Any]]:
     ]
 
 
-def run_qmp(binary: Path, *, preconfig: bool = False) -> dict[str, dict[str, Any]]:
-    command = [
-        str(binary),
-        "-machine",
-        "none",
-        "-display",
-        "none",
-        "-nodefaults",
-        "-S",
-        "-qmp",
-        "stdio",
+def tid_enable_qmp_messages() -> list[dict[str, Any]]:
+    return [
+        {"execute": "qmp_capabilities", "id": "capabilities"},
+        {"execute": "query-log-categories", "id": "initial"},
+        {
+            "execute": "set-log-categories",
+            "arguments": {"action": "enable", "categories": ["tid"]},
+            "id": "enable-tid",
+        },
+        {"execute": "query-log-categories", "id": "after-enable-tid"},
+        {"execute": "quit", "id": "quit"},
     ]
-    if preconfig:
-        command.insert(1, "--preconfig")
 
-    payload = "\n".join(json.dumps(message) for message in qmp_messages()) + "\n"
+
+def sticky_qmp_messages() -> list[dict[str, Any]]:
+    return [
+        {"execute": "qmp_capabilities", "id": "capabilities"},
+        {"execute": "query-log-categories", "id": "initial"},
+        {
+            "execute": "set-log-categories",
+            "arguments": {"action": "disable", "categories": ["tid"]},
+            "id": "disable-tid",
+        },
+        {"execute": "query-log-categories", "id": "after-disable-tid"},
+        {"execute": "quit", "id": "quit"},
+    ]
+
+
+def run_qmp(
+    binary: Path,
+    messages: list[dict[str, Any]],
+    *,
+    preconfig: bool = False,
+    extra_args: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    command = [str(binary)]
+    if preconfig:
+        command.append("--preconfig")
+    if extra_args:
+        command.extend(extra_args)
+    command.extend(
+        [
+            "-machine",
+            "none",
+            "-display",
+            "none",
+            "-nodefaults",
+            "-S",
+            "-qmp",
+            "stdio",
+        ]
+    )
+
+    payload = "\n".join(json.dumps(message) for message in messages) + "\n"
     try:
         completed = subprocess.run(
             command,
@@ -115,18 +160,9 @@ def run_qmp(binary: Path, *, preconfig: bool = False) -> dict[str, dict[str, Any
         responses[str(value["id"])] = value
 
     required = {
-        "capabilities",
-        "initial",
-        "replace",
-        "after-replace",
-        "disable",
-        "after-disable",
-        "enable",
-        "after-enable",
-        "invalid",
-        "after-invalid",
-        "reset",
-        "after-reset",
+        str(message["id"])
+        for message in messages
+        if "id" in message and message["id"] != "quit"
     }
     missing = required - responses.keys()
     if missing:
@@ -184,17 +220,38 @@ def enabled_names(categories: dict[str, dict[str, Any]]) -> set[str]:
     return {name for name, entry in categories.items() if entry["enabled"]}
 
 
-def validate_session(label: str, responses: dict[str, dict[str, Any]]) -> set[str]:
+def require_generic_error(label: str, response: dict[str, Any]) -> None:
+    error = response.get("error")
+    if not isinstance(error, dict) or error.get("class") != "GenericError":
+        raise SystemExit(f"{label}: expected GenericError, got {response!r}")
+
+
+def validate_ordinary_session(
+    label: str, responses: dict[str, dict[str, Any]]
+) -> set[str]:
     initial = response_categories(label + " initial", responses["initial"])
     if enabled_names(initial):
         raise SystemExit(f"{label}: ordinary categories enabled at startup")
+
+    require_generic_error(label + " tid without template", responses["tid-no-template"])
+    after_tid = response_categories(
+        label + " after tid without template", responses["after-tid-no-template"]
+    )
+    if enabled_names(after_tid):
+        raise SystemExit(f"{label}: failed tid request changed logging state")
 
     replace = response_categories(label + " replace", responses["replace"])
     after_replace = response_categories(
         label + " after replace", responses["after-replace"]
     )
-    if enabled_names(replace) != {"guest_errors", "int"}:
-        raise SystemExit(f"{label}: replace action produced wrong state")
+    expected_replace = {"guest_errors", "int"}
+    if {"irq", "exception"} <= replace.keys():
+        expected_replace |= {"irq", "exception"}
+    if enabled_names(replace) != expected_replace:
+        raise SystemExit(
+            f"{label}: replace action produced wrong state: "
+            f"{sorted(enabled_names(replace))}"
+        )
     if enabled_names(after_replace) != enabled_names(replace):
         raise SystemExit(f"{label}: replace response disagrees with query")
 
@@ -217,10 +274,7 @@ def validate_session(label: str, responses: dict[str, dict[str, Any]]) -> set[st
     if enabled_names(after_enable) != expected_enabled:
         raise SystemExit(f"{label}: enable response disagrees with query")
 
-    invalid = responses["invalid"]
-    error = invalid.get("error")
-    if not isinstance(error, dict) or error.get("class") != "GenericError":
-        raise SystemExit(f"{label}: invalid category was not rejected: {invalid!r}")
+    require_generic_error(label + " invalid category", responses["invalid"])
     after_invalid = response_categories(
         label + " after invalid", responses["after-invalid"]
     )
@@ -237,6 +291,36 @@ def validate_session(label: str, responses: dict[str, dict[str, Any]]) -> set[st
     return set(initial)
 
 
+def validate_tid_enable_rejected(
+    label: str, responses: dict[str, dict[str, Any]]
+) -> None:
+    initial = response_categories(label + " initial", responses["initial"])
+    if enabled_names(initial):
+        raise SystemExit(f"{label}: categories enabled before tid transition")
+
+    require_generic_error(label + " enable tid", responses["enable-tid"])
+    after = response_categories(
+        label + " after enable tid", responses["after-enable-tid"]
+    )
+    if enabled_names(after):
+        raise SystemExit(f"{label}: rejected tid enable changed state")
+
+
+def validate_sticky_session(
+    label: str, responses: dict[str, dict[str, Any]]
+) -> None:
+    initial = response_categories(label + " initial", responses["initial"])
+    if enabled_names(initial) != {"tid"}:
+        raise SystemExit(f"{label}: tid startup state was not reported exactly")
+
+    require_generic_error(label + " disable tid", responses["disable-tid"])
+    after = response_categories(
+        label + " after disable tid", responses["after-disable-tid"]
+    )
+    if enabled_names(after) != {"tid"}:
+        raise SystemExit(f"{label}: rejected tid transition changed state")
+
+
 def validate_runtime(build_dir: Path) -> None:
     x86_binary = build_dir / "qemu-system-x86_64"
     arm_binary = build_dir / "qemu-system-aarch64"
@@ -244,10 +328,15 @@ def validate_runtime(build_dir: Path) -> None:
         if not binary.is_file():
             raise SystemExit(f"runtime binary missing: {binary}")
 
-    x86_names = validate_session("x86_64 ready", run_qmp(x86_binary))
-    arm_names = validate_session("aarch64 ready", run_qmp(arm_binary))
-    preconfig_names = validate_session(
-        "x86_64 preconfig", run_qmp(x86_binary, preconfig=True)
+    messages = ordinary_qmp_messages()
+    x86_names = validate_ordinary_session(
+        "x86_64 ready", run_qmp(x86_binary, messages)
+    )
+    arm_names = validate_ordinary_session(
+        "aarch64 ready", run_qmp(arm_binary, messages)
+    )
+    preconfig_names = validate_ordinary_session(
+        "x86_64 preconfig", run_qmp(x86_binary, messages, preconfig=True)
     )
 
     if x86_names != arm_names:
@@ -255,9 +344,29 @@ def validate_runtime(build_dir: Path) -> None:
     if x86_names != preconfig_names:
         raise SystemExit("x86_64 log registry changed across initialization phase")
 
+    with tempfile.TemporaryDirectory(prefix="wd40-log-tid-") as tmp:
+        template = str(Path(tmp) / "qemu-%d.log")
+        validate_tid_enable_rejected(
+            "x86_64 startup-global tid enable",
+            run_qmp(
+                x86_binary,
+                tid_enable_qmp_messages(),
+                extra_args=["-D", template],
+            ),
+        )
+        validate_sticky_session(
+            "x86_64 sticky tid",
+            run_qmp(
+                x86_binary,
+                sticky_qmp_messages(),
+                extra_args=["-D", template, "-d", "tid"],
+            ),
+        )
+
     print(
         "Structured log control: "
-        f"categories={len(x86_names)} targets=2 preconfig=validated"
+        f"categories={len(x86_names)} targets=2 preconfig=validated "
+        "tid=validated"
     )
 
 
@@ -287,6 +396,8 @@ def main() -> None:
         "LogCategoryInfoList *qmp_set_log_categories",
         "Unknown log category '%s'",
         "cannot be disabled once set",
+        "can only be selected at ",
+        "process startup with a '%%d' logfile template",
     )
     require(
         "docs/devel/wd40-monitor-v2.rst",
@@ -294,6 +405,8 @@ def main() -> None:
         "query-log-categories",
         "set-log-categories",
         "reported as sticky",
+        "fixed at process startup",
+        "QMP rejects attempts either to enable it",
     )
 
     if len(sys.argv) > 2:

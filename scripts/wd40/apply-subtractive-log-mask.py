@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Add left-to-right additive and subtractive ``-d`` log-mask parsing.
 
-The transformation is marker-based and idempotent so it can be rerun after
-routine upstream rebases. Existing unprefixed masks retain their behavior;
+The transformation is marker-based, self-repairing for the duplicated test
+block produced by the original transformer, and safe to replay after later
+logging extensions. Existing unprefixed masks retain their behavior;
 ``+item`` explicitly adds a category and ``-item`` removes one from the mask
 built so far.
 """
@@ -12,6 +13,73 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+LEGACY_PARSE_MASK_TEST_BLOCK = """static int all_log_items_mask(void)
+{
+    const QEMULogItem *item;
+    int mask = 0;
+
+    for (item = qemu_log_items; item->mask != 0; item++) {
+        mask |= item->mask;
+    }
+    return mask;
+}
+
+static void test_parse_log_mask(void)
+{
+    int all = all_log_items_mask();
+
+    g_assert_cmpint(qemu_str_to_log_mask("int"), ==, CPU_LOG_INT);
+    g_assert_cmpint(qemu_str_to_log_mask("+int,guest_errors"), ==,
+                    CPU_LOG_INT | LOG_GUEST_ERROR);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-int"), ==,
+                    all & ~CPU_LOG_INT);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-int,+int"), ==, all);
+    g_assert_cmpint(qemu_str_to_log_mask("-all,guest_errors"), ==,
+                    LOG_GUEST_ERROR);
+    g_assert_cmpint(qemu_str_to_log_mask("int,-int,guest_errors"), ==,
+                    LOG_GUEST_ERROR);
+    g_assert_cmpint(
+        qemu_str_to_log_mask("all,-definitely-not-a-log-item"), ==, 0);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-"), ==, 0);
+}
+
+"""
+
+PARSE_MASK_TEST_BLOCK = """static int all_log_items_mask(void)
+{
+    const QEMULogItem *item;
+    int mask = 0;
+
+    for (item = qemu_log_items; item->mask != 0; item++) {
+        mask |= item->mask;
+    }
+    return mask;
+}
+
+static void test_parse_log_mask(void)
+{
+    int all = all_log_items_mask();
+    int int_mask = qemu_str_to_log_mask("int");
+
+    g_assert_cmpint(int_mask, !=, 0);
+    g_assert_cmpint(qemu_str_to_log_mask("+int,guest_errors"), ==,
+                    int_mask | LOG_GUEST_ERROR);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-int"), ==,
+                    all & ~int_mask);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-int,+int"), ==, all);
+    g_assert_cmpint(qemu_str_to_log_mask("-all,guest_errors"), ==,
+                    LOG_GUEST_ERROR);
+    g_assert_cmpint(qemu_str_to_log_mask("int,-int,guest_errors"), ==,
+                    LOG_GUEST_ERROR);
+    g_assert_cmpint(
+        qemu_str_to_log_mask("all,-definitely-not-a-log-item"), ==, 0);
+    g_assert_cmpint(qemu_str_to_log_mask("all,-"), ==, 0);
+    g_assert_cmpint(qemu_str_to_log_mask("-"), ==, 0);
+}
+
+"""
 
 
 def load(path: str) -> tuple[Path, str]:
@@ -24,14 +92,77 @@ def store(file_path: Path, text: str) -> None:
 
 
 def replace_once(path: str, old: str, new: str) -> None:
+    """Replace one pristine marker or accept exactly one transformed block."""
     file_path, text = load(path)
-    count = text.count(old)
-    if count == 1:
-        store(file_path, text.replace(old, new, 1))
+    new_count = text.count(new)
+    if new_count == 1:
         return
-    if count == 0 and new in text:
+    if new_count > 1:
+        raise RuntimeError(
+            f"{path}: transformed replacement appears {new_count} times"
+        )
+    if new.endswith(old):
+        owned_prefix = new[:-len(old)]
+        if owned_prefix and owned_prefix in text:
+            return
+
+    old_count = text.count(old)
+    if old_count != 1:
+        raise RuntimeError(
+            f"{path}: expected one replacement site, found {old_count}"
+        )
+    store(file_path, text.replace(old, new, 1))
+
+
+def ensure_parse_mask_tests() -> None:
+    """Install one test block and collapse damage from old replay behavior.
+
+    A later transformer may extend the unique test function. Such an extension
+    is deliberately preserved. Only the exact legacy/canonical repeated blocks
+    are normalized when duplicates exist.
+    """
+    path = "tests/unit/test-logging.c"
+    file_path, text = load(path)
+    start = "static int all_log_items_mask(void)\n"
+    test_start = "static void test_parse_log_mask(void)\n"
+    anchor = "static void set_log_path_tmp(char const *dir, char const *tpl, Error **errp)\n"
+
+    start_count = text.count(start)
+    test_count = text.count(test_start)
+    anchor_count = text.count(anchor)
+    if anchor_count != 1:
+        raise RuntimeError(f"{path}: expected one test insertion anchor, found {anchor_count}")
+
+    anchor_pos = text.index(anchor)
+    if start_count == 0 and test_count == 0:
+        store(file_path, text[:anchor_pos] + PARSE_MASK_TEST_BLOCK + text[anchor_pos:])
         return
-    raise RuntimeError(f"{path}: expected one replacement site, found {count}")
+    if start_count != test_count or start_count == 0:
+        raise RuntimeError(
+            f"{path}: inconsistent parse-mask test functions: "
+            f"helper={start_count} test={test_count}"
+        )
+
+    first = text.index(start)
+    if first > anchor_pos:
+        raise RuntimeError(f"{path}: parse-mask tests occur after their anchor")
+    region = text[first:anchor_pos]
+
+    if start_count == 1:
+        if region == LEGACY_PARSE_MASK_TEST_BLOCK:
+            store(file_path, text[:first] + PARSE_MASK_TEST_BLOCK + text[anchor_pos:])
+        # Preserve the canonical block and any one-copy downstream extension.
+        return
+
+    residue = region
+    for block in (LEGACY_PARSE_MASK_TEST_BLOCK, PARSE_MASK_TEST_BLOCK):
+        residue = residue.replace(block, "")
+    if residue.strip():
+        raise RuntimeError(
+            f"{path}: refusing to discard noncanonical content while repairing "
+            f"{start_count} duplicate test blocks"
+        )
+    store(file_path, text[:first] + PARSE_MASK_TEST_BLOCK + text[anchor_pos:])
 
 
 def main() -> None:
@@ -243,43 +374,9 @@ ERST
            "                  (use '-d help' for a list of log items)\\n"
 """,
     )
-    replace_once(
-        "tests/unit/test-logging.c",
-        """static void set_log_path_tmp(char const *dir, char const *tpl, Error **errp)
-""",
-        """static int all_log_items_mask(void)
-{
-    const QEMULogItem *item;
-    int mask = 0;
 
-    for (item = qemu_log_items; item->mask != 0; item++) {
-        mask |= item->mask;
-    }
-    return mask;
-}
+    ensure_parse_mask_tests()
 
-static void test_parse_log_mask(void)
-{
-    int all = all_log_items_mask();
-
-    g_assert_cmpint(qemu_str_to_log_mask("int"), ==, CPU_LOG_INT);
-    g_assert_cmpint(qemu_str_to_log_mask("+int,guest_errors"), ==,
-                    CPU_LOG_INT | LOG_GUEST_ERROR);
-    g_assert_cmpint(qemu_str_to_log_mask("all,-int"), ==,
-                    all & ~CPU_LOG_INT);
-    g_assert_cmpint(qemu_str_to_log_mask("all,-int,+int"), ==, all);
-    g_assert_cmpint(qemu_str_to_log_mask("-all,guest_errors"), ==,
-                    LOG_GUEST_ERROR);
-    g_assert_cmpint(qemu_str_to_log_mask("int,-int,guest_errors"), ==,
-                    LOG_GUEST_ERROR);
-    g_assert_cmpint(
-        qemu_str_to_log_mask("all,-definitely-not-a-log-item"), ==, 0);
-    g_assert_cmpint(qemu_str_to_log_mask("all,-"), ==, 0);
-}
-
-static void set_log_path_tmp(char const *dir, char const *tpl, Error **errp)
-""",
-    )
     replace_once(
         "tests/unit/test-logging.c",
         """    g_test_add_func("/logging/parse_range", test_parse_range);
