@@ -20,6 +20,9 @@ jobs:
           if test -f .github/rage128-texture0-pro-followup.py; then
             python3 .github/rage128-texture0-pro-followup.py
           fi
+          if test -f .github/rage128-texture0-build-fix.py; then
+            python3 .github/rage128-texture0-build-fix.py
+          fi
           git diff --check
 
       - name: Install build dependencies
