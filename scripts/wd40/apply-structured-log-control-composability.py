@@ -7,8 +7,8 @@ block starts with that anchor, so HMP argument documentation inserted between
 the anchor and the existing log section caused a duplicate section on replay.
 
 This transformation makes owned-prefix and owned-suffix recognition symmetric,
-updates the hardening template, and wires the repair into the integration
-contract before the structured-log transformer runs.
+updates the hardening template, and wires the repair into every integration
+workflow replay/check path before the structured-log transformer runs.
 """
 
 from __future__ import annotations
@@ -82,6 +82,32 @@ def replace_exact(path: str, old: str, new: str) -> None:
     store(file_path, text.replace(old, new, 1))
 
 
+def insert_before_each(path: str, anchor: str, insertion: str) -> None:
+    """Insert one line before every matching workflow line, atomically.
+
+    A fully applied file is a no-op.  A partially applied or duplicated file is
+    rejected rather than silently normalised, so replay errors remain visible.
+    """
+
+    file_path, text = load(path)
+    anchor_count = text.count(anchor)
+    insertion_count = text.count(insertion)
+    pair = insertion + anchor
+    pair_count = text.count(pair)
+
+    if anchor_count == 0:
+        raise RuntimeError(f"{path}: workflow anchor is absent: {anchor!r}")
+    if pair_count == anchor_count and insertion_count == anchor_count:
+        return
+    if pair_count != 0 or insertion_count != 0:
+        raise RuntimeError(
+            f"{path}: partial workflow repair: anchors={anchor_count} "
+            f"insertions={insertion_count} adjacent={pair_count}"
+        )
+
+    store(file_path, text.replace(anchor, pair))
+
+
 def main() -> None:
     replace_exact(
         "scripts/wd40/apply-structured-log-control.py",
@@ -95,17 +121,15 @@ def main() -> None:
         "NEW_REPLACE = '''" + COMPOSABLE_REPLACE + "'''",
     )
 
-    replace_exact(
+    insert_before_each(
         ".github/workflows/wd40-qol-integration.yml",
         "            python3 scripts/wd40/apply-structured-log-control.py\n",
-        "            python3 scripts/wd40/apply-structured-log-control-composability.py\n"
-        "            python3 scripts/wd40/apply-structured-log-control.py\n",
+        "            python3 scripts/wd40/apply-structured-log-control-composability.py\n",
     )
-    replace_exact(
+    insert_before_each(
         ".github/workflows/wd40-qol-integration.yml",
         "          python3 scripts/ci/check-wd40-structured-log-control.py\n",
-        "          python3 scripts/ci/check-wd40-transform-composability.py\n"
-        "          python3 scripts/ci/check-wd40-structured-log-control.py\n",
+        "          python3 scripts/ci/check-wd40-transform-composability.py\n",
     )
 
 
