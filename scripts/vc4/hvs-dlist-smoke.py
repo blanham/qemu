@@ -75,6 +75,13 @@ RGB888_SCANOUT_BUFFER_B = 0x00205000
 RGBA8888_SCANOUT_LIST_WORD = 0x160
 RGBA8888_SCANOUT_BUFFER_A = 0x00206000
 RGBA8888_SCANOUT_BUFFER_B = 0x00207000
+POSITIONED_OUTPUT_WIDTH = 12
+POSITIONED_OUTPUT_HEIGHT = 8
+POSITIONED_X = 2
+POSITIONED_Y = 2
+POSITIONED_SCANOUT_LIST_WORD = 0x180
+POSITIONED_SCANOUT_BUFFER_A = 0x00208000
+POSITIONED_SCANOUT_BUFFER_B = 0x00209000
 
 
 class QMPClient:
@@ -502,6 +509,98 @@ def exercise_scanout(qtest: Any, qmp: QMPClient, temp: Path) -> None:
     expect_disabled_empty(qtest, SCANOUT_CHANNEL)
 
 
+def expect_positioned_pattern(
+    path: Path,
+    expected_colors: tuple[tuple[int, int, int], ...],
+) -> None:
+    width, height, pixels = read_ppm(path)
+    if (width, height) != (POSITIONED_OUTPUT_WIDTH, POSITIONED_OUTPUT_HEIGHT):
+        raise RuntimeError(
+            f"positioned HVS size mismatch: {(width, height)} != "
+            f"{(POSITIONED_OUTPUT_WIDTH, POSITIONED_OUTPUT_HEIGHT)}"
+        )
+
+    for y in range(height):
+        for x in range(width):
+            inside = (
+                POSITIONED_X <= x < POSITIONED_X + SCANOUT_WIDTH
+                and POSITIONED_Y <= y < POSITIONED_Y + SCANOUT_HEIGHT
+            )
+            if inside:
+                source_x = x - POSITIONED_X
+                source_y = y - POSITIONED_Y
+                quadrant = (
+                    2 if source_y >= SCANOUT_HEIGHT // 2 else 0
+                ) + (1 if source_x >= SCANOUT_WIDTH // 2 else 0)
+                expected = expected_colors[quadrant]
+            else:
+                expected = (0, 0, 0)
+            offset = (y * width + x) * 3
+            actual = tuple(pixels[offset:offset + 3])
+            if actual != expected:
+                raise RuntimeError(
+                    f"positioned HVS pixel {(x, y)} is {actual}, "
+                    f"expected {expected}"
+                )
+
+
+def exercise_positioned_scanout(
+    qtest: Any,
+    qmp: QMPClient,
+    temp: Path,
+) -> None:
+    colors_a = (0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFFFF)
+    colors_b = (0x00FFFFFF, 0x000000FF, 0x0000FF00, 0x00FF0000)
+    expected_a = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255))
+    expected_b = ((255, 255, 255), (0, 0, 255), (0, 255, 0), (255, 0, 0))
+    dlist = SCALER_DLIST_START + POSITIONED_SCANOUT_LIST_WORD * 4
+    ctl0 = (
+        SCALER_CTL0_VALID
+        | (7 << 24)
+        | SCALER_CTL0_ORDER_ABGR
+        | SCALER_CTL0_RGBA_EXPAND_ROUND
+        | SCALER_CTL0_UNITY
+        | HVS_PIXEL_FORMAT_RGBA8888
+    )
+    element = (
+        ctl0,
+        0xFF000000 | (POSITIONED_Y << 12) | POSITIONED_X,
+        (SCANOUT_HEIGHT << 16) | SCANOUT_WIDTH,
+        0xC0C0C0C0,
+        POSITIONED_SCANOUT_BUFFER_A,
+        0xC0C0C0C0,
+        SCANOUT_PITCH,
+        SCALER_CTL0_END,
+    )
+
+    write_pattern(qtest, POSITIONED_SCANOUT_BUFFER_A, colors_a)
+    write_pattern(qtest, POSITIONED_SCANOUT_BUFFER_B, colors_b)
+    for index, value in enumerate(element):
+        qtest.writel(dlist + index * 4, value)
+
+    qtest.writel(
+        SCALER_DISPLIST[SCANOUT_CHANNEL], POSITIONED_SCANOUT_LIST_WORD
+    )
+    qtest.writel(
+        SCALER_DISPCTRLX[SCANOUT_CHANNEL],
+        SCALER_DISPCTRLX_ENABLE
+        | (POSITIONED_OUTPUT_WIDTH << 12)
+        | POSITIONED_OUTPUT_HEIGHT,
+    )
+
+    first = temp / "hvs-positioned-a.ppm"
+    qmp.execute("screendump", {"filename": str(first)})
+    expect_positioned_pattern(first, expected_a)
+
+    qtest.writel(dlist + 4 * 4, POSITIONED_SCANOUT_BUFFER_B)
+    second = temp / "hvs-positioned-b.ppm"
+    qmp.execute("screendump", {"filename": str(second)})
+    expect_positioned_pattern(second, expected_b)
+
+    qtest.writel(SCALER_DISPCTRLX[SCANOUT_CHANNEL], 0)
+    expect_disabled_empty(qtest, SCANOUT_CHANNEL)
+
+
 def exercise_rgb565_scanout(
     qtest: Any,
     qmp: QMPClient,
@@ -809,6 +908,7 @@ def main() -> int:
                     )
 
             exercise_scanout(qtest, qmp, temp)
+            exercise_positioned_scanout(qtest, qmp, temp)
             exercise_rgb565_scanout(qtest, qmp, temp)
             exercise_rgb888_scanout(qtest, qmp, temp)
             exercise_rgba8888_orders(qtest, qmp, temp)
@@ -858,7 +958,10 @@ def main() -> int:
                 f"QEMU exited with status {process.returncode}:\n{stderr}"
             )
 
-    print("BCM2835 HVS display-list and linear scanout smoke test passed")
+    print(
+        "BCM2835 HVS display-list, linear, and positioned scanout "
+        "smoke test passed"
+    )
     return 0
 
 

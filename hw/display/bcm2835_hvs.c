@@ -147,7 +147,11 @@ static hwaddr bcm2835_hvs_status_offset(unsigned channel)
 
 static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
                                        unsigned channel,
-                                       BCM2835FBConfig *config)
+                                       BCM2835FBConfig *config,
+                                       uint32_t *output_xres,
+                                       uint32_t *output_yres,
+                                       uint32_t *scanout_x,
+                                       uint32_t *scanout_y)
 {
     uint32_t control = s->regs[bcm2835_hvs_index(
         bcm2835_hvs_control_offset(channel))];
@@ -168,6 +172,8 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
     uint32_t pos2;
     uint32_t width;
     uint32_t height;
+    uint32_t start_x;
+    uint32_t start_y;
     uint32_t pitch;
 
     if (!(control & SCALER_DISPCTRLX_ENABLE) || !s->fb) {
@@ -309,13 +315,16 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
     width = pos2 & SCALER_POS2_WIDTH_MASK;
     height = (pos2 >> SCALER_POS2_HEIGHT_SHIFT) &
              SCALER_POS2_HEIGHT_MASK;
+    start_x = pos0 & SCALER_POS0_START_X_MASK;
+    start_y = (pos0 >> SCALER_POS0_START_Y_SHIFT) &
+              SCALER_POS0_START_Y_MASK;
     pitch = s->regs[list_index + SCALER_UNITY_PLANE_PITCH_WORD] &
             SCALER_SRC_PITCH_MASK;
 
-    if (((pos0 >> SCALER_POS0_START_Y_SHIFT) &
-         SCALER_POS0_START_Y_MASK) != 0 ||
-        (pos0 & SCALER_POS0_START_X_MASK) != 0 ||
-        width != channel_width || height != channel_height ||
+    if (!width || !height ||
+        width > channel_width || height > channel_height ||
+        start_x > channel_width - width ||
+        start_y > channel_height - height ||
         pitch < width * bytes_per_pixel ||
         pitch % bytes_per_pixel != 0) {
         return false;
@@ -331,24 +340,41 @@ static bool bcm2835_hvs_scanout_config(BCM2835HVSState *s,
     config->bpp = bits_per_pixel;
     config->base = s->regs[list_index + SCALER_UNITY_PLANE_PTR_WORD];
     config->pixo = pixo;
+    *output_xres = channel_width;
+    *output_yres = channel_height;
+    *scanout_x = start_x;
+    *scanout_y = start_y;
     return true;
 }
 
 static void bcm2835_hvs_refresh_scanout(BCM2835HVSState *s)
 {
     BCM2835FBConfig config;
+    uint32_t output_xres;
+    uint32_t output_yres;
+    uint32_t scanout_x;
+    uint32_t scanout_y;
     int channel;
 
     /* BCM2835 HDMI is fed by HVS channel 2.  Retain lower-channel support
      * for focused device tests and the other first-generation outputs.
      */
     for (channel = SCALER_CHANNEL_COUNT - 1; channel >= 0; channel--) {
-        if (!bcm2835_hvs_scanout_config(s, channel, &config)) {
+        if (!bcm2835_hvs_scanout_config(s, channel, &config,
+                                        &output_xres, &output_yres,
+                                        &scanout_x, &scanout_y)) {
             continue;
         }
 
-        if (memcmp(&s->fb->config, &config, sizeof(config)) != 0) {
-            bcm2835_fb_reconfigure(s->fb, &config);
+        if (memcmp(&s->fb->config, &config, sizeof(config)) != 0 ||
+            !s->fb->hvs_scanout ||
+            s->fb->scanout_xres != output_xres ||
+            s->fb->scanout_yres != output_yres ||
+            s->fb->scanout_x != scanout_x ||
+            s->fb->scanout_y != scanout_y) {
+            bcm2835_fb_reconfigure_scanout(s->fb, &config,
+                                            output_xres, output_yres,
+                                            scanout_x, scanout_y);
         } else {
             s->fb->invalidate = true;
         }

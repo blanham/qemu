@@ -222,60 +222,83 @@ static bool fb_update_display(void *opaque)
 {
     BCM2835FBState *s = opaque;
     DisplaySurface *surface = qemu_console_surface(s->con);
+    DisplaySurface *draw_surface = surface;
     int first = 0;
     int last = 0;
-    int src_width = 0;
-    int dest_width = 0;
-    uint32_t xoff = 0, yoff = 0;
+    int src_width;
+    uint32_t xoff = 0;
+    uint32_t yoff = 0;
+    uint32_t output_xres;
+    uint32_t output_yres;
+    uint32_t scanout_x;
+    uint32_t scanout_y;
+    bool positioned;
+    bool invalidate;
 
     if (s->lock || !s->config.xres) {
         return true;
     }
 
+    output_xres = s->hvs_scanout ? s->scanout_xres : s->config.xres;
+    output_yres = s->hvs_scanout ? s->scanout_yres : s->config.yres;
+    scanout_x = s->hvs_scanout ? s->scanout_x : 0;
+    scanout_y = s->hvs_scanout ? s->scanout_y : 0;
+    if (!output_xres || !output_yres ||
+        surface_bits_per_pixel(surface) == 0) {
+        return true;
+    }
+
+    positioned = s->hvs_scanout &&
+        (scanout_x != 0 || scanout_y != 0 ||
+         s->config.xres != output_xres ||
+         s->config.yres != output_yres);
+    invalidate = s->invalidate;
     src_width = bcm2835_fb_get_pitch(&s->config);
     if (fb_use_offsets(&s->config)) {
         xoff = s->config.xoffset;
         yoff = s->config.yoffset;
     }
 
-    dest_width = s->config.xres;
-
-    switch (surface_bits_per_pixel(surface)) {
-    case 0:
-        return true;
-    case 8:
-        break;
-    case 15:
-        dest_width *= 2;
-        break;
-    case 16:
-        dest_width *= 2;
-        break;
-    case 24:
-        dest_width *= 3;
-        break;
-    case 32:
-        dest_width *= 4;
-        break;
-    default:
-        hw_error("bcm2835_fb: bad color depth\n");
-        break;
-    }
-
-    if (s->invalidate) {
+    if (invalidate) {
         hwaddr base = s->config.base + xoff + (hwaddr)yoff * src_width;
+
         framebuffer_update_memory_section(&s->fbsection, s->dma_mr,
-                                          base,
-                                          s->config.yres, src_width);
+                                          base, s->config.yres,
+                                          src_width);
+        if (positioned) {
+            memset(surface_data(surface), 0,
+                   (size_t)surface_stride(surface) *
+                   surface_height(surface));
+        }
     }
 
-    framebuffer_update_display(surface, &s->fbsection,
+    if (positioned) {
+        uint8_t *dest = surface_data(surface);
+
+        dest += (size_t)scanout_y * surface_stride(surface);
+        dest += (size_t)scanout_x * surface_bytes_per_pixel(surface);
+        draw_surface = qemu_create_displaysurface_from(
+            s->config.xres, s->config.yres,
+            surface_format(surface), surface_stride(surface), dest);
+    }
+
+    framebuffer_update_display(draw_surface, &s->fbsection,
                                s->config.xres, s->config.yres,
-                               src_width, dest_width, 0, s->invalidate,
-                               draw_line_src16, s, &first, &last);
+                               src_width, surface_stride(draw_surface),
+                               0, invalidate, draw_line_src16, s,
+                               &first, &last);
+
+    if (draw_surface != surface) {
+        qemu_free_displaysurface(draw_surface);
+    }
 
     if (first >= 0) {
-        qemu_console_update(s->con, 0, first, s->config.xres, last - first + 1);
+        if (invalidate && positioned) {
+            qemu_console_update(s->con, 0, 0, output_xres, output_yres);
+        } else {
+            qemu_console_update(s->con, scanout_x, scanout_y + first,
+                                s->config.xres, last - first + 1);
+        }
     }
 
     s->invalidate = false;
@@ -321,15 +344,59 @@ void bcm2835_fb_validate_config(BCM2835FBConfig *config)
     }
 }
 
-void bcm2835_fb_reconfigure(BCM2835FBState *s, BCM2835FBConfig *newconfig)
+static void bcm2835_fb_apply_config(BCM2835FBState *s,
+                                     BCM2835FBConfig *newconfig,
+                                     uint32_t output_xres,
+                                     uint32_t output_yres,
+                                     uint32_t scanout_x,
+                                     uint32_t scanout_y,
+                                     bool hvs_scanout)
 {
     s->lock = true;
-
     s->config = *newconfig;
-
+    s->hvs_scanout = hvs_scanout;
+    s->scanout_xres = output_xres;
+    s->scanout_yres = output_yres;
+    s->scanout_x = scanout_x;
+    s->scanout_y = scanout_y;
     s->invalidate = true;
-    qemu_console_resize(s->con, s->config.xres, s->config.yres);
+    qemu_console_resize(s->con, output_xres, output_yres);
     s->lock = false;
+}
+
+void bcm2835_fb_reconfigure(BCM2835FBState *s,
+                            BCM2835FBConfig *newconfig)
+{
+    bcm2835_fb_apply_config(s, newconfig,
+                            newconfig->xres, newconfig->yres,
+                            0, 0, false);
+}
+
+void bcm2835_fb_reconfigure_scanout(BCM2835FBState *s,
+                                    BCM2835FBConfig *newconfig,
+                                    uint32_t output_xres,
+                                    uint32_t output_yres,
+                                    uint32_t scanout_x,
+                                    uint32_t scanout_y)
+{
+    if (!output_xres || !output_yres ||
+        output_xres > XRES_MAX || output_yres > YRES_MAX ||
+        newconfig->xres > output_xres ||
+        newconfig->yres > output_yres ||
+        scanout_x > output_xres - newconfig->xres ||
+        scanout_y > output_yres - newconfig->yres) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      TYPE_BCM2835_FB ": invalid HVS scanout geometry "
+                      "%ux%u+%u+%u in %ux%u\n",
+                      newconfig->xres, newconfig->yres,
+                      scanout_x, scanout_y,
+                      output_xres, output_yres);
+        return;
+    }
+
+    bcm2835_fb_apply_config(s, newconfig,
+                            output_xres, output_yres,
+                            scanout_x, scanout_y, true);
 }
 
 static void bcm2835_fb_mbox_push(BCM2835FBState *s, uint32_t value)
@@ -420,10 +487,35 @@ static const MemoryRegionOps bcm2835_fb_ops = {
     .valid.max_access_size = 4,
 };
 
+static int bcm2835_fb_post_load(void *opaque, int version_id)
+{
+    BCM2835FBState *s = opaque;
+
+    if (version_id < 2 || !s->scanout_xres || !s->scanout_yres) {
+        s->hvs_scanout = false;
+        s->scanout_xres = s->config.xres;
+        s->scanout_yres = s->config.yres;
+        s->scanout_x = 0;
+        s->scanout_y = 0;
+    }
+    if (s->scanout_xres > XRES_MAX || s->scanout_yres > YRES_MAX ||
+        s->config.xres > s->scanout_xres ||
+        s->config.yres > s->scanout_yres ||
+        s->scanout_x > s->scanout_xres - s->config.xres ||
+        s->scanout_y > s->scanout_yres - s->config.yres) {
+        return -EINVAL;
+    }
+
+    qemu_console_resize(s->con, s->scanout_xres, s->scanout_yres);
+    s->invalidate = true;
+    return 0;
+}
+
 static const VMStateDescription vmstate_bcm2835_fb = {
     .name = TYPE_BCM2835_FB,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = bcm2835_fb_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(lock, BCM2835FBState),
         VMSTATE_BOOL(invalidate, BCM2835FBState),
@@ -439,6 +531,11 @@ static const VMStateDescription vmstate_bcm2835_fb = {
         VMSTATE_UNUSED(8), /* Was pitch and size */
         VMSTATE_UINT32(config.pixo, BCM2835FBState),
         VMSTATE_UINT32(config.alpha, BCM2835FBState),
+        VMSTATE_BOOL_V(hvs_scanout, BCM2835FBState, 2),
+        VMSTATE_UINT32_V(scanout_xres, BCM2835FBState, 2),
+        VMSTATE_UINT32_V(scanout_yres, BCM2835FBState, 2),
+        VMSTATE_UINT32_V(scanout_x, BCM2835FBState, 2),
+        VMSTATE_UINT32_V(scanout_y, BCM2835FBState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -465,6 +562,11 @@ static void bcm2835_fb_reset(DeviceState *dev)
     s->pending = false;
 
     s->config = s->initial_config;
+    s->hvs_scanout = false;
+    s->scanout_xres = s->config.xres;
+    s->scanout_yres = s->config.yres;
+    s->scanout_x = 0;
+    s->scanout_y = 0;
 
     s->invalidate = true;
     s->lock = false;
@@ -495,7 +597,8 @@ static void bcm2835_fb_realize(DeviceState *dev, Error **errp)
     bcm2835_fb_reset(dev);
 
     s->con = qemu_graphic_console_create(dev, 0, &vgafb_ops, s);
-    qemu_console_resize(s->con, s->config.xres, s->config.yres);
+    qemu_console_resize(s->con,
+                        s->scanout_xres, s->scanout_yres);
 }
 
 static const Property bcm2835_fb_props[] = {

@@ -66,12 +66,22 @@ struct BCM2835FBState {
     qemu_irq mbox_irq;
 
     bool lock, invalidate, pending;
+    bool hvs_scanout;
+    uint32_t scanout_xres, scanout_yres;
+    uint32_t scanout_x, scanout_y;
 
     BCM2835FBConfig config;
     BCM2835FBConfig initial_config;
 };
 
-void bcm2835_fb_reconfigure(BCM2835FBState *s, BCM2835FBConfig *newconfig);
+void bcm2835_fb_reconfigure(BCM2835FBState *s,
+                              BCM2835FBConfig *newconfig);
+void bcm2835_fb_reconfigure_scanout(BCM2835FBState *s,
+                                    BCM2835FBConfig *newconfig,
+                                    uint32_t output_xres,
+                                    uint32_t output_yres,
+                                    uint32_t scanout_x,
+                                    uint32_t scanout_y);
 
 /**
  * bcm2835_fb_get_pitch: return number of bytes per line of the framebuffer
