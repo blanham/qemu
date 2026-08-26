@@ -28,6 +28,14 @@
 
 #include "linux-kms-pageflip-probe.inc.c"
 
+#ifndef DRM_MODE_CONNECTED
+#define DRM_MODE_CONNECTED 1
+#endif
+
+#ifndef DRM_MODE_CONNECTOR_WRITEBACK
+#define DRM_MODE_CONNECTOR_WRITEBACK 18
+#endif
+
 #define VC4_MASTER_REACQUIRE_CARD_PATH "/dev/dri/card0"
 #define VC4_MASTER_REACQUIRE_TIMEOUT_SECONDS     35U
 #define VC4_MASTER_REACQUIRE_VISUAL_HOLD_SECONDS 3U
@@ -40,8 +48,12 @@
     UINT64_C(0x5643344d41535452)
 #define VC4_MASTER_REACQUIRE_ATOMIC_USER_DATA \
     UINT64_C(0x56433441544f4d43)
+#define VC4_MASTER_REACQUIRE_ATOMIC_MODESET_USER_DATA \
+    UINT64_C(0x5643344d4f444553)
 #define VC4_MASTER_REACQUIRE_MAX_CRTCS      16U
 #define VC4_MASTER_REACQUIRE_MAX_PLANES     64U
+#define VC4_MASTER_REACQUIRE_MAX_MODES      64U
+#define VC4_MASTER_REACQUIRE_MAX_ENCODERS   32U
 #define VC4_MASTER_REACQUIRE_MAX_PROPERTIES 96U
 #define VC4_MASTER_REACQUIRE_PRIMARY_PLANE  UINT64_C(1)
 
@@ -228,11 +240,7 @@ enum vc4_master_reacquire_buffer_kind {
     VC4_MASTER_REACQUIRE_MODESET_BUFFER,
     VC4_MASTER_REACQUIRE_PAGEFLIP_BUFFER,
     VC4_MASTER_REACQUIRE_ATOMIC_BUFFER,
-};
-
-enum vc4_master_reacquire_event_kind {
-    VC4_MASTER_REACQUIRE_PAGEFLIP_EVENT,
-    VC4_MASTER_REACQUIRE_ATOMIC_EVENT,
+    VC4_MASTER_REACQUIRE_ATOMIC_MODESET_BUFFER,
 };
 
 struct vc4_master_reacquire_buffer {
@@ -358,6 +366,21 @@ static int vc4_master_reacquire_create_buffer(
             "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_FB_OK\n";
         label = "ATOMIC";
         break;
+    case VC4_MASTER_REACQUIRE_ATOMIC_MODESET_BUFFER:
+        create_stage = "create-atomic-modeset-dumb";
+        map_stage = "map-atomic-modeset-dumb";
+        mmap_stage = "mmap-atomic-modeset-dumb";
+        addfb_stage = "addfb2-atomic-modeset";
+        invalid_dumb_stage = "atomic-modeset-dumb-invalid";
+        invalid_fb_stage = "atomic-modeset-fb-invalid";
+        dumb_marker =
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_DUMB_OK\n";
+        map_marker =
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_MAP_OK\n";
+        fb_marker =
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_FB_OK\n";
+        label = "ATOMIC_MODESET";
+        break;
     default:
         errno = EINVAL;
         return vc4_master_reacquire_fail("invalid-buffer-kind");
@@ -409,6 +432,7 @@ static int vc4_master_reacquire_create_buffer(
             buffer->mapping, buffer->create.pitch, width, height);
         break;
     case VC4_MASTER_REACQUIRE_ATOMIC_BUFFER:
+    case VC4_MASTER_REACQUIRE_ATOMIC_MODESET_BUFFER:
         vc4_master_reacquire_fill_atomic_pattern(
             buffer->mapping, buffer->create.pitch, width, height);
         break;
@@ -518,21 +542,32 @@ static int vc4_master_reacquire_wait_event(int fd, uint32_t crtc_id,
                 struct drm_event_vblank vblank;
 
                 memcpy(&vblank, event_bytes + offset, sizeof(vblank));
-                const bool atomic = expected_user_data ==
-                    VC4_MASTER_REACQUIRE_ATOMIC_USER_DATA;
+                const char *label = "PAGEFLIP";
+                const char *ok_marker =
+                    "VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK\n";
+
+                if (expected_user_data ==
+                        VC4_MASTER_REACQUIRE_ATOMIC_USER_DATA) {
+                    label = "ATOMIC";
+                    ok_marker =
+                        "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK\n";
+                } else if (expected_user_data ==
+                           VC4_MASTER_REACQUIRE_ATOMIC_MODESET_USER_DATA) {
+                    label = "ATOMIC_MODESET";
+                    ok_marker =
+                        "VC4_LINUX_KMS_MASTER_REACQUIRE_"
+                        "ATOMIC_MODESET_EVENT_OK\n";
+                }
 
                 report("VC4_LINUX_KMS_MASTER_REACQUIRE_%s_EVENT "
                        "type=%u length=%u user=0x%016llx "
                        "sequence=%u crtc=%u\n",
-                       atomic ? "ATOMIC" : "PAGEFLIP",
-                       vblank.base.type, vblank.base.length,
+                       label, vblank.base.type, vblank.base.length,
                        (unsigned long long)vblank.user_data,
                        vblank.sequence, vblank.crtc_id);
                 if (vblank.user_data == expected_user_data &&
                     (vblank.crtc_id == 0 || vblank.crtc_id == crtc_id)) {
-                    marker(atomic ?
-                        "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK\n" :
-                        "VC4_LINUX_KMS_MASTER_REACQUIRE_EVENT_OK\n");
+                    marker(ok_marker);
                     return 0;
                 }
             }
@@ -550,8 +585,25 @@ struct vc4_master_reacquire_plane_properties {
     bool type_found;
     bool fb_id_found;
     bool crtc_id_found;
+    bool src_x_found;
+    bool src_y_found;
+    bool src_w_found;
+    bool src_h_found;
+    bool crtc_x_found;
+    bool crtc_y_found;
+    bool crtc_w_found;
+    bool crtc_h_found;
     uint64_t type_value;
     uint32_t fb_id_property;
+    uint32_t crtc_id_property;
+    uint32_t src_x_property;
+    uint32_t src_y_property;
+    uint32_t src_w_property;
+    uint32_t src_h_property;
+    uint32_t crtc_x_property;
+    uint32_t crtc_y_property;
+    uint32_t crtc_w_property;
+    uint32_t crtc_h_property;
     uint64_t fb_id_value;
     uint64_t crtc_id_value;
 };
@@ -559,6 +611,15 @@ struct vc4_master_reacquire_plane_properties {
 struct vc4_master_reacquire_primary_plane {
     uint32_t plane_id;
     uint32_t fb_id_property;
+    uint32_t crtc_id_property;
+    uint32_t src_x_property;
+    uint32_t src_y_property;
+    uint32_t src_w_property;
+    uint32_t src_h_property;
+    uint32_t crtc_x_property;
+    uint32_t crtc_y_property;
+    uint32_t crtc_w_property;
+    uint32_t crtc_h_property;
 };
 
 static int vc4_master_reacquire_crtc_index(int fd, uint32_t crtc_id,
@@ -684,12 +745,41 @@ static int vc4_master_reacquire_plane_properties(
             result->fb_id_value = property_values[index];
         } else if (strcmp(property.name, "CRTC_ID") == 0) {
             result->crtc_id_found = true;
+            result->crtc_id_property = property.prop_id;
             result->crtc_id_value = property_values[index];
+        } else if (strcmp(property.name, "SRC_X") == 0) {
+            result->src_x_found = true;
+            result->src_x_property = property.prop_id;
+        } else if (strcmp(property.name, "SRC_Y") == 0) {
+            result->src_y_found = true;
+            result->src_y_property = property.prop_id;
+        } else if (strcmp(property.name, "SRC_W") == 0) {
+            result->src_w_found = true;
+            result->src_w_property = property.prop_id;
+        } else if (strcmp(property.name, "SRC_H") == 0) {
+            result->src_h_found = true;
+            result->src_h_property = property.prop_id;
+        } else if (strcmp(property.name, "CRTC_X") == 0) {
+            result->crtc_x_found = true;
+            result->crtc_x_property = property.prop_id;
+        } else if (strcmp(property.name, "CRTC_Y") == 0) {
+            result->crtc_y_found = true;
+            result->crtc_y_property = property.prop_id;
+        } else if (strcmp(property.name, "CRTC_W") == 0) {
+            result->crtc_w_found = true;
+            result->crtc_w_property = property.prop_id;
+        } else if (strcmp(property.name, "CRTC_H") == 0) {
+            result->crtc_h_found = true;
+            result->crtc_h_property = property.prop_id;
         }
     }
 
     if (!result->type_found || !result->fb_id_found ||
-        !result->crtc_id_found) {
+        !result->crtc_id_found || !result->src_x_found ||
+        !result->src_y_found || !result->src_w_found ||
+        !result->src_h_found || !result->crtc_x_found ||
+        !result->crtc_y_found || !result->crtc_w_found ||
+        !result->crtc_h_found) {
         errno = ENOENT;
         (void)vc4_master_reacquire_fail(
             "atomic-required-plane-property-missing");
@@ -777,6 +867,96 @@ out:
     return status;
 }
 
+
+static int vc4_master_reacquire_alternate_mode(
+    int fd, uint32_t connector_id,
+    const struct drm_mode_modeinfo *current_mode,
+    struct drm_mode_modeinfo *alternate_mode)
+{
+    struct drm_mode_get_connector connector = {
+        .connector_id = connector_id,
+    };
+    struct drm_mode_modeinfo modes[VC4_MASTER_REACQUIRE_MAX_MODES] = { 0 };
+    uint32_t encoders[VC4_MASTER_REACQUIRE_MAX_ENCODERS] = { 0 };
+    uint32_t properties[VC4_MASTER_REACQUIRE_MAX_PROPERTIES] = { 0 };
+    uint64_t property_values[VC4_MASTER_REACQUIRE_MAX_PROPERTIES] = { 0 };
+    uint64_t current_area;
+
+    if (connector_id == 0 || current_mode == NULL ||
+        alternate_mode == NULL) {
+        errno = EINVAL;
+        return vc4_master_reacquire_fail(
+            "invalid-atomic-modeset-selection-request");
+    }
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector,
+            "atomic-modeset-get-connector-count") < 0) {
+        return -1;
+    }
+    if (connector.count_modes == 0 ||
+        connector.count_modes > VC4_MASTER_REACQUIRE_MAX_MODES ||
+        connector.count_encoders > VC4_MASTER_REACQUIRE_MAX_ENCODERS ||
+        connector.count_props > VC4_MASTER_REACQUIRE_MAX_PROPERTIES) {
+        errno = connector.count_modes == 0 ? ENODEV : EOVERFLOW;
+        return vc4_master_reacquire_fail(
+            "atomic-modeset-connector-capacity");
+    }
+
+    connector.modes_ptr = (uintptr_t)modes;
+    connector.encoders_ptr = (uintptr_t)encoders;
+    connector.props_ptr = (uintptr_t)properties;
+    connector.prop_values_ptr = (uintptr_t)property_values;
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector,
+            "atomic-modeset-get-connector") < 0) {
+        return -1;
+    }
+    if (connector.count_modes == 0 ||
+        connector.count_modes > VC4_MASTER_REACQUIRE_MAX_MODES ||
+        connector.count_encoders > VC4_MASTER_REACQUIRE_MAX_ENCODERS ||
+        connector.count_props > VC4_MASTER_REACQUIRE_MAX_PROPERTIES ||
+        connector.connection != DRM_MODE_CONNECTED ||
+        connector.connector_type == DRM_MODE_CONNECTOR_WRITEBACK) {
+        errno = ENODEV;
+        return vc4_master_reacquire_fail(
+            "atomic-modeset-connector-invalid");
+    }
+
+    current_area =
+        (uint64_t)current_mode->hdisplay * current_mode->vdisplay;
+    for (unsigned int pass = 0; pass < 2; pass++) {
+        for (uint32_t index = 0; index < connector.count_modes; index++) {
+            uint64_t area =
+                (uint64_t)modes[index].hdisplay * modes[index].vdisplay;
+            bool different_size =
+                modes[index].hdisplay != current_mode->hdisplay ||
+                modes[index].vdisplay != current_mode->vdisplay;
+
+            if (!different_size || modes[index].hdisplay == 0 ||
+                modes[index].vdisplay == 0) {
+                continue;
+            }
+            if (pass == 0 && area > current_area) {
+                continue;
+            }
+            *alternate_mode = modes[index];
+            report("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+                   "ATOMIC_MODESET_SELECTION connector=%u "
+                   "from=%ux%u to=%ux%u clock=%u\n",
+                   connector_id, current_mode->hdisplay,
+                   current_mode->vdisplay, alternate_mode->hdisplay,
+                   alternate_mode->vdisplay, alternate_mode->clock);
+            marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+                   "ATOMIC_MODESET_SELECTION_OK\n");
+            return 0;
+        }
+    }
+
+    errno = ENODEV;
+    return vc4_master_reacquire_fail(
+        "atomic-modeset-no-alternate-mode");
+}
+
 static int vc4_master_reacquire_primary_plane(
     int fd, uint32_t crtc_id, uint32_t expected_fb_id,
     struct vc4_master_reacquire_primary_plane *result)
@@ -859,6 +1039,15 @@ static int vc4_master_reacquire_primary_plane(
 
         result->plane_id = plane.plane_id;
         result->fb_id_property = properties.fb_id_property;
+        result->crtc_id_property = properties.crtc_id_property;
+        result->src_x_property = properties.src_x_property;
+        result->src_y_property = properties.src_y_property;
+        result->src_w_property = properties.src_w_property;
+        result->src_h_property = properties.src_h_property;
+        result->crtc_x_property = properties.crtc_x_property;
+        result->crtc_y_property = properties.crtc_y_property;
+        result->crtc_w_property = properties.crtc_w_property;
+        result->crtc_h_property = properties.crtc_h_property;
         report("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY "
                "plane=%u crtc=%u fb=%u fb_prop=%u crtc_index=%u\n",
                result->plane_id, crtc_id, expected_fb_id,
@@ -973,10 +1162,278 @@ static int vc4_master_reacquire_atomic_swap(
     }
     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK\n");
     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY\n");
-    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY\n");
     sleep(VC4_MASTER_REACQUIRE_VISUAL_HOLD_SECONDS);
     marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK\n");
     return 0;
+}
+
+
+static int vc4_master_reacquire_expect_allow_modeset(
+    int fd, const struct drm_mode_atomic *request)
+{
+    struct drm_mode_atomic probe;
+    int result;
+    int saved_errno;
+
+    if (request == NULL) {
+        errno = EINVAL;
+        return vc4_master_reacquire_fail(
+            "invalid-atomic-modeset-allow-check");
+    }
+    probe = *request;
+    probe.flags = DRM_MODE_ATOMIC_TEST_ONLY;
+    probe.user_data = 0;
+    errno = 0;
+    do {
+        result = ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &probe);
+    } while (result < 0 && errno == EINTR);
+    if (result == 0) {
+        errno = EPROTO;
+        return vc4_master_reacquire_fail(
+            "atomic-modeset-allowed-without-flag");
+    }
+
+    saved_errno = errno;
+    if (saved_errno != EINVAL) {
+        errno = saved_errno;
+        return vc4_master_reacquire_fail(
+            "atomic-modeset-without-allow");
+    }
+    report("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_ALLOW_REQUIRED errno=%d\n",
+           saved_errno);
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_ALLOW_REQUIRED_OK\n");
+    errno = 0;
+    return 0;
+}
+
+static int vc4_master_reacquire_atomic_modeset(
+    int fd, const struct vc4_modeset_selection *selection,
+    uint32_t current_fb_id,
+    struct vc4_master_reacquire_buffer *modeset_buffer)
+{
+    struct vc4_master_reacquire_primary_plane primary = { 0 };
+    struct drm_mode_modeinfo alternate_mode = { 0 };
+    struct drm_mode_create_blob mode_blob = { 0 };
+    struct drm_mode_destroy_blob destroy_blob = { 0 };
+    struct drm_mode_crtc current = { 0 };
+    struct drm_mode_atomic atomic = { 0 };
+    uint32_t connector_crtc_property = 0;
+    uint32_t crtc_mode_property = 0;
+    uint32_t crtc_active_property = 0;
+    uint64_t connector_crtc_value = 0;
+    uint64_t crtc_mode_value = 0;
+    uint64_t crtc_active_value = 0;
+    uint32_t object_ids[3];
+    uint32_t property_counts[3] = { 1, 2, 10 };
+    uint32_t property_ids[13];
+    uint64_t property_values[13];
+    int status = -1;
+    int saved_errno = 0;
+
+    if (selection == NULL || modeset_buffer == NULL ||
+        selection->connector_id == 0 || selection->crtc_id == 0 ||
+        current_fb_id == 0) {
+        errno = EINVAL;
+        return vc4_master_reacquire_fail(
+            "invalid-atomic-modeset-request");
+    }
+    if (vc4_master_reacquire_primary_plane(
+            fd, selection->crtc_id, current_fb_id, &primary) < 0) {
+        return -1;
+    }
+    if (vc4_master_reacquire_alternate_mode(
+            fd, selection->connector_id, &selection->mode,
+            &alternate_mode) < 0) {
+        return -1;
+    }
+    if (vc4_master_reacquire_object_property(
+            fd, selection->connector_id, DRM_MODE_OBJECT_CONNECTOR,
+            "CRTC_ID", &connector_crtc_property,
+            &connector_crtc_value) < 0 ||
+        vc4_master_reacquire_object_property(
+            fd, selection->crtc_id, DRM_MODE_OBJECT_CRTC,
+            "MODE_ID", &crtc_mode_property, &crtc_mode_value) < 0 ||
+        vc4_master_reacquire_object_property(
+            fd, selection->crtc_id, DRM_MODE_OBJECT_CRTC,
+            "ACTIVE", &crtc_active_property,
+            &crtc_active_value) < 0) {
+        return -1;
+    }
+    if (connector_crtc_value != selection->crtc_id ||
+        crtc_mode_value == 0 || crtc_active_value != 1) {
+        errno = EPROTO;
+        return vc4_master_reacquire_fail(
+            "atomic-modeset-object-state");
+    }
+    report("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_PROPERTIES connector_crtc=%u "
+           "crtc_mode=%u crtc_active=%u plane=%u\n",
+           connector_crtc_property, crtc_mode_property,
+           crtc_active_property, primary.plane_id);
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_PROPERTIES_OK\n");
+
+    if (vc4_master_reacquire_create_buffer(
+            fd, alternate_mode.hdisplay, alternate_mode.vdisplay,
+            VC4_MASTER_REACQUIRE_ATOMIC_MODESET_BUFFER,
+            modeset_buffer) < 0) {
+        return -1;
+    }
+
+    mode_blob.data = (uintptr_t)&alternate_mode;
+    mode_blob.length = sizeof(alternate_mode);
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_CREATEPROPBLOB, &mode_blob,
+            "atomic-modeset-create-mode-blob") < 0) {
+        return -1;
+    }
+    if (mode_blob.blob_id == 0) {
+        errno = EIO;
+        return vc4_master_reacquire_fail(
+            "atomic-modeset-mode-blob-invalid");
+    }
+    report("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_BLOB blob=%u\n", mode_blob.blob_id);
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_BLOB_OK\n");
+
+    object_ids[0] = selection->connector_id;
+    object_ids[1] = selection->crtc_id;
+    object_ids[2] = primary.plane_id;
+
+    property_ids[0] = connector_crtc_property;
+    property_values[0] = selection->crtc_id;
+
+    property_ids[1] = crtc_mode_property;
+    property_values[1] = mode_blob.blob_id;
+    property_ids[2] = crtc_active_property;
+    property_values[2] = 1;
+
+    property_ids[3] = primary.fb_id_property;
+    property_values[3] = modeset_buffer->framebuffer.fb_id;
+    property_ids[4] = primary.crtc_id_property;
+    property_values[4] = selection->crtc_id;
+    property_ids[5] = primary.src_x_property;
+    property_values[5] = 0;
+    property_ids[6] = primary.src_y_property;
+    property_values[6] = 0;
+    property_ids[7] = primary.src_w_property;
+    property_values[7] = (uint64_t)alternate_mode.hdisplay << 16;
+    property_ids[8] = primary.src_h_property;
+    property_values[8] = (uint64_t)alternate_mode.vdisplay << 16;
+    property_ids[9] = primary.crtc_x_property;
+    property_values[9] = 0;
+    property_ids[10] = primary.crtc_y_property;
+    property_values[10] = 0;
+    property_ids[11] = primary.crtc_w_property;
+    property_values[11] = alternate_mode.hdisplay;
+    property_ids[12] = primary.crtc_h_property;
+    property_values[12] = alternate_mode.vdisplay;
+
+    atomic.count_objs = 3;
+    atomic.objs_ptr = (uintptr_t)object_ids;
+    atomic.count_props_ptr = (uintptr_t)property_counts;
+    atomic.props_ptr = (uintptr_t)property_ids;
+    atomic.prop_values_ptr = (uintptr_t)property_values;
+    if (vc4_master_reacquire_expect_allow_modeset(fd, &atomic) < 0) {
+        goto out;
+    }
+
+    atomic.flags =
+        DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET;
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_ATOMIC, &atomic,
+            "atomic-modeset-test-only") < 0) {
+        goto out;
+    }
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_TEST_ONLY_OK\n");
+
+    atomic.flags = DRM_MODE_ATOMIC_NONBLOCK |
+                   DRM_MODE_PAGE_FLIP_EVENT |
+                   DRM_MODE_ATOMIC_ALLOW_MODESET;
+    atomic.user_data = VC4_MASTER_REACQUIRE_ATOMIC_MODESET_USER_DATA;
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_IOCTL_START\n");
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_ATOMIC, &atomic,
+            "atomic-modeset-commit") < 0) {
+        goto out;
+    }
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_QUEUED\n");
+
+    if (vc4_master_reacquire_wait_event(
+            fd, selection->crtc_id,
+            VC4_MASTER_REACQUIRE_ATOMIC_MODESET_USER_DATA) < 0) {
+        goto out;
+    }
+
+    current.crtc_id = selection->crtc_id;
+    if (vc4_master_reacquire_ioctl(
+            fd, DRM_IOCTL_MODE_GETCRTC, &current,
+            "getcrtc-after-atomic-modeset") < 0) {
+        goto out;
+    }
+    if (current.fb_id != modeset_buffer->framebuffer.fb_id ||
+        !current.mode_valid ||
+        current.mode.hdisplay != alternate_mode.hdisplay ||
+        current.mode.vdisplay != alternate_mode.vdisplay) {
+        report("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+               "ATOMIC_MODESET_MISMATCH expected_fb=%u actual_fb=%u "
+               "mode_valid=%u expected_mode=%ux%u actual_mode=%ux%u\n",
+               modeset_buffer->framebuffer.fb_id, current.fb_id,
+               current.mode_valid, alternate_mode.hdisplay,
+               alternate_mode.vdisplay, current.mode.hdisplay,
+               current.mode.vdisplay);
+        errno = EIO;
+        (void)vc4_master_reacquire_fail(
+            "atomic-modeset-current-state-mismatch");
+        goto out;
+    }
+    report("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_CURRENT fb=%u mode=%ux%u clock=%u\n",
+           current.fb_id, current.mode.hdisplay,
+           current.mode.vdisplay, current.mode.clock);
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_CURRENT_OK\n");
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+           "ATOMIC_MODESET_VISUAL_READY\n");
+    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY\n");
+    sleep(VC4_MASTER_REACQUIRE_VISUAL_HOLD_SECONDS);
+    status = 0;
+
+out:
+    saved_errno = errno;
+    if (mode_blob.blob_id != 0) {
+        int destroy_result;
+
+        destroy_blob.blob_id = mode_blob.blob_id;
+        do {
+            destroy_result = ioctl(
+                fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, &destroy_blob);
+        } while (destroy_result < 0 && errno == EINTR);
+        if (destroy_result < 0) {
+            if (status == 0) {
+                return vc4_master_reacquire_fail(
+                    "atomic-modeset-destroy-mode-blob");
+            }
+            report("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+                   "ATOMIC_MODESET_BLOB_CLEANUP_FAILED errno=%d\n",
+                   errno);
+        } else {
+            marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+                   "ATOMIC_MODESET_BLOB_DESTROYED_OK\n");
+        }
+    }
+    errno = saved_errno;
+    if (status == 0) {
+        marker("VC4_LINUX_KMS_MASTER_REACQUIRE_"
+               "ATOMIC_MODESET_OK\n");
+    }
+    return status;
 }
 
 static int vc4_master_reacquire_run(int inherited_master_fd,
@@ -994,6 +1451,9 @@ static int vc4_master_reacquire_run(int inherited_master_fd,
         .mapping = MAP_FAILED,
     };
     struct vc4_master_reacquire_buffer atomic_buffer = {
+        .mapping = MAP_FAILED,
+    };
+    struct vc4_master_reacquire_buffer atomic_modeset_buffer = {
         .mapping = MAP_FAILED,
     };
     uint32_t connector_id;
@@ -1186,6 +1646,17 @@ static int vc4_master_reacquire_run(int inherited_master_fd,
         goto mastered_fail;
     }
 
+    if (vc4_master_reacquire_atomic_modeset(
+            fd, &selection, atomic_buffer.framebuffer.fb_id,
+            &atomic_modeset_buffer) < 0) {
+        goto mastered_fail;
+    }
+    if (vc4_master_reacquire_unmap_buffer(
+            &atomic_modeset_buffer,
+            "munmap-atomic-modeset-dumb") < 0) {
+        goto mastered_fail;
+    }
+
     if (vc4_master_reacquire_ioctl0(fd, DRM_IOCTL_DROP_MASTER,
                                     "drop-master-new-file") < 0) {
         goto mastered_fail;
@@ -1216,6 +1687,11 @@ mastered_fail:
         if (atomic_buffer.mapping != MAP_FAILED) {
             (void)munmap(atomic_buffer.mapping, atomic_buffer.create.size);
             atomic_buffer.mapping = MAP_FAILED;
+        }
+        if (atomic_modeset_buffer.mapping != MAP_FAILED) {
+            (void)munmap(atomic_modeset_buffer.mapping,
+                         atomic_modeset_buffer.create.size);
+            atomic_modeset_buffer.mapping = MAP_FAILED;
         }
         do {
             drop_result = ioctl(fd, DRM_IOCTL_DROP_MASTER, 0);

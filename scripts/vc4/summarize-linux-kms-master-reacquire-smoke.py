@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise explicit VC4 master-handoff and atomic-primary classifications."""
+"""Exercise explicit VC4 handoff and full atomic-modeset classifications."""
 
 from __future__ import annotations
 
@@ -90,6 +90,36 @@ MISSING_CLASSIFICATIONS = {
         "vc4-kms-master-handoff-atomic-visual-not-ready",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK":
         "vc4-kms-master-handoff-atomic-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_SELECTION_OK":
+        "vc4-kms-master-handoff-atomic-modeset-selection-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_PROPERTIES_OK":
+        "vc4-kms-master-handoff-atomic-modeset-properties-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_DUMB_OK":
+        "vc4-kms-master-handoff-atomic-modeset-dumb-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_MAP_OK":
+        "vc4-kms-master-handoff-atomic-modeset-map-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_FB_OK":
+        "vc4-kms-master-handoff-atomic-modeset-fb-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_BLOB_OK":
+        "vc4-kms-master-handoff-atomic-modeset-blob-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_ALLOW_REQUIRED_OK":
+        "vc4-kms-master-handoff-atomic-modeset-allow-proof-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_TEST_ONLY_OK":
+        "vc4-kms-master-handoff-atomic-modeset-test-only-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_IOCTL_START":
+        "vc4-kms-master-handoff-atomic-modeset-ioctl-not-started",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_QUEUED":
+        "vc4-kms-master-handoff-atomic-modeset-not-queued",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_EVENT_OK":
+        "vc4-kms-master-handoff-atomic-modeset-event-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_CURRENT_OK":
+        "vc4-kms-master-handoff-atomic-modeset-current-incomplete",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_VISUAL_READY":
+        "vc4-kms-master-handoff-atomic-modeset-visual-not-ready",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_BLOB_DESTROYED_OK":
+        "vc4-kms-master-handoff-atomic-modeset-blob-leaked",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_OK":
+        "vc4-kms-master-handoff-atomic-modeset-incomplete",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY":
         "vc4-kms-master-handoff-visual-not-ready",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED":
@@ -296,7 +326,7 @@ def main() -> int:
     )
 
     print(
-        "VC4 explicit DRM-master handoff/atomic-primary "
+        "VC4 explicit DRM-master handoff/full-atomic-modeset "
         "classifications: PASS"
     )
     return 0

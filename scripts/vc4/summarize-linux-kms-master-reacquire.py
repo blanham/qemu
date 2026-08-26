@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize explicit VC4 master handoff and atomic-primary scanout."""
+"""Summarize explicit VC4 master handoff and full atomic modeset."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 CLEAR = (
     "linux-vc4-kms-explicit-master-handoff-"
-    "atomic-primary-pageflip-visual-clear"
+    "atomic-modeset-pageflip-visual-clear"
 )
 
 MODESET_FAILURE_RE = re.compile(
@@ -60,8 +60,23 @@ WITNESS_MARKER_ORDER = (
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_EVENT_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY",
-    "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_SELECTION_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_PROPERTIES_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_DUMB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_MAP_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_FB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_BLOB_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_ALLOW_REQUIRED_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_TEST_ONLY_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_IOCTL_START",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_QUEUED",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_EVENT_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_CURRENT_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_VISUAL_READY",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_BLOB_DESTROYED_OK",
+    "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_CHILD_DROPPED",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_OK",
     "VC4_LINUX_KMS_MASTER_REACQUIRE_ORIGINAL_RESTORED",
@@ -250,6 +265,36 @@ def classify(evidence: dict[str, Any]) -> str:
         return "vc4-kms-master-handoff-atomic-visual-not-ready"
     if not evidence["atomic_ok"]:
         return "vc4-kms-master-handoff-atomic-incomplete"
+    if not evidence["atomic_modeset_selection_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-selection-incomplete"
+    if not evidence["atomic_modeset_properties_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-properties-incomplete"
+    if not evidence["atomic_modeset_dumb_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-dumb-incomplete"
+    if not evidence["atomic_modeset_map_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-map-incomplete"
+    if not evidence["atomic_modeset_fb_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-fb-incomplete"
+    if not evidence["atomic_modeset_blob_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-blob-incomplete"
+    if not evidence["atomic_modeset_allow_required_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-allow-proof-incomplete"
+    if not evidence["atomic_modeset_test_only_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-test-only-incomplete"
+    if not evidence["atomic_modeset_ioctl_started"]:
+        return "vc4-kms-master-handoff-atomic-modeset-ioctl-not-started"
+    if not evidence["atomic_modeset_queued"]:
+        return "vc4-kms-master-handoff-atomic-modeset-not-queued"
+    if not evidence["atomic_modeset_event_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-event-incomplete"
+    if not evidence["atomic_modeset_current_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-current-incomplete"
+    if not evidence["atomic_modeset_visual_ready"]:
+        return "vc4-kms-master-handoff-atomic-modeset-visual-not-ready"
+    if not evidence["atomic_modeset_blob_destroyed_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-blob-leaked"
+    if not evidence["atomic_modeset_ok"]:
+        return "vc4-kms-master-handoff-atomic-modeset-incomplete"
     if not evidence["visual_ready"]:
         return "vc4-kms-master-handoff-visual-not-ready"
     if not evidence["image_present"]:
@@ -419,6 +464,73 @@ def measure(
         "atomic_ok": marker(
             serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK"
         ),
+        "atomic_modeset_selection_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_"
+            "ATOMIC_MODESET_SELECTION_OK",
+        ),
+        "atomic_modeset_properties_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_"
+            "ATOMIC_MODESET_PROPERTIES_OK",
+        ),
+        "atomic_modeset_dumb_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_DUMB_OK",
+        ),
+        "atomic_modeset_map_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_MAP_OK",
+        ),
+        "atomic_modeset_fb_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_FB_OK",
+        ),
+        "atomic_modeset_blob_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_BLOB_OK",
+        ),
+        "atomic_modeset_allow_required_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_"
+            "ATOMIC_MODESET_ALLOW_REQUIRED_OK",
+        ),
+        "atomic_modeset_test_only_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_"
+            "ATOMIC_MODESET_TEST_ONLY_OK",
+        ),
+        "atomic_modeset_ioctl_started": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_"
+            "ATOMIC_MODESET_IOCTL_START",
+        ),
+        "atomic_modeset_queued": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_QUEUED",
+        ),
+        "atomic_modeset_event_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_EVENT_OK",
+        ),
+        "atomic_modeset_current_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_CURRENT_OK",
+        ),
+        "atomic_modeset_visual_ready": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_"
+            "ATOMIC_MODESET_VISUAL_READY",
+        ),
+        "atomic_modeset_blob_destroyed_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_"
+            "ATOMIC_MODESET_BLOB_DESTROYED_OK",
+        ),
+        "atomic_modeset_ok": marker(
+            serial,
+            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_MODESET_OK",
+        ),
         "visual_ready": marker(
             serial, "VC4_LINUX_KMS_MASTER_REACQUIRE_VISUAL_READY"
         ),
@@ -495,7 +607,7 @@ def build_record(
     image_witness = image if image_present else None
 
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "source_sha": source_sha,
         "run_id": run_id,
         "run_attempt": run_attempt,
@@ -580,6 +692,57 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
         ("GETCRTC reports atomic framebuffer", record["atomic_current_fb_ok"]),
         ("Atomic visual-ready hold reached", record["atomic_visual_ready"]),
         ("Atomic primary-plane witness completed", record["atomic_ok"]),
+        (
+            "Alternate connector mode selected",
+            record["atomic_modeset_selection_ok"],
+        ),
+        (
+            "Full atomic object properties identified",
+            record["atomic_modeset_properties_ok"],
+        ),
+        (
+            "Atomic-modeset dumb buffer created",
+            record["atomic_modeset_dumb_ok"],
+        ),
+        (
+            "Atomic-modeset dumb buffer mapped",
+            record["atomic_modeset_map_ok"],
+        ),
+        (
+            "Atomic-modeset framebuffer created",
+            record["atomic_modeset_fb_ok"],
+        ),
+        ("Mode property blob created", record["atomic_modeset_blob_ok"]),
+        (
+            "ALLOW_MODESET necessity proved",
+            record["atomic_modeset_allow_required_ok"],
+        ),
+        (
+            "Full atomic TEST_ONLY modeset completed",
+            record["atomic_modeset_test_only_ok"],
+        ),
+        (
+            "Full atomic modeset ioctl started",
+            record["atomic_modeset_ioctl_started"],
+        ),
+        ("Full atomic modeset queued", record["atomic_modeset_queued"]),
+        (
+            "Full atomic modeset event received",
+            record["atomic_modeset_event_ok"],
+        ),
+        (
+            "GETCRTC verified framebuffer and new mode",
+            record["atomic_modeset_current_ok"],
+        ),
+        (
+            "Full atomic modeset visual hold reached",
+            record["atomic_modeset_visual_ready"],
+        ),
+        (
+            "Mode property blob destroyed",
+            record["atomic_modeset_blob_destroyed_ok"],
+        ),
+        ("Full atomic modeset completed", record["atomic_modeset_ok"]),
         ("Visual-ready hold reached", record["visual_ready"]),
         ("Exact final pixels verified", record["visual_pixels_ok"]),
         ("Child explicitly dropped master", record["child_master_dropped"]),
@@ -596,7 +759,7 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
         ("Failure errno", record["failure_errno"]),
     )
     lines = [
-        "# VC4 explicit DRM-master handoff and atomic primary-plane flip",
+        "# VC4 explicit DRM-master handoff and full atomic modeset",
         "",
         f"Validation passed: **{'true' if record['passed'] else 'false'}**",
         "",
@@ -632,11 +795,16 @@ def write_markdown(path: pathlib.Path, record: dict[str, Any]) -> None:
             "flip. While still master on the same drm_file, it enables atomic "
             "UAPI, identifies the active primary plane and its FB_ID property, "
             "TEST_ONLY-validates a third framebuffer, then queues a "
-            "nonblocking "
-            "atomic primary-plane update with a flip-complete event. GETCRTC "
-            "and every captured XRGB8888 pixel must expose that third buffer. "
-            "The child drops master before exiting, and PID 1 must "
-            "reacquire it "
+            "nonblocking atomic primary-plane update with a flip-complete "
+            "event. It then chooses a different connector mode, creates a "
+            "mode property blob and a fourth framebuffer, and proves that "
+            "the transaction fails without ALLOW_MODESET. A complete atomic "
+            "request routes the connector, programs MODE_ID and ACTIVE, and "
+            "sets every primary-plane source and destination rectangle. The "
+            "ALLOW_MODESET TEST_ONLY and nonblocking event-driven commits "
+            "must pass; GETCRTC and every captured XRGB8888 pixel must expose "
+            "the new framebuffer at the alternate resolution. The child "
+            "destroys the mode blob, drops master, and PID 1 reacquires it "
             "before the render witness continues.",
         )
     )
