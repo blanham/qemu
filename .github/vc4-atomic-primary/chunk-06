@@ -1,0 +1,199 @@
++        .obj_id = object_id,
++        .obj_type = object_type,
++    };
++    uint32_t *property_ids = NULL;
++    uint64_t *property_values = NULL;
++    int status = -1;
++
++    if (object_id == 0 || name == NULL || property_id == NULL ||
++        property_value == NULL) {
++        errno = EINVAL;
++        return vc4_master_reacquire_fail(
++            "invalid-object-property-request");
++    }
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &properties,
++            "atomic-get-object-property-count") < 0) {
++        return -1;
++    }
++    if (properties.count_props == 0 ||
++        properties.count_props > VC4_MASTER_REACQUIRE_MAX_PROPERTIES) {
++        errno = properties.count_props == 0 ? ENODEV : EOVERFLOW;
++        return vc4_master_reacquire_fail("atomic-object-property-count");
++    }
++
++    property_ids = calloc(properties.count_props, sizeof(*property_ids));
++    property_values = calloc(properties.count_props,
++                             sizeof(*property_values));
++    if (property_ids == NULL || property_values == NULL) {
++        (void)vc4_master_reacquire_fail(
++            "atomic-allocate-object-properties");
++        goto out;
++    }
++    properties.props_ptr = (uintptr_t)property_ids;
++    properties.prop_values_ptr = (uintptr_t)property_values;
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &properties,
++            "atomic-get-object-properties") < 0) {
++        goto out;
++    }
++
++    for (uint32_t index = 0; index < properties.count_props; index++) {
++        struct drm_mode_get_property property = {
++            .prop_id = property_ids[index],
++        };
++
++        if (vc4_master_reacquire_ioctl(
++                fd, DRM_IOCTL_MODE_GETPROPERTY, &property,
++                "atomic-get-object-property-metadata") < 0) {
++            goto out;
++        }
++        property.name[DRM_PROP_NAME_LEN - 1] = '\0';
++        if (strcmp(property.name, name) == 0) {
++            *property_id = property.prop_id;
++            *property_value = property_values[index];
++            status = 0;
++            goto out;
++        }
++    }
++
++    errno = ENOENT;
++    (void)vc4_master_reacquire_fail("atomic-object-property-not-found");
++
++out:
++    free(property_values);
++    free(property_ids);
++    return status;
++}
++
++static int vc4_master_reacquire_primary_plane(
++    int fd, uint32_t crtc_id, uint32_t expected_fb_id,
++    struct vc4_master_reacquire_primary_plane *result)
++{
++    struct drm_set_client_cap capability = {
++        .capability = DRM_CLIENT_CAP_ATOMIC,
++        .value = 1,
++    };
++    struct drm_mode_get_plane_res resources = { 0 };
++    uint32_t *plane_ids = NULL;
++    uint32_t crtc_index = 0;
++    int status = -1;
++
++    if (result == NULL || crtc_id == 0 || expected_fb_id == 0) {
++        errno = EINVAL;
++        return vc4_master_reacquire_fail(
++            "invalid-primary-plane-request");
++    }
++    memset(result, 0, sizeof(*result));
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_SET_CLIENT_CAP, &capability,
++            "atomic-enable-client-cap") < 0) {
++        return -1;
++    }
++    marker("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CAPS_OK\n");
++
++    if (vc4_master_reacquire_crtc_index(
++            fd, crtc_id, &crtc_index) < 0) {
++        return -1;
++    }
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &resources,
++            "atomic-get-plane-count") < 0) {
++        return -1;
++    }
++    if (resources.count_planes == 0 ||
++        resources.count_planes > VC4_MASTER_REACQUIRE_MAX_PLANES) {
++        errno = resources.count_planes == 0 ? ENODEV : EOVERFLOW;
++        return vc4_master_reacquire_fail("atomic-plane-count");
++    }
++
++    plane_ids = calloc(resources.count_planes, sizeof(*plane_ids));
++    if (plane_ids == NULL) {
++        return vc4_master_reacquire_fail("atomic-allocate-planes");
++    }
++    resources.plane_id_ptr = (uintptr_t)plane_ids;
++    if (vc4_master_reacquire_ioctl(
++            fd, DRM_IOCTL_MODE_GETPLANERESOURCES, &resources,
++            "atomic-get-plane-ids") < 0) {
++        goto out;
++    }
++
++    for (uint32_t index = 0; index < resources.count_planes; index++) {
++        struct drm_mode_get_plane plane = {
++            .plane_id = plane_ids[index],
++        };
++        struct vc4_master_reacquire_plane_properties properties;
++
++        if (vc4_master_reacquire_ioctl(
++                fd, DRM_IOCTL_MODE_GETPLANE, &plane,
++                "atomic-get-plane") < 0) {
++            goto out;
++        }
++        if (crtc_index >= 32 ||
++            !(plane.possible_crtcs & (UINT32_C(1) << crtc_index))) {
++            continue;
++        }
++        if (vc4_master_reacquire_plane_properties(
++                fd, plane.plane_id, &properties) < 0) {
++            goto out;
++        }
++        if (properties.type_value !=
++                VC4_MASTER_REACQUIRE_PRIMARY_PLANE ||
++            plane.crtc_id != crtc_id ||
++            properties.crtc_id_value != crtc_id ||
++            plane.fb_id != expected_fb_id ||
++            properties.fb_id_value != expected_fb_id) {
++            continue;
++        }
++
++        result->plane_id = plane.plane_id;
++        result->fb_id_property = properties.fb_id_property;
++        report("VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY "
++               "plane=%u crtc=%u fb=%u fb_prop=%u crtc_index=%u\n",
++               result->plane_id, crtc_id, expected_fb_id,
++               result->fb_id_property, crtc_index);
++        marker(
++            "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_PRIMARY_PLANE_OK\n");
++        status = 0;
++        goto out;
++    }
++
++    errno = ENODEV;
++    (void)vc4_master_reacquire_fail("atomic-primary-plane-not-found");
++
++out:
++    free(plane_ids);
++    return status;
++}
++
++static int vc4_master_reacquire_atomic_swap(
++    int fd, const struct vc4_modeset_selection *selection,
++    uint32_t current_fb_id,
++    struct vc4_master_reacquire_buffer *atomic_buffer)
++{
++    struct vc4_master_reacquire_primary_plane primary = { 0 };
++    struct drm_mode_crtc current = { 0 };
++    uint32_t active_property = 0;
++    uint64_t active_value = 0;
++    uint32_t object_ids[2];
++    uint32_t property_counts[2] = { 1, 1 };
++    uint32_t property_ids[2];
++    uint64_t property_values[2];
++    struct drm_mode_atomic atomic = { 0 };
++
++    if (selection == NULL || atomic_buffer == NULL ||
++        selection->crtc_id == 0 || current_fb_id == 0) {
++        errno = EINVAL;
++        return vc4_master_reacquire_fail("invalid-atomic-swap-request");
++    }
++    if (vc4_master_reacquire_primary_plane(
++            fd, selection->crtc_id, current_fb_id, &primary) < 0) {
++        return -1;
++    }
++    if (vc4_master_reacquire_object_property(
++            fd, selection->crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE",
++            &active_property, &active_value) < 0) {
++        return -1;
++    }
++    if (active_value != 1) {
++        errno = EPROTO;
