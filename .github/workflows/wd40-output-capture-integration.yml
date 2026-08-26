@@ -1,0 +1,101 @@
+name: WD40 monitor output capture integration
+
+on:
+  push:
+    branches:
+      - wd40/qol-output-capture-integration
+      - wd40/qol-integration
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wd40-output-capture-integration-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-output-capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out candidate history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replay and validate the output-capture transform
+        run: |
+          set -Eeuo pipefail
+
+          apply_capture() {
+            python3 scripts/wd40/apply-monitor-output-capture.py
+            python3 scripts/wd40/apply-monitor-output-capture-hardening.py
+          }
+
+          apply_capture
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-output-capture-pass1.diff
+          apply_capture
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-output-capture-pass2.diff
+          cmp \
+            /tmp/wd40-output-capture-pass1.diff \
+            /tmp/wd40-output-capture-pass2.diff
+
+          python3 scripts/ci/check-wd40-monitor-output-capture.py
+          git diff --check
+          test -z "$(git status --porcelain)"
+
+      - name: Install C build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build x86_64 system emulation without Rust
+        run: |
+          set -Eeuo pipefail
+
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-wd40-output-capture
+          cd build-wd40-output-capture
+          ../configure \
+            --target-list=x86_64-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 qemu-system-x86_64
+          cd ..
+
+      - name: Exercise QMP and HMP output capture
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-monitor-output-capture.py \
+            build-wd40-output-capture
+
+      - name: Verify a clean candidate tree
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-wd40-output-capture
+          python3 scripts/ci/check-wd40-monitor-output-capture.py
+          git diff --check
+          git status --short
+          test -z "$(git status --porcelain)"
