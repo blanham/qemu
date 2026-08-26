@@ -26,18 +26,26 @@ def replace_once(path: str, old: str, new: str) -> None:
     file_path, text = load(path)
     if new in text:
         return
+    if new.endswith(old):
+        owned_prefix = new[:-len(old)]
+        if owned_prefix and owned_prefix in text:
+            return
     count = text.count(old)
     if count != 1:
         raise RuntimeError(f"{path}: expected one replacement site, found {count}")
     store(file_path, text.replace(old, new, 1))
 
 
-def write_exact(path: str, content: str) -> None:
+def write_extensible(path: str, content: str) -> None:
     file_path = ROOT / path
     if file_path.exists():
-        if file_path.read_text(encoding="utf-8") != content:
-            raise RuntimeError(f"{path}: existing file differs from WD40 content")
-        return
+        current = file_path.read_text(encoding="utf-8")
+        if current == content or current.startswith(content + "\n"):
+            return
+        raise RuntimeError(
+            f"{path}: existing file is not the WD40 base or an append-only "
+            "extension"
+        )
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(content, encoding="utf-8")
 
@@ -247,7 +255,7 @@ static void help_cmd_dump_one(Monitor *mon,
    wd40-monitor-v2
 """,
     )
-    write_exact(
+    write_extensible(
         "docs/devel/wd40-monitor-v2.rst",
         """WD40 monitor-v2 foundations
 ============================

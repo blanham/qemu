@@ -67,10 +67,11 @@ For example::
 
 The commands are available during preconfiguration.  Unknown category names
 are rejected atomically: no logging state changes unless every supplied name
-is valid.  The ``tid`` category is reported as sticky because QEMU cannot
-return from per-thread log files to a single global output after enabling it;
-an attempted transition that would disable it is rejected instead of being
-silently misreported.
+is valid.  The ``tid`` category is reported as sticky because its state is
+fixed at process startup.  It must be enabled with both a ``-D`` ``%d``
+filename template and ``-d tid``; QMP rejects attempts either to enable it
+later or to disable it after startup, rather than silently misreporting a
+transition the logger cannot perform.
 
 Trace-event patterns remain managed through QEMU's tracing interfaces.  This
 API covers the ordinary named categories in ``qemu_log_items`` and deliberately

@@ -113,8 +113,15 @@ LogCategoryInfoList *qmp_set_log_categories(LogCategoryAction action,
         g_assert_not_reached();
     }
 
-    if ((current & LOG_PER_THREAD) && !(target & LOG_PER_THREAD)) {
-        error_setg(errp, "The 'tid' log category cannot be disabled once set");
+    if ((current ^ target) & LOG_PER_THREAD) {
+        if (current & LOG_PER_THREAD) {
+            error_setg(errp,
+                       "The 'tid' log category cannot be disabled once set");
+        } else {
+            error_setg(errp,
+                       "The 'tid' log category can only be selected at "
+                       "process startup with a '%%d' logfile template");
+        }
         return NULL;
     }
     if (!qemu_set_log(target, errp)) {

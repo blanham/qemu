@@ -26,6 +26,10 @@ def replace_once(path: str, old: str, new: str) -> None:
     file_path, text = load(path)
     if new in text:
         return
+    if new.endswith(old):
+        owned_prefix = new[:-len(old)]
+        if owned_prefix and owned_prefix in text:
+            return
     count = text.count(old)
     if count != 1:
         raise RuntimeError(f"{path}: expected one replacement site, found {count}")
@@ -49,8 +53,8 @@ def main() -> None:
 #
 # @enabled: Whether the category is currently enabled.
 #
-# @sticky: Whether the category cannot be disabled after being
-#     enabled.
+# @sticky: Whether the category's enabled state is fixed at process
+#     startup and cannot be changed at run time.
 #
 # Since: 11.2
 ##
@@ -246,8 +250,15 @@ LogCategoryInfoList *qmp_set_log_categories(LogCategoryAction action,
         g_assert_not_reached();
     }
 
-    if ((current & LOG_PER_THREAD) && !(target & LOG_PER_THREAD)) {
-        error_setg(errp, "The 'tid' log category cannot be disabled once set");
+    if ((current ^ target) & LOG_PER_THREAD) {
+        if (current & LOG_PER_THREAD) {
+            error_setg(errp,
+                       "The 'tid' log category cannot be disabled once set");
+        } else {
+            error_setg(errp,
+                       "The 'tid' log category can only be selected at "
+                       "process startup with a '%%d' logfile template");
+        }
         return NULL;
     }
     if (!qemu_set_log(target, errp)) {
@@ -289,10 +300,11 @@ For example::
 
 The commands are available during preconfiguration.  Unknown category names
 are rejected atomically: no logging state changes unless every supplied name
-is valid.  The ``tid`` category is reported as sticky because QEMU cannot
-return from per-thread log files to a single global output after enabling it;
-an attempted transition that would disable it is rejected instead of being
-silently misreported.
+is valid.  The ``tid`` category is reported as sticky because its state is
+fixed at process startup.  It must be enabled with both a ``-D`` ``%d``
+filename template and ``-d tid``; QMP rejects attempts either to enable it
+later or to disable it after startup, rather than silently misreporting a
+transition the logger cannot perform.
 
 Trace-event patterns remain managed through QEMU's tracing interfaces.  This
 API covers the ordinary named categories in ``qemu_log_items`` and deliberately

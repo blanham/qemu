@@ -294,8 +294,8 @@
 #
 # @enabled: Whether the category is currently enabled.
 #
-# @sticky: Whether the category cannot be disabled after being
-#     enabled.
+# @sticky: Whether the category's enabled state is fixed at process
+#     startup and cannot be changed at run time.
 #
 # Since: 11.2
 ##
