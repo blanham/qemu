@@ -29,6 +29,26 @@ def exactly_once(path: str, marker: str) -> None:
         raise SystemExit(f"{path}: expected one {marker!r}, found {count}")
 
 
+def completion_qapi_block() -> str:
+    data = source("qapi/misc.json")
+    start_marker = "##\n# @WD40HMPCompletion:\n"
+    end_marker = "##\n# @LogCategoryInfo:\n"
+    start = data.find(start_marker)
+    end = data.find(end_marker, start + len(start_marker))
+    if start < 0 or end < 0:
+        raise SystemExit("qapi/misc.json: could not isolate completion block")
+    return data[start:end]
+
+
+def validate_qapi_doc_width() -> None:
+    for offset, line in enumerate(completion_qapi_block().splitlines(), 1):
+        if line.startswith("#") and len(line) > 70:
+            raise SystemExit(
+                "qapi/misc.json: WD40 completion documentation line "
+                f"{offset} is {len(line)} columns: {line!r}"
+            )
+
+
 def validate_static() -> None:
     need(
         "qapi/misc.json",
@@ -65,6 +85,7 @@ def validate_static() -> None:
         "docs/devel/wd40-monitor-v2.rst",
         "Context-sensitive HMP completion",
     )
+    validate_qapi_doc_width()
 
 
 def run_qmp(binary: Path, workdir: Path, messages: list[dict]) -> dict[str, dict]:
