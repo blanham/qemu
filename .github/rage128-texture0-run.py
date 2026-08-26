@@ -2,6 +2,19 @@
 
 from pathlib import Path
 
+source = Path("hw/display/ati_3d.c")
+followup = Path(".github/rage128-texture0-followup.py")
+
+# The source-generating patch has already landed on this laboratory branch.
+# Keep the runner useful for a fresh branch, but do not replay its regex-only
+# transforms over an already-generated source file.  Incremental correctness
+# patches are deliberately separate and idempotent.
+if "static bool ati_3d_texture_init" in source.read_text(encoding="utf-8"):
+    if followup.exists():
+        code = followup.read_text(encoding="utf-8")
+        exec(compile(code, str(followup), "exec"))
+    raise SystemExit(0)
+
 patch = Path(".github/rage128-texture0-patch.py")
 code = patch.read_text(encoding="utf-8")
 
@@ -94,3 +107,6 @@ if code.count(old_texture_writer) != 1:
 code = code.replace(old_texture_writer, new_texture_writer, 1)
 
 exec(compile(code, str(patch), "exec"))
+if followup.exists():
+    code = followup.read_text(encoding="utf-8")
+    exec(compile(code, str(followup), "exec"))
