@@ -124,21 +124,42 @@ jobs:
           source = Path(
               "tests/vc4/linux-kms-master-reacquire-probe.inc.c"
           ).read_text(encoding="utf-8")
-          ordered = (
+          child = source[
+              source.index("static int vc4_master_reacquire_run"):
+              source.index("static int vc4_master_reacquire_restore_original")
+          ]
+          atomic = source[
+              source.index("static int vc4_master_reacquire_atomic_swap"):
+              source.index("static int vc4_master_reacquire_run")
+          ]
+          child_order = (
+              "open(VC4_MASTER_REACQUIRE_CARD_PATH",
               "vc4_master_reacquire_expect_busy(fd)",
               "set-master-after-drop",
               "setcrtc-independent-file",
               "DRM_IOCTL_MODE_PAGE_FLIP",
               "vc4_master_reacquire_atomic_swap",
+          )
+          atomic_order = (
               "DRM_MODE_ATOMIC_TEST_ONLY",
               "DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT",
+              "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_CURRENT_FB_OK",
               "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_VISUAL_READY",
+              "VC4_LINUX_KMS_MASTER_REACQUIRE_ATOMIC_OK",
           )
-          positions = [source.find(token) for token in ordered]
-          if any(position < 0 for position in positions):
-              raise SystemExit(f"atomic source token missing: {positions}")
-          if positions != sorted(positions):
-              raise SystemExit(f"atomic source order invalid: {positions}")
+          for label, text, tokens in (
+              ("child", child, child_order),
+              ("atomic", atomic, atomic_order),
+          ):
+              positions = [text.find(token) for token in tokens]
+              if any(position < 0 for position in positions):
+                  raise SystemExit(
+                      f"{label} source token missing: {positions}"
+                  )
+              if positions != sorted(positions):
+                  raise SystemExit(
+                      f"{label} source order invalid: {positions}"
+                  )
           print("VC4 explicit-handoff/atomic source order: PASS")
           PY
 
