@@ -399,6 +399,84 @@
   'features': [ 'unstable' ] }
 
 ##
+# @WD40CPURegister:
+#
+# One register from QEMU's active GDB register model.
+#
+# @number: architecture-defined GDB register number
+#
+# @name: GDB register name, or ``gdb-reg-N`` when this CPU has no
+#     name metadata for register N
+#
+# @feature: GDB feature containing the register, when available
+#
+# @described: whether @name came from GDB feature metadata
+#
+# @available: whether the CPU returned a value for this register
+#
+# @bytes: number of value bytes; zero when @available is false
+#
+# @value: lowercase hexadecimal encoding of the bytes returned by the
+#     CPU's GDB register callback
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40CPURegister',
+  'data': { 'number': 'int', 'name': 'str', '*feature': 'str',
+            'described': 'bool', 'available': 'bool',
+            'bytes': 'uint64', '*value': 'str' } }
+
+##
+# @WD40CPURegisterSnapshot:
+#
+# A synchronized register snapshot for one realized virtual CPU.
+#
+# @cpu-index: QEMU virtual CPU index
+#
+# @target: canonical QEMU target name
+#
+# @target-bits: target ``long`` width
+#
+# @target-big-endian: whether the target's default byte order is big
+#     endian
+#
+# @qom-type: concrete CPU QOM type
+#
+# @registers: registers sorted by GDB register number
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40CPURegisterSnapshot',
+  'data': { 'cpu-index': 'int', 'target': 'str',
+            'target-bits': 'uint64',
+            'target-big-endian': 'bool', 'qom-type': 'str',
+            'registers': [ 'WD40CPURegister' ] } }
+
+##
+# @x-wd40-query-cpu-registers:
+#
+# Read one virtual CPU through the same register callbacks and
+# metadata used by QEMU's GDB stub.  This avoids parsing
+# architecture-specific ``info registers`` text while retaining
+# supplemental register sets.  Register numbers must be unique after
+# CPU initialization.
+#
+# @cpu-index: virtual CPU index; defaults to the first realized CPU
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: synchronized register snapshot
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-query-cpu-registers',
+  'data': { '*cpu-index': 'int' },
+  'returns': 'WD40CPURegisterSnapshot',
+  'features': [ 'unstable' ] }
+
+##
 # @LogCategoryInfo:
 #
 # Structured metadata for a QEMU log category.

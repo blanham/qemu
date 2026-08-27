@@ -80,6 +80,33 @@ many filesystem candidates could not be represented as QMP UTF-8 strings.
 This lets TTYphoon and other monitor-v2 clients reuse QEMU's live knowledge
 without embedding another completion implementation.
 
+Cross-architecture CPU register snapshots
+-----------------------------------------
+
+``x-wd40-query-cpu-registers`` reads the selected virtual CPU through QEMU's
+GDB register registry and callbacks.  It returns canonical target and CPU type
+metadata plus registers sorted by GDB number, including dynamically registered
+supplemental feature sets.  Architectures that have not supplied register-name
+metadata still expose their core register numbers with ``gdb-reg-N`` names.
+
+The supporting GDB registry accounts for explicit register-number gaps before
+appending later feature sets.  The snapshot service treats duplicate numbers as
+an initialization error instead of silently pairing a name from one feature
+with value bytes supplied by another callback.
+
+Register values are the exact byte sequences produced by the target's GDB
+callback, encoded as lowercase hexadecimal rather than converted through an
+architecture-specific integer formatter.  The snapshot reports target word
+size and default endianness, but clients should retain the register's GDB
+feature when interpreting vector, floating-point, or special register layouts.
+
+The command synchronizes accelerator state before reading.
+It does not pause a running machine, so debugger frontends should issue
+``stop`` first when they need a coherent snapshot across all registers or
+virtual CPUs.  This gives TTYphoon a typed cross-target register foundation
+without scraping ``info registers`` output or adding per-architecture monitor
+parsers.
+
 Structured log-category control
 -------------------------------
 

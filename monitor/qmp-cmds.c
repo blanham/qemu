@@ -17,6 +17,10 @@
 #include "qemu/ctype.h"
 #include "qemu/sockets.h"
 #include "qemu/log.h"
+#include "exec/gdbstub.h"
+#include "hw/core/cpu.h"
+#include "qemu/target-info.h"
+#include "system/hw_accel.h"
 #include "monitor-internal.h"
 #include "monitor/qdev.h"
 #include "monitor/qmp-helpers.h"
@@ -34,6 +38,200 @@
 #include "hw/mem/memory-device.h"
 #include "hw/intc/intc.h"
 #include "migration/misc.h"
+
+typedef struct WD40RegisterDescriptor {
+    int number;
+    const char *name;
+    const char *feature;
+} WD40RegisterDescriptor;
+
+static bool wd40_register_descriptor_present(const GArray *descriptors,
+                                               int number)
+{
+    guint i;
+
+    for (i = 0; i < descriptors->len; i++) {
+        const WD40RegisterDescriptor *descriptor =
+            &g_array_index(descriptors, WD40RegisterDescriptor, i);
+
+        if (descriptor->number == number) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int wd40_register_descriptor_compare(const void *left,
+                                             const void *right)
+{
+    const WD40RegisterDescriptor *left_descriptor = left;
+    const WD40RegisterDescriptor *right_descriptor = right;
+
+    return (left_descriptor->number > right_descriptor->number) -
+           (left_descriptor->number < right_descriptor->number);
+}
+
+static char *wd40_register_value_to_hex(const GByteArray *value)
+{
+    static const char digits[] = "0123456789abcdef";
+    char *hex = g_malloc_n((gsize)value->len + 1, 2);
+    guint i;
+
+    for (i = 0; i < value->len; i++) {
+        hex[i * 2] = digits[value->data[i] >> 4];
+        hex[i * 2 + 1] = digits[value->data[i] & 0x0f];
+    }
+    hex[value->len * 2] = '\0';
+    return hex;
+}
+
+static CPUState *wd40_cpu_by_index(bool has_cpu_index, int64_t cpu_index)
+{
+    CPUState *cpu;
+
+    if (!has_cpu_index) {
+        return first_cpu;
+    }
+
+    CPU_FOREACH(cpu) {
+        if (cpu->cpu_index == cpu_index) {
+            return cpu;
+        }
+    }
+    return NULL;
+}
+
+WD40CPURegisterSnapshot *
+qmp_x_wd40_query_cpu_registers(bool has_cpu_index, int64_t cpu_index,
+                                Error **errp)
+{
+    CPUState *cpu = wd40_cpu_by_index(has_cpu_index, cpu_index);
+    GArray *gdb_descriptors = NULL;
+    GArray *descriptors = NULL;
+    GByteArray *value = NULL;
+    WD40CPURegisterSnapshot *snapshot = NULL;
+    WD40CPURegisterList **tail;
+    guint i;
+
+    if (!cpu) {
+        if (has_cpu_index) {
+            error_setg(errp, "CPU index %" PRId64 " does not exist",
+                       cpu_index);
+        } else {
+            error_setg(errp, "No realized CPU is available");
+        }
+        return NULL;
+    }
+
+    cpu_synchronize_state(cpu);
+    gdb_descriptors = gdb_get_register_list(cpu);
+    descriptors = g_array_new(false, false,
+                              sizeof(WD40RegisterDescriptor));
+
+    /* gdb_read_register() checks the legacy core range first. */
+    for (i = 0; i < cpu->cc->gdb_num_core_regs; i++) {
+        WD40RegisterDescriptor descriptor = {
+            .number = i,
+        };
+
+        g_array_append_val(descriptors, descriptor);
+    }
+
+    /* Supplemental feature ranges are checked in registration order. */
+    for (i = 0; i < gdb_descriptors->len; i++) {
+        const GDBRegDesc *gdb_descriptor =
+            &g_array_index(gdb_descriptors, GDBRegDesc, i);
+        WD40RegisterDescriptor descriptor = {
+            .number = gdb_descriptor->gdb_reg,
+            .name = gdb_descriptor->name,
+            .feature = gdb_descriptor->feature_name,
+        };
+
+        if (wd40_register_descriptor_present(descriptors,
+                                             descriptor.number)) {
+            error_setg(errp,
+                       "CPU type '%s' exposes GDB register %d more than once",
+                       object_get_typename(OBJECT(cpu)), descriptor.number);
+            goto fail;
+        }
+        g_array_append_val(descriptors, descriptor);
+    }
+
+    if (descriptors->len == 0) {
+        error_setg(errp, "CPU type '%s' exposes no GDB registers",
+                   object_get_typename(OBJECT(cpu)));
+        goto fail;
+    }
+    g_array_sort(descriptors, wd40_register_descriptor_compare);
+
+    snapshot = g_new0(WD40CPURegisterSnapshot, 1);
+    snapshot->cpu_index = cpu->cpu_index;
+    snapshot->target = g_strdup(target_name());
+    snapshot->target_bits = target_long_bits();
+    snapshot->target_big_endian = target_big_endian();
+    snapshot->qom_type = g_strdup(object_get_typename(OBJECT(cpu)));
+    tail = &snapshot->registers;
+    value = g_byte_array_new();
+
+    for (i = 0; i < descriptors->len; i++) {
+        const WD40RegisterDescriptor *descriptor =
+            &g_array_index(descriptors, WD40RegisterDescriptor, i);
+        WD40CPURegister *info;
+        WD40CPURegisterList *entry;
+        bool name_valid;
+        int bytes;
+
+        g_byte_array_set_size(value, 0);
+        bytes = gdb_read_register(cpu, value, descriptor->number);
+        if (bytes < 0 || (guint)bytes != value->len) {
+            error_setg(errp,
+                       "GDB register %d returned inconsistent size %d/%u",
+                       descriptor->number, bytes, value->len);
+            goto fail;
+        }
+
+        info = g_new0(WD40CPURegister, 1);
+        info->number = descriptor->number;
+        name_valid = descriptor->name &&
+                     g_utf8_validate(descriptor->name, -1, NULL);
+        info->described = name_valid;
+        info->name = name_valid
+            ? g_strdup(descriptor->name)
+            : g_strdup_printf("gdb-reg-%d", descriptor->number);
+        if (descriptor->feature &&
+            g_utf8_validate(descriptor->feature, -1, NULL)) {
+            info->feature = g_strdup(descriptor->feature);
+        }
+        info->available = bytes > 0;
+        info->bytes = value->len;
+        if (info->available) {
+            info->value = wd40_register_value_to_hex(value);
+        }
+
+        entry = g_new0(WD40CPURegisterList, 1);
+        entry->value = info;
+        *tail = entry;
+        tail = &entry->next;
+    }
+
+    g_byte_array_unref(value);
+    g_array_free(descriptors, true);
+    g_array_free(gdb_descriptors, true);
+    return snapshot;
+
+fail:
+    if (value) {
+        g_byte_array_unref(value);
+    }
+    if (descriptors) {
+        g_array_free(descriptors, true);
+    }
+    if (gdb_descriptors) {
+        g_array_free(gdb_descriptors, true);
+    }
+    qapi_free_WD40CPURegisterSnapshot(snapshot);
+    return NULL;
+}
 
 static LogCategoryInfoList *qmp_log_category_info_list(void)
 {
