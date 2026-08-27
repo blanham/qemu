@@ -344,6 +344,10 @@ def validate_snapshot(
 
 
 def validate_target(build: Path, case: TargetCase) -> None:
+    print(
+        f"WD40 CPU register snapshot: starting {case.target} runtime checks",
+        flush=True,
+    )
     binary = build / case.binary
     if not binary.is_file():
         raise SystemExit(f"missing built emulator: {binary}")
@@ -391,13 +395,24 @@ def validate_target(build: Path, case: TargetCase) -> None:
     print(f"WD40 CPU register snapshot: {case.target} runtime checks passed")
 
 
-def validate_runtime(build: Path) -> None:
-    for case in TARGETS:
+def select_targets(names: list[str]) -> tuple[TargetCase, ...]:
+    if not names:
+        return TARGETS
+
+    available = {case.target: case for case in TARGETS}
+    unknown = sorted(set(names).difference(available))
+    if unknown:
+        raise SystemExit(
+            f"unknown target(s) {unknown!r}; choose from {sorted(available)!r}"
+        )
+    return tuple(available[name] for name in names)
+
+
+def validate_runtime(build: Path, target_names: list[str]) -> None:
+    for case in select_targets(target_names):
         validate_target(build, case)
 
 
 validate_static()
-if len(sys.argv) > 2:
-    raise SystemExit(f"usage: {sys.argv[0]} [build-directory]")
-if len(sys.argv) == 2:
-    validate_runtime(Path(sys.argv[1]).resolve())
+if len(sys.argv) >= 2:
+    validate_runtime(Path(sys.argv[1]).resolve(), sys.argv[2:])
