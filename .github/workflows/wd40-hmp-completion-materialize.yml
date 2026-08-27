@@ -17,7 +17,7 @@ jobs:
   materialize-build-test:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
       - name: Check out feature branch
@@ -92,7 +92,8 @@ jobs:
             libglib2.0-dev \
             libpixman-1-dev
 
-      - name: Build x86_64 system emulation without Rust
+      - name: Build system and user emulators without Rust
+        timeout-minutes: 90
         run: |
           set -Eeuo pipefail
           mkdir .wd40-poison
@@ -109,17 +110,31 @@ jobs:
           mkdir build-wd40-completion
           cd build-wd40-completion
           ../configure \
-            --target-list=x86_64-softmmu \
+            --target-list=x86_64-softmmu,aarch64-softmmu,x86_64-linux-user \
             --disable-rust \
             --enable-fdt=internal \
             --disable-docs \
             --disable-werror
-          ninja -j2 qemu-system-x86_64
+          timeout --foreground --signal=TERM --kill-after=5m 75m \
+            ninja -j2 \
+              tests/unit/test-logging \
+              qemu-system-x86_64 \
+              qemu-system-aarch64 \
+              qemu-x86_64
           cd ..
 
-      - name: Exercise monitor discovery, capture, and completion
+      - name: Exercise the complete QoL runtime contract
         run: |
           set -Eeuo pipefail
+          ./build-wd40-completion/tests/unit/test-logging --tap -k
+          python3 scripts/ci/check-wd40-rustless.py \
+            build-wd40-completion
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py \
+            build-wd40-completion
+          python3 scripts/ci/check-wd40-structured-log-control.py \
+            build-wd40-completion
+          python3 scripts/ci/check-wd40-split-irq-exception-logs.py \
+            build-wd40-completion
           python3 scripts/ci/check-wd40-hmp-command-introspection.py \
             build-wd40-completion
           python3 scripts/ci/check-wd40-hmp-argument-introspection.py \
