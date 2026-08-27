@@ -1,0 +1,343 @@
+name: VC4 Linux Mesa GLES2 frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-mesa-gles2-frontier
+    paths:
+      - .github/workflows/vc4-linux-mesa-gles2-frontier.yml
+      - hw/arm/bcm2835_peripherals.c
+      - hw/display/bcm2835_v3d.c
+      - include/hw/arm/bcm2835_peripherals.h
+      - include/hw/display/bcm2835_v3d.h
+      - scripts/vc4/build-linux-mesa-gles2-initramfs.sh
+      - scripts/vc4/build-linux-mesa-gles2-root.sh
+      - scripts/vc4/build-linux-v3d-modular-initramfs.sh
+      - scripts/vc4/build-v3d-linux-dtb.sh
+      - scripts/vc4/copy-aarch64-elf-closure.py
+      - scripts/vc4/enable-linux-mesa-gles2-probe.py
+      - scripts/vc4/fetch-linux-vc4-modules.py
+      - scripts/vc4/msync-smoke.py
+      - scripts/vc4/property-clock-enumeration-smoke.py
+      - scripts/vc4/property-power-domain-smoke.py
+      - scripts/vc4/raspi3-linux-probe.py
+      - scripts/vc4/summarize-linux-mesa-gles2.py
+      - scripts/vc4/summarize-linux-mesa-gles2-smoke.py
+      - scripts/vc4/v3d-smoke.py
+      - tests/vc4/linux-mesa-gles2-probe.c
+      - tests/vc4/linux-mesa-gles2-supervisor.inc.c
+      - tests/vc4/linux-v3d-modular-init.c
+      - tests/vc4/vc4-render-only-overlay.dts
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-linux-mesa-gles2-frontier
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      BRANCH: agent/vc4-linux-mesa-gles2-frontier
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      OFFICIAL_DIR: /tmp/vc4-mesa-official
+      MODULE_DIR: /tmp/vc4-mesa-modules
+      MESA_ROOT: /tmp/vc4-mesa-root
+      INITRAMFS_DIR: /tmp/vc4-mesa-initramfs
+      DTB_DIR: /tmp/vc4-mesa-dtb
+      PROBE_DIR: /tmp/vc4-mesa-probe
+      EVIDENCE_DIR: vc4-linux-mesa-gles2-evidence
+      STATUS_JSON: VC4_LINUX_MESA_GLES2_STATUS.json
+      STATUS_MD: VC4_LINUX_MESA_GLES2_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Capture exact product source
+        id: source
+        run: |
+          set -euo pipefail
+          printf 'SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git diff --check
+
+      - name: Install host and AArch64 build dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture arm64
+          sudo python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("/etc/apt/sources.list.d/ubuntu.sources")
+          if path.is_file():
+              stanzas = []
+              for stanza in path.read_text().strip().split("\n\n"):
+                  lines = stanza.splitlines()
+                  if (
+                      any(line.startswith("Types:") for line in lines)
+                      and not any(
+                          line.startswith("Architectures:")
+                          for line in lines
+                      )
+                  ):
+                      insert = next(
+                          (
+                              index + 1
+                              for index, line in enumerate(lines)
+                              if line.startswith("Types:")
+                          ),
+                          1,
+                      )
+                      lines.insert(insert, "Architectures: amd64")
+                  stanzas.append("\n".join(lines))
+              path.write_text("\n\n".join(stanzas) + "\n")
+          PY
+          sudo tee /etc/apt/sources.list.d/ubuntu-arm64.sources \
+              >/dev/null <<'EOF'
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: noble noble-updates noble-backports noble-security
+          Components: main universe
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu \
+            bison cmake cpio curl device-tree-compiler file flex \
+            g++-aarch64-linux-gnu gcc-aarch64-linux-gnu gzip \
+            libc6-dev-arm64-cross libdrm-dev:amd64 libdrm-dev:arm64 \
+            libglib2.0-dev libpixman-1-dev \
+            linux-libc-dev-arm64-cross meson ninja-build pkg-config \
+            python3 python3-mako python3-packaging python3-ply \
+            python3-setuptools python3-yaml xz-utils zlib1g-dev zstd
+          rm -rf \
+            "$OFFICIAL_DIR" "$MODULE_DIR" "$MESA_ROOT" \
+            "$INITRAMFS_DIR" "$DTB_DIR" "$PROBE_DIR" "$EVIDENCE_DIR"
+          mkdir -p \
+            "$OFFICIAL_DIR" "$DTB_DIR" "$PROBE_DIR" "$EVIDENCE_DIR"
+
+      - name: Validate frontier sources
+        id: validate_sources
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/copy-aarch64-elf-closure.py \
+            scripts/vc4/enable-linux-mesa-gles2-probe.py \
+            scripts/vc4/fetch-linux-vc4-modules.py \
+            scripts/vc4/msync-smoke.py \
+            scripts/vc4/property-clock-enumeration-smoke.py \
+            scripts/vc4/property-power-domain-smoke.py \
+            scripts/vc4/raspi3-linux-probe.py \
+            scripts/vc4/summarize-linux-mesa-gles2.py \
+            scripts/vc4/summarize-linux-mesa-gles2-smoke.py \
+            scripts/vc4/v3d-smoke.py
+          python3 scripts/vc4/summarize-linux-mesa-gles2-smoke.py
+          bash -n \
+            scripts/vc4/build-linux-mesa-gles2-initramfs.sh \
+            scripts/vc4/build-linux-mesa-gles2-root.sh \
+            scripts/vc4/build-linux-v3d-modular-initramfs.sh \
+            scripts/vc4/build-v3d-linux-dtb.sh
+          temp=$(mktemp)
+          cp tests/vc4/linux-v3d-modular-init.c "$temp"
+          python3 scripts/vc4/enable-linux-mesa-gles2-probe.py "$temp"
+          grep -Fq '#include "linux-mesa-gles2-supervisor.inc.c"' \
+            "$temp"
+          grep -Fq 'vc4_linux_mesa_gles2_supervise()' "$temp"
+          if python3 scripts/vc4/enable-linux-mesa-gles2-probe.py \
+              "$temp"; then
+            echo "Mesa probe patcher accepted a duplicate application" >&2
+            exit 1
+          fi
+          rm -f "$temp"
+          git diff --check
+
+      - name: Build pinned AArch64 Mesa VC4 userspace
+        id: mesa_root
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-linux-mesa-gles2-root.sh \
+            "$MESA_ROOT" \
+            2>&1 | tee "$EVIDENCE_DIR/mesa-root.log"
+          cp "$MESA_ROOT/PROVENANCE" "$EVIDENCE_DIR/"
+          cp "$MESA_ROOT/ELF_CLOSURE" "$EVIDENCE_DIR/"
+          cp "$MESA_ROOT/ROOT_SHA256SUMS" "$EVIDENCE_DIR/"
+
+      - name: Fetch pinned Linux VC4 module closure
+        id: modules
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/fetch-linux-vc4-modules.py \
+            --base-url \
+            "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/modules/${RPI_KERNEL_RELEASE}" \
+            --out-dir "$MODULE_DIR" \
+            --target vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/modules.log"
+          grep -Fq vc4.ko "$MODULE_DIR/MANIFEST"
+
+      - name: Build Mesa-enabled initramfs
+        id: initramfs
+        run: |
+          set -euo pipefail
+          bash scripts/vc4/build-linux-mesa-gles2-initramfs.sh \
+            "$INITRAMFS_DIR" "$MODULE_DIR" "$MESA_ROOT" \
+            2>&1 | tee "$EVIDENCE_DIR/initramfs.log"
+          cp "$INITRAMFS_DIR/SHA256SUMS" \
+            "$EVIDENCE_DIR/INITRAMFS_SHA256SUMS"
+          cp "$INITRAMFS_DIR/MESA_PROVENANCE" "$EVIDENCE_DIR/"
+          cp "$INITRAMFS_DIR/MESA_ELF_CLOSURE" "$EVIDENCE_DIR/"
+
+      - name: Fetch pinned kernel and build render-only DTB
+        id: dtb
+        run: |
+          set -euo pipefail
+          for file in kernel8.img bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$OFFICIAL_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$OFFICIAL_DIR/kernel8.img")" = \
+            a694aa64988bbecadc770c874488165303eac673
+          test "$(git hash-object "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          dtc -q -@ -I dts -O dtb \
+            -o "$DTB_DIR/render-only.dtbo" \
+            tests/vc4/vc4-render-only-overlay.dts
+          bash scripts/vc4/build-v3d-linux-dtb.sh \
+            "$OFFICIAL_DIR/bcm2710-rpi-3-b.dtb" \
+            "$DTB_DIR/render-only.dtbo" \
+            "$DTB_DIR/render-only.dtb"
+          sha256sum "$OFFICIAL_DIR"/* "$DTB_DIR"/* \
+            > "$EVIDENCE_DIR/PINNED_INPUT_SHA256SUMS"
+
+      - name: Configure and build both QEMU frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$EVIDENCE_DIR/build.log"
+
+      - name: Preserve VC4 architectural regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/property-power-domain-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/power-domain.log"
+          python3 scripts/vc4/property-clock-enumeration-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/clock-enumeration.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/msync.log"
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE_DIR/v3d.log"
+
+      - name: Run the pinned Mesa VC4 GLES2 triangle
+        id: runtime
+        run: |
+          set +e
+          python3 scripts/vc4/raspi3-linux-probe.py \
+            --mode linux-direct \
+            --qemu build/qemu-system-aarch64 \
+            --kernel "$OFFICIAL_DIR/kernel8.img" \
+            --dtb "$DTB_DIR/render-only.dtb" \
+            --initrd "$INITRAMFS_DIR/initramfs.cpio.gz" \
+            --out-dir "$PROBE_DIR" \
+            --seconds 150 --sample-interval 5 \
+            > "$PROBE_DIR/probe.stdout" 2>&1
+          rc=$?
+          printf '%s\n' "$rc" > "$PROBE_DIR/return-code"
+          cat "$PROBE_DIR/probe.stdout"
+          exit 0
+
+      - name: Classify the exact Mesa/V3D frontier
+        id: classify
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/summarize-linux-mesa-gles2.py \
+            --serial "$PROBE_DIR/serial.log" \
+            --qemu-stderr "$PROBE_DIR/qemu.stderr" \
+            --probe-result "$PROBE_DIR/result.json" \
+            --return-code "$PROBE_DIR/return-code" \
+            --json "$STATUS_JSON" \
+            --markdown "$STATUS_MD" \
+            --source-sha "${SOURCE_SHA:-}" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --outcome source=${{ steps.source.outcome }} \
+            --outcome dependencies=${{ steps.dependencies.outcome }} \
+            --outcome mesa_root=${{ steps.mesa_root.outcome }} \
+            --outcome modules=${{ steps.modules.outcome }} \
+            --outcome initramfs=${{ steps.initramfs.outcome }} \
+            --outcome dtb=${{ steps.dtb.outcome }} \
+            --outcome build=${{ steps.build.outcome }} \
+            --outcome regressions=${{ steps.regressions.outcome }} \
+            --outcome runtime=${{ steps.runtime.outcome }}
+
+      - name: Collect evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cp -a "$PROBE_DIR" "$EVIDENCE_DIR/runtime" || true
+          cp -a "$DTB_DIR" "$EVIDENCE_DIR/dtbs" || true
+          cp "$STATUS_JSON" "$STATUS_MD" "$EVIDENCE_DIR/" || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-linux-mesa-gles2-${{ github.run_attempt }}
+          path: vc4-linux-mesa-gles2-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish exact Mesa frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git config user.name "VC4 CI"
+          git config user.email "vc4-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "test/vc4: record Linux Mesa GLES2 frontier [skip ci]"
+            git pull --rebase origin "$BRANCH"
+            git push origin HEAD:"$BRANCH"
+          fi
+
+      - name: Require a reproducible userspace frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          cat "$STATUS_MD"
+          python3 - "$STATUS_JSON" <<'PY'
+          import json
+          import sys
+
+          record = json.load(open(sys.argv[1], encoding="utf-8"))
+          if record.get("harness_valid") is not True:
+              raise SystemExit(
+                  "Mesa GLES2 harness did not reach a reproducible frontier: "
+                  + str(record.get("classification"))
+              )
+          print(
+              "VC4 Mesa GLES2 frontier: "
+              + str(record.get("classification"))
+          )
+          PY
