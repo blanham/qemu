@@ -6,8 +6,11 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -16,24 +19,110 @@
     "/usr/bin/vc4-mesa-gles2-probe"
 #define VC4_MESA_GLES2_SUPERVISOR_SECONDS 50U
 #define VC4_MESA_GLES2_POLL_NS 100000000L
+#define VC4_MESA_GLES2_LOG_BYTES (256U * 1024U)
 
-static void vc4_linux_mesa_gles2_reopen_log(void)
+typedef struct VC4MesaGLES2Log {
+    int fd;
+    size_t length;
+    size_t dropped;
+} VC4MesaGLES2Log;
+
+static char vc4_linux_mesa_gles2_log_buffer[VC4_MESA_GLES2_LOG_BYTES];
+
+static int vc4_linux_mesa_gles2_set_nonblocking(int fd)
 {
-    int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+    int flags = fcntl(fd, F_GETFL);
 
-    if (fd < 0) {
-        return;
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        return -1;
     }
+    return 0;
+}
+
+static int vc4_linux_mesa_gles2_redirect_log(int fd)
+{
     if (fd != STDOUT_FILENO && dup2(fd, STDOUT_FILENO) < 0) {
-        close(fd);
-        return;
+        return -1;
     }
     if (fd != STDERR_FILENO && dup2(fd, STDERR_FILENO) < 0) {
-        close(fd);
-        return;
+        return -1;
     }
     if (fd > STDERR_FILENO) {
         close(fd);
+    }
+    return 0;
+}
+
+/*
+ * Drain even after the retained buffer is full.  The fixed-size transcript
+ * bounds PID 1's memory use while making sure a verbose Mesa child can never
+ * block forever on a full pipe and hide the actual V3D frontier.
+ */
+static int vc4_linux_mesa_gles2_drain_log(VC4MesaGLES2Log *log)
+{
+    char scratch[4096];
+
+    for (;;) {
+        ssize_t received = read(log->fd, scratch, sizeof(scratch));
+
+        if (received > 0) {
+            size_t bytes = (size_t)received;
+            size_t available = VC4_MESA_GLES2_LOG_BYTES - log->length;
+            size_t retained = bytes < available ? bytes : available;
+
+            if (retained != 0) {
+                memcpy(vc4_linux_mesa_gles2_log_buffer + log->length,
+                       scratch, retained);
+                log->length += retained;
+            }
+            log->dropped += bytes - retained;
+            continue;
+        }
+        if (received == 0) {
+            return 1;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return 0;
+        }
+        return -1;
+    }
+}
+
+static void vc4_linux_mesa_gles2_replay_log(VC4MesaGLES2Log *log)
+{
+    if (log->fd >= 0) {
+        close(log->fd);
+        log->fd = -1;
+    }
+    if (log->length != 0) {
+        emit_text(vc4_linux_mesa_gles2_log_buffer, log->length);
+    }
+    if (log->dropped != 0) {
+        report("VC4_LINUX_MESA_GLES2_LOG_TRUNCATED "
+               "kept=%zu dropped=%zu\n",
+               log->length, log->dropped);
+    }
+}
+
+static int vc4_linux_mesa_gles2_finish_log(VC4MesaGLES2Log *log)
+{
+    int result = vc4_linux_mesa_gles2_drain_log(log);
+    int saved_errno = errno;
+
+    vc4_linux_mesa_gles2_replay_log(log);
+    errno = saved_errno;
+    return result < 0 ? -1 : 0;
+}
+
+static void vc4_linux_mesa_gles2_stop_child(pid_t child)
+{
+    int status;
+
+    (void)kill(child, SIGKILL);
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
     }
 }
 
@@ -43,6 +132,12 @@ static int vc4_linux_mesa_gles2_supervise(void)
         .tv_sec = 0,
         .tv_nsec = VC4_MESA_GLES2_POLL_NS,
     };
+    VC4MesaGLES2Log log = {
+        .fd = -1,
+        .length = 0,
+        .dropped = 0,
+    };
+    int log_pipe[2];
     pid_t child;
 
     marker("VC4_LINUX_MESA_GLES2_SUPERVISOR_START\n");
@@ -52,24 +147,45 @@ static int vc4_linux_mesa_gles2_supervise(void)
                errno, strerror(errno));
         return -1;
     }
-
-    child = fork();
-    if (child < 0) {
+    if (pipe2(log_pipe, O_CLOEXEC) < 0) {
         report("VC4_LINUX_MESA_GLES2_SUPERVISOR_FAILED "
-               "stage=fork errno=%d (%s)\n",
+               "stage=pipe errno=%d (%s)\n",
                errno, strerror(errno));
         return -1;
     }
+    if (vc4_linux_mesa_gles2_set_nonblocking(log_pipe[0]) < 0) {
+        int saved_errno = errno;
+
+        close(log_pipe[0]);
+        close(log_pipe[1]);
+        report("VC4_LINUX_MESA_GLES2_SUPERVISOR_FAILED "
+               "stage=nonblocking-log errno=%d (%s)\n",
+               saved_errno, strerror(saved_errno));
+        return -1;
+    }
+
+    child = fork();
+    if (child < 0) {
+        int saved_errno = errno;
+
+        close(log_pipe[0]);
+        close(log_pipe[1]);
+        report("VC4_LINUX_MESA_GLES2_SUPERVISOR_FAILED "
+               "stage=fork errno=%d (%s)\n",
+               saved_errno, strerror(saved_errno));
+        return -1;
+    }
     if (child == 0) {
-        /*
-         * The init console is deliberately nonblocking so the static probe
-         * cannot deadlock under serial backpressure.  A dynamically linked
-         * Mesa process can emit enough diagnostics for every stderr marker,
-         * including its alarm marker, to be lost with EAGAIN.  Send the
-         * child directly through kmsg instead; the kernel console drains it
-         * asynchronously and the workflow retains an exact execution stage.
-         */
-        vc4_linux_mesa_gles2_reopen_log();
+        int saved_errno;
+
+        close(log_pipe[0]);
+        if (vc4_linux_mesa_gles2_redirect_log(log_pipe[1]) < 0) {
+            saved_errno = errno;
+            report("VC4_LINUX_MESA_GLES2_EXEC_FAILED "
+                   "stage=redirect-log errno=%d (%s)\n",
+                   saved_errno, strerror(saved_errno));
+            _exit(126);
+        }
         (void)setenv("EGL_PLATFORM", "surfaceless", 1);
         (void)setenv("MESA_LOADER_DRIVER_OVERRIDE", "vc4", 1);
         (void)setenv("GALLIUM_DRIVER", "vc4", 1);
@@ -82,11 +198,16 @@ static int vc4_linux_mesa_gles2_supervise(void)
                      "/lib/aarch64-linux-gnu:/lib", 1);
         execl(VC4_MESA_GLES2_PROGRAM,
               VC4_MESA_GLES2_PROGRAM, (char *)NULL);
+        saved_errno = errno;
         report("VC4_LINUX_MESA_GLES2_EXEC_FAILED "
                "path=%s errno=%d (%s)\n",
-               VC4_MESA_GLES2_PROGRAM, errno, strerror(errno));
+               VC4_MESA_GLES2_PROGRAM,
+               saved_errno, strerror(saved_errno));
         _exit(127);
     }
+
+    close(log_pipe[1]);
+    log.fd = log_pipe[0];
 
     for (unsigned int iteration = 0;
          iteration < VC4_MESA_GLES2_SUPERVISOR_SECONDS * 10;
@@ -94,10 +215,29 @@ static int vc4_linux_mesa_gles2_supervise(void)
         int status = 0;
         pid_t result;
 
+        if (vc4_linux_mesa_gles2_drain_log(&log) < 0) {
+            int saved_errno = errno;
+
+            vc4_linux_mesa_gles2_stop_child(child);
+            vc4_linux_mesa_gles2_replay_log(&log);
+            report("VC4_LINUX_MESA_GLES2_SUPERVISOR_FAILED "
+                   "stage=read-log errno=%d (%s)\n",
+                   saved_errno, strerror(saved_errno));
+            return -1;
+        }
+
         do {
             result = waitpid(child, &status, WNOHANG);
         } while (result < 0 && errno == EINTR);
         if (result == child) {
+            if (vc4_linux_mesa_gles2_finish_log(&log) < 0) {
+                int saved_errno = errno;
+
+                report("VC4_LINUX_MESA_GLES2_SUPERVISOR_FAILED "
+                       "stage=finish-log errno=%d (%s)\n",
+                       saved_errno, strerror(saved_errno));
+                return -1;
+            }
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                 marker("VC4_LINUX_MESA_GLES2_SUPERVISOR_OK\n");
                 return 0;
@@ -113,16 +253,27 @@ static int vc4_linux_mesa_gles2_supervise(void)
             return -1;
         }
         if (result < 0) {
+            int saved_errno = errno;
+
+            vc4_linux_mesa_gles2_stop_child(child);
+            (void)vc4_linux_mesa_gles2_finish_log(&log);
             report("VC4_LINUX_MESA_GLES2_SUPERVISOR_FAILED "
                    "stage=waitpid errno=%d (%s)\n",
-                   errno, strerror(errno));
+                   saved_errno, strerror(saved_errno));
             return -1;
         }
         nanosleep(&delay, NULL);
     }
 
-    (void)kill(child, SIGKILL);
-    (void)waitpid(child, NULL, 0);
+    vc4_linux_mesa_gles2_stop_child(child);
+    if (vc4_linux_mesa_gles2_finish_log(&log) < 0) {
+        int saved_errno = errno;
+
+        report("VC4_LINUX_MESA_GLES2_SUPERVISOR_FAILED "
+               "stage=finish-timeout-log errno=%d (%s)\n",
+               saved_errno, strerror(saved_errno));
+        return -1;
+    }
     marker("VC4_LINUX_MESA_GLES2_SUPERVISOR_TIMEOUT\n");
     return -1;
 }
