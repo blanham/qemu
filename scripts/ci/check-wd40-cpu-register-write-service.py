@@ -160,10 +160,13 @@ def validate_static() -> None:
         "docs/devel/wd40-monitor-v2.rst",
         "Typed CPU register writes",
         "x-wd40-write-cpu-register",
-        "same byte order returned by ``x-wd40-query-cpu-registers``",
-        "reads the register to establish its exact width",
+        "same byte",
+        "order returned by ``x-wd40-query-cpu-registers``",
+        "reads the",
+        "register to establish its exact width",
         "fresh read-back",
-        "not a transactional rollback guarantee",
+        "not a transactional rollback",
+        "guarantee.",
         "does not pause a running guest",
     )
 
