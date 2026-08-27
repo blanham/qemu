@@ -82,16 +82,8 @@ needs_exe_wrapper = true
 [built-in options]
 c_args = ['-I/usr/include/aarch64-linux-gnu']
 cpp_args = ['-I/usr/include/aarch64-linux-gnu']
-c_link_args = [
-  '-L/usr/lib/aarch64-linux-gnu',
-  '-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu',
-  '-Wl,-rpath-link,/lib/aarch64-linux-gnu'
-]
-cpp_link_args = [
-  '-L/usr/lib/aarch64-linux-gnu',
-  '-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu',
-  '-Wl,-rpath-link,/lib/aarch64-linux-gnu'
-]
+c_link_args = ['-L/usr/lib/aarch64-linux-gnu', '-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu', '-Wl,-rpath-link,/lib/aarch64-linux-gnu']
+cpp_link_args = ['-L/usr/lib/aarch64-linux-gnu', '-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu', '-Wl,-rpath-link,/lib/aarch64-linux-gnu']
 EOF
 
 meson setup "$mesa_build" "$mesa_source" \
