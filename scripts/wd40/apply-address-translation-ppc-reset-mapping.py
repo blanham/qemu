@@ -16,9 +16,8 @@ OLD = '''    TargetCase(
         ),
         target="ppc",
         target_bits=32,
-        target_big_endian=True,
-        virtual_address=0x10000,
-        physical_address=None,
+        big_endian=True,
+        address=0x10000,
         translated=False,
     ),
 '''
@@ -31,10 +30,10 @@ NEW = '''    TargetCase(
         ),
         target="ppc",
         target_bits=32,
-        target_big_endian=True,
-        virtual_address=0x10000,
-        physical_address=0x10000,
+        big_endian=True,
+        address=0x10000,
         translated=True,
+        physical_address=0x10000,
     ),
 '''
 
