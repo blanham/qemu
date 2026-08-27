@@ -115,8 +115,9 @@ def main() -> None:
 ##
 # @x-wd40-query-cpu-registers:
 #
-# Read one virtual CPU through the same register callbacks and metadata
-# used by QEMU's GDB stub.  This avoids parsing architecture-specific
+# Read one virtual CPU through the same register callbacks and
+# metadata used by QEMU's GDB stub.  This avoids parsing
+# architecture-specific
 # ``info registers`` text while retaining supplemental register sets.
 #
 # @cpu-index: virtual CPU index; defaults to the first realized CPU
@@ -376,11 +377,12 @@ architecture-specific integer formatter.  The snapshot reports target word
 size and default endianness, but clients should retain the register's GDB
 feature when interpreting vector, floating-point, or special register layouts.
 
-The command synchronizes accelerator state before reading.  It does not pause a
-running machine, so debugger frontends should issue ``stop`` first when they
-need a coherent snapshot across all registers or virtual CPUs.  This gives
-TTYphoon a typed cross-target register foundation without scraping ``info
-registers`` output or adding per-architecture monitor parsers.
+The command synchronizes accelerator state before reading.
+It does not pause a running machine, so debugger frontends should issue
+``stop`` first when they need a coherent snapshot across all registers or
+virtual CPUs.  This gives TTYphoon a typed cross-target register foundation
+without scraping ``info registers`` output or adding per-architecture monitor
+parsers.
 
 """,
         owned_markers=(
