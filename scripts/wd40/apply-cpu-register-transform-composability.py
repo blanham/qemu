@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Make WD40 CPU-register transform ownership markers composable.'''
+'''Make WD40 CPU-register transforms composable and style-clean.'''
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def replace_once(path: str, old: str, new: str) -> None:
         return
     if old_count != 1 or new_count != 0:
         raise RuntimeError(
-            f"{path}: unexpected CPU-register marker state: "
+            f"{path}: unexpected CPU-register transform state: "
             f"old={old_count}, new={new_count}"
         )
     file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
@@ -51,6 +51,14 @@ def main() -> None:
             "static bool wd40_register_descriptor_for_number(\\n",
             "qmp_x_wd40_write_cpu_register",
         ),
+''',
+    )
+    replace_once(
+        "scripts/wd40/apply-cpu-register-write-service.py",
+        '''# The hexadecimal value must encode exactly the current register width.
+''',
+        '''# The hexadecimal value must encode exactly the current register
+# width.
 ''',
     )
     replace_once(
