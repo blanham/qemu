@@ -82,7 +82,8 @@ TARGETS = (
         target_bits=32,
         big_endian=True,
         address=0x10000,
-        translated=False,
+        translated=True,
+        physical_address=0x10000,
     ),
 )
 

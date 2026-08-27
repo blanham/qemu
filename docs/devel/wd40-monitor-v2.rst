@@ -100,6 +100,24 @@ physical address mapped to MMIO can invoke the device's read callback.  The
 bounded response is intended for interactive memory panes and inspectors;
 larger captures should continue to use file-oriented dump mechanisms.
 
+Typed virtual-to-physical translation
+-------------------------------------
+
+``x-wd40-translate-address`` exposes QEMU's common CPU debugger translation
+hook without parsing target-specific monitor text.  The result identifies the
+selected CPU and target, reports an ordinary translation miss as structured
+state, and returns the physical address, CPU address-space index, aligned block
+size, and raw transaction attributes after a successful translation.
+
+The aligned block size describes the range for which the CPU translation and
+attributes remain valid.  It does not prove that the resulting physical
+address is backed by RAM or a device.  Frontends can combine this command with
+``x-wd40-read-memory`` when they need both MMU provenance and bytes.
+
+The command synchronizes accelerator state but does not pause a running guest.
+Clients should stop the machine before combining translations, memory reads,
+and register snapshots that must describe one coherent point in time.
+
 Cross-architecture CPU register snapshots
 -----------------------------------------
 

@@ -860,6 +860,106 @@
   'features': [ 'unstable' ] }
 
 ##
+# @WD40MemoryTransactionAttributes:
+#
+# Raw memory-transaction attributes returned by CPU debug translation.
+#
+# @unspecified: whether the translating CPU supplied no explicit
+#     transaction attributes
+#
+# @secure: architecture-specific secure or system-management access
+#
+# @security-space: raw two-bit architecture security-space value
+#
+# @user: whether the access is unprivileged
+#
+# @memory: whether the access is restricted to normal memory
+#
+# @debug: whether the access has debugger privileges
+#
+# @requester-id: bus requester identifier
+#
+# @pid: process identifier or PCI PASID
+#
+# @address-type: architecture-specific address-type bit
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40MemoryTransactionAttributes',
+  'data': { 'unspecified': 'bool', 'secure': 'bool',
+            'security-space': 'uint8', 'user': 'bool',
+            'memory': 'bool', 'debug': 'bool',
+            'requester-id': 'uint16', 'pid': 'uint8',
+            'address-type': 'bool' } }
+
+##
+# @WD40AddressTranslation:
+#
+# CPU debugger translation of one guest virtual address.
+#
+# @cpu-index: QEMU virtual CPU index
+#
+# @target: canonical QEMU target name
+#
+# @target-bits: target ``long`` width
+#
+# @target-big-endian: whether the target's default byte order is big
+#     endian
+#
+# @qom-type: concrete CPU QOM type
+#
+# @virtual-address: address supplied to the CPU translation hook
+#
+# @translated: whether the CPU translated the virtual address
+#
+# @physical-address: translated physical address
+#
+# @address-space-index: CPU address-space index selected by the
+#     returned transaction attributes
+#
+# @page-bits: log2 of the aligned translation block size
+#
+# @page-size: aligned translation block size in bytes
+#
+# @attributes: raw memory-transaction attributes for the translation
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40AddressTranslation',
+  'data': { 'cpu-index': 'int', 'target': 'str',
+            'target-bits': 'uint64',
+            'target-big-endian': 'bool', 'qom-type': 'str',
+            'virtual-address': 'uint64', 'translated': 'bool',
+            '*physical-address': 'uint64',
+            '*address-space-index': 'int', '*page-bits': 'uint8',
+            '*page-size': 'uint64',
+            '*attributes': 'WD40MemoryTransactionAttributes' } }
+
+##
+# @x-wd40-translate-address:
+#
+# Translate one guest virtual address through the selected CPU's
+# debugger translation hook.  An ordinary translation miss returns
+# @WD40AddressTranslation.translated as false rather than a QMP error.
+#
+# @address: guest virtual address to translate
+#
+# @cpu-index: virtual CPU used for translation; defaults to CPU 0
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: typed CPU address-translation result
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-translate-address',
+  'data': { 'address': 'uint64', '*cpu-index': 'int' },
+  'returns': 'WD40AddressTranslation',
+  'features': [ 'unstable' ] }
+
+##
 # @memsave:
 #
 # Save a portion of guest memory to a file.

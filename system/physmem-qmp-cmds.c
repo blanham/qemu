@@ -11,6 +11,7 @@
 #include "qapi/error.h"
 #include "qapi/qapi-commands-machine.h"
 #include "qapi/qmp/qerror.h"
+#include "qemu/target-info.h"
 #include "hw/core/cpu.h"
 #include "system/address-spaces.h"
 #include "system/hw_accel.h"
@@ -115,6 +116,74 @@ qmp_x_wd40_read_memory(WD40MemorySpace space, uint64_t address,
         result->cpu_index = cpu_index;
     }
     result->data = wd40_memory_bytes_to_hex(buffer, (size_t)size);
+    return result;
+}
+
+WD40AddressTranslation *
+qmp_x_wd40_translate_address(uint64_t address, bool has_cpu_index,
+                              int64_t cpu_index, Error **errp)
+{
+    TranslateForDebugResult translation;
+    WD40AddressTranslation *result;
+    CPUState *cpu;
+    bool translated;
+
+    if (migration_guest_ram_loading()) {
+        error_setg(errp, "Guest memory access not allowed during migration");
+        return NULL;
+    }
+    if (!has_cpu_index) {
+        cpu_index = 0;
+    }
+    cpu = qemu_get_cpu(cpu_index);
+    if (!cpu) {
+        error_setg(errp, QERR_INVALID_PARAMETER_VALUE,
+                   "cpu-index", "a CPU number");
+        return NULL;
+    }
+
+    cpu_synchronize_state(cpu);
+    translated = cpu_translate_for_debug(cpu, address, &translation);
+    if (translated && translation.lg_page_size >= 64) {
+        error_setg(errp,
+                   "CPU %" PRId64
+                   " returned invalid translation page bits %u",
+                   cpu_index, translation.lg_page_size);
+        return NULL;
+    }
+
+    result = g_new0(WD40AddressTranslation, 1);
+    result->cpu_index = cpu_index;
+    result->target = g_strdup(target_name());
+    result->target_bits = target_long_bits();
+    result->target_big_endian = target_big_endian();
+    result->qom_type = g_strdup(object_get_typename(OBJECT(cpu)));
+    result->virtual_address = address;
+    result->translated = translated;
+
+    if (!translated) {
+        return result;
+    }
+
+    result->has_physical_address = true;
+    result->physical_address = translation.physaddr;
+    result->has_address_space_index = true;
+    result->address_space_index = cpu_asidx_from_attrs(cpu,
+                                                       translation.attrs);
+    result->has_page_bits = true;
+    result->page_bits = translation.lg_page_size;
+    result->has_page_size = true;
+    result->page_size = UINT64_C(1) << translation.lg_page_size;
+    result->attributes = g_new0(WD40MemoryTransactionAttributes, 1);
+    result->attributes->unspecified = translation.attrs.unspecified;
+    result->attributes->secure = translation.attrs.secure;
+    result->attributes->security_space = translation.attrs.space;
+    result->attributes->user = translation.attrs.user;
+    result->attributes->memory = translation.attrs.memory;
+    result->attributes->debug = translation.attrs.debug;
+    result->attributes->requester_id = translation.attrs.requester_id;
+    result->attributes->pid = translation.attrs.pid;
+    result->attributes->address_type = translation.attrs.address_type;
     return result;
 }
 
