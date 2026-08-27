@@ -22,7 +22,10 @@ class TargetCase:
     bits: int
     big_endian: bool
     required_registers: frozenset[str]
-    required_numbered_registers: tuple[tuple[int, str, str], ...] = ()
+    required_numbered_registers: tuple[
+        tuple[int, str, str, bool, bool], ...
+    ] = ()
+    absent_registers: frozenset[int] = frozenset()
     cpus: int = 1
 
 
@@ -77,8 +80,17 @@ TARGETS = (
         big_endian=True,
         required_registers=frozenset(("r0", "pc", "msr")),
         required_numbered_registers=(
-            (104, "spefscr", "org.gnu.gdb.power.spe"),
+            (
+                32,
+                "gdb-reg-32",
+                "org.gnu.gdb.power.core",
+                False,
+                False,
+            ),
+            (71, "ev0h", "org.gnu.gdb.power.spe", True, True),
+            (104, "spefscr", "org.gnu.gdb.power.spe", True, True),
         ),
+        absent_registers=frozenset((70,)),
     ),
 )
 
@@ -389,6 +401,13 @@ def validate_snapshot(
             "sorted and unique"
         )
 
+    unexpected = sorted(case.absent_registers.intersection(by_number))
+    if unexpected:
+        raise SystemExit(
+            f"{case.target}/cpu{cpu_index}: explicit register gaps were "
+            f"materialized unexpectedly: {unexpected!r}"
+        )
+
     missing = case.required_registers.difference(names)
     unavailable = {
         name for name in case.required_registers if name in names and not names[name]
@@ -399,13 +418,20 @@ def validate_snapshot(
             f"missing={sorted(missing)!r}, unavailable={sorted(unavailable)!r}"
         )
 
-    for number, name, feature in case.required_numbered_registers:
+    for (
+        number,
+        name,
+        feature,
+        available,
+        described,
+    ) in case.required_numbered_registers:
         register = by_number.get(number)
         expected = {
             "number": number,
             "name": name,
             "feature": feature,
-            "available": True,
+            "available": available,
+            "described": described,
         }
         actual = None
         if register is not None:
