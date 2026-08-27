@@ -6,14 +6,36 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #define VC4_MESA_GLES2_PROGRAM \
     "/usr/bin/vc4-mesa-gles2-probe"
 #define VC4_MESA_GLES2_SUPERVISOR_SECONDS 50U
 #define VC4_MESA_GLES2_POLL_NS 100000000L
+
+static void vc4_linux_mesa_gles2_reopen_log(void)
+{
+    int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+
+    if (fd < 0) {
+        return;
+    }
+    if (fd != STDOUT_FILENO && dup2(fd, STDOUT_FILENO) < 0) {
+        close(fd);
+        return;
+    }
+    if (fd != STDERR_FILENO && dup2(fd, STDERR_FILENO) < 0) {
+        close(fd);
+        return;
+    }
+    if (fd > STDERR_FILENO) {
+        close(fd);
+    }
+}
 
 static int vc4_linux_mesa_gles2_supervise(void)
 {
@@ -39,6 +61,15 @@ static int vc4_linux_mesa_gles2_supervise(void)
         return -1;
     }
     if (child == 0) {
+        /*
+         * The init console is deliberately nonblocking so the static probe
+         * cannot deadlock under serial backpressure.  A dynamically linked
+         * Mesa process can emit enough diagnostics for every stderr marker,
+         * including its alarm marker, to be lost with EAGAIN.  Send the
+         * child directly through kmsg instead; the kernel console drains it
+         * asynchronously and the workflow retains an exact execution stage.
+         */
+        vc4_linux_mesa_gles2_reopen_log();
         (void)setenv("EGL_PLATFORM", "surfaceless", 1);
         (void)setenv("MESA_LOADER_DRIVER_OVERRIDE", "vc4", 1);
         (void)setenv("GALLIUM_DRIVER", "vc4", 1);
