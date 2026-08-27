@@ -39,13 +39,26 @@ def main() -> None:
 
     replace_once(
         "scripts/ci/check-wd40-memory-write-service.py",
+        """        "'data': 'str'",
+        "'*cpu-index': 'int'",
+    )
+""",
+        """        "'data': 'str'",
+        "'*cpu-index': 'int'",
+        "Writes are not atomic",
+        "failure may leave an earlier portion",
+    )
+""",
+    )
+
+    replace_once(
+        "scripts/ci/check-wd40-memory-write-service.py",
         """        "virtual debug writes can modify ROM",
         "read-modify-write",
     )
 """,
         """        "virtual debug writes can modify ROM",
         "read-modify-write",
-        "Writes are not atomic",
         "Neither virtual nor physical writes are atomic",
         "does not roll it back",
     )
