@@ -179,18 +179,30 @@ jobs:
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py
           git diff --check
 
+          original_head="$(git rev-parse HEAD)"
+
+          git add gdbstub/gdbstub.c
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "GDB register-gap repair is already materialized"
+          else
+            git commit -m \
+              "gdbstub: account for explicit register-number gaps"
+          fi
+
           git add \
             docs/devel/wd40-monitor-v2.rst \
-            gdbstub/gdbstub.c \
             monitor/qmp-cmds.c \
             qapi/misc.json
           git diff --cached --check
-
           if git diff --cached --quiet; then
-            echo "CPU register services are already materialized"
+            echo "CPU register snapshot service is already materialized"
           else
             git commit -m \
-              "gdbstub: materialize gap-safe CPU register snapshots"
+              "monitor: materialize WD40 CPU register snapshots"
+          fi
+
+          if test "$(git rev-parse HEAD)" != "$original_head"; then
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
