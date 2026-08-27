@@ -19,6 +19,7 @@
 
 #define R128_BUS_CNTL                  0x0030
 #define R128_GEN_RESET_CNTL            0x00f0
+#define R128_CRTC_OFFSET               0x0224
 #define R128_PCI_GART_PAGE             0x017c
 #define R128_PM4_BUFFER_OFFSET         0x0700
 #define R128_PM4_BUFFER_CNTL           0x0704
@@ -62,6 +63,7 @@
 #define R128_CONSTANT_COLOR_C          0x1d34
 #define R128_PRIM_TEXTURE_BORDER_COLOR_C 0x1d38
 #define R128_SEC_TEXTURE_BORDER_COLOR_C 0x1d3c
+#define R128_STEN_REF_MASK_C            0x1d40
 #define R128_PLANE_3D_MASK_C           0x1d44
 #define R128_SOLID_COLOR                0x1bc8
 #define R128_AUX_SC_CNTL                0x1660
@@ -69,8 +71,19 @@
 #define R128_AUX1_SC_RIGHT              0x1668
 #define R128_AUX1_SC_TOP                0x166c
 #define R128_AUX1_SC_BOTTOM             0x1670
+#define R128_AUX2_SC_LEFT               0x1674
+#define R128_AUX2_SC_RIGHT              0x1678
+#define R128_AUX2_SC_TOP                0x167c
+#define R128_AUX2_SC_BOTTOM             0x1680
+#define R128_AUX3_SC_LEFT               0x1684
+#define R128_AUX3_SC_RIGHT              0x1688
+#define R128_AUX3_SC_TOP                0x168c
+#define R128_AUX3_SC_BOTTOM             0x1690
+#define R128_WAIT_UNTIL                 0x1720
+#define R128_SCALE_3D_CNTL              0x1a00
 
 #define R128_PM4_PACKET0               0x00000000U
+#define R128_PM4_PACKET1               0x40000000U
 #define R128_PM4_PACKET2               0x80000000U
 #define R128_PM4_PACKET3               0xc0000000U
 #define R128_PM4_CNTL_HOSTDATA_BLT     0x00009400U
@@ -99,6 +112,8 @@
 #define R128_PM4_MICRO_FREERUN         (1U << 30)
 #define R128_PM4_BUSY                  (1U << 16)
 #define R128_PM4_GUI_ACTIVE            (1U << 31)
+#define R128_PM4_BUFFER_DL_DONE        (1U << 31)
+#define R128_EVENT_CRTC_OFFSET         (1U << 0)
 #define R128_SOFT_RESET_GUI            (1U << 0)
 
 #define R128_VC_FRMT_RHW               0x00000001U
@@ -139,6 +154,7 @@
 #define DEPTH_OFFSET                   0x00010000U
 #define TEXTURE_OFFSET                 0x00020000U
 #define TEXTURE1_OFFSET                0x00030000U
+#define BACK_OFFSET                    0x00040000U
 #define RING_DWORDS                    1024U
 
 
@@ -265,6 +281,17 @@ static void ring_packet0(RingBuilder *ring, uint32_t reg,
 static void ring_packet0_one(RingBuilder *ring, uint32_t reg, uint32_t value)
 {
     ring_packet0(ring, reg, &value, 1);
+}
+
+static void ring_packet1(RingBuilder *ring, uint32_t reg0,
+                         uint32_t value0, uint32_t reg1,
+                         uint32_t value1)
+{
+    ring_emit(ring, R128_PM4_PACKET1 |
+              ((reg0 >> 2) & 0x7ffU) |
+              (((reg1 >> 2) & 0x7ffU) << 11));
+    ring_emit(ring, value0);
+    ring_emit(ring, value1);
 }
 
 static void ring_packet3(RingBuilder *ring, uint32_t opcode,
@@ -1567,6 +1594,130 @@ static void test_pm4_shading_and_coverage(void)
     rage128_pm4_stop(test);
 }
 
+static void test_pm4_dri1_state_swap_flip(void)
+{
+    Rage128PM4Test *test = rage128_pm4_start();
+    RingBuilder ring = { 0 };
+    const uint32_t vc_setup =
+        (1U << 0) | (3U << 1) | (3U << 3) |
+        (2U << 5) | (1U << 8);
+    const float triangle[3][3] = {
+        { 8.0f, 8.0f, 0.0f },
+        { 56.0f, 8.0f, 0.0f },
+        { 8.0f, 56.0f, 0.0f },
+    };
+    const uint32_t colors[3] = {
+        0xff0000ff, 0xff0000ff, 0xff0000ff,
+    };
+    const uint32_t context[12] = {
+        surface_pitch_offset(BACK_OFFSET, false),
+        R128_GMC_DST_32BPP,
+        0,
+        (63U << 16) | 63U,
+        DEPTH_OFFSET,
+        8,
+        R128_Z_PIX_WIDTH_32 | R128_Z_TEST_LESS,
+        0,
+        R128_ALPHA_TEST_ALWAYS,
+        0,
+        0,
+        0,
+    };
+    const uint32_t stencil_and_plane_mask[2] = {
+        0,
+        UINT32_MAX,
+    };
+    const uint32_t aux1[4] = { 8, 23, 8, 55 };
+    const uint32_t aux2[4] = { 24, 55, 8, 23 };
+    const uint32_t copy_master =
+        R128_GMC_SRC_PITCH_OFFSET_CNTL |
+        R128_GMC_DST_PITCH_OFFSET_CNTL |
+        R128_GMC_BRUSH_NONE |
+        R128_GMC_DST_32BPP |
+        R128_GMC_SRC_DATATYPE_COLOR |
+        R128_ROP3_S |
+        R128_DP_SRC_SOURCE_MEMORY |
+        R128_GMC_CLR_CMP_CNTL_DIS |
+        R128_GMC_AUX_CLIP_DIS |
+        R128_GMC_WR_MSK_DIS;
+    const uint32_t swap[6] = {
+        copy_master,
+        surface_pitch_offset(BACK_OFFSET, false),
+        surface_pitch_offset(0, false),
+        0,
+        0,
+        (64U << 16) | 64U,
+    };
+
+    write_vertices(test, 0, triangle, colors, 3);
+    load_microcode(test);
+    setup_gart(test);
+
+    /*
+     * The Xorg engine setup establishes forward X/Y directions
+     * before the kernel's swap packets.  Replay that persistent
+     * engine precondition instead of relying on reset state.
+     */
+    mmio_write(test, R128_DP_CNTL, 3);
+
+    /*
+     * Replay the state groups emitted by r128_emit_state(): core,
+     * context, packet1 setup, masks, window, and ORed cliprects.
+     */
+    ring_packet0_one(&ring, R128_SCALE_3D_CNTL, 0);
+    ring_packet0(&ring, R128_DST_PITCH_OFFSET_C, context,
+                 G_N_ELEMENTS(context));
+    ring_packet1(&ring, R128_SETUP_CNTL, 0,
+                 R128_PM4_VC_FPU_SETUP, vc_setup);
+    ring_packet0_one(&ring, R128_DP_WRITE_MASK, UINT32_MAX);
+    ring_packet0(&ring, R128_STEN_REF_MASK_C,
+                 stencil_and_plane_mask,
+                 G_N_ELEMENTS(stencil_and_plane_mask));
+    ring_packet0_one(&ring, R128_WINDOW_XY_OFFSET, 0);
+    ring_packet0(&ring, R128_AUX1_SC_LEFT, aux1,
+                 G_N_ELEMENTS(aux1));
+    ring_packet0(&ring, R128_AUX2_SC_LEFT, aux2,
+                 G_N_ELEMENTS(aux2));
+    ring_packet0_one(&ring, R128_AUX_SC_CNTL,
+                     (1U << 0) | (1U << 2));
+    ring_draw(&ring, 0, 3, R128_VC_PRIM_TRI_LIST);
+
+    /* Replay r128_cce_dispatch_swap() and its completion age. */
+    ring_packet3(&ring, R128_PM4_CNTL_BITBLT_MULTI, swap,
+                 G_N_ELEMENTS(swap));
+    ring_packet0_one(&ring, R128_GUI_SCRATCH_REG0, 1);
+
+    /* Replay r128_cce_dispatch_flip(). */
+    ring_packet0_one(&ring, R128_WAIT_UNTIL,
+                     R128_EVENT_CRTC_OFFSET);
+    ring_packet0_one(&ring, R128_CRTC_OFFSET, BACK_OFFSET);
+    ring_packet0_one(&ring, R128_GUI_SCRATCH_REG0, 2);
+    execute_ring(test, &ring);
+
+    /* r128_do_cce_flush() marks the current write pointer done. */
+    mmio_write(test, R128_PM4_BUFFER_DL_WPTR,
+               ring.count | R128_PM4_BUFFER_DL_DONE);
+
+    g_assert_cmphex(vram_read32(test, BACK_OFFSET +
+                                        (16U * 64 + 16U) *
+                                        sizeof(uint32_t)), ==,
+                    0xffff0000);
+    g_assert_cmphex(framebuffer_read(test, 16, 16), ==,
+                    0xffff0000);
+    g_assert_cmphex(framebuffer_read(test, 40, 16), ==,
+                    0xffff0000);
+    g_assert_cmphex(framebuffer_read(test, 24, 32), ==,
+                    0x00000000);
+    g_assert_cmphex(mmio_read(test, R128_GUI_SCRATCH_REG0), ==, 2);
+    g_assert_cmphex(mmio_read(test, R128_WAIT_UNTIL), ==,
+                    R128_EVENT_CRTC_OFFSET);
+    g_assert_cmphex(mmio_read(test, R128_CRTC_OFFSET), ==,
+                    BACK_OFFSET);
+    g_assert_cmpuint(mmio_read(test, R128_PM4_BUFFER_DL_WPTR), ==,
+                     ring.count);
+    rage128_pm4_stop(test);
+}
+
 static void test_pm4_signed_window_offset(void)
 {
     Rage128PM4Test *test = rage128_pm4_start();
@@ -1630,6 +1781,8 @@ int main(int argc, char **argv)
                     test_pm4_malformed_inline_faults);
     g_test_add_func("/ati/rage128/pm4-shading-and-coverage",
                     test_pm4_shading_and_coverage);
+    g_test_add_func("/ati/rage128/pm4-dri1-state-swap-flip",
+                    test_pm4_dri1_state_swap_flip);
     g_test_add_func("/ati/rage128/pm4-signed-window-offset",
                     test_pm4_signed_window_offset);
     return g_test_run();

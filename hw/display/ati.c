@@ -12,9 +12,9 @@
  * unaccelerated X output at the moment.
  * Currently it's little more than a frame buffer with minimal functions,
  * other more advanced features of the hardware are yet to be implemented.
- * The Rage 128 model now includes a synchronous CCE/PM4 command engine
- * and a software fixed-function reference renderer. Texturing remains a
- * separate follow-on rather than being approximated through host GL.
+ * The Rage 128 model includes a synchronous CCE/PM4 command engine
+ * and a deterministic software fixed-function renderer with two texture
+ * units. Unsupported effects fail closed rather than using host GL.
  */
 
 #include "qemu/osdep.h"
