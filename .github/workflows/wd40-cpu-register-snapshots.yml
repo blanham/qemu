@@ -127,7 +127,7 @@ jobs:
               qemu-x86_64
           cd ..
 
-      - name: Exercise the complete QoL runtime contract
+      - name: Exercise the inherited QoL runtime contract
         run: |
           set -Eeuo pipefail
           ./build-wd40-registers/tests/unit/test-logging --tap -k
@@ -147,8 +147,26 @@ jobs:
             build-wd40-registers
           python3 scripts/ci/check-wd40-hmp-completion.py \
             build-wd40-registers
+
+      - name: Exercise x86-64 register snapshots
+        run: |
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
-            build-wd40-registers
+            build-wd40-registers x86_64
+
+      - name: Exercise AArch64 register snapshots
+        run: |
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
+            build-wd40-registers aarch64
+
+      - name: Exercise m68k register snapshots
+        run: |
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
+            build-wd40-registers m68k
+
+      - name: Exercise PowerPC register snapshots
+        run: |
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
+            build-wd40-registers ppc
 
       - name: Materialize the validated register service
         run: |
