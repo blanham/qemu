@@ -22,6 +22,7 @@ class TargetCase:
     bits: int
     big_endian: bool
     required_registers: frozenset[str]
+    required_numbered_registers: tuple[tuple[int, str, str], ...] = ()
     cpus: int = 1
 
 
@@ -75,6 +76,9 @@ TARGETS = (
         bits=32,
         big_endian=True,
         required_registers=frozenset(("r0", "pc", "msr")),
+        required_numbered_registers=(
+            (104, "spefscr", "org.gnu.gdb.power.spe"),
+        ),
     ),
 )
 
@@ -127,7 +131,7 @@ def validate_qapi_doc_width() -> None:
             )
 
 
-def validate_resolution_precedence(implementation: str) -> None:
+def validate_registry_invariants(implementation: str) -> None:
     core_loop = implementation.find(
         "for (i = 0; i < cpu->cc->gdb_num_core_regs; i++)"
     )
@@ -152,18 +156,20 @@ def validate_resolution_precedence(implementation: str) -> None:
     )
     if duplicate_guard is None:
         raise SystemExit(
-            "monitor/qmp-cmds.c: missing overlapping-register guard"
+            "monitor/qmp-cmds.c: missing duplicate-register guard"
         )
 
     body = duplicate_guard.group("body")
-    if "continue;" not in body:
+    required = ("error_setg", "more than once", "goto fail;")
+    missing = [marker for marker in required if marker not in body]
+    if missing:
         raise SystemExit(
-            "monitor/qmp-cmds.c: overlapping descriptors do not retain "
-            "first-resolution precedence"
+            "monitor/qmp-cmds.c: duplicate-register guard is not fatal: "
+            f"missing {missing!r}"
         )
-    if "error_setg" in body or "goto fail" in body:
+    if "continue;" in body:
         raise SystemExit(
-            "monitor/qmp-cmds.c: overlapping descriptors remain fatal"
+            "monitor/qmp-cmds.c: duplicate GDB registers are silently hidden"
         )
 
 
@@ -176,9 +182,8 @@ def validate_static() -> None:
         "'target-big-endian': 'bool'",
         "'registers': [ 'WD40CPURegister' ]",
         "'features': [ 'unstable' ]",
-        "When ranges overlap, the descriptor",
-        "selected by GDB lookup is retained: legacy core first, then",
-        "supplemental registration order.",
+        "Register numbers must be unique after",
+        "CPU initialization.",
     )
     need(
         "monitor/qmp-cmds.c",
@@ -194,17 +199,16 @@ def validate_static() -> None:
         'g_strdup_printf("gdb-reg-%d", descriptor->number)',
         "gdb_read_register() checks the legacy core range first.",
         "Supplemental feature ranges are checked in registration order.",
-        "Retain the descriptor for the callback GDB resolves first.",
+        "exposes GDB register %d more than once",
     )
     need(
         "docs/devel/wd40-monitor-v2.rst",
         "Cross-architecture CPU register snapshots",
         "x-wd40-query-cpu-registers",
         "GDB register registry and callbacks",
-        "descriptor selection follows ``gdb_read_register()``",
-        "legacy core range wins first",
-        "supplemental features in",
-        "registration order",
+        "explicit register-number gaps",
+        "treats duplicate numbers as",
+        "an initialization error",
         "does not pause a running machine",
         "without scraping ``info registers``",
     )
@@ -221,19 +225,14 @@ def validate_static() -> None:
     )
 
     implementation = implementation_block()
-    forbidden = (
-        "cpu_dump_state",
-        "human_monitor_command",
-        '"info registers"',
-        "GDB register number %d is duplicated",
-    )
+    forbidden = ("cpu_dump_state", "human_monitor_command", '"info registers"')
     present = [marker for marker in forbidden if marker in implementation]
     if present:
         raise SystemExit(
-            "monitor/qmp-cmds.c: register service has forbidden behavior: "
+            "monitor/qmp-cmds.c: register service scrapes text or dump output: "
             f"{present!r}"
         )
-    validate_resolution_precedence(implementation)
+    validate_registry_invariants(implementation)
     validate_qapi_doc_width()
 
 
@@ -374,6 +373,7 @@ def validate_snapshot(
 
     numbers: list[int] = []
     names: dict[str, bool] = {}
+    by_number: dict[int, dict[str, Any]] = {}
     for offset, register in enumerate(registers):
         number, name, available = validate_register(
             register,
@@ -381,6 +381,7 @@ def validate_snapshot(
         )
         numbers.append(number)
         names[name] = available
+        by_number[number] = register
 
     if numbers != sorted(set(numbers)):
         raise SystemExit(
@@ -397,6 +398,23 @@ def validate_snapshot(
             f"{case.target}/cpu{cpu_index}: required register failure: "
             f"missing={sorted(missing)!r}, unavailable={sorted(unavailable)!r}"
         )
+
+    for number, name, feature in case.required_numbered_registers:
+        register = by_number.get(number)
+        expected = {
+            "number": number,
+            "name": name,
+            "feature": feature,
+            "available": True,
+        }
+        actual = None
+        if register is not None:
+            actual = {key: register.get(key) for key in expected}
+        if actual != expected:
+            raise SystemExit(
+                f"{case.target}/cpu{cpu_index}: numbered register mismatch: "
+                f"{actual!r} != {expected!r}"
+            )
 
 
 def validate_target(build: Path, case: TargetCase) -> None:
