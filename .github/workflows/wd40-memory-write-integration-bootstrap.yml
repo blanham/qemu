@@ -108,12 +108,12 @@ jobs:
           PY
 
           git diff --check
-          cmp -s \
-            scripts/wd40/generated-qol-integration-workflow.yml \
-            .github/workflows/wd40-qol-integration.yml && {
-              echo "generated workflow unexpectedly matches the old contract" >&2
-              exit 1
-            }
+          if cmp -s \
+              scripts/wd40/generated-qol-integration-workflow.yml \
+              .github/workflows/wd40-qol-integration.yml; then
+            echo "generated workflow unexpectedly matches the old contract" >&2
+            exit 1
+          fi
 
       - name: Publish the generated workflow source
         run: |
