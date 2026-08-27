@@ -1,0 +1,48 @@
+name: WD40 address translation integration materializer
+
+on:
+  push:
+    branches:
+      - wd40/qol-address-translation-integration
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-address-translation-integration-materializer
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out integration candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize canonical integration coverage
+        run: |
+          set -Eeuo pipefail
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+          python3 scripts/wd40/materialize-address-translation-integration.py
+          python3 scripts/ci/check-wd40-address-translation-service.py
+          git diff --check
+
+          git rm \
+            .github/workflows/wd40-address-translation-integration-materialize.yml \
+            .github/workflows/wd40-address-translation-ppc-diagnostic.yml \
+            scripts/wd40/apply-address-translation-ppc-reset-mapping.py \
+            scripts/wd40/materialize-address-translation-integration.py
+          git add \
+            .github/workflows/wd40-address-translation-service.yml \
+            .github/workflows/wd40-qol-integration.yml
+          git diff --cached --check
+          git commit -m "ci: integrate typed address translation"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
