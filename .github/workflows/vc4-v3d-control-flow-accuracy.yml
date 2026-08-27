@@ -82,8 +82,7 @@ jobs:
           set -euo pipefail
           git config user.name "VC4 Agent"
           git config user.email "vc4-agent@users.noreply.github.com"
-          git rm -- \
-            .github/workflows/vc4-v3d-control-flow-accuracy.yml \
+          git restore -- \
             scripts/vc4/v3d-control-flow-accuracy-fix.py
           git add -- \
             hw/display/bcm2835_v3d.c \
