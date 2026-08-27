@@ -638,8 +638,12 @@ void gdb_register_coprocessor(CPUState *cpu,
     }
     gdb_register_feature(cpu, base_reg, get_reg, set_reg, feature);
 
-    /* Add to end of list.  */
-    cpu->gdb_num_regs += feature->num_regs;
+    /*
+     * Include an explicit gap before the feature in the next free
+     * register number.  Adding only feature->num_regs would make the
+     * following feature overlap the tail of this one.
+     */
+    cpu->gdb_num_regs = base_reg + feature->num_regs;
 }
 
 void gdb_unregister_coprocessor_all(CPUState *cpu)
