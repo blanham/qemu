@@ -11,6 +11,7 @@ on:
       - wd40/qol-memory-read-integration
       - wd40/qol-address-translation-integration
       - wd40/qol-memory-write-integration
+      - wd40/qol-memory-write-hardening-integration
   workflow_dispatch:
 
 permissions:
@@ -78,6 +79,7 @@ jobs:
             python3 scripts/wd40/apply-address-translation-service.py
             python3 scripts/wd40/apply-address-translation-checker-composability.py
             python3 scripts/wd40/apply-memory-write-service.py
+            python3 scripts/wd40/apply-memory-write-hardening.py
           }
 
           apply_contract
