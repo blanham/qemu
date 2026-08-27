@@ -885,6 +885,9 @@
 # Write between 1 byte and 1 MiB to guest virtual or physical
 # memory from an exact hexadecimal byte string.
 #
+# Writes are not atomic.  A failure may leave an earlier portion of
+# the requested range modified.
+#
 # @space: address space used for the write
 #
 # @address: first guest address to write
