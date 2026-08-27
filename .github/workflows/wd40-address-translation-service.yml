@@ -54,7 +54,6 @@ jobs:
             python3 scripts/wd40/apply-cpu-register-snapshots.py
             python3 scripts/wd40/apply-memory-read-service.py
             python3 scripts/wd40/apply-address-translation-service.py
-            python3 scripts/wd40/apply-address-translation-ppc-reset-mapping.py
           }
 
           apply_contract
