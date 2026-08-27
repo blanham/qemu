@@ -127,6 +127,30 @@ def validate_qapi_doc_width() -> None:
             )
 
 
+def validate_overlap_precedence(implementation: str) -> None:
+    duplicate_guard = re.search(
+        r"if \(wd40_register_descriptor_present\(descriptors,\n"
+        r"\s+descriptor\.number\)\) \{(?P<body>.*?)\n\s+\}",
+        implementation,
+        re.DOTALL,
+    )
+    if duplicate_guard is None:
+        raise SystemExit(
+            "monitor/qmp-cmds.c: missing overlapping-register guard"
+        )
+
+    body = duplicate_guard.group("body")
+    if "continue;" not in body:
+        raise SystemExit(
+            "monitor/qmp-cmds.c: overlapping descriptors do not retain "
+            "first-registration precedence"
+        )
+    if "error_setg" in body or "goto fail" in body:
+        raise SystemExit(
+            "monitor/qmp-cmds.c: overlapping descriptors remain fatal"
+        )
+
+
 def validate_static() -> None:
     need(
         "qapi/misc.json",
@@ -136,6 +160,8 @@ def validate_static() -> None:
         "'target-big-endian': 'bool'",
         "'registers': [ 'WD40CPURegister' ]",
         "'features': [ 'unstable' ]",
+        "Overlapping feature ranges retain the",
+        "first registered descriptor, matching GDB callback lookup.",
     )
     need(
         "monitor/qmp-cmds.c",
@@ -149,12 +175,16 @@ def validate_static() -> None:
         "target_long_bits()",
         "target_big_endian()",
         'g_strdup_printf("gdb-reg-%d", descriptor->number)',
+        "feature ranges in registration order",
+        "descriptor so its metadata names the callback we read",
     )
     need(
         "docs/devel/wd40-monitor-v2.rst",
         "Cross-architecture CPU register snapshots",
         "x-wd40-query-cpu-registers",
         "GDB register registry and callbacks",
+        "overlapping supplemental feature ranges",
+        "first-match lookup",
         "does not pause a running machine",
         "without scraping ``info registers``",
     )
@@ -171,13 +201,19 @@ def validate_static() -> None:
     )
 
     implementation = implementation_block()
-    forbidden = ("cpu_dump_state", "human_monitor_command", '"info registers"')
+    forbidden = (
+        "cpu_dump_state",
+        "human_monitor_command",
+        '"info registers"',
+        "GDB register number %d is duplicated",
+    )
     present = [marker for marker in forbidden if marker in implementation]
     if present:
         raise SystemExit(
-            "monitor/qmp-cmds.c: register service scrapes text or dump output: "
+            "monitor/qmp-cmds.c: register service has forbidden behavior: "
             f"{present!r}"
         )
+    validate_overlap_precedence(implementation)
     validate_qapi_doc_width()
 
 
