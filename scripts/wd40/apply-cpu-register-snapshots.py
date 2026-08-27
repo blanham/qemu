@@ -118,8 +118,9 @@ def main() -> None:
 # Read one virtual CPU through the same register callbacks and
 # metadata used by QEMU's GDB stub.  This avoids parsing
 # architecture-specific ``info registers`` text while retaining
-# supplemental register sets.  Overlapping feature ranges retain the
-# first registered descriptor, matching GDB callback lookup.
+# supplemental register sets.  When ranges overlap, the descriptor
+# selected by GDB lookup is retained: legacy core first, then
+# supplemental registration order.
 #
 # @cpu-index: virtual CPU index; defaults to the first realized CPU
 #
@@ -248,6 +249,16 @@ qmp_x_wd40_query_cpu_registers(bool has_cpu_index, int64_t cpu_index,
     descriptors = g_array_new(false, false,
                               sizeof(WD40RegisterDescriptor));
 
+    /* gdb_read_register() checks the legacy core range first. */
+    for (i = 0; i < cpu->cc->gdb_num_core_regs; i++) {
+        WD40RegisterDescriptor descriptor = {
+            .number = i,
+        };
+
+        g_array_append_val(descriptors, descriptor);
+    }
+
+    /* Supplemental feature ranges are checked in registration order. */
     for (i = 0; i < gdb_descriptors->len; i++) {
         const GDBRegDesc *gdb_descriptor =
             &g_array_index(gdb_descriptors, GDBRegDesc, i);
@@ -259,25 +270,10 @@ qmp_x_wd40_query_cpu_registers(bool has_cpu_index, int64_t cpu_index,
 
         if (wd40_register_descriptor_present(descriptors,
                                              descriptor.number)) {
-            /*
-             * gdb_read_register() resolves overlapping supplemental
-             * feature ranges in registration order.  Keep the first
-             * descriptor so its metadata names the callback we read.
-             */
+            /* Retain the descriptor for the callback GDB resolves first. */
             continue;
         }
         g_array_append_val(descriptors, descriptor);
-    }
-
-    for (i = 0; i < cpu->cc->gdb_num_core_regs; i++) {
-        WD40RegisterDescriptor descriptor = {
-            .number = i,
-        };
-
-        if (!wd40_register_descriptor_present(descriptors,
-                                              descriptor.number)) {
-            g_array_append_val(descriptors, descriptor);
-        }
     }
 
     if (descriptors->len == 0) {
@@ -375,10 +371,10 @@ metadata plus registers sorted by GDB number, including dynamically registered
 supplemental feature sets.  Architectures that have not supplied register-name
 metadata still expose their core register numbers with ``gdb-reg-N`` names.
 
-Some targets register overlapping supplemental feature ranges.  The service
-keeps the first descriptor in registration order, matching
-``gdb_read_register()``'s first-match lookup, so metadata and value bytes stay
-paired.
+When ranges overlap, descriptor selection follows ``gdb_read_register()``
+exactly: the legacy core range wins first, followed by supplemental features in
+registration order.  Metadata therefore names the callback that supplies each
+value rather than an overlapping feature that GDB would not consult.
 
 Register values are the exact byte sequences produced by the target's GDB
 callback, encoded as lowercase hexadecimal rather than converted through an
