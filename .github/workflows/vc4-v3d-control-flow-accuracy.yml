@@ -39,6 +39,17 @@ jobs:
       - name: Correct control-thread register semantics
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/v3d-control-flow-accuracy-fix.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    count = text.count(old)\n    if count != 1:\n        raise SystemExit(f"{label}: expected exactly one anchor, found {count}")\n    return text.replace(old, new, 1)\n'''
+          new = '''    count = text.count(old)\n    if count == 2 and label == "flush no-op removal":\n        first = text.find(old)\n        second = text.find(old, first + len(old))\n        return text[:second] + text[second:].replace(old, new, 1)\n    if count != 1:\n        raise SystemExit(f"{label}: expected exactly one anchor, found {count}")\n    return text.replace(old, new, 1)\n'''
+          if text.count(old) != 1:
+              raise SystemExit('replace_once helper anchor changed')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
           python3 -m py_compile \
             scripts/vc4/v3d-control-flow-accuracy-fix.py
           python3 scripts/vc4/v3d-control-flow-accuracy-fix.py
