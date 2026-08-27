@@ -1,0 +1,173 @@
+name: WD40 AArch64 memory-read diagnostic
+
+on:
+  push:
+    branches:
+      - wd40/qol-memory-read-aarch64-diagnostic
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-aarch64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out diagnostic branch
+        uses: actions/checkout@v4
+
+      - name: Apply the memory-read service
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/wd40/apply-memory-read-service.py
+          python3 scripts/ci/check-wd40-memory-read-service.py
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build AArch64 system emulator
+        run: |
+          set -Eeuo pipefail
+          mkdir build-wd40-aarch64
+          cd build-wd40-aarch64
+          ../configure \
+            --target-list=aarch64-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          timeout --foreground --signal=TERM --kill-after=5m 70m \
+            ninja -j2 qemu-system-aarch64
+          tar -czf ../qemu-system-aarch64.tar.gz qemu-system-aarch64
+
+      - name: Upload diagnostic emulator
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-system-aarch64
+          path: qemu-system-aarch64.tar.gz
+          retention-days: 1
+
+  probe-aarch64:
+    needs: build-aarch64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Download diagnostic emulator
+        uses: actions/download-artifact@v4
+        with:
+          name: qemu-system-aarch64
+
+      - name: Extract emulator
+        run: |
+          tar -xzf qemu-system-aarch64.tar.gz
+          chmod +x qemu-system-aarch64
+
+      - name: Print concise physical and virtual QMP replies
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          address = 0x40010000
+          machines = (
+              "virt,accel=tcg",
+              "virt,accel=tcg,secure=off",
+              "virt,accel=tcg,secure=off,virtualization=on",
+          )
+
+          loader = []
+          for offset, value in enumerate((0x41, 0x42, 0x43, 0x44)):
+              loader += [
+                  "-device",
+                  (
+                      f"loader,id=wd40-byte{offset},"
+                      f"addr=0x{address + offset:x},"
+                      f"data=0x{value:x},data-len=1"
+                  ),
+              ]
+
+          requests = [
+              {"execute": "qmp_capabilities", "id": "cap"},
+              {
+                  "execute": "x-wd40-read-memory",
+                  "arguments": {
+                      "space": "physical",
+                      "address": address,
+                      "size": 4,
+                  },
+                  "id": "physical",
+              },
+              {
+                  "execute": "x-wd40-read-memory",
+                  "arguments": {
+                      "space": "virtual",
+                      "address": address,
+                      "size": 4,
+                  },
+                  "id": "virtual-default",
+              },
+              {
+                  "execute": "x-wd40-read-memory",
+                  "arguments": {
+                      "space": "virtual",
+                      "address": address,
+                      "size": 4,
+                      "cpu-index": 0,
+                  },
+                  "id": "virtual-cpu0",
+              },
+              {"execute": "quit", "id": "quit"},
+          ]
+
+          for machine in machines:
+              command = [
+                  "./qemu-system-aarch64",
+                  "-machine", machine,
+                  "-cpu", "max",
+                  "-smp", "2",
+                  "-m", "128M",
+                  *loader,
+                  "-display", "none",
+                  "-serial", "none",
+                  "-monitor", "none",
+                  "-nodefaults",
+                  "-S",
+                  "-qmp", "stdio",
+              ]
+              run = subprocess.run(
+                  command,
+                  input="\n".join(json.dumps(item) for item in requests) + "\n",
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  timeout=60,
+                  check=False,
+              )
+              replies = {}
+              for line in run.stdout.splitlines():
+                  try:
+                      item = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  identifier = item.get("id")
+                  if identifier in {"physical", "virtual-default", "virtual-cpu0"}:
+                      replies[identifier] = item
+
+              print(f"MACHINE {machine}")
+              print(json.dumps(replies, sort_keys=True))
+              if run.stderr:
+                  print("STDERR", run.stderr.strip())
+              print(f"RETURN_CODE {run.returncode}")
+          PY
