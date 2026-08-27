@@ -42,7 +42,6 @@ VC4_INITRAMFS_REQUIRED_MARKERS="${required_markers[*]}" \
 for path in \
     usr/bin/vc4-mesa-gles2-probe \
     usr/lib/aarch64-linux-gnu/libEGL.so.1 \
-    usr/lib/aarch64-linux-gnu/libEGL_mesa.so.0 \
     usr/lib/aarch64-linux-gnu/libGLESv2.so.2 \
     usr/lib/aarch64-linux-gnu/libglapi.so.0 \
     usr/lib/aarch64-linux-gnu/dri/vc4_dri.so \
