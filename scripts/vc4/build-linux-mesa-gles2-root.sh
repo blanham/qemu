@@ -149,6 +149,8 @@ mesa_lib="$out_dir/root/usr/lib/aarch64-linux-gnu"
 test -e "$mesa_lib/libEGL.so"
 test -e "$mesa_lib/libGLESv2.so"
 test -e "$mesa_lib/dri/vc4_dri.so"
+find "$mesa_lib" -maxdepth 2 -printf '%y %p -> %l\n' | \
+    LC_ALL=C sort > "$out_dir/MESA_INSTALLED_FILES"
 
 "$cc" \
     -O2 \
@@ -177,7 +179,6 @@ closure_args=(
     --search /lib/aarch64-linux-gnu
     --seed usr/bin/vc4-mesa-gles2-probe
     --seed usr/lib/aarch64-linux-gnu/libEGL.so.1
-    --seed usr/lib/aarch64-linux-gnu/libEGL_mesa.so.0
     --seed usr/lib/aarch64-linux-gnu/libGLESv2.so.2
     --seed usr/lib/aarch64-linux-gnu/libglapi.so.0
     --seed usr/lib/aarch64-linux-gnu/dri/vc4_dri.so
