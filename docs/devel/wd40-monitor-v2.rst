@@ -115,9 +115,14 @@ writes reject ``cpu-index``.
 
 Writes are debugger operations rather than side-effect-free RAM edits.  They
 can invoke MMIO callbacks, and virtual debug writes can modify ROM through
-QEMU's debugger path.  The command synchronizes accelerator state but does not
-pause a running guest; clients should issue ``stop`` before read-modify-write
-work that must be coherent.
+QEMU's debugger path.  Neither virtual nor physical writes are atomic.  If a
+multi-byte request fails, an earlier portion of the range may already have
+been modified; QEMU does not roll it back.  Clients that need all-or-nothing
+behavior must arrange their own validation and rollback.
+
+The command synchronizes accelerator state but does not pause a running guest;
+clients should issue ``stop`` before read-modify-write work that must be
+coherent.
 
 Typed virtual-to-physical translation
 -------------------------------------

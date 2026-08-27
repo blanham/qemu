@@ -78,7 +78,7 @@ TARGETS = (
         ),
         target="ppc",
         address=0x10000,
-        virtual=False,
+        virtual=True,
     ),
 )
 
@@ -147,6 +147,8 @@ def validate_static() -> None:
         "'features': [ 'unstable' ]",
         "'data': 'str'",
         "'*cpu-index': 'int'",
+        "Writes are not atomic",
+        "failure may leave an earlier portion",
     )
     need(
         "system/physmem-qmp-cmds.c",
@@ -174,6 +176,8 @@ def validate_static() -> None:
         "memory-transaction failures",
         "virtual debug writes can modify ROM",
         "read-modify-write",
+        "Neither virtual nor physical writes are atomic",
+        "does not roll it back",
     )
 
     exactly_once("qapi/machine.json", "'struct': 'WD40MemoryWrite'")

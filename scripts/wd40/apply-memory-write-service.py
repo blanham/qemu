@@ -99,6 +99,9 @@ def main() -> None:
 # Write between 1 byte and 1 MiB to guest virtual or physical
 # memory from an exact hexadecimal byte string.
 #
+# Writes are not atomic.  A failure may leave an earlier portion of
+# the requested range modified.
+#
 # @space: address space used for the write
 #
 # @address: first guest address to write
@@ -301,9 +304,14 @@ writes reject ``cpu-index``.
 
 Writes are debugger operations rather than side-effect-free RAM edits.  They
 can invoke MMIO callbacks, and virtual debug writes can modify ROM through
-QEMU's debugger path.  The command synchronizes accelerator state but does not
-pause a running guest; clients should issue ``stop`` before read-modify-write
-work that must be coherent.
+QEMU's debugger path.  Neither virtual nor physical writes are atomic.  If a
+multi-byte request fails, an earlier portion of the range may already have
+been modified; QEMU does not roll it back.  Clients that need all-or-nothing
+behavior must arrange their own validation and rollback.
+
+The command synchronizes accelerator state but does not pause a running guest;
+clients should issue ``stop`` before read-modify-write work that must be
+coherent.
 
 """,
         owned_markers=(
