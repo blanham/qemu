@@ -289,7 +289,7 @@ larger captures should continue to use file-oriented dump mechanisms.
 """,
         owned_markers=(
             "Bounded guest-memory reads",
-            "x-wd40-read-memory",
+            "These are debugger accesses, not side-effect-free RAM snapshots.",
         ),
     )
 
