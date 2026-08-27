@@ -86,8 +86,10 @@
                                 V3D_INT_FLDONE | V3D_INT_FRDONE)
 
 #define V3D_CTRSTA             (1u << 15)
-#define V3D_CTSEMA             (1u << 12)
-#define V3D_CTRTSD             (1u << 8)
+#define V3D_CTSEMA_SHIFT       12
+#define V3D_CTSEMA_MASK        (0x7u << V3D_CTSEMA_SHIFT)
+#define V3D_CTRTSD_SHIFT       8
+#define V3D_CTRTSD_MASK        (0x3u << V3D_CTRTSD_SHIFT)
 #define V3D_CTRUN              (1u << 5)
 #define V3D_CTSUBS             (1u << 4)
 #define V3D_CTERR              (1u << 3)
@@ -388,16 +390,28 @@ static void bcm2835_v3d_update_sub_list_state(BCM2835V3DState *s,
 {
     uint32_t cs_index = REG_INDEX(V3D_CTNCS(thread));
     uint32_t ra_index = REG_INDEX(V3D_CT00RA0 + thread * 4);
-    uint32_t lc_index = REG_INDEX(V3D_CT0LC + thread * 4);
 
+    s->regs[cs_index] =
+        (s->regs[cs_index] & ~V3D_CTRTSD_MASK) |
+        ((uint32_t)cl->sub_list_depth << V3D_CTRTSD_SHIFT);
     if (cl->sub_list_depth != 0) {
-        s->regs[cs_index] |= V3D_CTSUBS;
         s->regs[ra_index] = cl->return_pc[cl->sub_list_depth - 1];
     } else {
-        s->regs[cs_index] &= ~V3D_CTSUBS;
         s->regs[ra_index] = 0;
     }
-    s->regs[lc_index] = cl->sub_list_depth;
+}
+
+static void bcm2835_v3d_increment_list_counter(BCM2835V3DState *s,
+                                                unsigned thread,
+                                                bool major)
+{
+    uint32_t index = REG_INDEX(V3D_CT0LC + thread * 4);
+    unsigned shift = major ? 16 : 0;
+    uint32_t mask = 0xffffu << shift;
+    uint32_t count = ((s->regs[index] & mask) >> shift) + 1;
+
+    s->regs[index] = (s->regs[index] & ~mask) |
+                     ((count & 0xffffu) << shift);
 }
 
 static bool bcm2835_v3d_packet_fits(BCM2835V3DState *s,
@@ -445,8 +459,6 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
         *stop = true;
         return true;
     case VC4_PACKET_NOP:
-    case VC4_PACKET_FLUSH:
-    case VC4_PACKET_FLUSH_ALL:
     case VC4_PACKET_START_TILE_BINNING:
     case VC4_PACKET_INCREMENT_SEMAPHORE:
     case VC4_PACKET_WAIT_ON_SEMAPHORE:
@@ -470,6 +482,11 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
     case VC4_PACKET_LOAD_FULL_RES_TILE:
     case VC4_PACKET_STORE_TILE_BUFFER_GENERAL:
     case VC4_PACKET_LOAD_TILE_BUFFER_GENERAL:
+        return true;
+
+    case VC4_PACKET_FLUSH:
+    case VC4_PACKET_FLUSH_ALL:
+        bcm2835_v3d_increment_list_counter(s, thread, true);
         return true;
 
     case VC4_PACKET_BRANCH:
@@ -517,6 +534,7 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
         }
         *next_pc = cl->return_pc[--cl->sub_list_depth];
         bcm2835_v3d_update_sub_list_state(s, thread, cl);
+        bcm2835_v3d_increment_list_counter(s, thread, false);
         return true;
 
     case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:
@@ -575,7 +593,8 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
 }
 
 static void bcm2835_v3d_complete_thread(BCM2835V3DState *s,
-                                         unsigned thread, bool success)
+                                         unsigned thread, bool success,
+                                         bool halted)
 {
     uint32_t cs_index = REG_INDEX(V3D_CTNCS(thread));
     uint32_t pcs = s->regs[REG_INDEX(V3D_PCS)];
@@ -593,9 +612,12 @@ static void bcm2835_v3d_complete_thread(BCM2835V3DState *s,
         return;
     }
 
-    s->regs[cs_index] &= ~(V3D_CTERR | V3D_CTSUBS);
+    s->regs[cs_index] &= ~(V3D_CTERR | V3D_CTSUBS |
+                           V3D_CTRTSD_MASK);
+    if (halted) {
+        s->regs[cs_index] |= V3D_CTSUBS;
+    }
     s->regs[REG_INDEX(V3D_CT00RA0 + thread * 4)] = 0;
-    s->regs[REG_INDEX(V3D_CT0LC + thread * 4)] = 0;
     s->regs[REG_INDEX(V3D_CTNCA(thread))] =
         s->regs[REG_INDEX(V3D_CTNEA(thread))];
 
@@ -619,11 +641,13 @@ static void bcm2835_v3d_execute_thread(BCM2835V3DState *s, unsigned thread)
     uint32_t steps = 0;
     uint32_t pcs;
     bool stop;
+    bool halted = false;
+    bool finished = false;
     bool success = true;
 
     if (end < pc || end - pc > VC4_MAX_CONTROL_LIST_BYTES) {
         s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
-        bcm2835_v3d_complete_thread(s, thread, false);
+        bcm2835_v3d_complete_thread(s, thread, false, false);
         return;
     }
     if (end == pc) {
@@ -646,7 +670,7 @@ static void bcm2835_v3d_execute_thread(BCM2835V3DState *s, unsigned thread)
         uint8_t packet;
 
         if (cl.sub_list_depth == 0 && pc == end) {
-            stop = true;
+            finished = true;
             break;
         }
         if (cl.sub_list_depth == 0 &&
@@ -666,11 +690,13 @@ static void bcm2835_v3d_execute_thread(BCM2835V3DState *s, unsigned thread)
         }
         pc = next_pc;
         if (stop) {
+            halted = true;
+            finished = true;
             break;
         }
     }
 
-    if (success && !stop) {
+    if (success && !finished) {
         s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
         qemu_log_mask(LOG_GUEST_ERROR,
                       TYPE_BCM2835_V3D
@@ -679,7 +705,7 @@ static void bcm2835_v3d_execute_thread(BCM2835V3DState *s, unsigned thread)
         success = false;
     }
 
-    bcm2835_v3d_complete_thread(s, thread, success);
+    bcm2835_v3d_complete_thread(s, thread, success, halted);
 }
 
 static uint64_t bcm2835_v3d_read(void *opaque, hwaddr addr, unsigned size)
@@ -757,9 +783,11 @@ static void bcm2835_v3d_write(void *opaque, hwaddr addr,
         if (v & V3D_CTERR) {
             s->regs[index] &= ~V3D_CTERR;
         }
-        s->regs[index] = (s->regs[index] & (V3D_CTRUN | V3D_CTERR)) |
-                         (v & (V3D_CTSEMA | V3D_CTRTSD |
-                               V3D_CTSUBS | V3D_CTMODE));
+        s->regs[index] =
+            (s->regs[index] & (V3D_CTRUN | V3D_CTERR |
+                               V3D_CTSEMA_MASK | V3D_CTRTSD_MASK |
+                               V3D_CTMODE)) |
+            (v & V3D_CTSUBS);
         return;
     case V3D_CT0CA:
     case V3D_CT1CA:
@@ -770,6 +798,15 @@ static void bcm2835_v3d_write(void *opaque, hwaddr addr,
         thread = (addr - V3D_CT0EA) >> 2;
         s->regs[index] = v;
         bcm2835_v3d_execute_thread(s, thread);
+        return;
+    case V3D_CT0LC:
+    case V3D_CT1LC:
+        if (v & 1u) {
+            s->regs[index] &= 0xffff0000u;
+        }
+        if (v & (1u << 16)) {
+            s->regs[index] &= 0x0000ffffu;
+        }
         return;
     case V3D_BFC:
     case V3D_RFC:

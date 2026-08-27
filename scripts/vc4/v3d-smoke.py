@@ -30,10 +30,13 @@ V3D_ERRSTAT = V3D_BASE + 0xF20
 V3D_EXPECTED_IDENT0 = (2 << 24) | (ord("D") << 16) | (ord("3") << 8) | ord("V")
 V3D_INT_FRDONE = 1 << 0
 V3D_CTRSTA = 1 << 15
+V3D_CTRTSD_SHIFT = 8
+V3D_CTRTSD_MASK = 3 << V3D_CTRTSD_SHIFT
 V3D_CTSUBS = 1 << 4
 V3D_CTERR = 1 << 3
 
 VC4_PACKET_HALT = 0
+VC4_PACKET_FLUSH = 4
 VC4_PACKET_BRANCH = 16
 VC4_PACKET_BRANCH_TO_SUB_LIST = 17
 VC4_PACKET_RETURN_FROM_SUB_LIST = 18
@@ -184,7 +187,7 @@ def build_branch_rcl(address: int) -> bytes:
     target = address + 5 + len(skipped)
     return (
         bytes((VC4_PACKET_BRANCH,)) + struct.pack("<I", target) +
-        skipped + bytes((VC4_PACKET_HALT,))
+        skipped + bytes((VC4_PACKET_FLUSH, VC4_PACKET_HALT))
     )
 
 
@@ -245,7 +248,8 @@ def exercise(qtest: QTest) -> None:
     expect("render control-list current address",
            qtest.readl(V3D_CT1CA), CL_ADDRESS + len(clear_rcl))
     expect("render frame count", qtest.readl(V3D_RFC), 1)
-    expect("render thread status", qtest.readl(V3D_CT1CS), 0)
+    expect("render thread halt status", qtest.readl(V3D_CT1CS),
+           V3D_CTSUBS)
     expect("render-done interrupt", qtest.readl(V3D_INTCTL),
            V3D_INT_FRDONE)
     expect("top-left clear pixel", qtest.readl(FRAMEBUFFER_ADDRESS),
@@ -271,9 +275,12 @@ def exercise(qtest: QTest) -> None:
     qtest.writel(V3D_CT1CA, CONTROL_FLOW_CL_ADDRESS)
     qtest.writel(V3D_CT1EA, CONTROL_FLOW_CL_ADDRESS + len(main_rcl))
     expect("sub-list render frame count", qtest.readl(V3D_RFC), 2)
-    expect("sub-list thread status", qtest.readl(V3D_CT1CS), 0)
+    expect("sub-list thread halt status", qtest.readl(V3D_CT1CS),
+           V3D_CTSUBS)
     expect("sub-list return-address cleanup", qtest.readl(V3D_CT1RA0), 0)
-    expect("sub-list counter cleanup", qtest.readl(V3D_CT1LC), 0)
+    expect("sub-list return count", qtest.readl(V3D_CT1LC), 1)
+    qtest.writel(V3D_CT1LC, 1)
+    expect("sub-list counter reset", qtest.readl(V3D_CT1LC), 0)
     expect("sub-list top-left clear", qtest.readl(FRAMEBUFFER_ADDRESS),
            CLEAR_COLOR)
     expect("sub-list bottom-right clear",
@@ -288,7 +295,12 @@ def exercise(qtest: QTest) -> None:
     qtest.writel(V3D_CT1CA, BRANCH_CL_ADDRESS)
     qtest.writel(V3D_CT1EA, BRANCH_CL_ADDRESS + len(branch_rcl))
     expect("bounded branch frame count", qtest.readl(V3D_RFC), 3)
-    expect("bounded branch status", qtest.readl(V3D_CT1CS), 0)
+    expect("bounded branch halt status", qtest.readl(V3D_CT1CS),
+           V3D_CTSUBS)
+    expect("bounded branch flush count", qtest.readl(V3D_CT1LC),
+           1 << 16)
+    qtest.writel(V3D_CT1LC, 1 << 16)
+    expect("bounded branch counter reset", qtest.readl(V3D_CT1LC), 0)
     expect("bounded branch ERRSTAT", qtest.readl(V3D_ERRSTAT), 0)
     qtest.writel(V3D_INTCTL, V3D_INT_FRDONE)
 
@@ -329,9 +341,10 @@ def exercise(qtest: QTest) -> None:
     nested_status = qtest.readl(V3D_CT1CS)
     if not (nested_status & V3D_CTERR):
         raise RuntimeError("excessive sub-list nesting did not set CTERR")
-    if not (nested_status & V3D_CTSUBS):
-        raise RuntimeError("failed nested sub-list lost CTSUBS state")
-    expect("failed nested sub-list depth", qtest.readl(V3D_CT1LC), 2)
+    expect("failed nested sub-list depth",
+           (nested_status & V3D_CTRTSD_MASK) >> V3D_CTRTSD_SHIFT, 2)
+    expect("failed nested sub-list return count",
+           qtest.readl(V3D_CT1LC), 0)
     if qtest.readl(V3D_CT1RA0) == 0:
         raise RuntimeError("failed nested sub-list lost return address")
     if qtest.readl(V3D_ERRSTAT) == 0:
