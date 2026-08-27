@@ -107,6 +107,7 @@
 #define VC4_PACKET_WAIT_ON_SEMAPHORE          8
 #define VC4_PACKET_BRANCH                    16
 #define VC4_PACKET_BRANCH_TO_SUB_LIST        17
+#define VC4_PACKET_RETURN_FROM_SUB_LIST      18
 #define VC4_PACKET_STORE_MS_TILE_BUFFER      24
 #define VC4_PACKET_STORE_MS_TILE_BUFFER_EOF  25
 #define VC4_PACKET_STORE_FULL_RES_TILE       26
@@ -145,6 +146,7 @@
 
 #define VC4_MAX_CONTROL_LIST_BYTES (16 * MiB)
 #define VC4_MAX_CONTROL_LIST_STEPS (4 * 1024 * 1024)
+#define VC4_MAX_SUB_LIST_DEPTH     2
 #define VC4_MAX_RENDER_DIMENSION   4096
 
 #define REG_INDEX(offset) ((offset) >> 2)
@@ -170,6 +172,10 @@ typedef struct VC4V3DCLState {
     bool have_render_config;
     bool have_clear_color;
     bool saw_eof;
+    uint32_t main_start;
+    uint32_t main_end;
+    uint32_t return_pc[VC4_MAX_SUB_LIST_DEPTH];
+    uint8_t sub_list_depth;
 } VC4V3DCLState;
 
 static void bcm2835_v3d_update_irq(BCM2835V3DState *s)
@@ -326,6 +332,7 @@ static unsigned bcm2835_v3d_packet_size(uint8_t packet)
     case VC4_PACKET_START_TILE_BINNING:
     case VC4_PACKET_INCREMENT_SEMAPHORE:
     case VC4_PACKET_WAIT_ON_SEMAPHORE:
+    case VC4_PACKET_RETURN_FROM_SUB_LIST:
     case VC4_PACKET_STORE_MS_TILE_BUFFER:
     case VC4_PACKET_STORE_MS_TILE_BUFFER_EOF:
     case VC4_PACKET_COMPRESSED_PRIMITIVE:
@@ -375,21 +382,58 @@ static unsigned bcm2835_v3d_packet_size(uint8_t packet)
     }
 }
 
+static void bcm2835_v3d_update_sub_list_state(BCM2835V3DState *s,
+                                                  unsigned thread,
+                                                  VC4V3DCLState *cl)
+{
+    uint32_t cs_index = REG_INDEX(V3D_CTNCS(thread));
+    uint32_t ra_index = REG_INDEX(V3D_CT00RA0 + thread * 4);
+    uint32_t lc_index = REG_INDEX(V3D_CT0LC + thread * 4);
+
+    if (cl->sub_list_depth != 0) {
+        s->regs[cs_index] |= V3D_CTSUBS;
+        s->regs[ra_index] = cl->return_pc[cl->sub_list_depth - 1];
+    } else {
+        s->regs[cs_index] &= ~V3D_CTSUBS;
+        s->regs[ra_index] = 0;
+    }
+    s->regs[lc_index] = cl->sub_list_depth;
+}
+
+static bool bcm2835_v3d_packet_fits(BCM2835V3DState *s,
+                                    VC4V3DCLState *cl,
+                                    uint32_t pc, uint8_t packet,
+                                    unsigned size)
+{
+    bool wraps = size == 0 || UINT32_MAX - pc < size - 1;
+    bool outside_main = cl->sub_list_depth == 0 &&
+        (pc < cl->main_start || pc > cl->main_end ||
+         cl->main_end - pc < size);
+
+    if (!wraps && !outside_main) {
+        return true;
+    }
+
+    s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  TYPE_BCM2835_V3D
+                  ": invalid/truncated packet 0x%02x at 0x%08x "
+                  "(sub-list depth %u)\n",
+                  packet, pc, cl->sub_list_depth);
+    return false;
+}
+
 static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
                                        unsigned thread,
                                        VC4V3DCLState *cl,
-                                       uint32_t pc, uint32_t end,
+                                       uint32_t pc,
                                        uint8_t packet, uint32_t *next_pc,
                                        bool *stop)
 {
     unsigned size = bcm2835_v3d_packet_size(packet);
+    uint32_t target;
 
-    if (size == 0 || end - pc < size) {
-        s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      TYPE_BCM2835_V3D
-                      ": invalid/truncated packet 0x%02x at 0x%08x\n",
-                      packet, pc);
+    if (!bcm2835_v3d_packet_fits(s, cl, pc, packet, size)) {
         return false;
     }
 
@@ -426,6 +470,53 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
     case VC4_PACKET_LOAD_FULL_RES_TILE:
     case VC4_PACKET_STORE_TILE_BUFFER_GENERAL:
     case VC4_PACKET_LOAD_TILE_BUFFER_GENERAL:
+        return true;
+
+    case VC4_PACKET_BRANCH:
+        if (!bcm2835_v3d_cl_read_u32(s, pc + 1, &target)) {
+            return false;
+        }
+        if (cl->sub_list_depth == 0 &&
+            (target < cl->main_start || target > cl->main_end)) {
+            s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          TYPE_BCM2835_V3D
+                          ": main-list branch target 0x%08x outside "
+                          "[0x%08x,0x%08x] at 0x%08x\n",
+                          target, cl->main_start, cl->main_end, pc);
+            return false;
+        }
+        *next_pc = target;
+        return true;
+
+    case VC4_PACKET_BRANCH_TO_SUB_LIST:
+        if (cl->sub_list_depth == VC4_MAX_SUB_LIST_DEPTH) {
+            s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          TYPE_BCM2835_V3D
+                          ": sub-list nesting exceeds %u at 0x%08x\n",
+                          VC4_MAX_SUB_LIST_DEPTH, pc);
+            return false;
+        }
+        if (!bcm2835_v3d_cl_read_u32(s, pc + 1, &target)) {
+            return false;
+        }
+        cl->return_pc[cl->sub_list_depth++] = *next_pc;
+        bcm2835_v3d_update_sub_list_state(s, thread, cl);
+        *next_pc = target;
+        return true;
+
+    case VC4_PACKET_RETURN_FROM_SUB_LIST:
+        if (cl->sub_list_depth == 0) {
+            s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          TYPE_BCM2835_V3D
+                          ": return-from-sub-list without a caller "
+                          "at 0x%08x\n", pc);
+            return false;
+        }
+        *next_pc = cl->return_pc[--cl->sub_list_depth];
+        bcm2835_v3d_update_sub_list_state(s, thread, cl);
         return true;
 
     case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:
@@ -467,8 +558,6 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
         }
         return true;
 
-    case VC4_PACKET_BRANCH:
-    case VC4_PACKET_BRANCH_TO_SUB_LIST:
     case VC4_PACKET_GL_INDEXED_PRIMITIVE:
     case VC4_PACKET_GL_ARRAY_PRIMITIVE:
     case VC4_PACKET_COMPRESSED_PRIMITIVE:
@@ -504,7 +593,9 @@ static void bcm2835_v3d_complete_thread(BCM2835V3DState *s,
         return;
     }
 
-    s->regs[cs_index] &= ~V3D_CTERR;
+    s->regs[cs_index] &= ~(V3D_CTERR | V3D_CTSUBS);
+    s->regs[REG_INDEX(V3D_CT00RA0 + thread * 4)] = 0;
+    s->regs[REG_INDEX(V3D_CT0LC + thread * 4)] = 0;
     s->regs[REG_INDEX(V3D_CTNCA(thread))] =
         s->regs[REG_INDEX(V3D_CTNEA(thread))];
 
@@ -548,12 +639,27 @@ static void bcm2835_v3d_execute_thread(BCM2835V3DState *s, unsigned thread)
     }
     s->regs[REG_INDEX(V3D_PCS)] = pcs;
 
-    while (pc < end && steps++ < VC4_MAX_CONTROL_LIST_STEPS) {
+    cl.main_start = pc;
+    cl.main_end = end;
+
+    while (steps < VC4_MAX_CONTROL_LIST_STEPS) {
         uint8_t packet;
 
+        if (cl.sub_list_depth == 0 && pc == end) {
+            stop = true;
+            break;
+        }
+        if (cl.sub_list_depth == 0 &&
+            (pc < cl.main_start || pc > cl.main_end)) {
+            s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
+            success = false;
+            break;
+        }
+
+        steps++;
         s->regs[REG_INDEX(V3D_CTNCA(thread))] = pc;
         if (!bcm2835_v3d_cl_read_u8(s, pc, &packet) ||
-            !bcm2835_v3d_execute_packet(s, thread, &cl, pc, end,
+            !bcm2835_v3d_execute_packet(s, thread, &cl, pc,
                                         packet, &next_pc, &stop)) {
             success = false;
             break;
@@ -564,8 +670,12 @@ static void bcm2835_v3d_execute_thread(BCM2835V3DState *s, unsigned thread)
         }
     }
 
-    if (steps >= VC4_MAX_CONTROL_LIST_STEPS) {
+    if (success && !stop) {
         s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      TYPE_BCM2835_V3D
+                      ": control-list step limit exceeded at 0x%08x\n",
+                      pc);
         success = false;
     }
 
