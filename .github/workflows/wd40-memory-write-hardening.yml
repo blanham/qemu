@@ -1,0 +1,113 @@
+name: WD40 memory-write hardening
+
+on:
+  push:
+    branches:
+      - wd40/qol-memory-write-hardening
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-memory-write-hardening-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  validate-materialize-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out hardening branch
+        uses: actions/checkout@v4
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply, replay, and validate the hardening contract
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/wd40/apply-memory-write-hardening.py
+          git diff --no-ext-diff --binary > /tmp/wd40-memory-write-hardening-pass1.diff
+          python3 scripts/wd40/apply-memory-write-hardening.py
+          git diff --no-ext-diff --binary > /tmp/wd40-memory-write-hardening-pass2.diff
+          if ! cmp -s \
+              /tmp/wd40-memory-write-hardening-pass1.diff \
+              /tmp/wd40-memory-write-hardening-pass2.diff; then
+            echo "memory-write hardening replay changed the generated tree" >&2
+            diff -u \
+              /tmp/wd40-memory-write-hardening-pass1.diff \
+              /tmp/wd40-memory-write-hardening-pass2.diff || true
+            exit 1
+          fi
+          python3 scripts/ci/check-wd40-memory-write-service.py
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build PowerPC without Rust
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "unexpected Rust tool invocation: $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-wd40-memory-write-hardening
+          cd build-wd40-memory-write-hardening
+          ../configure \
+            --target-list=ppc-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 qemu-system-ppc
+
+      - name: Exercise PowerPC translation, reads, and virtual writes
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-address-translation-service.py \
+            build-wd40-memory-write-hardening ppc
+          python3 scripts/ci/check-wd40-memory-read-service.py \
+            build-wd40-memory-write-hardening ppc
+          python3 scripts/ci/check-wd40-memory-write-service.py \
+            build-wd40-memory-write-hardening ppc
+
+      - name: Materialize and publish the validated hardening
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-wd40-memory-write-hardening
+          python3 scripts/wd40/apply-memory-write-hardening.py
+          python3 scripts/ci/check-wd40-memory-write-service.py
+          git diff --check
+          git add \
+            scripts/wd40/apply-memory-write-hardening.py \
+            scripts/wd40/apply-memory-write-service.py \
+            scripts/ci/check-wd40-memory-write-service.py \
+            qapi/machine.json \
+            docs/devel/wd40-monitor-v2.rst
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "monitor: harden bounded memory-write semantics"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+          test -z "$(git status --porcelain)"
