@@ -344,6 +344,61 @@
   'features': [ 'unstable' ] }
 
 ##
+# @WD40HMPCompletion:
+#
+# Context-sensitive HMP completion candidates.
+#
+# @cursor: byte offset in the command line where completion was
+#     requested
+#
+# @replace-start: byte offset where the active token begins
+#
+# @replace-length: number of bytes from @replace-start to @cursor
+#
+# @candidates: sorted complete replacements for the active token
+#
+# @capacity-reached: whether HMP's fixed completion capacity was
+#     filled, so additional candidates may exist
+#
+# @omitted-invalid-utf8: candidates omitted because QMP strings must
+#     contain valid UTF-8
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40HMPCompletion',
+  'data': { 'cursor': 'uint64', 'replace-start': 'uint64',
+            'replace-length': 'uint64', 'candidates': [ 'str' ],
+            'capacity-reached': 'bool',
+            'omitted-invalid-utf8': 'uint64' } }
+
+##
+# @x-wd40-complete-hmp:
+#
+# Complete an HMP command line with the same registry, argument
+# grammar, dynamic value providers, and availability checks used by
+# interactive HMP.  Frontends should replace the returned byte span
+# with one selected candidate while preserving text after @cursor.
+#
+# @command-line: complete editor buffer
+#
+# @cursor: byte offset where completion is requested; defaults to the
+#     end of @command-line and must lie on a UTF-8 boundary
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: replacement span and completion candidates
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-complete-hmp',
+  'data': { 'command-line': 'str', '*cursor': 'uint64' },
+  'returns': 'WD40HMPCompletion',
+  'allow-preconfig': true,
+  'features': [ 'unstable' ] }
+
+##
 # @LogCategoryInfo:
 #
 # Structured metadata for a QEMU log category.

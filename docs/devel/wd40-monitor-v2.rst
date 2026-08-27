@@ -60,6 +60,26 @@ large dump.  The HMP ``capture-output`` command is a thin frontend over this
 service; new typed WD40 commands should return structured QAPI objects instead.
 Nested capture is rejected at the shared service boundary.
 
+Context-sensitive HMP completion
+--------------------------------
+
+``x-wd40-complete-hmp`` exposes the exact completion engine used by interactive
+HMP.  It covers command aliases, nested command tables, filename and block
+backend arguments, and command-specific dynamic providers such as device,
+chardev, migration, trace-event, and snapshot names.  Availability filtering
+therefore remains identical to the active target and machine phase.
+
+The request accepts an optional byte cursor so a frontend can complete text in
+the middle of an editor buffer.  The response identifies the active token's
+replacement span and returns sorted complete candidate strings; text after the
+cursor is never inspected or discarded.  Offsets are UTF-8 byte offsets, and
+the cursor must fall on a character boundary.
+
+The result also reports when HMP's fixed completion capacity was filled and how
+many filesystem candidates could not be represented as QMP UTF-8 strings.
+This lets TTYphoon and other monitor-v2 clients reuse QEMU's live knowledge
+without embedding another completion implementation.
+
 Structured log-category control
 -------------------------------
 

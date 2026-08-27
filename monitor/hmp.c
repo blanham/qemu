@@ -1652,6 +1652,118 @@ cleanup:
     free_cmdline_args(args, nb_args);
 }
 
+static void G_GNUC_PRINTF(2, 3)
+hmp_completion_discard_printf(void *opaque, const char *fmt, ...)
+{
+    (void)opaque;
+    (void)fmt;
+}
+
+static void hmp_completion_discard_flush(void *opaque)
+{
+    (void)opaque;
+}
+
+static int hmp_completion_compare(const void *left, const void *right)
+{
+    const char *const *left_string = left;
+    const char *const *right_string = right;
+
+    return strcmp(*left_string, *right_string);
+}
+
+static void hmp_completion_clear(ReadLineState *rs)
+{
+    int i;
+
+    for (i = 0; i < rs->nb_completions; i++) {
+        g_clear_pointer(&rs->completions[i], g_free);
+    }
+    rs->nb_completions = 0;
+}
+
+WD40HMPCompletion *qmp_x_wd40_complete_hmp(const char *command_line,
+                                             bool has_cursor,
+                                             uint64_t cursor,
+                                             Error **errp)
+{
+    size_t line_length = strlen(command_line);
+    g_autofree char *command_prefix = NULL;
+    MonitorHMP *hmp;
+    ReadLineState *rs;
+    WD40HMPCompletion *result;
+    strList **tail;
+    uint64_t omitted = 0;
+    int i;
+
+    if (line_length > READLINE_CMD_BUF_SIZE) {
+        error_setg(errp,
+                   "command-line exceeds the HMP readline limit of %d bytes",
+                   READLINE_CMD_BUF_SIZE);
+        return NULL;
+    }
+
+    if (!has_cursor) {
+        cursor = line_length;
+    }
+    if (cursor > line_length) {
+        error_setg(errp,
+                   "cursor at byte %" PRIu64
+                   " exceeds command-line length %zu",
+                   cursor, line_length);
+        return NULL;
+    }
+    if (!g_utf8_validate(command_line, (gssize)cursor, NULL)) {
+        error_setg(errp, "cursor must lie on a UTF-8 boundary");
+        return NULL;
+    }
+
+    command_prefix = g_strndup(command_line, (gsize)cursor);
+    hmp = MONITOR_HMP(object_new(TYPE_MONITOR_HMP));
+    hmp->rs = readline_init(hmp_completion_discard_printf,
+                            hmp_completion_discard_flush,
+                            hmp, monitor_find_completion);
+    rs = hmp->rs;
+    monitor_find_completion(hmp, command_prefix);
+
+    if (rs->completion_index < 0 ||
+        (uint64_t)rs->completion_index > cursor) {
+        error_setg(errp, "HMP completion returned an invalid replacement span");
+        hmp_completion_clear(rs);
+        object_unref(hmp);
+        return NULL;
+    }
+
+    qsort(rs->completions, rs->nb_completions,
+          sizeof(rs->completions[0]), hmp_completion_compare);
+
+    result = g_new0(WD40HMPCompletion, 1);
+    result->cursor = cursor;
+    result->replace_start = cursor - rs->completion_index;
+    result->replace_length = rs->completion_index;
+    result->capacity_reached =
+        rs->nb_completions == READLINE_MAX_COMPLETIONS;
+    tail = &result->candidates;
+
+    for (i = 0; i < rs->nb_completions; i++) {
+        strList *entry;
+
+        if (!g_utf8_validate(rs->completions[i], -1, NULL)) {
+            omitted++;
+            continue;
+        }
+        entry = g_new0(strList, 1);
+        entry->value = g_strdup(rs->completions[i]);
+        *tail = entry;
+        tail = &entry->next;
+    }
+    result->omitted_invalid_utf8 = omitted;
+
+    hmp_completion_clear(rs);
+    object_unref(hmp);
+    return result;
+}
+
 static void monitor_read(void *opaque, const uint8_t *buf, int size)
 {
     Monitor *mon = opaque;
