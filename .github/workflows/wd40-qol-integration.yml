@@ -10,6 +10,7 @@ on:
       - wd40/qol-cpu-register-integration
       - wd40/qol-memory-read-integration
       - wd40/qol-address-translation-integration
+      - wd40/qol-memory-write-integration
   workflow_dispatch:
 
 permissions:
@@ -75,6 +76,8 @@ jobs:
             python3 scripts/wd40/apply-cpu-register-snapshots.py
             python3 scripts/wd40/apply-memory-read-service.py
             python3 scripts/wd40/apply-address-translation-service.py
+            python3 scripts/wd40/apply-address-translation-checker-composability.py
+            python3 scripts/wd40/apply-memory-write-service.py
           }
 
           apply_contract
@@ -108,6 +111,7 @@ jobs:
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py
           python3 scripts/ci/check-wd40-memory-read-service.py
           python3 scripts/ci/check-wd40-address-translation-service.py
+          python3 scripts/ci/check-wd40-memory-write-service.py
           git diff --check
 
       - name: Install C and probe build dependencies
@@ -333,6 +337,12 @@ jobs:
           python3 scripts/ci/check-wd40-address-translation-service.py \
             build-qol-integration ppc
 
+      - name: Exercise bounded memory writes
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-memory-write-service.py \
+            build-qol-integration x86_64 aarch64 m68k ppc
+
       - name: Publish the validated integration history
         if: github.ref_name == 'wd40/qol-integration'
         run: |
@@ -353,6 +363,7 @@ jobs:
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py
           python3 scripts/ci/check-wd40-memory-read-service.py
           python3 scripts/ci/check-wd40-address-translation-service.py
+          python3 scripts/ci/check-wd40-memory-write-service.py
           git diff --check
           git status --short
           test -z "$(git status --porcelain)"
