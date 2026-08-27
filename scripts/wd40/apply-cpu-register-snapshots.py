@@ -118,9 +118,8 @@ def main() -> None:
 # Read one virtual CPU through the same register callbacks and
 # metadata used by QEMU's GDB stub.  This avoids parsing
 # architecture-specific ``info registers`` text while retaining
-# supplemental register sets.  When ranges overlap, the descriptor
-# selected by GDB lookup is retained: legacy core first, then
-# supplemental registration order.
+# supplemental register sets.  Register numbers must be unique after
+# CPU initialization.
 #
 # @cpu-index: virtual CPU index; defaults to the first realized CPU
 #
@@ -270,8 +269,10 @@ qmp_x_wd40_query_cpu_registers(bool has_cpu_index, int64_t cpu_index,
 
         if (wd40_register_descriptor_present(descriptors,
                                              descriptor.number)) {
-            /* Retain the descriptor for the callback GDB resolves first. */
-            continue;
+            error_setg(errp,
+                       "CPU type '%s' exposes GDB register %d more than once",
+                       object_get_typename(OBJECT(cpu)), descriptor.number);
+            goto fail;
         }
         g_array_append_val(descriptors, descriptor);
     }
@@ -371,10 +372,10 @@ metadata plus registers sorted by GDB number, including dynamically registered
 supplemental feature sets.  Architectures that have not supplied register-name
 metadata still expose their core register numbers with ``gdb-reg-N`` names.
 
-When ranges overlap, descriptor selection follows ``gdb_read_register()``
-exactly: the legacy core range wins first, followed by supplemental features in
-registration order.  Metadata therefore names the callback that supplies each
-value rather than an overlapping feature that GDB would not consult.
+The supporting GDB registry accounts for explicit register-number gaps before
+appending later feature sets.  The snapshot service treats duplicate numbers as
+an initialization error instead of silently pairing a name from one feature
+with value bytes supplied by another callback.
 
 Register values are the exact byte sequences produced by the target's GDB
 callback, encoded as lowercase hexadecimal rather than converted through an
