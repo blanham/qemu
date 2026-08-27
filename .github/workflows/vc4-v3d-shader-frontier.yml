@@ -1,0 +1,94 @@
+name: VC4 V3D shader frontier
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-mesa-gles2-frontier
+    paths:
+      - .github/workflows/vc4-v3d-shader-frontier.yml
+      - scripts/vc4/v3d-shader-frontier-fix.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-v3d-shader-frontier
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      BRANCH: agent/vc4-linux-mesa-gles2-frontier
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install QEMU build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libpixman-1-dev ninja-build \
+            python3 python3-venv zlib1g-dev
+
+      - name: Materialize bounded shader and QPU diagnostics
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/v3d-shader-frontier-fix.py \
+            scripts/vc4/v3d-shader-frontier-smoke.py
+          python3 scripts/vc4/v3d-shader-frontier-fix.py
+          git diff --check
+          grep -Fq 'frontier primitive thread=%u' \
+            hw/display/bcm2835_v3d.c
+          grep -Fq 'vc4_qpu_trace_program' hw/display/vc4_qpu.c
+          grep -Fq 'vc4_v3d_frontier_report' \
+            hw/display/vc4_v3d_frontier.c
+          grep -Fq "'vc4_qpu.c'" hw/display/meson.build
+          grep -Fq "'vc4_v3d_frontier.c'" \
+            hw/display/meson.build
+
+      - name: Configure and build QEMU
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build qemu-system-aarch64
+
+      - name: Preserve the existing V3D regression
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Validate the shader-record frontier
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/v3d-shader-frontier-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish validated product commit
+        run: |
+          set -euo pipefail
+          git config user.name "VC4 Agent"
+          git config user.email "vc4-agent@users.noreply.github.com"
+          git restore -- scripts/vc4/v3d-shader-frontier-fix.py
+          git add -- \
+            hw/display/bcm2835_v3d.c \
+            hw/display/meson.build \
+            include/hw/display/bcm2835_v3d.h
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "Shader frontier product already materialized"
+            exit 0
+          fi
+          git commit -m \
+            "hw/display: expose validated VC4 shader frontier"
+          git pull --rebase origin "$BRANCH"
+          git push origin HEAD:"$BRANCH"
