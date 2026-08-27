@@ -159,11 +159,17 @@ jobs:
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
             build-wd40-memory x86_64 aarch64 m68k ppc
 
-      - name: Exercise x86-64 and AArch64 memory reads
+      - name: Exercise x86-64 memory reads
         run: |
           set -Eeuo pipefail
           python3 scripts/ci/check-wd40-memory-read-service.py \
-            build-wd40-memory x86_64 aarch64
+            build-wd40-memory x86_64
+
+      - name: Exercise AArch64 memory reads
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-memory-read-service.py \
+            build-wd40-memory aarch64
 
       - name: Exercise m68k memory reads
         run: |
