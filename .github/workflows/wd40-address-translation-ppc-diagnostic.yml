@@ -1,0 +1,139 @@
+name: WD40 PowerPC address-translation diagnostic
+
+on:
+  push:
+    branches:
+      - wd40/qol-address-translation-service
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wd40-address-translation-ppc-diagnostic-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose-ppce500:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+
+      - name: Materialize the translation service
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/wd40/apply-address-translation-service.py
+          python3 scripts/ci/check-wd40-address-translation-service.py
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build PowerPC without Rust
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "unexpected Rust tool invocation: $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-wd40-ppc-translation
+          cd build-wd40-ppc-translation
+          ../configure \
+            --target-list=ppc-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          ninja -j2 qemu-system-ppc
+
+      - name: Capture ppce500 translation reply
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          address = 0x10000
+          command = [
+              "./build-wd40-ppc-translation/qemu-system-ppc",
+              "-machine", "ppce500,accel=tcg",
+              "-m", "128M",
+          ]
+          for offset, value in enumerate((0x41, 0x42, 0x43, 0x44)):
+              command += [
+                  "-device",
+                  (
+                      f"loader,id=wd40-translation-byte{offset},"
+                      f"addr=0x{address + offset:x},"
+                      f"data=0x{value:x},data-len=1"
+                  ),
+              ]
+          command += [
+              "-display", "none",
+              "-serial", "none",
+              "-monitor", "none",
+              "-nodefaults",
+              "-S",
+              "-qmp", "stdio",
+          ]
+          messages = [
+              {"execute": "qmp_capabilities", "id": "cap"},
+              {
+                  "execute": "x-wd40-translate-address",
+                  "arguments": {"address": address},
+                  "id": "default",
+              },
+              {
+                  "execute": "x-wd40-translate-address",
+                  "arguments": {"address": address, "cpu-index": 0},
+                  "id": "cpu0",
+              },
+              {"execute": "quit", "id": "quit"},
+          ]
+          run = subprocess.run(
+              command,
+              input="\n".join(json.dumps(item) for item in messages) + "\n",
+              text=True,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              timeout=60,
+              check=False,
+          )
+          replies = []
+          for line in run.stdout.splitlines():
+              try:
+                  item = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if "id" in item:
+                  replies.append(item)
+          diagnostic = {
+              "returncode": run.returncode,
+              "command": command,
+              "replies": replies,
+              "stderr": run.stderr,
+          }
+          encoded = json.dumps(diagnostic, sort_keys=True)
+          print(encoded, flush=True)
+          print(f"::notice title=WD40 ppce500 translation::{encoded}", flush=True)
+          if not any(item.get("id") == "default" for item in replies):
+              raise SystemExit("missing ppce500 translation reply")
+          PY
