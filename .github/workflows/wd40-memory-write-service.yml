@@ -54,6 +54,7 @@ jobs:
             python3 scripts/wd40/apply-cpu-register-snapshots.py
             python3 scripts/wd40/apply-memory-read-service.py
             python3 scripts/wd40/apply-address-translation-service.py
+            python3 scripts/wd40/apply-address-translation-checker-composability.py
             python3 scripts/wd40/apply-memory-write-service.py
           }
 
@@ -197,6 +198,7 @@ jobs:
           git add \
             docs/devel/wd40-monitor-v2.rst \
             qapi/machine.json \
+            scripts/ci/check-wd40-address-translation-service.py \
             scripts/ci/check-wd40-memory-write-service.py \
             system/physmem-qmp-cmds.c
           git diff --cached --check
