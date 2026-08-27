@@ -117,8 +117,9 @@ def main() -> None:
 #
 # Read one virtual CPU through the same register callbacks and
 # metadata used by QEMU's GDB stub.  This avoids parsing
-# architecture-specific
-# ``info registers`` text while retaining supplemental register sets.
+# architecture-specific ``info registers`` text while retaining
+# supplemental register sets.  Overlapping feature ranges retain the
+# first registered descriptor, matching GDB callback lookup.
 #
 # @cpu-index: virtual CPU index; defaults to the first realized CPU
 #
@@ -258,9 +259,12 @@ qmp_x_wd40_query_cpu_registers(bool has_cpu_index, int64_t cpu_index,
 
         if (wd40_register_descriptor_present(descriptors,
                                              descriptor.number)) {
-            error_setg(errp, "GDB register number %d is duplicated",
-                       descriptor.number);
-            goto fail;
+            /*
+             * gdb_read_register() resolves overlapping supplemental
+             * feature ranges in registration order.  Keep the first
+             * descriptor so its metadata names the callback we read.
+             */
+            continue;
         }
         g_array_append_val(descriptors, descriptor);
     }
@@ -370,6 +374,11 @@ GDB register registry and callbacks.  It returns canonical target and CPU type
 metadata plus registers sorted by GDB number, including dynamically registered
 supplemental feature sets.  Architectures that have not supplied register-name
 metadata still expose their core register numbers with ``gdb-reg-N`` names.
+
+Some targets register overlapping supplemental feature ranges.  The service
+keeps the first descriptor in registration order, matching
+``gdb_read_register()``'s first-match lookup, so metadata and value bytes stay
+paired.
 
 Register values are the exact byte sequences produced by the target's GDB
 callback, encoded as lowercase hexadecimal rather than converted through an
