@@ -44,7 +44,7 @@ jobs:
             scripts/vc4/v3d-shader-frontier-smoke.py
           python3 scripts/vc4/v3d-shader-frontier-fix.py
           git diff --check
-          grep -Fq 'frontier primitive thread=%u' \
+          grep -Fq 'vc4_v3d_frontier_report' \
             hw/display/bcm2835_v3d.c
           grep -Fq 'vc4_qpu_trace_program' hw/display/vc4_qpu.c
           grep -Fq 'vc4_v3d_frontier_report' \
