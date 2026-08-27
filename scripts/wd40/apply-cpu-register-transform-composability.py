@@ -41,6 +41,21 @@ def main() -> None:
     replace_once(
         "scripts/wd40/apply-cpu-register-write-service.py",
         '''        owned_markers=(
+            "static int wd40_register_hex_digit",
+            "wd40_register_descriptor_for_number",
+            "qmp_x_wd40_write_cpu_register",
+        ),
+''',
+        '''        owned_markers=(
+            "static int wd40_register_hex_digit",
+            "static bool wd40_register_descriptor_for_number(\\n",
+            "qmp_x_wd40_write_cpu_register",
+        ),
+''',
+    )
+    replace_once(
+        "scripts/wd40/apply-cpu-register-write-service.py",
+        '''        owned_markers=(
             "Typed CPU register writes",
             "x-wd40-write-cpu-register",
             "fresh read-back",
