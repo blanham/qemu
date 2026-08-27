@@ -794,6 +794,72 @@
    'line': 'uint16' }}
 
 ##
+# @WD40MemorySpace:
+#
+# Guest address space used by a WD40 memory read.
+#
+# @virtual: translate through the selected CPU's current MMU state
+#
+# @physical: read the system physical address space directly
+#
+# Since: 11.2
+##
+{ 'enum': 'WD40MemorySpace',
+  'data': [ 'virtual', 'physical' ] }
+
+##
+# @WD40MemoryRead:
+#
+# Exact bytes returned by a bounded guest-memory read.
+#
+# @space: address space used for the read
+#
+# @address: first guest address read
+#
+# @bytes: number of bytes returned
+#
+# @cpu-index: selected virtual CPU for a virtual read
+#
+# @data: lowercase hexadecimal encoding of the returned bytes
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40MemoryRead',
+  'data': { 'space': 'WD40MemorySpace',
+            'address': 'uint64', 'bytes': 'uint64',
+            '*cpu-index': 'int', 'data': 'str' } }
+
+##
+# @x-wd40-read-memory:
+#
+# Read between 1 byte and 1 MiB from guest virtual or physical
+# memory and return the exact bytes through QMP.
+#
+# @space: address space used for the read
+#
+# @address: first guest address to read
+#
+# @size: number of bytes to read
+#
+# @cpu-index: virtual CPU used for MMU translation.  It defaults to
+#     CPU 0 for virtual reads and is rejected for physical reads.
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: a bounded raw memory read
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-read-memory',
+  'data': { 'space': 'WD40MemorySpace',
+            'address': 'uint64', 'size': 'uint64',
+            '*cpu-index': 'int' },
+  'returns': 'WD40MemoryRead',
+  'features': [ 'unstable' ] }
+
+##
 # @memsave:
 #
 # Save a portion of guest memory to a file.

@@ -12,8 +12,111 @@
 #include "qapi/qapi-commands-machine.h"
 #include "qapi/qmp/qerror.h"
 #include "hw/core/cpu.h"
+#include "system/address-spaces.h"
+#include "system/hw_accel.h"
+#include "system/memory.h"
 #include "system/physmem.h"
 #include "migration/misc.h"
+
+#define WD40_MEMORY_READ_MAX (1024U * 1024U)
+
+static char *wd40_memory_bytes_to_hex(const uint8_t *bytes, size_t length)
+{
+    static const char digits[] = "0123456789abcdef";
+    char *hex = g_malloc(length * 2 + 1);
+    size_t i;
+
+    for (i = 0; i < length; i++) {
+        hex[i * 2] = digits[bytes[i] >> 4];
+        hex[i * 2 + 1] = digits[bytes[i] & 0x0f];
+    }
+    hex[length * 2] = '\0';
+    return hex;
+}
+
+WD40MemoryRead *
+qmp_x_wd40_read_memory(WD40MemorySpace space, uint64_t address,
+                        uint64_t size, bool has_cpu_index,
+                        int64_t cpu_index, Error **errp)
+{
+    g_autofree uint8_t *buffer = NULL;
+    WD40MemoryRead *result;
+    CPUState *cpu = NULL;
+    MemTxResult transaction;
+
+    if (size == 0 || size > WD40_MEMORY_READ_MAX) {
+        error_setg(errp,
+                   "size must be between 1 and %u bytes",
+                   WD40_MEMORY_READ_MAX);
+        return NULL;
+    }
+    if (address > UINT64_MAX - (size - 1)) {
+        error_setg(errp, "address range wraps past UINT64_MAX");
+        return NULL;
+    }
+    if (migration_guest_ram_loading()) {
+        error_setg(errp, "Guest memory access not allowed during migration");
+        return NULL;
+    }
+
+    buffer = g_malloc((gsize)size);
+    switch (space) {
+    case WD40_MEMORY_SPACE_VIRTUAL:
+        if (!has_cpu_index) {
+            cpu_index = 0;
+        }
+        cpu = qemu_get_cpu(cpu_index);
+        if (!cpu) {
+            error_setg(errp, QERR_INVALID_PARAMETER_VALUE,
+                       "cpu-index", "a CPU number");
+            return NULL;
+        }
+
+        cpu_synchronize_state(cpu);
+        if (cpu_memory_rw_debug(cpu, address, buffer,
+                                (size_t)size, false) != 0) {
+            error_setg(errp,
+                       "Virtual memory read failed at 0x%016" PRIx64
+                       " for %" PRIu64 " bytes",
+                       address, size);
+            return NULL;
+        }
+        break;
+
+    case WD40_MEMORY_SPACE_PHYSICAL:
+        if (has_cpu_index) {
+            error_setg(errp,
+                       "cpu-index is only valid for virtual memory");
+            return NULL;
+        }
+        transaction = address_space_read(&address_space_memory, address,
+                                         MEMTXATTRS_UNSPECIFIED,
+                                         buffer, size);
+        if (transaction != MEMTX_OK) {
+            error_setg(errp,
+                       "Physical memory read failed at 0x%016" PRIx64
+                       " for %" PRIu64
+                       " bytes (transaction result 0x%x)",
+                       address, size, (unsigned int)transaction);
+            return NULL;
+        }
+        break;
+
+    default:
+        g_assert_not_reached();
+    }
+
+    result = g_new0(WD40MemoryRead, 1);
+    result->space = space;
+    result->address = address;
+    result->bytes = size;
+    if (space == WD40_MEMORY_SPACE_VIRTUAL) {
+        result->has_cpu_index = true;
+        result->cpu_index = cpu_index;
+    }
+    result->data = wd40_memory_bytes_to_hex(buffer, (size_t)size);
+    return result;
+}
 
 void qmp_memsave(uint64_t addr, uint64_t size, const char *filename,
                  bool has_cpu, int64_t cpu_index, Error **errp)

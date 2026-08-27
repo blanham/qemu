@@ -80,6 +80,26 @@ many filesystem candidates could not be represented as QMP UTF-8 strings.
 This lets TTYphoon and other monitor-v2 clients reuse QEMU's live knowledge
 without embedding another completion implementation.
 
+Bounded guest-memory reads
+--------------------------
+
+``x-wd40-read-memory`` returns between one byte and one MiB of raw guest
+memory as lowercase hexadecimal.  Virtual reads use the selected CPU's
+debugger translation path and synchronize accelerator state first.  Physical
+reads use the system address space directly and preserve memory-transaction
+errors instead of silently returning filler bytes.
+
+The command rejects wrapped address ranges, invalid CPU selections, and a CPU
+selection on physical reads.  It is unavailable while incoming migration is
+loading guest RAM.  Like the register snapshot command, it does not pause a
+running machine; frontends should stop the guest when they require a coherent
+view across multiple reads.
+
+These are debugger accesses, not side-effect-free RAM snapshots.  A virtual or
+physical address mapped to MMIO can invoke the device's read callback.  The
+bounded response is intended for interactive memory panes and inspectors;
+larger captures should continue to use file-oriented dump mechanisms.
+
 Cross-architecture CPU register snapshots
 -----------------------------------------
 
