@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  patch-integration-workflow:
+  export-integration-workflow:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -28,14 +28,15 @@ jobs:
           git config user.name "WD40 Build Bot"
           git config user.email "wd40-build@users.noreply.github.com"
 
-      - name: Extend the canonical integration contract
+      - name: Generate the canonical integration contract
         run: |
           set -Eeuo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path(".github/workflows/wd40-qol-integration.yml")
-          text = path.read_text(encoding="utf-8")
+          source = Path(".github/workflows/wd40-qol-integration.yml")
+          output = Path("scripts/wd40/generated-qol-integration-workflow.yml")
+          text = source.read_text(encoding="utf-8")
 
           replacements = (
               (
@@ -81,7 +82,7 @@ jobs:
                   continue
               if old_count != expected or new_count != 0:
                   raise RuntimeError(
-                      f"{path}: ambiguous integration edit: "
+                      f"{source}: ambiguous integration edit: "
                       f"old={old_count}, new={new_count}, "
                       f"expected={expected}, marker={old!r}"
                   )
@@ -101,22 +102,24 @@ jobs:
               if text.count(marker) != expected
           }
           if wrong:
-              raise RuntimeError(f"{path}: integrated marker counts: {wrong!r}")
+              raise RuntimeError(f"{source}: integrated marker counts: {wrong!r}")
 
-          path.write_text(text, encoding="utf-8")
+          output.write_text(text, encoding="utf-8")
           PY
 
-          rm .github/workflows/wd40-memory-write-integration-bootstrap.yml
           git diff --check
-          git diff -- .github/workflows/wd40-qol-integration.yml
+          cmp -s \
+            scripts/wd40/generated-qol-integration-workflow.yml \
+            .github/workflows/wd40-qol-integration.yml && {
+              echo "generated workflow unexpectedly matches the old contract" >&2
+              exit 1
+            }
 
-      - name: Publish the integration-ready helper head
+      - name: Publish the generated workflow source
         run: |
           set -Eeuo pipefail
-          git add \
-            .github/workflows/wd40-qol-integration.yml \
-            .github/workflows/wd40-memory-write-integration-bootstrap.yml
+          git add scripts/wd40/generated-qol-integration-workflow.yml
           git diff --cached --check
-          git commit -m "ci: integrate bounded memory writes"
+          git commit -m "ci: export bounded memory-write integration workflow"
           git push origin "HEAD:${GITHUB_REF_NAME}"
           test -z "$(git status --porcelain)"
