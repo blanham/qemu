@@ -302,12 +302,18 @@ def require_return(
 def require_error(
     replies: dict[str, dict[str, Any]],
     identifier: str,
-    fragment: str,
+    *fragments: str,
 ) -> None:
     error = replies[identifier].get("error")
-    if not isinstance(error, dict) or fragment not in error.get("desc", ""):
+    description = error.get("desc") if isinstance(error, dict) else None
+    missing = (
+        list(fragments)
+        if not isinstance(description, str)
+        else [fragment for fragment in fragments if fragment not in description]
+    )
+    if not isinstance(error, dict) or missing:
         raise SystemExit(
-            f"{identifier}: expected error containing {fragment!r}: "
+            f"{identifier}: expected error containing {fragments!r}: "
             f"{replies[identifier]!r}"
         )
 
@@ -470,7 +476,8 @@ def validate_target(build: Path, case: TargetCase) -> None:
         require_error(
             replies,
             "virtual-invalid-cpu",
-            "Invalid parameter",
+            "cpu-index",
+            "CPU number",
         )
 
     if case.test_unmapped:
