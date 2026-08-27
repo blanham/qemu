@@ -7,6 +7,7 @@ on:
       - wd40/qol-transform-composition-fix
       - wd40/qol-output-capture-integration
       - wd40/qol-hmp-completion-integration
+      - wd40/qol-cpu-register-integration
   workflow_dispatch:
 
 permissions:
@@ -20,7 +21,7 @@ jobs:
   integrate-build-test-and-publish:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     steps:
       - name: Check out integration branch
@@ -68,6 +69,8 @@ jobs:
             python3 scripts/wd40/apply-monitor-output-capture.py
             python3 scripts/wd40/apply-monitor-output-capture-hardening.py
             python3 scripts/wd40/apply-hmp-completion.py
+            python3 scripts/wd40/apply-gdb-register-gap-accounting.py
+            python3 scripts/wd40/apply-cpu-register-snapshots.py
           }
 
           apply_contract
@@ -76,9 +79,15 @@ jobs:
           apply_contract
           git diff --no-ext-diff --binary \
             > /tmp/wd40-integration-pass2.diff
-          cmp \
-            /tmp/wd40-integration-pass1.diff \
-            /tmp/wd40-integration-pass2.diff
+          if ! cmp -s \
+              /tmp/wd40-integration-pass1.diff \
+              /tmp/wd40-integration-pass2.diff; then
+            echo "complete QoL replay changed the generated tree" >&2
+            diff -u \
+              /tmp/wd40-integration-pass1.diff \
+              /tmp/wd40-integration-pass2.diff || true
+            exit 1
+          fi
 
           python3 scripts/ci/check-wd40-rustless.py
           python3 scripts/ci/check-wd40-amd-1tb-hole.py
@@ -91,6 +100,8 @@ jobs:
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
           python3 scripts/ci/check-wd40-monitor-output-capture.py
           python3 scripts/ci/check-wd40-hmp-completion.py
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py
           git diff --check
 
       - name: Install C and probe build dependencies
@@ -137,8 +148,8 @@ jobs:
           aarch64-linux-gnu-readelf -r /tmp/aarch64-handoff.elf \
             | grep -F "There are no relocations in this file."
 
-      - name: Build system and user emulators without a Rust toolchain
-        timeout-minutes: 90
+      - name: Build four system targets and user mode without Rust
+        timeout-minutes: 110
         run: |
           set -Eeuo pipefail
           mkdir .wd40-poison
@@ -155,16 +166,18 @@ jobs:
           mkdir build-qol-integration
           cd build-qol-integration
           ../configure \
-            --target-list=x86_64-softmmu,aarch64-softmmu,x86_64-linux-user \
+            --target-list=x86_64-softmmu,aarch64-softmmu,m68k-softmmu,ppc-softmmu,x86_64-linux-user \
             --disable-rust \
             --enable-fdt=internal \
             --disable-docs \
             --disable-werror
-          timeout --foreground --signal=TERM --kill-after=5m 75m \
+          timeout --foreground --signal=TERM --kill-after=5m 95m \
             ninja -j2 \
               tests/unit/test-logging \
               qemu-system-x86_64 \
               qemu-system-aarch64 \
+              qemu-system-m68k \
+              qemu-system-ppc \
               qemu-x86_64
           cd ..
 
@@ -245,6 +258,27 @@ jobs:
           python3 scripts/ci/check-wd40-hmp-completion.py \
             build-qol-integration
 
+      - name: Exercise x86-64 and AArch64 register snapshots
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
+            build-qol-integration x86_64
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
+            build-qol-integration aarch64
+
+      - name: Exercise m68k register snapshots
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
+            build-qol-integration m68k
+
+      - name: Exercise PowerPC snapshots and GDB register gaps
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
+            build-qol-integration ppc
+
       - name: Publish the validated integration history
         if: github.ref_name == 'wd40/qol-integration'
         run: |
@@ -261,6 +295,8 @@ jobs:
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
           python3 scripts/ci/check-wd40-monitor-output-capture.py
           python3 scripts/ci/check-wd40-hmp-completion.py
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py
           git diff --check
           git status --short
           test -z "$(git status --porcelain)"
