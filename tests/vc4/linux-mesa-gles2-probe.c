@@ -32,6 +32,26 @@
 #define VC4_MESA_SURFACE_HEIGHT 64
 #define VC4_MESA_TIMEOUT_SECONDS 40U
 
+static void vc4_mesa_write_all(const char *buffer, size_t length)
+{
+    int saved_errno = errno;
+
+    while (length > 0) {
+        ssize_t written = write(STDERR_FILENO, buffer, length);
+
+        if (written > 0) {
+            buffer += written;
+            length -= written;
+            continue;
+        }
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    errno = saved_errno;
+}
+
 static void vc4_mesa_report(const char *format, ...)
 {
     char buffer[1024];
@@ -47,7 +67,7 @@ static void vc4_mesa_report(const char *format, ...)
     if ((size_t)length >= sizeof(buffer)) {
         length = sizeof(buffer) - 1;
     }
-    (void)write(STDERR_FILENO, buffer, (size_t)length);
+    vc4_mesa_write_all(buffer, (size_t)length);
 }
 
 static void vc4_mesa_timeout(int signal_number)
@@ -56,7 +76,7 @@ static void vc4_mesa_timeout(int signal_number)
         "VC4_LINUX_MESA_GLES2_TIMEOUT stage=process-alarm\n";
 
     (void)signal_number;
-    (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    vc4_mesa_write_all(message, sizeof(message) - 1);
     _exit(124);
 }
 
