@@ -51,6 +51,7 @@ jobs:
             python3 scripts/wd40/apply-monitor-output-capture-hardening.py
             python3 scripts/wd40/apply-hmp-completion.py
             python3 scripts/wd40/apply-gdb-register-gap-accounting.py
+            python3 scripts/wd40/apply-cpu-register-transform-composability.py
             python3 scripts/wd40/apply-cpu-register-snapshots.py
             python3 scripts/wd40/apply-memory-read-service.py
             python3 scripts/wd40/apply-address-translation-service.py
@@ -204,7 +205,9 @@ jobs:
           git add \
             docs/devel/wd40-monitor-v2.rst \
             monitor/qmp-cmds.c \
-            qapi/misc.json
+            qapi/misc.json \
+            scripts/wd40/apply-cpu-register-snapshots.py \
+            scripts/wd40/apply-cpu-register-write-service.py
           git diff --cached --check
 
           if git diff --cached --quiet; then
