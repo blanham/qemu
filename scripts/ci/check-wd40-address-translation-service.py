@@ -121,15 +121,29 @@ def qapi_block() -> str:
 def implementation_block() -> str:
     text = source("system/physmem-qmp-cmds.c")
     start_marker = "WD40AddressTranslation *\n"
-    end_marker = "void qmp_memsave(uint64_t addr"
     start = text.find(start_marker)
-    end = text.find(end_marker, start + len(start_marker))
-    if start < 0 or end < 0:
+    if start < 0:
         raise SystemExit(
             "system/physmem-qmp-cmds.c: could not isolate "
             "address-translation block"
         )
-    return text[start:end]
+
+    end_markers = (
+        "#define WD40_MEMORY_WRITE_MAX",
+        "void qmp_memsave(uint64_t addr",
+    )
+    search_from = start + len(start_marker)
+    end_candidates = [
+        text.find(marker, search_from)
+        for marker in end_markers
+    ]
+    end_candidates = [end for end in end_candidates if end >= 0]
+    if not end_candidates:
+        raise SystemExit(
+            "system/physmem-qmp-cmds.c: could not isolate "
+            "address-translation block"
+        )
+    return text[start:min(end_candidates)]
 
 
 def validate_qapi_doc_width() -> None:

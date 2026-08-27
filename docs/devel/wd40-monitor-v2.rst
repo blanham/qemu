@@ -100,6 +100,25 @@ physical address mapped to MMIO can invoke the device's read callback.  The
 bounded response is intended for interactive memory panes and inspectors;
 larger captures should continue to use file-oriented dump mechanisms.
 
+Bounded guest-memory writes
+---------------------------
+
+``x-wd40-write-memory`` writes between one byte and one MiB from an exact
+hexadecimal byte string.  It shares ``WD40MemorySpace`` with bounded reads:
+virtual writes use the selected CPU's debugger path, while physical writes use
+the system address space and preserve memory-transaction failures.
+
+The command rejects empty, odd-length, non-hexadecimal, oversized, and wrapped
+requests before touching guest memory.  CPU selection follows the read
+service: CPU 0 is the virtual default, invalid CPU numbers fail, and physical
+writes reject ``cpu-index``.
+
+Writes are debugger operations rather than side-effect-free RAM edits.  They
+can invoke MMIO callbacks, and virtual debug writes can modify ROM through
+QEMU's debugger path.  The command synchronizes accelerator state but does not
+pause a running guest; clients should issue ``stop`` before read-modify-write
+work that must be coherent.
+
 Typed virtual-to-physical translation
 -------------------------------------
 

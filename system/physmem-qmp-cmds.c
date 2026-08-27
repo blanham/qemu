@@ -187,6 +187,145 @@ qmp_x_wd40_translate_address(uint64_t address, bool has_cpu_index,
     return result;
 }
 
+#define WD40_MEMORY_WRITE_MAX (1024U * 1024U)
+
+static int wd40_memory_hex_digit(char value)
+{
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'a' && value <= 'f') {
+        return value - 'a' + 10;
+    }
+    if (value >= 'A' && value <= 'F') {
+        return value - 'A' + 10;
+    }
+    return -1;
+}
+
+static uint8_t *wd40_memory_hex_to_bytes(const char *data,
+                                         size_t *length,
+                                         Error **errp)
+{
+    size_t hex_length = strlen(data);
+    uint8_t *bytes;
+    size_t i;
+
+    if (hex_length == 0) {
+        error_setg(errp, "data must encode at least one byte");
+        return NULL;
+    }
+    if (hex_length & 1) {
+        error_setg(errp,
+                   "data must contain an even number of hexadecimal digits");
+        return NULL;
+    }
+    if (hex_length / 2 > WD40_MEMORY_WRITE_MAX) {
+        error_setg(errp,
+                   "data must encode at most %u bytes",
+                   WD40_MEMORY_WRITE_MAX);
+        return NULL;
+    }
+
+    bytes = g_malloc(hex_length / 2);
+    for (i = 0; i < hex_length; i += 2) {
+        int high = wd40_memory_hex_digit(data[i]);
+        int low = wd40_memory_hex_digit(data[i + 1]);
+
+        if (high < 0 || low < 0) {
+            error_setg(errp,
+                       "data contains a non-hexadecimal character at "
+                       "offset %zu",
+                       high < 0 ? i : i + 1);
+            g_free(bytes);
+            return NULL;
+        }
+        bytes[i / 2] = (high << 4) | low;
+    }
+
+    *length = hex_length / 2;
+    return bytes;
+}
+
+WD40MemoryWrite *
+qmp_x_wd40_write_memory(WD40MemorySpace space, uint64_t address,
+                         const char *data, bool has_cpu_index,
+                         int64_t cpu_index, Error **errp)
+{
+    g_autofree uint8_t *buffer = NULL;
+    WD40MemoryWrite *result;
+    CPUState *cpu = NULL;
+    MemTxResult transaction;
+    size_t size = 0;
+
+    buffer = wd40_memory_hex_to_bytes(data, &size, errp);
+    if (!buffer) {
+        return NULL;
+    }
+    if (address > UINT64_MAX - (uint64_t)(size - 1)) {
+        error_setg(errp, "address range wraps past UINT64_MAX");
+        return NULL;
+    }
+    if (migration_guest_ram_loading()) {
+        error_setg(errp, "Guest memory access not allowed during migration");
+        return NULL;
+    }
+
+    switch (space) {
+    case WD40_MEMORY_SPACE_VIRTUAL:
+        if (!has_cpu_index) {
+            cpu_index = 0;
+        }
+        cpu = qemu_get_cpu(cpu_index);
+        if (!cpu) {
+            error_setg(errp, QERR_INVALID_PARAMETER_VALUE,
+                       "cpu-index", "a CPU number");
+            return NULL;
+        }
+
+        cpu_synchronize_state(cpu);
+        if (cpu_memory_rw_debug(cpu, address, buffer, size, true) != 0) {
+            error_setg(errp,
+                       "Virtual memory write failed at 0x%016" PRIx64
+                       " for %zu bytes",
+                       address, size);
+            return NULL;
+        }
+        break;
+
+    case WD40_MEMORY_SPACE_PHYSICAL:
+        if (has_cpu_index) {
+            error_setg(errp,
+                       "cpu-index is only valid for virtual memory");
+            return NULL;
+        }
+        transaction = address_space_write(&address_space_memory, address,
+                                          MEMTXATTRS_UNSPECIFIED,
+                                          buffer, size);
+        if (transaction != MEMTX_OK) {
+            error_setg(errp,
+                       "Physical memory write failed at 0x%016" PRIx64
+                       " for %zu bytes (transaction result 0x%x)",
+                       address, size, (unsigned int)transaction);
+            return NULL;
+        }
+        break;
+
+    default:
+        g_assert_not_reached();
+    }
+
+    result = g_new0(WD40MemoryWrite, 1);
+    result->space = space;
+    result->address = address;
+    result->bytes = size;
+    if (space == WD40_MEMORY_SPACE_VIRTUAL) {
+        result->has_cpu_index = true;
+        result->cpu_index = cpu_index;
+    }
+    return result;
+}
+
 void qmp_memsave(uint64_t addr, uint64_t size, const char *filename,
                  bool has_cpu, int64_t cpu_index, Error **errp)
 {

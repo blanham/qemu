@@ -796,11 +796,11 @@
 ##
 # @WD40MemorySpace:
 #
-# Guest address space used by a WD40 memory read.
+# Guest address space used by a WD40 memory access.
 #
 # @virtual: translate through the selected CPU's current MMU state
 #
-# @physical: read the system physical address space directly
+# @physical: access the system physical address space directly
 #
 # Since: 11.2
 ##
@@ -857,6 +857,56 @@
             'address': 'uint64', 'size': 'uint64',
             '*cpu-index': 'int' },
   'returns': 'WD40MemoryRead',
+  'features': [ 'unstable' ] }
+
+##
+# @WD40MemoryWrite:
+#
+# Result of a bounded guest-memory write.
+#
+# @space: address space used for the write
+#
+# @address: first guest address written
+#
+# @bytes: number of bytes written
+#
+# @cpu-index: selected virtual CPU for a virtual write
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40MemoryWrite',
+  'data': { 'space': 'WD40MemorySpace',
+            'address': 'uint64', 'bytes': 'uint64',
+            '*cpu-index': 'int' } }
+
+##
+# @x-wd40-write-memory:
+#
+# Write between 1 byte and 1 MiB to guest virtual or physical
+# memory from an exact hexadecimal byte string.
+#
+# @space: address space used for the write
+#
+# @address: first guest address to write
+#
+# @data: hexadecimal byte string to write
+#
+# @cpu-index: virtual CPU used for MMU translation.  It defaults to
+#     CPU 0 for virtual writes and is rejected for physical writes.
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: the completed bounded memory write
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-write-memory',
+  'data': { 'space': 'WD40MemorySpace',
+            'address': 'uint64', 'data': 'str',
+            '*cpu-index': 'int' },
+  'returns': 'WD40MemoryWrite',
   'features': [ 'unstable' ] }
 
 ##
