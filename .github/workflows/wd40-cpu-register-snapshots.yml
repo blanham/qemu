@@ -50,6 +50,7 @@ jobs:
             python3 scripts/wd40/apply-monitor-output-capture.py
             python3 scripts/wd40/apply-monitor-output-capture-hardening.py
             python3 scripts/wd40/apply-hmp-completion.py
+            python3 scripts/wd40/apply-gdb-register-gap-accounting.py
             python3 scripts/wd40/apply-cpu-register-snapshots.py
           }
 
@@ -80,6 +81,7 @@ jobs:
           python3 scripts/ci/check-wd40-split-irq-exception-logs.py
           python3 scripts/ci/check-wd40-monitor-output-capture.py
           python3 scripts/ci/check-wd40-hmp-completion.py
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py
           git diff --check
 
@@ -163,28 +165,32 @@ jobs:
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
             build-wd40-registers m68k
 
-      - name: Exercise PowerPC register snapshots
+      - name: Exercise PowerPC register snapshots and GDB gaps
         run: |
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
             build-wd40-registers ppc
 
-      - name: Materialize the validated register service
+      - name: Materialize the validated register services
         run: |
           set -Eeuo pipefail
           rm -rf .wd40-poison build-wd40-registers
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py
           git diff --check
 
           git add \
             docs/devel/wd40-monitor-v2.rst \
+            gdbstub/gdbstub.c \
             monitor/qmp-cmds.c \
             qapi/misc.json
           git diff --cached --check
 
           if git diff --cached --quiet; then
-            echo "CPU register snapshot service is already materialized"
+            echo "CPU register services are already materialized"
           else
-            git commit -m "monitor: materialize WD40 CPU register snapshots"
+            git commit -m \
+              "gdbstub: materialize gap-safe CPU register snapshots"
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
