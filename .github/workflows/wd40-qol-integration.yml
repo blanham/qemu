@@ -8,6 +8,7 @@ on:
       - wd40/qol-output-capture-integration
       - wd40/qol-hmp-completion-integration
       - wd40/qol-cpu-register-integration
+      - wd40/qol-memory-read-integration
   workflow_dispatch:
 
 permissions:
@@ -21,7 +22,7 @@ jobs:
   integrate-build-test-and-publish:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 180
 
     steps:
       - name: Check out integration branch
@@ -71,6 +72,7 @@ jobs:
             python3 scripts/wd40/apply-hmp-completion.py
             python3 scripts/wd40/apply-gdb-register-gap-accounting.py
             python3 scripts/wd40/apply-cpu-register-snapshots.py
+            python3 scripts/wd40/apply-memory-read-service.py
           }
 
           apply_contract
@@ -102,6 +104,7 @@ jobs:
           python3 scripts/ci/check-wd40-hmp-completion.py
           python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py
+          python3 scripts/ci/check-wd40-memory-read-service.py
           git diff --check
 
       - name: Install C and probe build dependencies
@@ -279,6 +282,30 @@ jobs:
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
             build-qol-integration ppc
 
+      - name: Exercise x86-64 memory reads
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-memory-read-service.py \
+            build-qol-integration x86_64
+
+      - name: Exercise AArch64 memory reads
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-memory-read-service.py \
+            build-qol-integration aarch64
+
+      - name: Exercise m68k memory reads
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-memory-read-service.py \
+            build-qol-integration m68k
+
+      - name: Exercise PowerPC memory reads
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-memory-read-service.py \
+            build-qol-integration ppc
+
       - name: Publish the validated integration history
         if: github.ref_name == 'wd40/qol-integration'
         run: |
@@ -297,6 +324,7 @@ jobs:
           python3 scripts/ci/check-wd40-hmp-completion.py
           python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
           python3 scripts/ci/check-wd40-cpu-register-snapshots.py
+          python3 scripts/ci/check-wd40-memory-read-service.py
           git diff --check
           git status --short
           test -z "$(git status --porcelain)"
