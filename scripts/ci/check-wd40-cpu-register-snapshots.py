@@ -127,7 +127,23 @@ def validate_qapi_doc_width() -> None:
             )
 
 
-def validate_overlap_precedence(implementation: str) -> None:
+def validate_resolution_precedence(implementation: str) -> None:
+    core_loop = implementation.find(
+        "for (i = 0; i < cpu->cc->gdb_num_core_regs; i++)"
+    )
+    supplemental_loop = implementation.find(
+        "for (i = 0; i < gdb_descriptors->len; i++)"
+    )
+    if core_loop < 0 or supplemental_loop < 0:
+        raise SystemExit(
+            "monitor/qmp-cmds.c: incomplete GDB descriptor collection"
+        )
+    if core_loop >= supplemental_loop:
+        raise SystemExit(
+            "monitor/qmp-cmds.c: descriptor collection does not mirror "
+            "GDB core-first resolution"
+        )
+
     duplicate_guard = re.search(
         r"if \(wd40_register_descriptor_present\(descriptors,\n"
         r"\s+descriptor\.number\)\) \{(?P<body>.*?)\n\s+\}",
@@ -143,7 +159,7 @@ def validate_overlap_precedence(implementation: str) -> None:
     if "continue;" not in body:
         raise SystemExit(
             "monitor/qmp-cmds.c: overlapping descriptors do not retain "
-            "first-registration precedence"
+            "first-resolution precedence"
         )
     if "error_setg" in body or "goto fail" in body:
         raise SystemExit(
@@ -160,8 +176,9 @@ def validate_static() -> None:
         "'target-big-endian': 'bool'",
         "'registers': [ 'WD40CPURegister' ]",
         "'features': [ 'unstable' ]",
-        "Overlapping feature ranges retain the",
-        "first registered descriptor, matching GDB callback lookup.",
+        "When ranges overlap, the descriptor",
+        "selected by GDB lookup is retained: legacy core first, then",
+        "supplemental registration order.",
     )
     need(
         "monitor/qmp-cmds.c",
@@ -175,16 +192,19 @@ def validate_static() -> None:
         "target_long_bits()",
         "target_big_endian()",
         'g_strdup_printf("gdb-reg-%d", descriptor->number)',
-        "feature ranges in registration order",
-        "descriptor so its metadata names the callback we read",
+        "gdb_read_register() checks the legacy core range first.",
+        "Supplemental feature ranges are checked in registration order.",
+        "Retain the descriptor for the callback GDB resolves first.",
     )
     need(
         "docs/devel/wd40-monitor-v2.rst",
         "Cross-architecture CPU register snapshots",
         "x-wd40-query-cpu-registers",
         "GDB register registry and callbacks",
-        "overlapping supplemental feature ranges",
-        "first-match lookup",
+        "descriptor selection follows ``gdb_read_register()``",
+        "legacy core range wins first",
+        "supplemental features in",
+        "registration order",
         "does not pause a running machine",
         "without scraping ``info registers``",
     )
@@ -213,7 +233,7 @@ def validate_static() -> None:
             "monitor/qmp-cmds.c: register service has forbidden behavior: "
             f"{present!r}"
         )
-    validate_overlap_precedence(implementation)
+    validate_resolution_precedence(implementation)
     validate_qapi_doc_width()
 
 
