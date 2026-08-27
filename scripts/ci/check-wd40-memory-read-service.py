@@ -49,7 +49,8 @@ TARGETS = (
             "-m", "128M",
         ),
         target="aarch64",
-        address=0x40010000,
+        # Keep the fixture outside virt's reset-time low-RAM boot data.
+        address=0x41000000,
         virtual=True,
     ),
     TargetCase(
