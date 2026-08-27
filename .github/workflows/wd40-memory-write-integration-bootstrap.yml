@@ -1,0 +1,115 @@
+name: WD40 memory-write integration bootstrap
+
+on:
+  push:
+    branches:
+      - wd40/qol-memory-write-integration
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-memory-write-integration-bootstrap-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  patch-integration-workflow:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out helper branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Extend the canonical integration contract
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/wd40-qol-integration.yml")
+          text = path.read_text(encoding="utf-8")
+
+          replacements = (
+              (
+                  "      - wd40/qol-address-translation-integration\n",
+                  "      - wd40/qol-address-translation-integration\n"
+                  "      - wd40/qol-memory-write-integration\n",
+              ),
+              (
+                  "            python3 scripts/wd40/apply-address-translation-service.py\n"
+                  "          }\n",
+                  "            python3 scripts/wd40/apply-address-translation-service.py\n"
+                  "            python3 scripts/wd40/apply-address-translation-checker-composability.py\n"
+                  "            python3 scripts/wd40/apply-memory-write-service.py\n"
+                  "          }\n",
+              ),
+              (
+                  "          python3 scripts/ci/check-wd40-address-translation-service.py\n"
+                  "          git diff --check\n",
+                  "          python3 scripts/ci/check-wd40-address-translation-service.py\n"
+                  "          python3 scripts/ci/check-wd40-memory-write-service.py\n"
+                  "          git diff --check\n",
+              ),
+              (
+                  "      - name: Publish the validated integration history\n",
+                  "      - name: Exercise bounded memory writes\n"
+                  "        run: |\n"
+                  "          set -Eeuo pipefail\n"
+                  "          python3 scripts/ci/check-wd40-memory-write-service.py \\\n"
+                  "            build-qol-integration x86_64 aarch64 m68k ppc\n"
+                  "\n"
+                  "      - name: Publish the validated integration history\n",
+              ),
+          )
+
+          for old, new in replacements:
+              old_count = text.count(old)
+              new_count = text.count(new)
+              if old_count == 0 and new_count == 1:
+                  continue
+              if old_count != 1 or new_count != 0:
+                  raise RuntimeError(
+                      f"{path}: ambiguous integration edit: "
+                      f"old={old_count}, new={new_count}, marker={old!r}"
+                  )
+              text = text.replace(old, new, 1)
+
+          required = (
+              "wd40/qol-memory-write-integration",
+              "apply-address-translation-checker-composability.py",
+              "apply-memory-write-service.py",
+              "check-wd40-memory-write-service.py",
+              "Exercise bounded memory writes",
+              "build-qol-integration x86_64 aarch64 m68k ppc",
+          )
+          missing = [marker for marker in required if marker not in text]
+          if missing:
+              raise RuntimeError(f"{path}: missing integrated markers: {missing!r}")
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          rm .github/workflows/wd40-memory-write-integration-bootstrap.yml
+          git diff --check
+          git diff -- .github/workflows/wd40-qol-integration.yml
+
+      - name: Publish the integration-ready helper head
+        run: |
+          set -Eeuo pipefail
+          git add \
+            .github/workflows/wd40-qol-integration.yml \
+            .github/workflows/wd40-memory-write-integration-bootstrap.yml
+          git diff --cached --check
+          git commit -m "ci: integrate bounded memory writes"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          test -z "$(git status --porcelain)"
