@@ -1,0 +1,115 @@
+name: Capture PowerPC Rage 128 PM4 runtime diagnostics
+
+on:
+  push:
+    branches:
+      - agent/rage128-ppc-endian-qemu
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize the staged PowerPC test on the canonical feature commit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cp tests/qtest/ati-rage128-ppc-pm4-test.c \
+             /tmp/ati-rage128-ppc-pm4-test.c
+          git fetch --no-tags origin agent/rage128-upstream-20260823
+          git checkout --detach origin/agent/rage128-upstream-20260823
+          cp /tmp/ati-rage128-ppc-pm4-test.c tests/qtest/
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/qtest/meson.build')
+          text = path.read_text(encoding='utf-8')
+          old = (
+              "qtests_ppc64 = \\\n"
+              "  qtests_ppc + \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\\n"
+          )
+          new = (
+              "qtests_ppc64 = \\\n"
+              "  qtests_ppc + \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') and\n"
+              "   config_all_devices.has_key('CONFIG_ATI_VGA') ? ['ati-rage128-ppc-pm4-test'] : []) +        \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\\n"
+          )
+          if text.count(old) != 1:
+              raise SystemExit('unexpected qtests_ppc64 anchor')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libfdt-dev libslirp-dev
+
+      - name: Configure and build the ppc64 test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir build
+          cd build
+          ../configure \
+            --target-list=ppc64-softmmu \
+            --enable-debug \
+            --enable-werror \
+            --disable-docs
+          ninja -j2 \
+            qemu-system-ppc64 \
+            tests/qtest/ati-rage128-ppc-pm4-test
+
+      - name: Capture verbose runtime output
+        id: runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          set +e
+          G_TEST_VERBOSE=1 QTEST_LOG=1 \
+            build/pyvenv/bin/meson test -C build --no-rebuild \
+              qtest-ppc64/ati-rage128-ppc-pm4-test \
+              --verbose --print-errorlogs \
+              2>&1 | tee /tmp/rage128-ppc-diagnostic.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > /tmp/rage128-ppc-diagnostic.rc
+          cp build/meson-logs/testlog.txt \
+             /tmp/rage128-ppc-meson-testlog.txt 2>/dev/null || true
+          cp build/meson-logs/testlog.json \
+             /tmp/rage128-ppc-meson-testlog.json 2>/dev/null || true
+          exit 0
+
+      - name: Upload PowerPC runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rage128-ppc-runtime-diagnostic
+          path: |
+            /tmp/rage128-ppc-diagnostic.log
+            /tmp/rage128-ppc-diagnostic.rc
+            /tmp/rage128-ppc-meson-testlog.txt
+            /tmp/rage128-ppc-meson-testlog.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Preserve the runtime result
+        if: always()
+        shell: bash
+        run: |
+          test -f /tmp/rage128-ppc-diagnostic.rc
+          test "$(cat /tmp/rage128-ppc-diagnostic.rc)" = 0
