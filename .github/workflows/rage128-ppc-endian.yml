@@ -40,16 +40,18 @@ jobs:
 
           path = Path('tests/qtest/meson.build')
           text = path.read_text(encoding='utf-8')
-          old = '''qtests_ppc64 = \\
-  qtests_ppc + \\
-  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\
-'''
-          new = '''qtests_ppc64 = \\
-  qtests_ppc + \\
-  (config_all_devices.has_key('CONFIG_PSERIES') and
-   config_all_devices.has_key('CONFIG_ATI_VGA') ? ['ati-rage128-ppc-pm4-test'] : []) +        \\
-  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\
-'''
+          old = (
+              "qtests_ppc64 = \\\n"
+              "  qtests_ppc + \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\\n"
+          )
+          new = (
+              "qtests_ppc64 = \\\n"
+              "  qtests_ppc + \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') and\n"
+              "   config_all_devices.has_key('CONFIG_ATI_VGA') ? ['ati-rage128-ppc-pm4-test'] : []) +        \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\\n"
+          )
           if text.count(old) != 1:
               raise SystemExit('unexpected qtests_ppc64 anchor')
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
