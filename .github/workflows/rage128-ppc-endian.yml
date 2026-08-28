@@ -1,0 +1,199 @@
+name: Validate and publish PowerPC Rage 128 PM4 endianness
+
+on:
+  push:
+    branches:
+      - agent/rage128-ppc-endian-qemu
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize the PowerPC PM4 test on the canonical feature commit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target=agent/rage128-upstream-20260823
+          staging=agent/rage128-ppc-endian-qemu
+          cp tests/qtest/ati-rage128-ppc-pm4-test.c \
+             /tmp/ati-rage128-ppc-pm4-test.c
+
+          git config user.name 'Bryce Lanham'
+          git config user.email 'blanham@gmail.com'
+          git fetch --no-tags origin "$target"
+          source_sha=$(git rev-parse "origin/$target")
+          source_parent=$(git rev-parse "$source_sha^")
+          test "$(git rev-list --count "$source_parent..$source_sha")" = 1
+          git checkout -B rage128-ppc-endian "$source_sha"
+
+          cp /tmp/ati-rage128-ppc-pm4-test.c tests/qtest/
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/qtest/meson.build')
+          text = path.read_text(encoding='utf-8')
+          old = '''qtests_ppc64 = \\
+  qtests_ppc + \\
+  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\
+'''
+          new = '''qtests_ppc64 = \\
+  qtests_ppc + \\
+  (config_all_devices.has_key('CONFIG_PSERIES') and
+   config_all_devices.has_key('CONFIG_ATI_VGA') ? ['ati-rage128-ppc-pm4-test'] : []) +        \\
+  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\
+'''
+          if text.count(old) != 1:
+              raise SystemExit('unexpected qtests_ppc64 anchor')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+          git add tests/qtest/ati-rage128-ppc-pm4-test.c \
+                  tests/qtest/meson.build
+
+          git log -1 --format=%B > /tmp/commit-message
+          if ! grep -q 'PowerPC PCI endian path' /tmp/commit-message; then
+            cat >> /tmp/commit-message <<'EOF'
+
+          Exercise the PowerPC PCI endian path on a big-endian pseries guest.
+          Validate swapped PCI MMIO access, little-endian ring and vertex DMA,
+          PCI-GART translation, bus-master read-pointer shadowing, indexed 3D
+          rendering, raw framebuffer byte order, and PIO packet submission.
+          This closes the architecture gap left by merely compiling the ppc
+          target without executing any Rage 128 CCE or fixed-function work.
+          EOF
+            sed -i 's/^          //' /tmp/commit-message
+          fi
+          git commit --amend -F /tmp/commit-message
+
+          echo "RAGE128_SOURCE_SHA=$source_sha" >> "$GITHUB_ENV"
+          echo "RAGE128_SOURCE_PARENT=$source_parent" >> "$GITHUB_ENV"
+          echo "RAGE128_TARGET=$target" >> "$GITHUB_ENV"
+          echo "RAGE128_STAGING=$staging" >> "$GITHUB_ENV"
+
+      - name: Fetch historical firmware and option ROMs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p roms logs
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/wkennington/linux-firmware/711d3297bac870af42088a467459a0634c1970ca/r128/r128_cce.bin \
+            -o /tmp/r128_cce.bin
+          test "$(wc -c < /tmp/r128_cce.bin)" = 2048
+          test "$(git hash-object /tmp/r128_cce.bin)" = \
+               18b00b7b6555e063893b54326ae0e58be02a5c06
+
+          base=https://raw.githubusercontent.com/blanham/86Box/6b8478ddcd832703e030a4274058568cd1ad4ebf/roms/video/ati_rage128
+          curl --fail --location --retry 3 \
+            "$base/113-57403-102.rom" -o roms/113-57403-102.rom
+          curl --fail --location --retry 3 \
+            "$base/Rage128PCI-Mac-OpenFirmware.ROM" \
+            -o roms/Rage128PCI-Mac-OpenFirmware.ROM
+          echo '91837fab2f2a71df54d3f031fd15bc5ed658b148d2df806b05e30f370fe60afe  roms/113-57403-102.rom' | sha256sum -c -
+          echo 'e8d6c829b22e4a4a9900b761b9394e5e2dddba594c78a473647e7b0df9e492d1  roms/Rage128PCI-Mac-OpenFirmware.ROM' | sha256sum -c -
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libfdt-dev libslirp-dev curl
+
+      - name: Configure and build x86-64, PowerPC, and PowerPC64
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir build
+          cd build
+          ../configure \
+            --target-list=x86_64-softmmu,ppc-softmmu,ppc64-softmmu \
+            --enable-debug \
+            --enable-werror \
+            --disable-docs
+          ninja -j2 \
+            qemu-system-x86_64 \
+            qemu-system-ppc \
+            qemu-system-ppc64 \
+            tests/unit/test-ati-rop3 \
+            tests/qtest/display-vga-test \
+            tests/qtest/ati-rage128-pm4-test \
+            tests/qtest/ati-rage128-ppc-pm4-test
+
+      - name: Run x86 and big-endian PowerPC PM4 suites
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RAGE128_CCE_FIRMWARE=/tmp/r128_cce.bin \
+            build/pyvenv/bin/meson test -C build --no-rebuild \
+              test-ati-rop3 \
+              qtest-x86_64/display-vga-test \
+              qtest-x86_64/ati-rage128-pm4-test \
+              qtest-ppc64/ati-rage128-ppc-pm4-test \
+              --print-errorlogs
+
+      - name: Smoke x86 and Macintosh option-ROM realization
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          set +e
+          timeout --signal=TERM 12s \
+            build/qemu-system-x86_64 \
+              -machine pc,accel=tcg -m 64M -nodefaults \
+              -display none -monitor none -serial none -no-reboot \
+              -boot menu=off,strict=on \
+              -chardev file,id=debugcon,path=logs/xpert.seabios.log \
+              -device isa-debugcon,iobase=0x402,chardev=debugcon \
+              -device ati-vga,model=rage128re,x-subsystem-id=0x0008,romfile=roms/113-57403-102.rom \
+              -D logs/xpert.qemu.log -d guest_errors,unimp
+          rc=$?
+          set -e
+          if [[ $rc -ne 0 && $rc -ne 124 && $rc -ne 143 ]]; then
+            exit "$rc"
+          fi
+          grep -q 'Running option rom at c000:0003' logs/xpert.seabios.log
+          grep -q 'Turning on vga text mode console' logs/xpert.seabios.log
+
+          set +e
+          timeout --signal=TERM 8s \
+            build/qemu-system-ppc64 \
+              -machine mac99,accel=tcg -m 256M -nodefaults \
+              -display none -monitor none -serial none -no-reboot -S \
+              -device ati-vga,model=rage128re,romfile=roms/Rage128PCI-Mac-OpenFirmware.ROM \
+              -D logs/mac-rom.qemu.log -d guest_errors,unimp
+          rc=$?
+          set -e
+          if [[ $rc -ne 0 && $rc -ne 124 && $rc -ne 143 ]]; then
+            cat logs/mac-rom.qemu.log || true
+            exit "$rc"
+          fi
+          ! grep -Eqi 'could not load|failed to load|invalid option rom' \
+              logs/mac-rom.qemu.log
+
+      - name: Publish the amended single feature commit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-list --count ${RAGE128_SOURCE_PARENT}..HEAD)" = 1
+          test "$(git merge-base ${RAGE128_SOURCE_PARENT} HEAD)" = \
+               "$RAGE128_SOURCE_PARENT"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test -z "$(git diff --name-only ${RAGE128_SOURCE_PARENT}..HEAD \
+                    | grep '^\.github/' || true)"
+          git clean -ffdx
+          test -z "$(git status --porcelain)"
+
+          git push \
+            --force-with-lease=refs/heads/${RAGE128_TARGET}:${RAGE128_SOURCE_SHA} \
+            origin HEAD:refs/heads/${RAGE128_TARGET}
+          git push --force origin \
+            HEAD:refs/heads/${RAGE128_STAGING}
