@@ -23,14 +23,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Extend the consolidated integration workflow
+      - name: Generate the consolidated integration workflow
         run: |
           set -Eeuo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path(".github/workflows/wd40-qol-integration.yml")
-          text = path.read_text(encoding="utf-8")
+          source = Path(".github/workflows/wd40-qol-integration.yml")
+          output = Path(
+              "scripts/wd40/generated-qol-integration-debug-points.yml"
+          )
+          text = source.read_text(encoding="utf-8")
 
           def insert_after_once(anchor: str, addition: str) -> None:
               global text
@@ -101,20 +104,33 @@ jobs:
               1,
           )
 
-          path.write_text(text, encoding="utf-8")
+          required = (
+              "      - wd40/qol-debug-point-integration\n",
+              "            python3 scripts/wd40/"
+              "apply-debug-point-service.py\n",
+              "          python3 scripts/ci/"
+              "check-wd40-debug-point-service.py\n",
+              "      - name: Exercise typed breakpoints and watchpoints\n",
+          )
+          for marker in required:
+              if marker not in text:
+                  raise SystemExit(f"generated workflow lacks {marker!r}")
+          if text.count(required[2]) != 3:
+              raise SystemExit(
+                  "expected three debug-point checker invocations"
+              )
+
+          output.write_text(text, encoding="utf-8")
           PY
 
-          rm .github/workflows/wd40-prepare-debug-point-integration.yml
           git diff --check
 
-      - name: Commit the prepared workflow
+      - name: Publish the generated workflow blob
         run: |
           set -Eeuo pipefail
           git config user.name "WD40 Build Bot"
           git config user.email "wd40-build@users.noreply.github.com"
-          git add \
-            .github/workflows/wd40-qol-integration.yml \
-            .github/workflows/wd40-prepare-debug-point-integration.yml
+          git add scripts/wd40/generated-qol-integration-debug-points.yml
           git diff --cached --check
-          git commit -m "ci: prepare WD40 debug-point integration"
+          git commit -m "ci: generate debug-point integration workflow"
           git push origin "HEAD:${GITHUB_REF_NAME}"
