@@ -1,0 +1,120 @@
+name: Prepare WD40 debug-point integration
+
+on:
+  push:
+    branches:
+      - wd40/qol-debug-point-integration-prep
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-debug-point-integration-prep
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out preparation branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extend the consolidated integration workflow
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/wd40-qol-integration.yml")
+          text = path.read_text(encoding="utf-8")
+
+          def insert_after_once(anchor: str, addition: str) -> None:
+              global text
+              if addition in text:
+                  raise SystemExit(f"addition already present: {addition!r}")
+              count = text.count(anchor)
+              if count != 1:
+                  raise SystemExit(
+                      f"expected one anchor {anchor!r}, found {count}"
+                  )
+              text = text.replace(anchor, anchor + addition, 1)
+
+          insert_after_once(
+              "      - wd40/qol-cpu-register-write-integration\n",
+              "      - wd40/qol-debug-point-integration\n",
+          )
+          insert_after_once(
+              "            python3 scripts/wd40/"
+              "apply-cpu-register-write-service.py\n",
+              "            python3 scripts/wd40/"
+              "apply-debug-point-service.py\n",
+          )
+
+          checker_anchor = (
+              "          python3 scripts/ci/"
+              "check-wd40-cpu-register-write-service.py\n"
+          )
+          checker_addition = (
+              "          python3 scripts/ci/"
+              "check-wd40-debug-point-service.py\n"
+          )
+          if checker_addition in text:
+              raise SystemExit("debug-point checker already integrated")
+          checker_count = text.count(checker_anchor)
+          if checker_count != 2:
+              raise SystemExit(
+                  "expected two static CPU register-write checker calls, "
+                  f"found {checker_count}"
+              )
+          text = text.replace(
+              checker_anchor,
+              checker_anchor + checker_addition,
+          )
+
+          runtime_anchor = (
+              "      - name: Publish the validated integration history\n"
+          )
+          runtime_block = (
+              "      - name: Exercise typed breakpoints and watchpoints\n"
+              "        run: |\n"
+              "          set -Eeuo pipefail\n"
+              "          python3 scripts/ci/"
+              "check-wd40-debug-point-service.py \\\n"
+              "            build-qol-integration "
+              "x86_64 aarch64 m68k ppc\n"
+              "\n"
+          )
+          if runtime_block in text:
+              raise SystemExit("debug-point runtime step already integrated")
+          runtime_count = text.count(runtime_anchor)
+          if runtime_count != 1:
+              raise SystemExit(
+                  f"expected one publish anchor, found {runtime_count}"
+              )
+          text = text.replace(
+              runtime_anchor,
+              runtime_block + runtime_anchor,
+              1,
+          )
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          rm .github/workflows/wd40-prepare-debug-point-integration.yml
+          git diff --check
+
+      - name: Commit the prepared workflow
+        run: |
+          set -Eeuo pipefail
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+          git add \
+            .github/workflows/wd40-qol-integration.yml \
+            .github/workflows/wd40-prepare-debug-point-integration.yml
+          git diff --cached --check
+          git commit -m "ci: prepare WD40 debug-point integration"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
