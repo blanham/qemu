@@ -115,9 +115,9 @@ jobs:
           for marker in required:
               if marker not in text:
                   raise SystemExit(f"generated workflow lacks {marker!r}")
-          if text.count(required[2]) != 3:
+          if text.count(required[2]) != 2:
               raise SystemExit(
-                  "expected three debug-point checker invocations"
+                  "expected two exact static debug-point checker invocations"
               )
 
           output.write_text(text, encoding="utf-8")
