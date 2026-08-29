@@ -73,7 +73,8 @@ def main() -> None:
 # @x-wd40-write-cpu-register:
 #
 # Write one register through QEMU's active GDB register callback.
-# The hexadecimal value must encode exactly the current register width.
+# The hexadecimal value must encode exactly the current register
+# width.
 # The returned value is read back after the callback completes.
 #
 # @number: architecture-defined GDB register number
@@ -317,7 +318,7 @@ fail:
 ''',
         owned_markers=(
             "static int wd40_register_hex_digit",
-            "wd40_register_descriptor_for_number",
+            "static bool wd40_register_descriptor_for_number(\n",
             "qmp_x_wd40_write_cpu_register",
         ),
     )
@@ -350,8 +351,8 @@ across registers and memory.
 """,
         owned_markers=(
             "Typed CPU register writes",
-            "x-wd40-write-cpu-register",
             "fresh read-back",
+            "target masking, normalization",
         ),
     )
 

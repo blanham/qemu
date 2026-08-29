@@ -393,7 +393,7 @@ parsers.
 """,
         owned_markers=(
             "Cross-architecture CPU register snapshots",
-            "x-wd40-query-cpu-registers",
+            "without scraping ``info registers`` output",
         ),
     )
 

@@ -233,6 +233,214 @@ fail:
     return NULL;
 }
 
+static int wd40_register_hex_digit(char value)
+{
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'a' && value <= 'f') {
+        return value - 'a' + 10;
+    }
+    if (value >= 'A' && value <= 'F') {
+        return value - 'A' + 10;
+    }
+    return -1;
+}
+
+static uint8_t *wd40_register_hex_to_bytes(const char *value,
+                                            size_t expected_bytes,
+                                            int number,
+                                            Error **errp)
+{
+    size_t hex_length = strlen(value);
+    uint8_t *bytes;
+    size_t i;
+
+    if (hex_length == 0) {
+        error_setg(errp, "register value must encode at least one byte");
+        return NULL;
+    }
+    if (hex_length & 1) {
+        error_setg(errp,
+                   "register value must contain an even number of "
+                   "hexadecimal digits");
+        return NULL;
+    }
+    if (hex_length / 2 != expected_bytes) {
+        error_setg(errp,
+                   "GDB register %d requires exactly %zu bytes, got %zu",
+                   number, expected_bytes, hex_length / 2);
+        return NULL;
+    }
+
+    bytes = g_malloc(expected_bytes);
+    for (i = 0; i < hex_length; i += 2) {
+        int high = wd40_register_hex_digit(value[i]);
+        int low = wd40_register_hex_digit(value[i + 1]);
+
+        if (high < 0 || low < 0) {
+            error_setg(errp,
+                       "register value contains a non-hexadecimal "
+                       "character at offset %zu",
+                       high < 0 ? i : i + 1);
+            g_free(bytes);
+            return NULL;
+        }
+        bytes[i / 2] = (high << 4) | low;
+    }
+    return bytes;
+}
+
+static bool wd40_register_descriptor_for_number(
+    CPUState *cpu, int64_t number, WD40RegisterDescriptor *descriptor,
+    Error **errp)
+{
+    GArray *gdb_descriptors;
+    unsigned matches = 0;
+    guint i;
+
+    if (number < 0 || number > INT_MAX) {
+        error_setg(errp, "GDB register number must be between 0 and %d",
+                   INT_MAX);
+        return false;
+    }
+
+    memset(descriptor, 0, sizeof(*descriptor));
+    descriptor->number = number;
+    if (number < cpu->cc->gdb_num_core_regs) {
+        matches++;
+    }
+
+    gdb_descriptors = gdb_get_register_list(cpu);
+    for (i = 0; i < gdb_descriptors->len; i++) {
+        const GDBRegDesc *candidate =
+            &g_array_index(gdb_descriptors, GDBRegDesc, i);
+
+        if (candidate->gdb_reg != number) {
+            continue;
+        }
+        if (matches != 0) {
+            error_setg(errp,
+                       "CPU type '%s' exposes GDB register %" PRId64
+                       " more than once",
+                       object_get_typename(OBJECT(cpu)), number);
+            g_array_free(gdb_descriptors, true);
+            return false;
+        }
+        descriptor->name = candidate->name;
+        descriptor->feature = candidate->feature_name;
+        matches++;
+    }
+    g_array_free(gdb_descriptors, true);
+
+    if (matches == 0) {
+        error_setg(errp, "CPU type '%s' has no GDB register %" PRId64,
+                   object_get_typename(OBJECT(cpu)), number);
+        return false;
+    }
+    return true;
+}
+
+WD40CPURegisterWrite *
+qmp_x_wd40_write_cpu_register(int64_t number, const char *value,
+                               bool has_cpu_index, int64_t cpu_index,
+                               Error **errp)
+{
+    CPUState *cpu = wd40_cpu_by_index(has_cpu_index, cpu_index);
+    WD40RegisterDescriptor descriptor;
+    GByteArray *register_value = NULL;
+    g_autofree uint8_t *buffer = NULL;
+    WD40CPURegisterWrite *result = NULL;
+    bool name_valid;
+    int bytes;
+
+    if (!cpu) {
+        if (has_cpu_index) {
+            error_setg(errp, "CPU index %" PRId64 " does not exist",
+                       cpu_index);
+        } else {
+            error_setg(errp, "No realized CPU is available");
+        }
+        return NULL;
+    }
+
+    cpu_synchronize_state(cpu);
+    if (!wd40_register_descriptor_for_number(cpu, number, &descriptor,
+                                             errp)) {
+        return NULL;
+    }
+
+    register_value = g_byte_array_new();
+    bytes = gdb_read_register(cpu, register_value, descriptor.number);
+    if (bytes < 0 || (guint)bytes != register_value->len) {
+        error_setg(errp,
+                   "GDB register %d returned inconsistent size %d/%u",
+                   descriptor.number, bytes, register_value->len);
+        goto fail;
+    }
+    if (bytes == 0) {
+        error_setg(errp, "GDB register %d is not available",
+                   descriptor.number);
+        goto fail;
+    }
+
+    buffer = wd40_register_hex_to_bytes(value, register_value->len,
+                                         descriptor.number, errp);
+    if (!buffer) {
+        goto fail;
+    }
+
+    bytes = gdb_write_register(cpu, buffer, descriptor.number);
+    if (bytes == 0) {
+        error_setg(errp, "GDB register %d is not writable",
+                   descriptor.number);
+        goto fail;
+    }
+    if (bytes < 0 || (guint)bytes != register_value->len) {
+        error_setg(errp,
+                   "GDB register %d wrote inconsistent size %d/%u",
+                   descriptor.number, bytes, register_value->len);
+        goto fail;
+    }
+
+    g_byte_array_set_size(register_value, 0);
+    bytes = gdb_read_register(cpu, register_value, descriptor.number);
+    if (bytes < 0 || (guint)bytes != register_value->len ||
+        (guint)bytes != strlen(value) / 2) {
+        error_setg(errp,
+                   "GDB register %d returned inconsistent post-write "
+                   "size %d/%u",
+                   descriptor.number, bytes, register_value->len);
+        goto fail;
+    }
+
+    result = g_new0(WD40CPURegisterWrite, 1);
+    result->cpu_index = cpu->cpu_index;
+    result->number = descriptor.number;
+    name_valid = descriptor.name &&
+                 g_utf8_validate(descriptor.name, -1, NULL);
+    result->described = name_valid;
+    result->name = name_valid
+        ? g_strdup(descriptor.name)
+        : g_strdup_printf("gdb-reg-%d", descriptor.number);
+    if (descriptor.feature &&
+        g_utf8_validate(descriptor.feature, -1, NULL)) {
+        result->feature = g_strdup(descriptor.feature);
+    }
+    result->bytes = register_value->len;
+    result->value = wd40_register_value_to_hex(register_value);
+
+    g_byte_array_unref(register_value);
+    return result;
+
+fail:
+    if (register_value) {
+        g_byte_array_unref(register_value);
+    }
+    qapi_free_WD40CPURegisterWrite(result);
+    return NULL;
+}
+
 static LogCategoryInfoList *qmp_log_category_info_list(void)
 {
     const QEMULogItem *item;

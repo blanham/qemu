@@ -477,6 +477,60 @@
   'features': [ 'unstable' ] }
 
 ##
+# @WD40CPURegisterWrite:
+#
+# Result of one exact GDB-register write and read-back.
+#
+# @cpu-index: QEMU virtual CPU index
+#
+# @number: architecture-defined GDB register number
+#
+# @name: GDB register name, or ``gdb-reg-N`` when unavailable
+#
+# @feature: GDB feature containing the register, when available
+#
+# @described: whether @name came from GDB feature metadata
+#
+# @bytes: exact register width in bytes
+#
+# @value: lowercase hexadecimal post-write read-back value
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40CPURegisterWrite',
+  'data': { 'cpu-index': 'int', 'number': 'int', 'name': 'str',
+            '*feature': 'str', 'described': 'bool',
+            'bytes': 'uint64', 'value': 'str' } }
+
+##
+# @x-wd40-write-cpu-register:
+#
+# Write one register through QEMU's active GDB register callback.
+# The hexadecimal value must encode exactly the current register
+# width.
+# The returned value is read back after the callback completes.
+#
+# @number: architecture-defined GDB register number
+#
+# @value: exact hexadecimal bytes in GDB register byte order
+#
+# @cpu-index: virtual CPU index; defaults to the first realized CPU
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: completed register write with post-write read-back
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-write-cpu-register',
+  'data': { 'number': 'int', 'value': 'str',
+            '*cpu-index': 'int' },
+  'returns': 'WD40CPURegisterWrite',
+  'features': [ 'unstable' ] }
+
+##
 # @LogCategoryInfo:
 #
 # Structured metadata for a QEMU log category.

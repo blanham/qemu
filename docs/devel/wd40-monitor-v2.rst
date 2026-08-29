@@ -169,6 +169,28 @@ virtual CPUs.  This gives TTYphoon a typed cross-target register foundation
 without scraping ``info registers`` output or adding per-architecture monitor
 parsers.
 
+Typed CPU register writes
+-------------------------
+
+``x-wd40-write-cpu-register`` writes one register by its architecture-defined
+GDB number.  The value is an exact hexadecimal byte string in the same byte
+order returned by ``x-wd40-query-cpu-registers``; it is not a formatted target
+integer.  Clients should discover the live register number, width, name, and
+feature from a snapshot instead of carrying architecture-specific tables.
+
+Before writing, the command synchronizes accelerator state and reads the
+register to establish its exact width.  It rejects unknown or unavailable
+registers, malformed hexadecimal, and values of the wrong size before calling
+the target's GDB write callback.  A zero-length callback result is reported as
+a non-writable register.
+
+The result contains a fresh read-back rather than merely echoing the request,
+so target masking, normalization, and architecture-specific side effects are
+visible to the client.  A callback error is not a transactional rollback
+guarantee.  The command does not pause a running guest; frontends should issue
+``stop`` before changing execution-critical state or coordinating writes
+across registers and memory.
+
 Structured log-category control
 -------------------------------
 
