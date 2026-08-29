@@ -1,0 +1,244 @@
+name: Probe PowerPC Rage 128 PAPR TCE DMA
+
+on:
+  push:
+    branches:
+      - agent/rage128-ppc-endian-qemu
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply the qtest-only PAPR TCE bridge
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(pathname: str, old: str, new: str) -> None:
+              path = Path(pathname)
+              text = path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f'{pathname}: expected one anchor, found {count}: {old!r}')
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'hw/ppc/spapr_rtas.c',
+              '#include "hw/ppc/spapr.h"\n#include "hw/ppc/spapr_vio.h"\n',
+              '#include "hw/ppc/spapr.h"\n'
+              '#include "hw/pci-host/spapr.h"\n'
+              '#include "hw/ppc/spapr_vio.h"\n')
+
+          tce_helper = '''static uint64_t qtest_spapr_tce_map(uint32_t nargs, target_ulong args,
+                                               uint32_t nret, target_ulong rets)
+          {
+              SpaprMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
+              PowerPCCPU *cpu = POWERPC_CPU(first_cpu);
+              SpaprPhbState *sphb;
+              target_ulong hargs[3];
+              target_ulong rc = H_SUCCESS;
+              uint64_t buid, ioba, phys, size, offset;
+
+              if (nargs != 8 || nret != 1) {
+                  if (nret) {
+                      rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
+                  }
+                  return H_PARAMETER;
+              }
+
+              buid = rtas_ldq(args, 0);
+              ioba = rtas_ldq(args, 2);
+              phys = rtas_ldq(args, 4);
+              size = rtas_ldq(args, 6);
+              if (!size || ((ioba | phys | size) & SPAPR_TCE_PAGE_MASK) ||
+                  ioba + size < ioba || phys + size < phys) {
+                  rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
+                  return H_PARAMETER;
+              }
+
+              sphb = spapr_pci_find_phb(spapr, buid);
+              if (!sphb) {
+                  rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
+                  return H_PARAMETER;
+              }
+
+              for (offset = 0; offset < size; offset += SPAPR_TCE_PAGE_SIZE) {
+                  hargs[0] = sphb->dma_liobn[0];
+                  hargs[1] = ioba + offset;
+                  /* PAPR TCE low bits 0b11 grant device read and write. */
+                  hargs[2] = (phys + offset) | 3;
+                  rc = spapr_hypercall(cpu, H_PUT_TCE, hargs);
+                  if (rc != H_SUCCESS) {
+                      break;
+                  }
+              }
+
+              rtas_st(rets, 0, rc == H_SUCCESS ?
+                      RTAS_OUT_SUCCESS : RTAS_OUT_HW_ERROR);
+              return rc;
+          }
+
+          static uint64_t qtest_rtas_call('''
+          replace_once(
+              'hw/ppc/spapr_rtas.c',
+              'static uint64_t qtest_rtas_call(',
+              tce_helper)
+          replace_once(
+              'hw/ppc/spapr_rtas.c',
+              '''    int token;
+
+              for (token = 0; token < RTAS_TOKEN_MAX - RTAS_TOKEN_BASE; token++) {
+          ''',
+              '''    int token;
+
+              if (strcmp(cmd, "qemu,spapr-tce-map") == 0) {
+                  return qtest_spapr_tce_map(nargs, args, nret, rets);
+              }
+
+              for (token = 0; token < RTAS_TOKEN_MAX - RTAS_TOKEN_BASE; token++) {
+          ''')
+
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '#include "libqos/libqos-spapr.h"\n#include "libqos/pci.h"\n',
+              '#include "libqos/libqos-spapr.h"\n'
+              '#include "libqos/pci-spapr.h"\n'
+              '#include "libqos/pci.h"\n')
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '    uint64_t framebuffer_size;\n    uint64_t mmio_size;\n',
+              '    uint64_t framebuffer_size;\n'
+              '    uint64_t mmio_size;\n'
+              '    uint64_t buid;\n')
+
+          test_helper = '''static void map_dma_range(PpcRage128Test *test, uint64_t ioba,
+                                    uint64_t phys, uint64_t size)
+          {
+              const uint32_t args[8] = {
+                  (uint32_t)(test->buid >> 32), (uint32_t)test->buid,
+                  (uint32_t)(ioba >> 32), (uint32_t)ioba,
+                  (uint32_t)(phys >> 32), (uint32_t)phys,
+                  (uint32_t)(size >> 32), (uint32_t)size,
+              };
+              uint64_t target_args = qmalloc(test->qs, sizeof(args));
+              uint64_t target_ret = qmalloc(test->qs, sizeof(uint32_t));
+              uint64_t rc;
+
+              for (unsigned int i = 0; i < G_N_ELEMENTS(args); i++) {
+                  qtest_writel(test->qs->qts,
+                               target_args + i * sizeof(uint32_t), args[i]);
+              }
+              qtest_writel(test->qs->qts, target_ret, UINT32_MAX);
+              rc = qtest_rtas_call(test->qs->qts, "qemu,spapr-tce-map",
+                                   G_N_ELEMENTS(args), target_args,
+                                   1, target_ret);
+              g_assert_cmphex(rc, ==, 0);
+              g_assert_cmpint((int32_t)qtest_readl(test->qs->qts, target_ret),
+                              ==, 0);
+
+              qfree(test->qs, target_ret);
+              qfree(test->qs, target_args);
+          }
+
+          static PpcRage128Test *ppc_rage128_start(void)'''
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              'static PpcRage128Test *ppc_rage128_start(void)',
+              test_helper)
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '''    PpcRage128Test *test = g_new0(PpcRage128Test, 1);
+              uint16_t command;
+          ''',
+              '''    PpcRage128Test *test = g_new0(PpcRage128Test, 1);
+              QPCIBusSPAPR *spapr_bus;
+              uint16_t command;
+          ''')
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '''        "-device ati-vga,model=rage128re,addr=04.0,rombar=0");
+              test->dev = qpci_device_find(test->qs->pcibus, QPCI_DEVFN(4, 0));
+          ''',
+              '''        "-device ati-vga,model=rage128re,addr=04.0,rombar=0");
+              spapr_bus = container_of(test->qs->pcibus, QPCIBusSPAPR, bus);
+              test->buid = spapr_bus->buid;
+              test->dev = qpci_device_find(test->qs->pcibus, QPCI_DEVFN(4, 0));
+          ''')
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '''    test->indirect_phys = alloc_page(test);
+              test->gart_phys = alloc_page(test);
+              return test;
+          ''',
+              '''    test->indirect_phys = alloc_page(test);
+              test->gart_phys = alloc_page(test);
+
+              map_dma_range(test, test->gart_phys, test->gart_phys, PAGE_SIZE);
+              map_dma_range(test, test->ring_phys, test->ring_phys, PAGE_SIZE);
+              map_dma_range(test, test->vertex_phys, test->vertex_phys, PAGE_SIZE);
+              map_dma_range(test, test->rptr_phys, test->rptr_phys, PAGE_SIZE);
+              map_dma_range(test, test->indirect_phys, test->indirect_phys,
+                            PAGE_SIZE);
+              return test;
+          ''')
+
+          path = Path('tests/qtest/meson.build')
+          text = path.read_text(encoding='utf-8')
+          old = (
+              "qtests_ppc64 = \\\n"
+              "  qtests_ppc + \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\\n"
+          )
+          new = (
+              "qtests_ppc64 = \\\n"
+              "  qtests_ppc + \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') and\n"
+              "   config_all_devices.has_key('CONFIG_ATI_VGA') ? ['ati-rage128-ppc-pm4-test'] : []) +        \\\n"
+              "  (config_all_devices.has_key('CONFIG_PSERIES') ? ['device-plug-test'] : []) +               \\\n"
+          )
+          if text.count(old) != 1:
+              raise SystemExit('unexpected qtests_ppc64 anchor')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build pkg-config python3-venv \
+            libglib2.0-dev libpixman-1-dev libfdt-dev libslirp-dev
+
+      - name: Configure and build ppc64
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir build
+          cd build
+          ../configure \
+            --target-list=ppc64-softmmu \
+            --enable-debug \
+            --enable-werror \
+            --disable-docs
+          ninja -j2 qemu-system-ppc64 tests/qtest/ati-rage128-ppc-pm4-test
+
+      - name: Run the big-endian PM4 test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          G_TEST_VERBOSE=1 QTEST_LOG=1 \
+            build/pyvenv/bin/meson test -C build --no-rebuild \
+              qtest-ppc64/ati-rage128-ppc-pm4-test \
+              --verbose --print-errorlogs
