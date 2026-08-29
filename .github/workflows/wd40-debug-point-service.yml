@@ -1,0 +1,228 @@
+name: WD40 typed debug points
+
+on:
+  push:
+    branches:
+      - wd40/qol-debug-point-service
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-debug-points-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  materialize-build-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply and replay the complete QoL contract
+        run: |
+          set -Eeuo pipefail
+
+          apply_contract() {
+            python3 scripts/wd40/apply-rustless-build.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control-hardening.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control.py
+            python3 scripts/wd40/apply-subtractive-log-mask.py
+            python3 scripts/wd40/apply-hmp-command-schema-composability.py
+            python3 scripts/wd40/apply-hmp-command-introspection-hardening.py
+            python3 scripts/wd40/apply-hmp-command-introspection.py
+            python3 scripts/wd40/apply-hmp-argument-introspection.py
+            python3 scripts/wd40/apply-structured-log-control-composability.py
+            python3 scripts/wd40/apply-structured-log-control.py
+            python3 scripts/wd40/apply-structured-log-control-hardening.py
+            python3 scripts/wd40/apply-split-irq-exception-logs.py
+            python3 scripts/wd40/apply-monitor-output-capture.py
+            python3 scripts/wd40/apply-monitor-output-capture-hardening.py
+            python3 scripts/wd40/apply-hmp-completion.py
+            python3 scripts/wd40/apply-gdb-register-gap-accounting.py
+            python3 scripts/wd40/apply-cpu-register-transform-composability.py
+            python3 scripts/wd40/apply-cpu-register-snapshots.py
+            python3 scripts/wd40/apply-memory-read-service.py
+            python3 scripts/wd40/apply-address-translation-service.py
+            python3 scripts/wd40/apply-address-translation-checker-composability.py
+            python3 scripts/wd40/apply-memory-write-service.py
+            python3 scripts/wd40/apply-memory-write-hardening.py
+            python3 scripts/wd40/apply-cpu-register-write-service.py
+            python3 scripts/wd40/apply-debug-point-service.py
+          }
+
+          apply_contract
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-debug-point-pass1.diff
+          apply_contract
+          git diff --no-ext-diff --binary \
+            > /tmp/wd40-debug-point-pass2.diff
+          if ! cmp -s \
+              /tmp/wd40-debug-point-pass1.diff \
+              /tmp/wd40-debug-point-pass2.diff; then
+            echo "complete QoL replay changed the generated tree" >&2
+            diff -u \
+              /tmp/wd40-debug-point-pass1.diff \
+              /tmp/wd40-debug-point-pass2.diff || true
+            exit 1
+          fi
+
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-hmp-argument-introspection.py
+          python3 scripts/ci/check-wd40-hmp-schema-composability.py
+          python3 scripts/ci/check-wd40-transform-composability.py
+          python3 scripts/ci/check-wd40-structured-log-control.py
+          python3 scripts/ci/check-wd40-split-irq-exception-logs.py
+          python3 scripts/ci/check-wd40-monitor-output-capture.py
+          python3 scripts/ci/check-wd40-hmp-completion.py
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py
+          python3 scripts/ci/check-wd40-memory-read-service.py
+          python3 scripts/ci/check-wd40-address-translation-service.py
+          python3 scripts/ci/check-wd40-memory-write-service.py
+          python3 scripts/ci/check-wd40-cpu-register-write-service.py
+          python3 scripts/ci/check-wd40-debug-point-service.py
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev
+
+      - name: Build four system targets and user mode without Rust
+        timeout-minutes: 110
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-wd40-debug-points
+          cd build-wd40-debug-points
+          ../configure \
+            --target-list=x86_64-softmmu,aarch64-softmmu,m68k-softmmu,ppc-softmmu,x86_64-linux-user \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          timeout --foreground --signal=TERM --kill-after=5m 95m \
+            ninja -j2 \
+              tests/unit/test-logging \
+              qemu-system-x86_64 \
+              qemu-system-aarch64 \
+              qemu-system-m68k \
+              qemu-system-ppc \
+              qemu-x86_64
+          cd ..
+
+      - name: Exercise the inherited QoL runtime contract
+        run: |
+          set -Eeuo pipefail
+          ./build-wd40-debug-points/tests/unit/test-logging --tap -k
+          python3 scripts/ci/check-wd40-rustless.py \
+            build-wd40-debug-points
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py \
+            build-wd40-debug-points
+          python3 scripts/ci/check-wd40-structured-log-control.py \
+            build-wd40-debug-points
+          python3 scripts/ci/check-wd40-split-irq-exception-logs.py \
+            build-wd40-debug-points
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py \
+            build-wd40-debug-points
+          python3 scripts/ci/check-wd40-hmp-argument-introspection.py \
+            build-wd40-debug-points
+          python3 scripts/ci/check-wd40-monitor-output-capture.py \
+            build-wd40-debug-points
+          python3 scripts/ci/check-wd40-hmp-completion.py \
+            build-wd40-debug-points
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
+
+      - name: Exercise inherited debugger services
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py \
+            build-wd40-debug-points x86_64 aarch64 m68k ppc
+          python3 scripts/ci/check-wd40-memory-read-service.py \
+            build-wd40-debug-points x86_64 aarch64 m68k ppc
+          python3 scripts/ci/check-wd40-address-translation-service.py \
+            build-wd40-debug-points x86_64 aarch64 m68k ppc
+          python3 scripts/ci/check-wd40-memory-write-service.py \
+            build-wd40-debug-points x86_64 aarch64 m68k ppc
+          python3 scripts/ci/check-wd40-cpu-register-write-service.py \
+            build-wd40-debug-points x86_64 aarch64 m68k ppc
+
+      - name: Exercise typed breakpoints and watchpoints
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-debug-point-service.py \
+            build-wd40-debug-points x86_64 aarch64 m68k ppc
+
+      - name: Materialize the validated debug-point service
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-wd40-debug-points
+
+          python3 scripts/ci/check-wd40-rustless.py
+          python3 scripts/ci/check-wd40-amd-1tb-hole.py
+          python3 scripts/ci/check-wd40-subtractive-log-mask.py
+          python3 scripts/ci/check-wd40-hmp-command-introspection.py
+          python3 scripts/ci/check-wd40-hmp-argument-introspection.py
+          python3 scripts/ci/check-wd40-hmp-schema-composability.py
+          python3 scripts/ci/check-wd40-transform-composability.py
+          python3 scripts/ci/check-wd40-structured-log-control.py
+          python3 scripts/ci/check-wd40-split-irq-exception-logs.py
+          python3 scripts/ci/check-wd40-monitor-output-capture.py
+          python3 scripts/ci/check-wd40-hmp-completion.py
+          python3 scripts/ci/check-wd40-gdb-register-gap-accounting.py
+          python3 scripts/ci/check-wd40-cpu-register-snapshots.py
+          python3 scripts/ci/check-wd40-memory-read-service.py
+          python3 scripts/ci/check-wd40-address-translation-service.py
+          python3 scripts/ci/check-wd40-memory-write-service.py
+          python3 scripts/ci/check-wd40-cpu-register-write-service.py
+          python3 scripts/ci/check-wd40-debug-point-service.py
+          git diff --check
+
+          git add \
+            docs/devel/wd40-monitor-v2.rst \
+            include/exec/gdbstub.h \
+            monitor/qmp-cmds.c \
+            qapi/misc.json
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo "debug-point service is already materialized"
+          else
+            git commit -m \
+              "monitor: materialize WD40 typed debug points"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+          git status --short
+          test -z "$(git status --porcelain)"
