@@ -1,0 +1,240 @@
+name: Repair PowerPC Rage 128 PAPR TCE setup v2
+
+on:
+  push:
+    branches:
+      - agent/rage128-ppc-endian-qemu
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install the pseries TCE qtest bridge and DMA mappings
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(pathname: str, old: str, new: str) -> None:
+              path = Path(pathname)
+              text = path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f'{pathname}: expected one anchor, found {count}: {old!r}')
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'hw/ppc/spapr_rtas.c',
+              '#include "hw/ppc/spapr.h"\n#include "hw/ppc/spapr_vio.h"\n',
+              '#include "hw/ppc/spapr.h"\n'
+              '#include "hw/pci-host/spapr.h"\n'
+              '#include "hw/ppc/spapr_vio.h"\n')
+
+          tce_helper = '''static uint64_t qtest_spapr_tce_map(uint32_t nargs, target_ulong args,
+                                               uint32_t nret, target_ulong rets)
+          {
+              SpaprMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
+              PowerPCCPU *cpu = POWERPC_CPU(first_cpu);
+              SpaprPhbState *sphb;
+              target_ulong hargs[3];
+              target_ulong rc = H_SUCCESS;
+              uint64_t buid, ioba, phys, size, offset;
+
+              if (nargs != 8 || nret != 1) {
+                  if (nret) {
+                      rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
+                  }
+                  return H_PARAMETER;
+              }
+
+              buid = rtas_ldq(args, 0);
+              ioba = rtas_ldq(args, 2);
+              phys = rtas_ldq(args, 4);
+              size = rtas_ldq(args, 6);
+              if (!size || ((ioba | phys | size) & SPAPR_TCE_PAGE_MASK) ||
+                  ioba + size < ioba || phys + size < phys) {
+                  rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
+                  return H_PARAMETER;
+              }
+
+              sphb = spapr_pci_find_phb(spapr, buid);
+              if (!sphb) {
+                  rtas_st(rets, 0, RTAS_OUT_PARAM_ERROR);
+                  return H_PARAMETER;
+              }
+
+              for (offset = 0; offset < size; offset += SPAPR_TCE_PAGE_SIZE) {
+                  hargs[0] = sphb->dma_liobn[0];
+                  hargs[1] = ioba + offset;
+                  /* PAPR TCE low bits 0b11 grant device read and write. */
+                  hargs[2] = (phys + offset) | 3;
+                  rc = spapr_hypercall(cpu, H_PUT_TCE, hargs);
+                  if (rc != H_SUCCESS) {
+                      break;
+                  }
+              }
+
+              rtas_st(rets, 0, rc == H_SUCCESS ?
+                      RTAS_OUT_SUCCESS : RTAS_OUT_HW_ERROR);
+              return rc;
+          }
+
+          static uint64_t qtest_rtas_call('''
+          replace_once(
+              'hw/ppc/spapr_rtas.c',
+              'static uint64_t qtest_rtas_call(',
+              tce_helper)
+          replace_once(
+              'hw/ppc/spapr_rtas.c',
+              '''    int token;
+
+              for (token = 0; token < RTAS_TOKEN_MAX - RTAS_TOKEN_BASE; token++) {
+          ''',
+              '''    int token;
+
+              if (strcmp(cmd, "qemu,spapr-tce-map") == 0) {
+                  return qtest_spapr_tce_map(nargs, args, nret, rets);
+              }
+
+              for (token = 0; token < RTAS_TOKEN_MAX - RTAS_TOKEN_BASE; token++) {
+          ''')
+
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '#include "libqos/libqos-spapr.h"\n#include "libqos/pci.h"\n',
+              '#include "libqos/libqos-spapr.h"\n'
+              '#include "libqos/pci-spapr.h"\n'
+              '#include "libqos/pci.h"\n')
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '    uint64_t framebuffer_size;\n    uint64_t mmio_size;\n',
+              '    uint64_t framebuffer_size;\n'
+              '    uint64_t mmio_size;\n'
+              '    uint64_t buid;\n')
+
+          test_helper = '''static void map_dma_range(PpcRage128Test *test, uint64_t ioba,
+                                    uint64_t phys, uint64_t size)
+          {
+              const uint32_t args[8] = {
+                  test->buid >> 32, test->buid,
+                  ioba >> 32, ioba,
+                  phys >> 32, phys,
+                  size >> 32, size,
+              };
+              uint64_t target_args = qmalloc(test->qs, sizeof(args));
+              uint64_t target_ret = qmalloc(test->qs, sizeof(uint32_t));
+              uint64_t rc;
+
+              for (unsigned int i = 0; i < G_N_ELEMENTS(args); i++) {
+                  qtest_writel(test->qs->qts,
+                               target_args + i * sizeof(uint32_t), args[i]);
+              }
+              qtest_writel(test->qs->qts, target_ret, UINT32_MAX);
+              rc = qtest_rtas_call(test->qs->qts, "qemu,spapr-tce-map",
+                                   G_N_ELEMENTS(args), target_args,
+                                   1, target_ret);
+              g_assert_cmphex(rc, ==, 0);
+              g_assert_cmpint((int32_t)qtest_readl(test->qs->qts, target_ret),
+                              ==, 0);
+
+              qfree(test->qs, target_ret);
+              qfree(test->qs, target_args);
+          }
+
+          static PpcRage128Test *ppc_rage128_start(void)'''
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              'static PpcRage128Test *ppc_rage128_start(void)',
+              test_helper)
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '''    PpcRage128Test *test = g_new0(PpcRage128Test, 1);
+              uint16_t command;
+          ''',
+              '''    PpcRage128Test *test = g_new0(PpcRage128Test, 1);
+              QPCIBusSPAPR *spapr_bus;
+              uint16_t command;
+          ''')
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '''        "-device ati-vga,model=rage128re,addr=04.0,rombar=0");
+              test->dev = qpci_device_find(test->qs->pcibus, QPCI_DEVFN(4, 0));
+          ''',
+              '''        "-device ati-vga,model=rage128re,addr=04.0,rombar=0");
+              spapr_bus = container_of(test->qs->pcibus, QPCIBusSPAPR, bus);
+              test->buid = spapr_bus->buid;
+              test->dev = qpci_device_find(test->qs->pcibus, QPCI_DEVFN(4, 0));
+          ''')
+          replace_once(
+              'tests/qtest/ati-rage128-ppc-pm4-test.c',
+              '''    test->indirect_phys = alloc_page(test);
+              test->gart_phys = alloc_page(test);
+              return test;
+          ''',
+              '''    test->indirect_phys = alloc_page(test);
+              test->gart_phys = alloc_page(test);
+
+              map_dma_range(test, test->gart_phys, test->gart_phys, PAGE_SIZE);
+              map_dma_range(test, test->ring_phys, test->ring_phys, PAGE_SIZE);
+              map_dma_range(test, test->vertex_phys, test->vertex_phys, PAGE_SIZE);
+              map_dma_range(test, test->rptr_phys, test->rptr_phys, PAGE_SIZE);
+              map_dma_range(test, test->indirect_phys, test->indirect_phys,
+                            PAGE_SIZE);
+              return test;
+          ''')
+
+          for workflow in (
+              '.github/workflows/rage128-ppc-endian.yml',
+              '.github/workflows/rage128-ppc-endian-diagnostic.yml',
+          ):
+              replace_once(
+                  workflow,
+                  '          cp tests/qtest/ati-rage128-ppc-pm4-test.c \\\n'
+                  '             /tmp/ati-rage128-ppc-pm4-test.c\n',
+                  '          cp tests/qtest/ati-rage128-ppc-pm4-test.c \\\n'
+                  '             /tmp/ati-rage128-ppc-pm4-test.c\n'
+                  '          cp hw/ppc/spapr_rtas.c /tmp/spapr_rtas.c\n')
+              replace_once(
+                  workflow,
+                  '          cp /tmp/ati-rage128-ppc-pm4-test.c tests/qtest/\n',
+                  '          cp /tmp/ati-rage128-ppc-pm4-test.c tests/qtest/\n'
+                  '          cp /tmp/spapr_rtas.c hw/ppc/spapr_rtas.c\n')
+
+          replace_once(
+              '.github/workflows/rage128-ppc-endian.yml',
+              "  validate:\n    if: github.actor != 'github-actions[bot]'\n"
+              '    runs-on: ubuntu-24.04\n',
+              '  validate:\n    runs-on: ubuntu-24.04\n')
+          replace_once(
+              '.github/workflows/rage128-ppc-endian.yml',
+              '          git add tests/qtest/ati-rage128-ppc-pm4-test.c \\\n'
+              '                  tests/qtest/meson.build\n',
+              '          git add hw/ppc/spapr_rtas.c \\\n'
+              '                  tests/qtest/ati-rage128-ppc-pm4-test.c \\\n'
+              '                  tests/qtest/meson.build\n')
+
+          Path('.github/workflows/rage128-ppc-tce-repair.yml').unlink()
+          Path('.github/workflows/rage128-ppc-tce-repair-v2.yml').unlink()
+          PY
+
+          git diff --check
+          git config user.name 'Bryce Lanham'
+          git config user.email 'blanham@gmail.com'
+          git add hw/ppc/spapr_rtas.c \
+                  tests/qtest/ati-rage128-ppc-pm4-test.c \
+                  .github/workflows/rage128-ppc-endian.yml \
+                  .github/workflows/rage128-ppc-endian-diagnostic.yml \
+                  .github/workflows/rage128-ppc-tce-repair.yml \
+                  .github/workflows/rage128-ppc-tce-repair-v2.yml
+          git commit -m 'tests/qtest: map Rage 128 ppc64 DMA through PAPR TCEs'
+          git push origin HEAD:refs/heads/agent/rage128-ppc-endian-qemu
