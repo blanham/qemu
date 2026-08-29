@@ -441,6 +441,123 @@ fail:
     return NULL;
 }
 
+static bool wd40_debug_point_type_to_gdb(WD40DebugPointType type,
+                                         GdbBreakpointType *gdb_type,
+                                         Error **errp)
+{
+    switch (type) {
+    case WD40_DEBUG_POINT_TYPE_SOFTWARE_BREAKPOINT:
+        *gdb_type = GDB_BREAKPOINT_SW;
+        return true;
+    case WD40_DEBUG_POINT_TYPE_HARDWARE_BREAKPOINT:
+        *gdb_type = GDB_BREAKPOINT_HW;
+        return true;
+    case WD40_DEBUG_POINT_TYPE_WRITE_WATCHPOINT:
+        *gdb_type = GDB_WATCHPOINT_WRITE;
+        return true;
+    case WD40_DEBUG_POINT_TYPE_READ_WATCHPOINT:
+        *gdb_type = GDB_WATCHPOINT_READ;
+        return true;
+    case WD40_DEBUG_POINT_TYPE_ACCESS_WATCHPOINT:
+        *gdb_type = GDB_WATCHPOINT_ACCESS;
+        return true;
+    default:
+        error_setg(errp, "Unsupported debugger point type");
+        return false;
+    }
+}
+
+static bool wd40_debug_point_validate(WD40DebugPointType type,
+                                      uint64_t address, uint64_t length,
+                                      GdbBreakpointType *gdb_type,
+                                      Error **errp)
+{
+    uint64_t max_address = VADDR_MAX;
+
+    if (length == 0) {
+        error_setg(errp, "Debugger point length must be nonzero");
+        return false;
+    }
+    if (address > max_address || length > max_address ||
+        address > max_address - (length - 1)) {
+        error_setg(errp,
+                   "Debugger point range 0x%" PRIx64 "/%" PRIu64
+                   " exceeds the guest virtual-address container",
+                   address, length);
+        return false;
+    }
+    return wd40_debug_point_type_to_gdb(type, gdb_type, errp);
+}
+
+static WD40DebugPoint *
+wd40_change_debug_point(bool insert, WD40DebugPointType type,
+                        uint64_t address, uint64_t length, Error **errp)
+{
+    GdbBreakpointType gdb_type;
+    WD40DebugPoint *result;
+    int ret;
+
+    if (!first_cpu) {
+        error_setg(errp, "No realized CPU is available");
+        return NULL;
+    }
+    if (runstate_is_running()) {
+        error_setg(errp,
+                   "The guest must be stopped before changing debugger "
+                   "points");
+        return NULL;
+    }
+    if (!wd40_debug_point_validate(type, address, length, &gdb_type, errp)) {
+        return NULL;
+    }
+
+    if (insert) {
+        ret = gdb_breakpoint_insert(first_cpu, gdb_type,
+                                    (vaddr)address, (vaddr)length);
+    } else {
+        ret = gdb_breakpoint_remove(first_cpu, gdb_type,
+                                    (vaddr)address, (vaddr)length);
+    }
+    if (ret == -ENOSYS) {
+        error_setg(errp,
+                   "The current accelerator does not support guest "
+                   "debugger points");
+        return NULL;
+    }
+    if (!insert && ret == -ENOENT) {
+        error_setg(errp,
+                   "The requested debugger point is not installed");
+        return NULL;
+    }
+    if (ret < 0) {
+        error_setg_errno(errp, -ret, "Could not %s debugger point",
+                         insert ? "insert" : "remove");
+        return NULL;
+    }
+
+    result = g_new0(WD40DebugPoint, 1);
+    result->type = type;
+    result->address = address;
+    result->length = length;
+    return result;
+}
+
+WD40DebugPoint *
+qmp_x_wd40_insert_debug_point(WD40DebugPointType type,
+                               uint64_t address, uint64_t length,
+                               Error **errp)
+{
+    return wd40_change_debug_point(true, type, address, length, errp);
+}
+
+WD40DebugPoint *
+qmp_x_wd40_remove_debug_point(WD40DebugPointType type,
+                               uint64_t address, uint64_t length,
+                               Error **errp)
+{
+    return wd40_change_debug_point(false, type, address, length, errp);
+}
+
 static LogCategoryInfoList *qmp_log_category_info_list(void)
 {
     const QEMULogItem *item;

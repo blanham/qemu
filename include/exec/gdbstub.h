@@ -1,6 +1,9 @@
 #ifndef GDBSTUB_H
 #define GDBSTUB_H
 
+#include "exec/vaddr.h"
+#include "gdbstub/enums.h"
+
 typedef struct GDBFeature {
     const char *xmlname;
     const char *xml;
@@ -152,6 +155,32 @@ typedef struct {
  * const strings.
  */
 GArray *gdb_get_register_list(CPUState *cpu);
+
+/**
+ * gdb_breakpoint_insert:
+ * @cpu: anchor CPU for the current accelerator's guest-debug hooks
+ * @type: software breakpoint, hardware breakpoint, or watchpoint kind
+ * @addr: guest virtual address
+ * @len: architecture or watchpoint length
+ *
+ * Install one debugger point through the active accelerator.
+ *
+ * Returns: zero on success or a negative errno value.
+ */
+int gdb_breakpoint_insert(CPUState *cpu, GdbBreakpointType type,
+                          vaddr addr, vaddr len);
+
+/**
+ * gdb_breakpoint_remove:
+ *
+ * Remove one debugger point previously installed with the same tuple.
+ *
+ * Returns: zero on success or a negative errno value.
+ */
+int gdb_breakpoint_remove(CPUState *cpu, GdbBreakpointType type,
+                          vaddr addr, vaddr len);
+
+void gdb_breakpoint_remove_all(CPUState *cpu);
 
 void gdb_set_stop_cpu(CPUState *cpu);
 

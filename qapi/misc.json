@@ -531,6 +531,98 @@
   'features': [ 'unstable' ] }
 
 ##
+# @WD40DebugPointType:
+#
+# Accelerator-backed debugger point kind.
+#
+# @software-breakpoint: software execution breakpoint
+#
+# @hardware-breakpoint: hardware execution breakpoint
+#
+# @write-watchpoint: stop on a guest write
+#
+# @read-watchpoint: stop on a guest read
+#
+# @access-watchpoint: stop on a guest read or write
+#
+# Since: 11.2
+##
+{ 'enum': 'WD40DebugPointType',
+  'data': [ 'software-breakpoint', 'hardware-breakpoint',
+            'write-watchpoint', 'read-watchpoint',
+            'access-watchpoint' ] }
+
+##
+# @WD40DebugPoint:
+#
+# One accelerator-backed debugger point tuple.
+#
+# @type: debugger point kind
+#
+# @address: guest virtual address
+#
+# @length: nonzero architecture or watchpoint length
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40DebugPoint',
+  'data': { 'type': 'WD40DebugPointType',
+            'address': 'uint64', 'length': 'uint64' } }
+
+##
+# @x-wd40-insert-debug-point:
+#
+# Install a breakpoint or watchpoint through the active accelerator's
+# GDB guest-debug hooks.  The guest must be stopped.
+#
+# @type: debugger point kind
+#
+# @address: guest virtual address
+#
+# @length: nonzero architecture or watchpoint length
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: the installed debugger point tuple
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-insert-debug-point',
+  'data': { 'type': 'WD40DebugPointType',
+            'address': 'uint64', 'length': 'uint64' },
+  'returns': 'WD40DebugPoint',
+  'features': [ 'unstable' ] }
+
+##
+# @x-wd40-remove-debug-point:
+#
+# Remove one breakpoint or watchpoint through the active accelerator's
+# GDB guest-debug hooks.  The guest must be stopped.  Removal is not
+# idempotent: a missing point is an error.
+#
+# @type: debugger point kind
+#
+# @address: guest virtual address
+#
+# @length: exact length used when the point was installed
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: the removed debugger point tuple
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-remove-debug-point',
+  'data': { 'type': 'WD40DebugPointType',
+            'address': 'uint64', 'length': 'uint64' },
+  'returns': 'WD40DebugPoint',
+  'features': [ 'unstable' ] }
+
+##
 # @LogCategoryInfo:
 #
 # Structured metadata for a QEMU log category.

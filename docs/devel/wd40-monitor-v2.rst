@@ -191,6 +191,28 @@ guarantee.  The command does not pause a running guest; frontends should issue
 ``stop`` before changing execution-critical state or coordinating writes
 across registers and memory.
 
+Typed breakpoints and watchpoints
+--------------------------------
+
+``x-wd40-insert-debug-point`` and ``x-wd40-remove-debug-point`` expose
+software and hardware execution breakpoints plus read, write, and access
+watchpoints through QEMU's existing accelerator guest-debug hooks.  This keeps
+TCG, KVM, and other accelerator-specific semantics behind one typed interface
+rather than modifying CPU breakpoint lists directly.
+
+The guest must be stopped before either operation.  Addresses and lengths are
+unsigned guest virtual-address values; lengths must be nonzero and the complete
+range must fit QEMU's ``vaddr`` container.  Removal uses the same type, address,
+and length tuple supplied at insertion and reports a missing point as an error.
+
+These commands share the accelerator's GDB debug-point plane.  An attached GDB
+may therefore remove a point created through QMP, and accelerator-specific
+aliases remain visible: for example, TCG currently implements software and
+hardware execution breakpoints with the same translated breakpoint mechanism.
+Clients should coordinate ownership and pair successful insertions with exact
+removals.  A failed accelerator operation is not a cross-CPU rollback
+guarantee.
+
 Structured log-category control
 -------------------------------
 
