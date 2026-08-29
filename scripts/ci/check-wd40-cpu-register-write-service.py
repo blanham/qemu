@@ -508,10 +508,12 @@ def register_by_number(
 
 def choose_pattern(original: str, salt: int) -> str:
     byte_count = len(original) // 2
-    data = bytes(
+    data = bytearray(
         (0x31 + salt * 23 + offset * 29) & 0xFF
         for offset in range(byte_count)
     )
+    if data[0] == int(original[:2], 16):
+        data[0] ^= 0xFF
     candidate = data.hex()
     if candidate == original:
         candidate = bytes(value ^ 0xFF for value in data).hex()
@@ -539,23 +541,43 @@ def validate_write_result(
     register: dict[str, Any],
     *,
     cpu_index: int,
-    value: str,
+    expected_value: str | None,
     context: str,
-) -> None:
+) -> str:
     expected: dict[str, Any] = {
         "cpu-index": cpu_index,
         "number": register["number"],
         "name": register["name"],
         "described": register["described"],
         "bytes": register["bytes"],
-        "value": value.lower(),
     }
     if "feature" in register:
         expected["feature"] = register["feature"]
-    if result != expected:
+
+    actual_value = result.get("value")
+    actual_metadata = dict(result)
+    actual_metadata.pop("value", None)
+    if actual_metadata != expected:
         raise SystemExit(
-            f"{context}: register write mismatch: {result!r} != {expected!r}"
+            f"{context}: register metadata mismatch: "
+            f"{actual_metadata!r} != {expected!r}"
         )
+    if (
+        not isinstance(actual_value, str)
+        or len(actual_value) != register["bytes"] * 2
+        or re.fullmatch(r"[0-9a-f]+", actual_value) is None
+    ):
+        raise SystemExit(
+            f"{context}: malformed post-write value: {actual_value!r}"
+        )
+    if expected_value is not None:
+        expected_value = expected_value.lower()
+        if actual_value != expected_value:
+            raise SystemExit(
+                f"{context}: register value mismatch: "
+                f"{actual_value!r} != {expected_value!r}"
+            )
+    return actual_value
 
 
 def validate_target(build: Path, case: TargetCase) -> None:
@@ -710,19 +732,24 @@ def validate_target(build: Path, case: TargetCase) -> None:
             ),
             f"{case.target}/cpu0/write",
         )
-        validate_write_result(
+        applied0 = validate_write_result(
             written0,
             register0,
             cpu_index=0,
-            value=pattern0,
+            expected_value=None,
             context=f"{case.target}/cpu0/write",
         )
+        if applied0 == original0:
+            raise SystemExit(
+                f"{case.target}: CPU 0 write left "
+                f"{case.register_name} unchanged"
+            )
         readback0 = register_by_name(
             query_snapshot(client, 0),
             case.register_name,
             context=f"{case.target}/cpu0/readback",
         )
-        if readback0["value"] != pattern0:
+        if readback0["value"] != applied0:
             raise SystemExit(
                 f"{case.target}: snapshot did not observe CPU 0 write"
             )
@@ -738,7 +765,7 @@ def validate_target(build: Path, case: TargetCase) -> None:
             restored0,
             register0,
             cpu_index=0,
-            value=original0,
+            expected_value=original0,
             context=f"{case.target}/cpu0/restore",
         )
 
@@ -765,19 +792,24 @@ def validate_target(build: Path, case: TargetCase) -> None:
                 ),
                 f"{case.target}/cpu1/write",
             )
-            validate_write_result(
+            applied1 = validate_write_result(
                 written1,
                 register1,
                 cpu_index=1,
-                value=pattern1,
+                expected_value=None,
                 context=f"{case.target}/cpu1/write",
             )
+            if applied1 == original1:
+                raise SystemExit(
+                    f"{case.target}: CPU 1 write left "
+                    f"{case.register_name} unchanged"
+                )
             readback1 = register_by_name(
                 query_snapshot(client, 1),
                 case.register_name,
                 context=f"{case.target}/cpu1/readback",
             )
-            if readback1["value"] != pattern1:
+            if readback1["value"] != applied1:
                 raise SystemExit(
                     f"{case.target}: snapshot did not observe CPU 1 write"
                 )
@@ -802,7 +834,7 @@ def validate_target(build: Path, case: TargetCase) -> None:
                 restored1,
                 register1,
                 cpu_index=1,
-                value=original1,
+                expected_value=original1,
                 context=f"{case.target}/cpu1/restore",
             )
             final1 = register_by_name(
