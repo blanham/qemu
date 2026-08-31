@@ -94,9 +94,11 @@ def main() -> None:
 #
 # @length: instruction length in bytes
 #
-# @bytes: lowercase hexadecimal encoding of the exact instruction bytes
+# @bytes: lowercase hexadecimal encoding of the exact instruction
+#     bytes
 #
-# @text: architecture disassembler output without an address or byte dump
+# @text: architecture disassembler output without an address or byte
+#     dump
 #
 # Since: 11.2
 ##
@@ -111,7 +113,8 @@ def main() -> None:
 #
 # @space: guest address space used to fetch instruction bytes
 #
-# @cpu-index: virtual CPU whose target mode and address space were used
+# @cpu-index: virtual CPU whose target mode and address space were
+#     used
 #
 # @address: first guest address decoded
 #
