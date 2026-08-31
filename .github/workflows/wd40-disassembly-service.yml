@@ -1,0 +1,128 @@
+name: WD40 structured disassembly service
+
+on:
+  push:
+    branches:
+      - wd40/qol-disassembly-service
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wd40-disassembly-service-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out the feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply and replay the complete monitor-v2 contract
+        run: |
+          set -Eeuo pipefail
+
+          apply_contract() {
+            python3 scripts/wd40/apply-rustless-build.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control-hardening.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control.py
+            python3 scripts/wd40/apply-subtractive-log-mask.py
+            python3 scripts/wd40/apply-hmp-command-schema-composability.py
+            python3 scripts/wd40/apply-hmp-command-introspection-hardening.py
+            python3 scripts/wd40/apply-hmp-command-introspection.py
+            python3 scripts/wd40/apply-hmp-argument-introspection.py
+            python3 scripts/wd40/apply-structured-log-control-composability.py
+            python3 scripts/wd40/apply-structured-log-control.py
+            python3 scripts/wd40/apply-structured-log-control-hardening.py
+            python3 scripts/wd40/apply-split-irq-exception-logs.py
+            python3 scripts/wd40/apply-monitor-output-capture.py
+            python3 scripts/wd40/apply-monitor-output-capture-hardening.py
+            python3 scripts/wd40/apply-hmp-completion.py
+            python3 scripts/wd40/apply-gdb-register-gap-accounting.py
+            python3 scripts/wd40/apply-cpu-register-transform-composability.py
+            python3 scripts/wd40/apply-cpu-register-snapshots.py
+            python3 scripts/wd40/apply-memory-read-service.py
+            python3 scripts/wd40/apply-address-translation-service.py
+            python3 scripts/wd40/apply-address-translation-checker-composability.py
+            python3 scripts/wd40/apply-memory-write-service.py
+            python3 scripts/wd40/apply-memory-write-hardening.py
+            python3 scripts/wd40/apply-cpu-register-write-service.py
+            python3 scripts/wd40/apply-debug-point-service.py
+            python3 scripts/wd40/apply-disassembly-service.py
+          }
+
+          apply_contract
+          git diff --no-ext-diff --binary > /tmp/wd40-disassembly-pass1.diff
+          apply_contract
+          git diff --no-ext-diff --binary > /tmp/wd40-disassembly-pass2.diff
+          if ! cmp -s \
+              /tmp/wd40-disassembly-pass1.diff \
+              /tmp/wd40-disassembly-pass2.diff; then
+            echo "complete monitor-v2 replay changed the generated tree" >&2
+            diff -u \
+              /tmp/wd40-disassembly-pass1.diff \
+              /tmp/wd40-disassembly-pass2.diff || true
+            exit 1
+          fi
+
+          python3 -m py_compile \
+            scripts/wd40/apply-disassembly-service.py \
+            scripts/ci/check-wd40-disassembly-service.py
+          python3 scripts/ci/check-wd40-disassembly-service.py
+          git diff --check
+
+      - name: Install build and disassembler dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libcapstone-dev \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            ninja-build \
+            pkg-config \
+            python3-venv
+
+      - name: Build x86-64, AArch64, m68k, and PowerPC without Rust
+        timeout-minutes: 100
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-wd40-disassembly
+          cd build-wd40-disassembly
+          ../configure \
+            --target-list=x86_64-softmmu,aarch64-softmmu,m68k-softmmu,ppc-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          timeout --foreground --signal=TERM --kill-after=5m 90m \
+            ninja -j2 \
+              qemu-system-x86_64 \
+              qemu-system-aarch64 \
+              qemu-system-m68k \
+              qemu-system-ppc
+          cd ..
+
+      - name: Exercise structured disassembly on four targets
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-disassembly-service.py \
+            build-wd40-disassembly x86_64 aarch64 m68k ppc
+          git diff --check
