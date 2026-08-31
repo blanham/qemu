@@ -1,0 +1,59 @@
+name: WD40 disassembly doc-width repair
+
+on:
+  push:
+    branches:
+      - wd40/qol-disassembly-service
+    paths:
+      - .github/workflows/wd40-disassembly-doc-wrap-fix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wd40/qol-disassembly-service
+          fetch-depth: 0
+
+      - name: Wrap QAPI documentation and commit the source fix
+        run: |
+          set -Eeuo pipefail
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/wd40/apply-disassembly-service.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              "# @bytes: lowercase hexadecimal encoding of the exact instruction bytes\n":
+                  "# @bytes: lowercase hexadecimal encoding of the exact instruction\n"
+                  "#     bytes\n",
+              "# @text: architecture disassembler output without an address or byte dump\n":
+                  "# @text: architecture disassembler output without an address or byte\n"
+                  "#     dump\n",
+              "# @cpu-index: virtual CPU whose target mode and address space were used\n":
+                  "# @cpu-index: virtual CPU whose target mode and address space were\n"
+                  "#     used\n",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f"missing unique doc line: {old!r}")
+              text = text.replace(old, new, 1)
+          compile(text, str(path), "exec")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          git diff --check
+          git add scripts/wd40/apply-disassembly-service.py
+          git commit -m "wd40: wrap structured disassembly QAPI docs"
+          git push origin HEAD:wd40/qol-disassembly-service
