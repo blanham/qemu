@@ -288,6 +288,60 @@ bool cap_disas_host(disassemble_info *info, const void *code, size_t size)
     return true;
 }
 
+/*
+ * Decode one instruction without formatting an address or opcode dump.
+ *
+ * INFO->buffer_length is the caller's remaining byte budget.  Read in
+ * small boundary-limited pieces so a complete instruction immediately
+ * before an inaccessible page does not require the following page.
+ */
+int cap_disas_one(disassemble_info *info, uint64_t pc)
+{
+    uint8_t cap_buf[32];
+    csh handle;
+    size_t limit;
+    size_t csize = 0;
+    int result = -EINVAL;
+
+    if (info->buffer_length <= 0) {
+        return -EIO;
+    }
+    limit = MIN(sizeof(cap_buf), (size_t)info->buffer_length);
+    if (cap_disas_start(info, &handle) != CS_ERR_OK) {
+        return -ENOSYS;
+    }
+
+    while (csize < limit) {
+        size_t boundary = 1024 - ((pc + csize) & 1023);
+        size_t tsize = MIN(limit - csize, boundary);
+        const uint8_t *cbuf;
+        size_t available;
+        uint64_t next_pc;
+
+        if (info->read_memory_func(pc + csize, cap_buf + csize,
+                                   tsize, info) != 0) {
+            result = -EIO;
+            break;
+        }
+        csize += tsize;
+        cbuf = cap_buf;
+        available = csize;
+        next_pc = pc;
+        if (cs_disasm_iter(handle, &cbuf, &available,
+                           &next_pc, cap_insn)) {
+            info->fprintf_func(info->stream, "%s%s%s",
+                               cap_insn->mnemonic,
+                               cap_insn->op_str[0] ? " " : "",
+                               cap_insn->op_str);
+            result = cap_insn->size;
+            break;
+        }
+    }
+
+    cs_close(&handle);
+    return result;
+}
+
 /* Disassemble COUNT insns at PC for the target.  */
 bool cap_disas_monitor(disassemble_info *info, uint64_t pc, int count)
 {

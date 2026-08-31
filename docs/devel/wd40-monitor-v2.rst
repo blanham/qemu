@@ -213,6 +213,33 @@ Clients should coordinate ownership and pair successful insertions with exact
 removals.  A failed accelerator operation is not a cross-CPU rollback
 guarantee.
 
+Bounded structured disassembly
+-------------------------------
+
+``x-wd40-disassemble`` decodes a caller-bounded sequence of complete guest
+instructions and returns one typed record per instruction: address, exact raw
+bytes, decoded length, and architecture disassembler text.  TTYphoon therefore
+does not have to scrape addresses and opcode columns from ``x/NI`` output.
+
+The selected CPU supplies the target's current instruction mode and, for
+physical reads, its address space.  Virtual reads use that CPU's debug-memory
+translation.  The guest must be stopped so the mode, translation state, and
+instruction bytes cannot race normal execution while a multi-instruction
+result is assembled.
+
+Clients request between 1 and 256 instructions and may impose a byte budget
+between 1 byte and 64 KiB.  The default budget is 32 bytes per requested
+instruction.  A memory fault, unsupported target disassembler, incomplete
+instruction, or exhausted budget fails the command rather than returning a
+silently truncated list.  Successful results report the total bytes consumed,
+which may be smaller than the read budget.
+
+The service uses QEMU's target disassembler callbacks directly.  Capstone
+builds use a single-instruction adapter that returns the decoded length instead
+of reparsing Capstone's monitor-formatted text.  Builds without Capstone retain
+support for targets with an in-tree ``print_insn`` decoder and report a typed
+error for targets that have no available decoder.
+
 Structured log-category control
 -------------------------------
 

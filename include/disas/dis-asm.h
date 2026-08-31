@@ -459,11 +459,13 @@ bool cap_disas_target(disassemble_info *info, uint64_t pc, size_t size);
 bool cap_disas_host(disassemble_info *info, const void *code, size_t size);
 bool cap_disas_monitor(disassemble_info *info, uint64_t pc, int count);
 bool cap_disas_plugin(disassemble_info *info, uint64_t pc, size_t size);
+int cap_disas_one(disassemble_info *info, uint64_t pc);
 #else
 # define cap_disas_target(i, p, s)  false
 # define cap_disas_host(i, p, s)    false
 # define cap_disas_monitor(i, p, c) false
 # define cap_disas_plugin(i, p, c)  false
+# define cap_disas_one(i, p)        (-1)
 #endif /* CONFIG_CAPSTONE */
 
 #ifndef ATTRIBUTE_UNUSED

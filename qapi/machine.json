@@ -1013,6 +1013,87 @@
   'features': [ 'unstable' ] }
 
 ##
+# @WD40DisassembledInstruction:
+#
+# One decoded guest instruction.
+#
+# @address: guest address of the instruction
+#
+# @length: instruction length in bytes
+#
+# @bytes: lowercase hexadecimal encoding of the exact instruction
+#     bytes
+#
+# @text: architecture disassembler output without an address or byte
+#     dump
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40DisassembledInstruction',
+  'data': { 'address': 'uint64', 'length': 'uint64',
+            'bytes': 'str', 'text': 'str' } }
+
+##
+# @WD40Disassembly:
+#
+# Bounded structured disassembly from one virtual CPU's target mode.
+#
+# @space: guest address space used to fetch instruction bytes
+#
+# @cpu-index: virtual CPU whose target mode and address space were
+#     used
+#
+# @address: first guest address decoded
+#
+# @instruction-count: number of instructions returned
+#
+# @bytes-consumed: total number of instruction bytes returned
+#
+# @instructions: decoded instructions in ascending address order
+#
+# Since: 11.2
+##
+{ 'struct': 'WD40Disassembly',
+  'data': { 'space': 'WD40MemorySpace', 'cpu-index': 'int',
+            'address': 'uint64', 'instruction-count': 'uint64',
+            'bytes-consumed': 'uint64',
+            'instructions': ['WD40DisassembledInstruction'] } }
+
+##
+# @x-wd40-disassemble:
+#
+# Decode between 1 and 256 instructions from guest virtual or physical
+# memory.  The guest must be stopped.  The byte budget defaults to 32
+# bytes per requested instruction and may be set between 1 byte and
+# 64 KiB.
+#
+# @space: guest address space used to fetch instruction bytes
+#
+# @address: first guest address to decode
+#
+# @instruction-count: number of complete instructions to return
+#
+# @max-bytes: maximum bytes the decoder may read or return
+#
+# @cpu-index: virtual CPU supplying target mode and physical address
+#     space.  It defaults to CPU 0.
+#
+# Features:
+#
+# @unstable: This command is an experimental monitor-v2 foundation.
+#
+# Returns: exact bytes and text for each complete decoded instruction
+#
+# Since: 11.2
+##
+{ 'command': 'x-wd40-disassemble',
+  'data': { 'space': 'WD40MemorySpace', 'address': 'uint64',
+            'instruction-count': 'uint64', '*max-bytes': 'uint64',
+            '*cpu-index': 'int' },
+  'returns': 'WD40Disassembly',
+  'features': [ 'unstable' ] }
+
+##
 # @memsave:
 #
 # Save a portion of guest memory to a file.
