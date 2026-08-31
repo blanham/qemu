@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import selectors
 import subprocess
@@ -321,17 +322,16 @@ class QMPClient:
         self.command = command
         self.process = subprocess.Popen(
             command,
-            text=True,
-            encoding="utf-8",
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=1,
+            bufsize=0,
         )
         if self.process.stdin is None or self.process.stdout is None:
             raise SystemExit(f"{binary.name}: failed to open QMP pipes")
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
+        self.output = bytearray()
         self.sequence = 0
 
         greeting = self._next_json(30)
@@ -345,7 +345,10 @@ class QMPClient:
     def _stderr(self) -> str:
         if self.process.stderr is None or self.process.poll() is None:
             return ""
-        return self.process.stderr.read()
+        return self.process.stderr.read().decode(
+            "utf-8",
+            errors="replace",
+        )
 
     def _abort(self, message: str) -> None:
         if self.process.poll() is None:
@@ -359,9 +362,29 @@ class QMPClient:
             f"command={self.command!r}; stderr={self._stderr()!r}"
         )
 
+    def _pop_json(self) -> dict[str, Any] | None:
+        while True:
+            newline = self.output.find(b"\n")
+            if newline < 0:
+                return None
+            line = bytes(self.output[:newline])
+            del self.output[:newline + 1]
+            line = line.strip()
+            if not line.startswith(b"{"):
+                continue
+            try:
+                item = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if isinstance(item, dict):
+                return item
+
     def _next_json(self, timeout: float) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while True:
+            item = self._pop_json()
+            if item is not None:
+                return item
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self._abort("timed out waiting for a QMP reply")
@@ -370,18 +393,10 @@ class QMPClient:
                 if self.process.poll() is not None:
                     self._abort("QEMU exited before the expected QMP reply")
                 self._abort("timed out waiting for QMP output")
-            line = self.process.stdout.readline()
-            if line == "":
+            chunk = os.read(self.process.stdout.fileno(), 65536)
+            if not chunk:
                 self._abort("QMP stdout closed unexpectedly")
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(item, dict):
-                return item
+            self.output.extend(chunk)
 
     def execute(
         self,
@@ -398,7 +413,9 @@ class QMPClient:
             message["arguments"] = arguments
         assert self.process.stdin is not None
         try:
-            self.process.stdin.write(json.dumps(message) + "\n")
+            self.process.stdin.write(
+            json.dumps(message).encode("utf-8") + b"\n"
+        )
             self.process.stdin.flush()
         except BrokenPipeError:
             self._abort(f"QMP pipe closed while sending {command!r}")
