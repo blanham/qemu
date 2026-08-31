@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - wd40/qol-disassembly-service
+      - wd40/qol-integration
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: wd40-disassembly-service-${{ github.ref_name }}
@@ -15,6 +16,7 @@ concurrency:
 
 jobs:
   build-and-test:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -23,6 +25,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
 
       - name: Apply and replay the complete monitor-v2 contract
         run: |
@@ -126,3 +133,34 @@ jobs:
           python3 scripts/ci/check-wd40-disassembly-service.py \
             build-wd40-disassembly x86_64 aarch64 m68k ppc
           git diff --check
+
+      - name: Publish the validated structured disassembly implementation
+        if: github.ref_name == 'wd40/qol-disassembly-service'
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-wd40-disassembly
+          python3 scripts/ci/check-wd40-disassembly-service.py
+          git diff --check
+
+          cat > /tmp/wd40-disassembly-expected.txt <<'EOF'
+          disas/capstone.c
+          disas/disas-mon.c
+          docs/devel/wd40-monitor-v2.rst
+          include/disas/dis-asm.h
+          qapi/machine.json
+          EOF
+          git diff --name-only | sort > /tmp/wd40-disassembly-actual.txt
+          diff -u \
+            /tmp/wd40-disassembly-expected.txt \
+            /tmp/wd40-disassembly-actual.txt
+          test -z "$(git ls-files --others --exclude-standard)"
+
+          git add -- \
+            disas/capstone.c \
+            disas/disas-mon.c \
+            docs/devel/wd40-monitor-v2.rst \
+            include/disas/dis-asm.h \
+            qapi/machine.json
+          git diff --cached --check
+          git commit -m "monitor: add bounded structured guest disassembly"
+          git push origin HEAD:wd40/qol-disassembly-service
