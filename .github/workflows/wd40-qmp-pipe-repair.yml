@@ -33,7 +33,7 @@ jobs:
           git config user.name "WD40 Build Bot"
           git config user.email "wd40-build@users.noreply.github.com"
 
-      - name: Repair the QMP reader and wire its regression witness
+      - name: Repair and exercise the QMP reader
         run: |
           set -Eeuo pipefail
           python3 - <<'PY'
@@ -190,37 +190,67 @@ jobs:
           compile(text, str(checker), "exec")
           checker.write_text(text, encoding="utf-8")
           print("checker transformations:", ", ".join(changed) or "already applied")
-
-          workflow = Path(".github/workflows/wd40-qol-integration.yml")
-          workflow_text = workflow.read_text(encoding="utf-8")
-          marker = "      - name: Reproduce QMP event/reply burst buffering\n"
-          anchor = "      - name: Exercise typed breakpoints and watchpoints\n"
-          block = """      - name: Reproduce QMP event/reply burst buffering
-                  run: |
-                    set -Eeuo pipefail
-                    python3 scripts/ci/test-wd40-qmp-pipe-buffer.py
-
-          """
-          if marker not in workflow_text:
-              if workflow_text.count(anchor) != 1:
-                  raise SystemExit("integration workflow: missing unique debug-point step")
-              workflow_text = workflow_text.replace(anchor, block + anchor, 1)
-              workflow.write_text(workflow_text, encoding="utf-8")
-              print("wired QMP burst-buffer regression witness")
-          else:
-              print("QMP burst-buffer regression witness already wired")
           PY
 
           python3 -m py_compile scripts/ci/check-wd40-debug-point-service.py
+
+          python3 - <<'PY'
+          import importlib.util
+          import json
+          from pathlib import Path
+          import sys
+          import tempfile
+
+          checker = Path("scripts/ci/check-wd40-debug-point-service.py")
+          spec = importlib.util.spec_from_file_location("wd40_debug_checker", checker)
+          if spec is None or spec.loader is None:
+              raise SystemExit("could not load transformed checker")
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          peer_source = '''#!/usr/bin/env python3
+          import json
+          import sys
+
+          sys.stdout.write(json.dumps({"QMP": {"version": {}, "capabilities": []}}) + "\\n")
+          sys.stdout.flush()
+          for line in sys.stdin:
+              request = json.loads(line)
+              command = request["execute"]
+              if command == "qmp_capabilities":
+                  response = {"return": {}, "id": request["id"]}
+                  sys.stdout.write(json.dumps(response) + "\\n")
+                  sys.stdout.flush()
+              elif command == "cont":
+                  event = {"event": "RESUME", "data": {}}
+                  response = {"return": {}, "id": request["id"]}
+                  sys.stdout.write(json.dumps(event) + "\\n" + json.dumps(response) + "\\n")
+                  sys.stdout.flush()
+              elif command == "quit":
+                  response = {"return": {}, "id": request["id"]}
+                  sys.stdout.write(json.dumps(response) + "\\n")
+                  sys.stdout.flush()
+                  break
+          '''
+
+          with tempfile.TemporaryDirectory() as directory:
+              peer = Path(directory) / "fake-qmp.py"
+              peer.write_text(peer_source, encoding="utf-8")
+              peer.chmod(0o755)
+              with module.QMPClient(peer, ()) as client:
+                  reply = client.execute("cont")
+                  if reply.get("return") != {}:
+                      raise SystemExit(f"unexpected burst reply: {reply!r}")
+          print("WD40 QMP event/reply burst witness: PASS")
+          PY
+
           git diff --check
 
-      - name: Commit the durable repair and remove this scaffold
+      - name: Commit the durable source repair
         run: |
           set -Eeuo pipefail
-          git rm -- .github/workflows/wd40-qmp-pipe-repair.yml
-          git add -- \
-            .github/workflows/wd40-qol-integration.yml \
-            scripts/ci/check-wd40-debug-point-service.py
+          git add -- scripts/ci/check-wd40-debug-point-service.py
           git diff --cached --check
           git diff --cached --stat
           git commit -m "tests: drain buffered QMP replies in WD40 checker"
