@@ -120,9 +120,11 @@ def main() -> None:
 ##
 # @WD40StepRequest:
 #
-# Accepted request to execute exactly one instruction on one virtual CPU.
+# Accepted request to execute exactly one instruction on one virtual
+# CPU.
 #
-# @sequence: nonzero request identifier used to correlate the stop event
+# @sequence: nonzero request identifier used to correlate the stop
+#     event
 #
 # @cpu-index: selected virtual CPU
 #
