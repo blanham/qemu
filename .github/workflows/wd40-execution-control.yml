@@ -1,0 +1,165 @@
+name: WD40 execution control
+
+on:
+  push:
+    branches:
+      - wd40/qol-execution-control
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wd40-execution-control-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-and-publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out the feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "WD40 Build Bot"
+          git config user.email "wd40-build@users.noreply.github.com"
+
+      - name: Apply and replay the complete monitor-v2 contract
+        run: |
+          set -Eeuo pipefail
+
+          apply_contract() {
+            python3 scripts/wd40/apply-rustless-build.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control-hardening.py
+            python3 scripts/wd40/apply-amd-1tb-hole-control.py
+            python3 scripts/wd40/apply-subtractive-log-mask.py
+            python3 scripts/wd40/apply-hmp-command-schema-composability.py
+            python3 scripts/wd40/apply-hmp-command-introspection-hardening.py
+            python3 scripts/wd40/apply-hmp-command-introspection.py
+            python3 scripts/wd40/apply-hmp-argument-introspection.py
+            python3 scripts/wd40/apply-structured-log-control-composability.py
+            python3 scripts/wd40/apply-structured-log-control.py
+            python3 scripts/wd40/apply-structured-log-control-hardening.py
+            python3 scripts/wd40/apply-split-irq-exception-logs.py
+            python3 scripts/wd40/apply-monitor-output-capture.py
+            python3 scripts/wd40/apply-monitor-output-capture-hardening.py
+            python3 scripts/wd40/apply-hmp-completion.py
+            python3 scripts/wd40/apply-gdb-register-gap-accounting.py
+            python3 scripts/wd40/apply-cpu-register-transform-composability.py
+            python3 scripts/wd40/apply-cpu-register-snapshots.py
+            python3 scripts/wd40/apply-memory-read-service.py
+            python3 scripts/wd40/apply-address-translation-service.py
+            python3 scripts/wd40/apply-address-translation-checker-composability.py
+            python3 scripts/wd40/apply-memory-write-service.py
+            python3 scripts/wd40/apply-memory-write-hardening.py
+            python3 scripts/wd40/apply-cpu-register-write-service.py
+            python3 scripts/wd40/apply-debug-point-service.py
+            python3 scripts/wd40/apply-disassembly-service.py
+            python3 scripts/wd40/apply-execution-control.py
+          }
+
+          apply_contract
+          git diff --no-ext-diff --binary > /tmp/wd40-execution-pass1.diff
+          apply_contract
+          git diff --no-ext-diff --binary > /tmp/wd40-execution-pass2.diff
+          if ! cmp -s \
+              /tmp/wd40-execution-pass1.diff \
+              /tmp/wd40-execution-pass2.diff; then
+            echo "complete execution-control replay changed the tree" >&2
+            diff -u \
+              /tmp/wd40-execution-pass1.diff \
+              /tmp/wd40-execution-pass2.diff || true
+            exit 1
+          fi
+
+          python3 -m py_compile \
+            scripts/wd40/apply-execution-control.py \
+            scripts/ci/check-wd40-execution-control.py
+          python3 scripts/ci/check-wd40-execution-control.py
+          git diff --check
+
+      - name: Install build and disassembler dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libcapstone-dev \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            ninja-build \
+            pkg-config \
+            python3-venv
+
+      - name: Build x86-64, AArch64, m68k, and PowerPC without Rust
+        timeout-minutes: 100
+        run: |
+          set -Eeuo pipefail
+          mkdir .wd40-poison
+          for tool in rustc cargo rustdoc rustfmt bindgen; do
+            cat > ".wd40-poison/$tool" <<EOF
+          #!/bin/sh
+          echo "WD40 Rustless contract: unexpected invocation of $tool" >&2
+          exit 99
+          EOF
+            chmod +x ".wd40-poison/$tool"
+          done
+          export PATH="$PWD/.wd40-poison:$PATH"
+
+          mkdir build-wd40-execution
+          cd build-wd40-execution
+          ../configure \
+            --target-list=x86_64-softmmu,aarch64-softmmu,m68k-softmmu,ppc-softmmu \
+            --disable-rust \
+            --enable-fdt=internal \
+            --disable-docs \
+            --disable-werror
+          timeout --foreground --signal=TERM --kill-after=5m 90m \
+            ninja -j2 \
+              qemu-system-x86_64 \
+              qemu-system-aarch64 \
+              qemu-system-m68k \
+              qemu-system-ppc
+          cd ..
+
+      - name: Exercise single-step and stop provenance on four targets
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/ci/check-wd40-execution-control.py \
+            build-wd40-execution x86_64 aarch64 m68k ppc
+          git diff --check
+
+      - name: Publish the validated execution-control implementation
+        run: |
+          set -Eeuo pipefail
+          rm -rf .wd40-poison build-wd40-execution
+          python3 scripts/ci/check-wd40-execution-control.py
+          git diff --check
+
+          cat > /tmp/wd40-execution-expected.txt <<'EOF'
+          docs/devel/wd40-monitor-v2.rst
+          include/system/runstate.h
+          qapi/run-state.json
+          system/cpus.c
+          system/runstate.c
+          EOF
+          git diff --name-only | sort > /tmp/wd40-execution-actual.txt
+          diff -u \
+            /tmp/wd40-execution-expected.txt \
+            /tmp/wd40-execution-actual.txt
+          test -z "$(git ls-files --others --exclude-standard)"
+
+          git add -- \
+            docs/devel/wd40-monitor-v2.rst \
+            include/system/runstate.h \
+            qapi/run-state.json \
+            system/cpus.c \
+            system/runstate.c
+          git diff --cached --check
+          git commit -m "system: add typed single-step and debug-stop events"
+          git push origin HEAD:wd40/qol-execution-control
