@@ -6,6 +6,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/display/vc4_qpu.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 
 #define VC4_QPU_MAX_TRACE_WORDS       64
