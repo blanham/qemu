@@ -45,6 +45,11 @@ PACKET_NAMES = {
     0x31: "clipped-compressed-primitive",
 }
 
+FRONTIER_DIAGNOSTIC_MARKERS = (
+    "bcm2835-v3d: frontier ",
+    "bcm2835-v3d: qpu frontier ",
+)
+
 FAILURE_RE = re.compile(
     r"VC4_LINUX_MESA_GLES2_FAILED stage=(\S+) "
     r"egl=0x([0-9a-fA-F]+) gl=0x([0-9a-fA-F]+) errno=(\d+)"
@@ -83,6 +88,14 @@ def parse_args() -> argparse.Namespace:
 
 def read_text(path: Path) -> str:
     return path.read_text(errors="replace") if path.is_file() else ""
+
+
+def collect_frontier_diagnostics(text: str) -> list[str]:
+    return [
+        line
+        for line in text.splitlines()
+        if any(marker in line for marker in FRONTIER_DIAGNOSTIC_MARKERS)
+    ]
 
 
 def parse_outcomes(values: list[str]) -> dict[str, str]:
@@ -219,6 +232,7 @@ def main() -> int:
     probe_result = parse_probe_result(args.probe_result)
     outcomes = parse_outcomes(args.outcome)
     positions = marker_positions(serial)
+    frontier_diagnostics = collect_frontier_diagnostics(qemu_stderr)
 
     failure_match = FAILURE_RE.search(serial)
     failure = None
@@ -259,6 +273,7 @@ def main() -> int:
         ),
         "failure": failure,
         "unsupported_packet": unsupported_packet,
+        "shader_frontier_diagnostics": frontier_diagnostics,
         "child_exit": (
             int(child_exit_match.group(1))
             if child_exit_match is not None else None
@@ -362,6 +377,7 @@ def main() -> int:
         f"- Child exit: `{record['child_exit']}`",
         f"- Child signal: `{record['child_signal']}`",
         f"- Probe return code: `{record['probe_return_code']}`",
+        f"- Shader/QPU witness lines: `{len(frontier_diagnostics)}`",
     ]
     if packet is not None:
         lines.extend((
@@ -371,6 +387,15 @@ def main() -> int:
             f"- Opcode: `0x{packet['opcode']:02x}`",
             f"- Name: `{packet['name']}`",
             f"- Command-list address: `0x{packet['address']:08x}`",
+        ))
+    if frontier_diagnostics:
+        lines.extend((
+            "",
+            "## Bounded shader/QPU witness",
+            "",
+            "```text",
+            *frontier_diagnostics,
+            "```",
         ))
     if failure is not None:
         lines.extend((
