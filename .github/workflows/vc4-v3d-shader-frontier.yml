@@ -108,6 +108,7 @@ jobs:
           git add -- \
             hw/display/bcm2835_v3d.c \
             hw/display/meson.build \
+            hw/display/vc4_qpu_exec.c \
             include/hw/display/bcm2835_v3d.h \
             tests/unit/meson.build
           git diff --cached --check
