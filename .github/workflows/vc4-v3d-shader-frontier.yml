@@ -6,7 +6,15 @@ on:
       - agent/vc4-linux-mesa-gles2-frontier
     paths:
       - .github/workflows/vc4-v3d-shader-frontier.yml
+      - hw/display/bcm2835_v3d.c
+      - hw/display/meson.build
+      - hw/display/vc4_qpu.c
+      - hw/display/vc4_v3d_frontier.c
+      - include/hw/display/bcm2835_v3d.h
+      - include/hw/display/vc4_qpu.h
+      - include/hw/display/vc4_v3d_frontier.h
       - scripts/vc4/v3d-shader-frontier-fix.py
+      - scripts/vc4/v3d-shader-frontier-smoke.py
   workflow_dispatch:
 
 permissions:
