@@ -18,6 +18,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -100,3 +101,11 @@ jobs:
             "hw/display: expose validated VC4 shader frontier"
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
+
+      - name: Dispatch pinned Linux Mesa GLES2 frontier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run vc4-linux-mesa-gles2-frontier.yml \
+            --ref "$BRANCH"
