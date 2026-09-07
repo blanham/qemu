@@ -7,6 +7,7 @@
 #include "qemu/osdep.h"
 #include "hw/display/vc4_qpu.h"
 #include "hw/display/vc4_v3d_frontier.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 
 #define VC4_MAX_SHADER_ATTRIBUTES       8
