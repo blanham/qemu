@@ -9,12 +9,17 @@ on:
       - hw/display/bcm2835_v3d.c
       - hw/display/meson.build
       - hw/display/vc4_qpu.c
+      - hw/display/vc4_qpu_exec.c
       - hw/display/vc4_v3d_frontier.c
       - include/hw/display/bcm2835_v3d.h
       - include/hw/display/vc4_qpu.h
+      - include/hw/display/vc4_qpu_exec.h
       - include/hw/display/vc4_v3d_frontier.h
+      - scripts/vc4/qpu-exec-integrate.py
       - scripts/vc4/v3d-shader-frontier-fix.py
       - scripts/vc4/v3d-shader-frontier-smoke.py
+      - tests/unit/meson.build
+      - tests/unit/test-vc4-qpu.c
   workflow_dispatch:
 
 permissions:
@@ -45,22 +50,24 @@ jobs:
             libglib2.0-dev libpixman-1-dev ninja-build \
             python3 python3-venv zlib1g-dev
 
-      - name: Materialize bounded shader and QPU diagnostics
+      - name: Materialize bounded shader and QPU support
         run: |
           set -euo pipefail
           python3 -m py_compile \
+            scripts/vc4/qpu-exec-integrate.py \
             scripts/vc4/v3d-shader-frontier-fix.py \
             scripts/vc4/v3d-shader-frontier-smoke.py
           python3 scripts/vc4/v3d-shader-frontier-fix.py
+          python3 scripts/vc4/qpu-exec-integrate.py
           git diff --check
           grep -Fq 'vc4_v3d_frontier_report' \
             hw/display/bcm2835_v3d.c
           grep -Fq 'vc4_qpu_trace_program' hw/display/vc4_qpu.c
+          grep -Fq 'vc4_qpu_execute' hw/display/vc4_qpu_exec.c
           grep -Fq 'vc4_v3d_frontier_report' \
             hw/display/vc4_v3d_frontier.c
-          grep -Fq "'vc4_qpu.c'" hw/display/meson.build
-          grep -Fq "'vc4_v3d_frontier.c'" \
-            hw/display/meson.build
+          grep -Fq "'vc4_qpu_exec.c'" hw/display/meson.build
+          grep -Fq "'test-vc4-qpu'" tests/unit/meson.build
 
       - name: Configure and build QEMU
         run: |
@@ -68,7 +75,13 @@ jobs:
           ./configure \
             --target-list=aarch64-softmmu \
             --disable-docs --disable-werror
-          ninja -C build qemu-system-aarch64
+          ninja -C build \
+            qemu-system-aarch64 tests/unit/test-vc4-qpu
+
+      - name: Validate measured QPU execution
+        run: |
+          set -euo pipefail
+          build/tests/unit/test-vc4-qpu --tap -k
 
       - name: Preserve the existing V3D regression
         run: |
@@ -89,18 +102,21 @@ jobs:
           printf 'published=false\n' >> "$GITHUB_OUTPUT"
           git config user.name "VC4 Agent"
           git config user.email "vc4-agent@users.noreply.github.com"
-          git restore -- scripts/vc4/v3d-shader-frontier-fix.py
+          git restore -- \
+            scripts/vc4/qpu-exec-integrate.py \
+            scripts/vc4/v3d-shader-frontier-fix.py
           git add -- \
             hw/display/bcm2835_v3d.c \
             hw/display/meson.build \
-            include/hw/display/bcm2835_v3d.h
+            include/hw/display/bcm2835_v3d.h \
+            tests/unit/meson.build
           git diff --cached --check
           if git diff --cached --quiet; then
-            echo "Shader frontier product already materialized"
+            echo "Shader/QPU product already materialized"
             exit 0
           fi
           git commit -m \
-            "hw/display: expose validated VC4 shader frontier"
+            "hw/display: integrate validated VC4 QPU execution core"
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
           printf 'published=true\n' >> "$GITHUB_OUTPUT"
