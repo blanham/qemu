@@ -31,6 +31,10 @@ struct BCM2835V3DState {
      * state here for migration and debug-register reads.
      */
     uint32_t regs[BCM2835_V3D_REG_WORDS];
+
+    /* Diagnostic-only suppression for repeated kernel timeout retries. */
+    uint32_t last_frontier_pc;
+    uint32_t last_frontier_shader_record;
 };
 
 #endif /* HW_DISPLAY_BCM2835_V3D_H */

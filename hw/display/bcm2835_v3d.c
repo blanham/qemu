@@ -16,6 +16,7 @@
 #include "system/memory.h"
 #include "hw/core/irq.h"
 #include "hw/display/bcm2835_v3d.h"
+#include "hw/display/vc4_v3d_frontier.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -171,6 +172,7 @@ typedef struct VC4V3DCLState {
     uint8_t clear_stencil;
     uint8_t tile_x;
     uint8_t tile_y;
+    VC4V3DFrontierState frontier;
     bool have_render_config;
     bool have_clear_color;
     bool saw_eof;
@@ -258,6 +260,53 @@ static bool bcm2835_v3d_cl_read_u32(BCM2835V3DState *s, uint32_t address,
     }
     *value = ldl_le_p(bytes);
     return true;
+}
+
+static bool bcm2835_v3d_frontier_read(void *opaque,
+                                         uint32_t address,
+                                         void *buffer, size_t size)
+{
+    BCM2835V3DState *s = opaque;
+
+    return address_space_read(&s->dma_as, address,
+                              MEMTXATTRS_UNSPECIFIED, buffer, size) ==
+           MEMTX_OK;
+}
+
+static bool bcm2835_v3d_report_primitive_frontier(
+    BCM2835V3DState *s, unsigned thread, VC4V3DCLState *cl,
+    uint32_t pc, uint8_t packet)
+{
+    VC4V3DPrimitiveInfo primitive = {
+        .pc = pc,
+        .thread = thread,
+        .packet = packet,
+        .indexed = packet == VC4_PACKET_GL_INDEXED_PRIMITIVE,
+    };
+
+    if (!bcm2835_v3d_cl_read_u8(s, pc + 1,
+                                &primitive.mode_byte) ||
+        !bcm2835_v3d_cl_read_u32(s, pc + 2,
+                                 &primitive.length)) {
+        return true;
+    }
+
+    if (!primitive.indexed) {
+        if (!bcm2835_v3d_cl_read_u32(s, pc + 6,
+                                     &primitive.first)) {
+            return true;
+        }
+    } else if (!bcm2835_v3d_cl_read_u32(
+                   s, pc + 6, &primitive.index_address) ||
+               !bcm2835_v3d_cl_read_u32(
+                   s, pc + 10, &primitive.max_index)) {
+        return true;
+    }
+
+    return vc4_v3d_frontier_report(
+        bcm2835_v3d_frontier_read, s, TYPE_BCM2835_V3D,
+        &cl->frontier, &primitive, &s->last_frontier_pc,
+        &s->last_frontier_shader_record);
 }
 
 static bool bcm2835_v3d_store_clear_tile(BCM2835V3DState *s,
@@ -463,7 +512,6 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
     case VC4_PACKET_INCREMENT_SEMAPHORE:
     case VC4_PACKET_WAIT_ON_SEMAPHORE:
     case VC4_PACKET_PRIMITIVE_LIST_FORMAT:
-    case VC4_PACKET_GL_SHADER_STATE:
     case VC4_PACKET_NV_SHADER_STATE:
     case VC4_PACKET_VG_SHADER_STATE:
     case VC4_PACKET_CONFIGURATION_BITS:
@@ -477,7 +525,6 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
     case VC4_PACKET_Z_CLIPPING:
     case VC4_PACKET_CLIPPER_XY_SCALING:
     case VC4_PACKET_CLIPPER_Z_SCALING:
-    case VC4_PACKET_TILE_BINNING_MODE_CONFIG:
     case VC4_PACKET_STORE_FULL_RES_TILE:
     case VC4_PACKET_LOAD_FULL_RES_TILE:
     case VC4_PACKET_STORE_TILE_BUFFER_GENERAL:
@@ -537,6 +584,34 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
         bcm2835_v3d_increment_list_counter(s, thread, false);
         return true;
 
+    case VC4_PACKET_TILE_BINNING_MODE_CONFIG:
+        if (thread != 0 ||
+            !bcm2835_v3d_cl_read_u32(
+                s, pc + 1, &cl->frontier.bin_alloc_base) ||
+            !bcm2835_v3d_cl_read_u32(
+                s, pc + 5, &cl->frontier.bin_alloc_size) ||
+            !bcm2835_v3d_cl_read_u32(
+                s, pc + 9, &cl->frontier.bin_state_base) ||
+            !bcm2835_v3d_cl_read_u8(
+                s, pc + 13, &cl->frontier.bin_tiles_x) ||
+            !bcm2835_v3d_cl_read_u8(
+                s, pc + 14, &cl->frontier.bin_tiles_y) ||
+            !bcm2835_v3d_cl_read_u8(
+                s, pc + 15, &cl->frontier.bin_flags)) {
+            return false;
+        }
+        cl->frontier.have_binning_config = true;
+        return true;
+
+    case VC4_PACKET_GL_SHADER_STATE:
+        if (thread != 0 ||
+            !bcm2835_v3d_cl_read_u32(
+                s, pc + 1, &cl->frontier.shader_record)) {
+            return false;
+        }
+        cl->frontier.have_shader_record = true;
+        return true;
+
     case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:
         if (thread != 1 ||
             !bcm2835_v3d_cl_read_u32(s, pc + 1, &cl->render_base) ||
@@ -578,6 +653,16 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
 
     case VC4_PACKET_GL_INDEXED_PRIMITIVE:
     case VC4_PACKET_GL_ARRAY_PRIMITIVE:
+        if (bcm2835_v3d_report_primitive_frontier(
+                s, thread, cl, pc, packet)) {
+            qemu_log_mask(LOG_UNIMP,
+                          TYPE_BCM2835_V3D
+                          ": packet 0x%02x requires binning/QPU "
+                          "execution at 0x%08x\n", packet, pc);
+        }
+        s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_UNSUPPORTED;
+        return false;
+
     case VC4_PACKET_COMPRESSED_PRIMITIVE:
     case VC4_PACKET_CLIPPED_COMPRESSED_PRIMITIVE:
         s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_UNSUPPORTED;
@@ -840,6 +925,8 @@ static void bcm2835_v3d_reset(DeviceState *dev)
     BCM2835V3DState *s = BCM2835_V3D(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
+    s->last_frontier_pc = UINT32_MAX;
+    s->last_frontier_shader_record = UINT32_MAX;
     bcm2835_v3d_update_irq(s);
 }
 
