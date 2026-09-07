@@ -22,56 +22,35 @@ typedef struct TestMemory {
 } TestMemory;
 
 static const uint64_t measured_vs[] = {
-    0xd002102702821f80ULL,
-    0xe0024c6700201a00ULL,
-    0x100049e020c20037ULL,
-    0x100049e1209c0007ULL,
-    0x1012402227c20277ULL,
-    0x100049e3209c0017ULL,
-    0x10220027079e76c0ULL,
-    0xe0025c6700001a00ULL,
-    0x10020c2715027d80ULL,
-    0x10020c2715827d80ULL,
-    0x10020c27159c0fc0ULL,
-    0x300009e7009e7000ULL,
-    0x100009e7009e7000ULL,
-    0x100009e7009e7000ULL,
+    0xd002102702821f80ULL, 0xe0024c6700201a00ULL,
+    0x100049e020c20037ULL, 0x100049e1209c0007ULL,
+    0x1012402227c20277ULL, 0x100049e3209c0017ULL,
+    0x10220027079e76c0ULL, 0xe0025c6700001a00ULL,
+    0x10020c2715027d80ULL, 0x10020c2715827d80ULL,
+    0x10020c27159c0fc0ULL, 0x300009e7009e7000ULL,
+    0x100009e7009e7000ULL, 0x100009e7009e7000ULL,
 };
 
 static const uint64_t measured_cs[] = {
-    0xe0024c6700201a00ULL,
-    0xe0025c6700001a00ULL,
-    0xd002102702821f80ULL,
-    0x1002086715c27d80ULL,
-    0x10024c233582724eULL,
-    0x100248a135c00d9fULL,
-    0x1012402027827256ULL,
-    0x10024c20359c0487ULL,
-    0xd0020c27159c0fc0ULL,
-    0x10220027079e7000ULL,
-    0xd0020c27159e0fc0ULL,
-    0x10020c2715027d80ULL,
-    0x10020c2715827d80ULL,
-    0x10020c27159c0fc0ULL,
-    0x300009e7009e7000ULL,
-    0x100009e7009e7000ULL,
+    0xe0024c6700201a00ULL, 0xe0025c6700001a00ULL,
+    0xd002102702821f80ULL, 0x1002086715c27d80ULL,
+    0x10024c233582724eULL, 0x100248a135c00d9fULL,
+    0x1012402027827256ULL, 0x10024c20359c0487ULL,
+    0xd0020c27159c0fc0ULL, 0x10220027079e7000ULL,
+    0xd0020c27159e0fc0ULL, 0x10020c2715027d80ULL,
+    0x10020c2715827d80ULL, 0x10020c27159c0fc0ULL,
+    0x300009e7009e7000ULL, 0x100009e7009e7000ULL,
     0x100009e7009e7000ULL,
 };
 
 static const uint64_t measured_fs[] = {
-    0x100009e7009e7000ULL,
-    0x100009e7009e7000ULL,
-    0x10020ba715827d80ULL,
-    0x300009e7009e7000ULL,
-    0x100009e7009e7000ULL,
-    0x500009e7009e7000ULL,
+    0x100009e7009e7000ULL, 0x100009e7009e7000ULL,
+    0x10020ba715827d80ULL, 0x300009e7009e7000ULL,
+    0x100009e7009e7000ULL, 0x500009e7009e7000ULL,
 };
 
 static const uint32_t transform_uniforms[] = {
-    0x3f800000,
-    0x44000000,
-    0xc4000000,
-    0x3f000000,
+    0x3f800000, 0x44000000, 0xc4000000, 0x3f000000,
 };
 
 static bool test_memory_read(void *opaque, uint32_t address,
@@ -85,7 +64,6 @@ static bool test_memory_read(void *opaque, uint32_t address,
         uint64_t segment_end = (uint64_t)segment->address + segment->size;
 
         if (address >= segment->address && end <= segment_end) {
-            memcpy(buffer, segment->data, size);
             memcpy(buffer,
                    segment->data + (address - segment->address), size);
             return true;
@@ -134,37 +112,46 @@ static void load_triangle_attributes(VC4QPUExecState *state)
 static void assert_transform_output(const VC4QPUExecState *state,
                                     unsigned packed_row)
 {
-    g_assert_cmphex(state->vpm[packed_row].lane[0], ==, 0xfe00fe00);
-    g_assert_cmphex(state->vpm[packed_row].lane[1], ==, 0xfe000600);
+    g_assert_cmphex(state->vpm[packed_row].lane[0], ==, 0x0200fe00);
+    g_assert_cmphex(state->vpm[packed_row].lane[1], ==, 0x02000600);
     g_assert_cmphex(state->vpm[packed_row].lane[2], ==, 0xfa00fe00);
+}
+
+static void prepare_transform_memory(TestMemory *memory,
+                                     uint32_t code_address,
+                                     uint32_t uniform_address,
+                                     uint8_t *code,
+                                     const uint64_t *words,
+                                     size_t word_count,
+                                     uint8_t *uniforms)
+{
+    encode_words(code, words, word_count);
+    encode_uniforms(uniforms, transform_uniforms,
+                    ARRAY_SIZE(transform_uniforms));
+    test_memory_add(memory, code_address, code,
+                    word_count * sizeof(uint64_t));
+    test_memory_add(memory, uniform_address, uniforms,
+                    sizeof(transform_uniforms));
 }
 
 static void test_measured_vertex_shader(void)
 {
-    enum {
-        CODE_ADDRESS = 0x1000,
-        UNIFORM_ADDRESS = 0x2000,
-    };
+    enum { CODE = 0x1000, UNIFORMS = 0x2000 };
     uint8_t code[sizeof(measured_vs)];
     uint8_t uniforms[sizeof(transform_uniforms)];
     TestMemory memory = { 0 };
     VC4QPUExecState state;
 
-    encode_words(code, measured_vs, ARRAY_SIZE(measured_vs));
-    encode_uniforms(uniforms, transform_uniforms,
-                    ARRAY_SIZE(transform_uniforms));
-    test_memory_add(&memory, CODE_ADDRESS, code, sizeof(code));
-    test_memory_add(&memory, UNIFORM_ADDRESS, uniforms, sizeof(uniforms));
-
-    vc4_qpu_exec_init(&state, UNIFORM_ADDRESS);
+    prepare_transform_memory(&memory, CODE, UNIFORMS, code,
+                             measured_vs, ARRAY_SIZE(measured_vs), uniforms);
+    vc4_qpu_exec_init(&state, UNIFORMS);
     load_triangle_attributes(&state);
 
-    g_assert_true(vc4_qpu_execute(
-        test_memory_read, &memory, CODE_ADDRESS, &state));
+    g_assert_true(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
     g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_NONE);
     g_assert_cmpuint(state.instruction_count, ==, ARRAY_SIZE(measured_vs));
     g_assert_cmphex(state.uniform_address, ==,
-                    UNIFORM_ADDRESS + sizeof(transform_uniforms));
+                    UNIFORMS + sizeof(transform_uniforms));
     assert_transform_output(&state, 0);
     for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
         g_assert_cmphex(state.vpm[1].lane[lane], ==, 0x3f000000);
@@ -174,30 +161,22 @@ static void test_measured_vertex_shader(void)
 
 static void test_measured_coordinate_shader(void)
 {
-    enum {
-        CODE_ADDRESS = 0x3000,
-        UNIFORM_ADDRESS = 0x4000,
-    };
+    enum { CODE = 0x3000, UNIFORMS = 0x4000 };
     uint8_t code[sizeof(measured_cs)];
     uint8_t uniforms[sizeof(transform_uniforms)];
     TestMemory memory = { 0 };
     VC4QPUExecState state;
 
-    encode_words(code, measured_cs, ARRAY_SIZE(measured_cs));
-    encode_uniforms(uniforms, transform_uniforms,
-                    ARRAY_SIZE(transform_uniforms));
-    test_memory_add(&memory, CODE_ADDRESS, code, sizeof(code));
-    test_memory_add(&memory, UNIFORM_ADDRESS, uniforms, sizeof(uniforms));
-
-    vc4_qpu_exec_init(&state, UNIFORM_ADDRESS);
+    prepare_transform_memory(&memory, CODE, UNIFORMS, code,
+                             measured_cs, ARRAY_SIZE(measured_cs), uniforms);
+    vc4_qpu_exec_init(&state, UNIFORMS);
     load_triangle_attributes(&state);
 
-    g_assert_true(vc4_qpu_execute(
-        test_memory_read, &memory, CODE_ADDRESS, &state));
+    g_assert_true(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
     g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_NONE);
     g_assert_cmpuint(state.instruction_count, ==, ARRAY_SIZE(measured_cs));
     g_assert_cmphex(state.uniform_address, ==,
-                    UNIFORM_ADDRESS + sizeof(transform_uniforms));
+                    UNIFORMS + sizeof(transform_uniforms));
 
     g_assert_cmphex(state.vpm[0].lane[0], ==, 0xbf800000);
     g_assert_cmphex(state.vpm[0].lane[1], ==, 0x40400000);
@@ -216,10 +195,7 @@ static void test_measured_coordinate_shader(void)
 
 static void test_measured_fragment_shader(void)
 {
-    enum {
-        CODE_ADDRESS = 0x5000,
-        UNIFORM_ADDRESS = 0x6000,
-    };
+    enum { CODE = 0x5000, UNIFORMS = 0x6000 };
     static const uint32_t color_uniform[] = { 0xff2080df };
     uint8_t code[sizeof(measured_fs)];
     uint8_t uniforms[sizeof(color_uniform)];
@@ -228,12 +204,11 @@ static void test_measured_fragment_shader(void)
 
     encode_words(code, measured_fs, ARRAY_SIZE(measured_fs));
     encode_uniforms(uniforms, color_uniform, ARRAY_SIZE(color_uniform));
-    test_memory_add(&memory, CODE_ADDRESS, code, sizeof(code));
-    test_memory_add(&memory, UNIFORM_ADDRESS, uniforms, sizeof(uniforms));
+    test_memory_add(&memory, CODE, code, sizeof(code));
+    test_memory_add(&memory, UNIFORMS, uniforms, sizeof(uniforms));
 
-    vc4_qpu_exec_init(&state, UNIFORM_ADDRESS);
-    g_assert_true(vc4_qpu_execute(
-        test_memory_read, &memory, CODE_ADDRESS, &state));
+    vc4_qpu_exec_init(&state, UNIFORMS);
+    g_assert_true(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
     g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_NONE);
     g_assert_cmpuint(state.instruction_count, ==, ARRAY_SIZE(measured_fs));
     g_assert_true(state.tlb_color_all_valid);
@@ -246,18 +221,17 @@ static void test_measured_fragment_shader(void)
 
 static void test_unsupported_signal_fails_closed(void)
 {
-    enum { CODE_ADDRESS = 0x7000 };
+    enum { CODE = 0x7000 };
     static const uint64_t branch = 0xf000000000000000ULL;
     uint8_t code[sizeof(branch)];
     TestMemory memory = { 0 };
     VC4QPUExecState state;
 
     encode_words(code, &branch, 1);
-    test_memory_add(&memory, CODE_ADDRESS, code, sizeof(code));
+    test_memory_add(&memory, CODE, code, sizeof(code));
     vc4_qpu_exec_init(&state, 0);
 
-    g_assert_false(vc4_qpu_execute(
-        test_memory_read, &memory, CODE_ADDRESS, &state));
+    g_assert_false(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
     g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_SIGNAL);
     g_assert_cmpuint(state.fault_detail, ==, 15);
     g_assert_cmpstr(vc4_qpu_exec_fault_name(state.fault), ==, "signal");
