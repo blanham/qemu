@@ -83,8 +83,10 @@ jobs:
             --qemu build/qemu-system-aarch64
 
       - name: Publish validated product commit
+        id: publish
         run: |
           set -euo pipefail
+          printf 'published=false\n' >> "$GITHUB_OUTPUT"
           git config user.name "VC4 Agent"
           git config user.email "vc4-agent@users.noreply.github.com"
           git restore -- scripts/vc4/v3d-shader-frontier-fix.py
@@ -101,8 +103,10 @@ jobs:
             "hw/display: expose validated VC4 shader frontier"
           git pull --rebase origin "$BRANCH"
           git push origin HEAD:"$BRANCH"
+          printf 'published=true\n' >> "$GITHUB_OUTPUT"
 
       - name: Dispatch pinned Linux Mesa GLES2 frontier
+        if: steps.publish.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
