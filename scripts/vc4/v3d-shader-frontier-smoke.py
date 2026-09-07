@@ -237,7 +237,7 @@ def main() -> int:
             str(qemu), "-M", "raspi3b-vc4-hetero", "-m", "1G",
             "-smp", "5", "-accel", "tcg,thread=single",
             "-display", "none", "-monitor", "none", "-serial", "none",
-            "-no-reboot", "-S", "-kernel", str(vpu_image),
+            "-d", "unimp", "-no-reboot", "-S", "-kernel", str(vpu_image),
             "-qtest", f"unix:{socket_path},server=on,wait=off",
         ]
 
