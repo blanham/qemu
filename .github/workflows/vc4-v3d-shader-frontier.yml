@@ -20,6 +20,7 @@ on:
       - scripts/vc4/v3d-shader-frontier-smoke.py
       - tests/unit/meson.build
       - tests/unit/test-vc4-qpu.c
+      - tests/unit/test-vc4-qpu-contract.c
   workflow_dispatch:
 
 permissions:
@@ -50,52 +51,88 @@ jobs:
             libglib2.0-dev libpixman-1-dev ninja-build \
             python3 python3-venv zlib1g-dev
 
-      - name: Materialize bounded shader and QPU support
+      - name: Materialize and verify idempotent QPU repairs
         run: |
           set -euo pipefail
+          mkdir -p build/vc4-qpu-evidence
+          git rev-parse HEAD > build/vc4-qpu-evidence/BASE_SHA
           python3 -m py_compile \
             scripts/vc4/qpu-exec-integrate.py \
             scripts/vc4/v3d-shader-frontier-fix.py \
             scripts/vc4/v3d-shader-frontier-smoke.py
           python3 scripts/vc4/v3d-shader-frontier-fix.py
           python3 scripts/vc4/qpu-exec-integrate.py
+          sha256sum hw/display/vc4_qpu_exec.c \
+            hw/display/meson.build tests/unit/meson.build \
+            > build/vc4-qpu-evidence/IDEMPOTENT_SHA256SUMS
+          python3 scripts/vc4/qpu-exec-integrate.py
+          sha256sum -c build/vc4-qpu-evidence/IDEMPOTENT_SHA256SUMS
           git diff --check
-          grep -Fq 'vc4_v3d_frontier_report' \
-            hw/display/bcm2835_v3d.c
-          grep -Fq 'vc4_qpu_trace_program' hw/display/vc4_qpu.c
-          grep -Fq 'vc4_qpu_execute' hw/display/vc4_qpu_exec.c
-          grep -Fq 'vc4_v3d_frontier_report' \
-            hw/display/vc4_v3d_frontier.c
-          grep -Fq "'vc4_qpu_exec.c'" hw/display/meson.build
-          grep -Fq "'test-vc4-qpu'" tests/unit/meson.build
+          git diff --no-ext-diff > build/vc4-qpu-evidence/product.patch
 
-      - name: Configure and build QEMU
+      - name: Configure and build focused QPU tests first
         run: |
           set -euo pipefail
           ./configure \
             --target-list=aarch64-softmmu \
-            --disable-docs --disable-werror
+            --disable-docs --disable-werror \
+            --extra-cflags=-Werror=implicit-function-declaration \
+            2>&1 | tee build/vc4-qpu-evidence/configure.log
           ninja -C build \
-            qemu-system-aarch64 tests/unit/test-vc4-qpu
+            tests/unit/test-vc4-qpu tests/unit/test-vc4-qpu-contract \
+            2>&1 | tee build/vc4-qpu-evidence/unit-build.log
 
-      - name: Validate measured QPU execution
+      - name: Validate measured shaders and independent ISA contracts
         run: |
           set -euo pipefail
-          build/tests/unit/test-vc4-qpu --tap -k
+          build/tests/unit/test-vc4-qpu --tap -k \
+            2>&1 | tee build/vc4-qpu-evidence/measured.tap
+          build/tests/unit/test-vc4-qpu-contract --tap -k \
+            2>&1 | tee build/vc4-qpu-evidence/contracts.tap
+
+      - name: Validate QPU tests under address and undefined-behavior sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          mkdir -p build-vc4-sanitize
+          (
+            cd build-vc4-sanitize
+            ../configure --target-list=aarch64-softmmu \
+              --disable-docs --disable-werror \
+              --extra-cflags='-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -Werror=implicit-function-declaration' \
+              --extra-ldflags='-fsanitize=address,undefined,float-cast-overflow'
+          ) 2>&1 | tee build/vc4-qpu-evidence/sanitizer-configure.log
+          ninja -C build-vc4-sanitize \
+            tests/unit/test-vc4-qpu tests/unit/test-vc4-qpu-contract \
+            2>&1 | tee build/vc4-qpu-evidence/sanitizer-build.log
+          build-vc4-sanitize/tests/unit/test-vc4-qpu --tap -k \
+            2>&1 | tee build/vc4-qpu-evidence/measured-sanitized.tap
+          build-vc4-sanitize/tests/unit/test-vc4-qpu-contract --tap -k \
+            2>&1 | tee build/vc4-qpu-evidence/contracts-sanitized.tap
+
+      - name: Build QEMU after the focused tests pass
+        run: |
+          set -euo pipefail
+          ninja -C build qemu-system-aarch64 \
+            2>&1 | tee build/vc4-qpu-evidence/qemu-build.log
 
       - name: Preserve the existing V3D regression
         run: |
           set -euo pipefail
           python3 scripts/vc4/v3d-smoke.py \
-            --qemu build/qemu-system-aarch64
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee build/vc4-qpu-evidence/v3d-smoke.log
 
       - name: Validate the shader-record frontier
         run: |
           set -euo pipefail
           python3 scripts/vc4/v3d-shader-frontier-smoke.py \
-            --qemu build/qemu-system-aarch64
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee build/vc4-qpu-evidence/shader-frontier.log
 
-      - name: Publish validated product commit
+      - name: Publish only the tested product tree
         id: publish
         run: |
           set -euo pipefail
@@ -114,12 +151,20 @@ jobs:
           git diff --cached --check
           if git diff --cached --quiet; then
             echo "Shader/QPU product already materialized"
+            git rev-parse HEAD > build/vc4-qpu-evidence/PRODUCT_SHA
             exit 0
           fi
           git commit -m \
-            "hw/display: integrate validated VC4 QPU execution core"
+            "hw/display: publish tested VC4 QPU conversion and packing repairs"
+          tested_tree=$(git rev-parse 'HEAD^{tree}')
+          printf '%s\n' "$tested_tree" > build/vc4-qpu-evidence/TESTED_TREE
           git pull --rebase origin "$BRANCH"
+          if [ "$(git rev-parse 'HEAD^{tree}')" != "$tested_tree" ]; then
+            echo "Branch advanced to a different tree; rerun validation before publication" >&2
+            exit 1
+          fi
           git push origin HEAD:"$BRANCH"
+          git rev-parse HEAD > build/vc4-qpu-evidence/PRODUCT_SHA
           printf 'published=true\n' >> "$GITHUB_OUTPUT"
 
       - name: Dispatch pinned Linux Mesa GLES2 frontier
@@ -130,3 +175,11 @@ jobs:
           set -euo pipefail
           gh workflow run vc4-linux-mesa-gles2-frontier.yml \
             --ref "$BRANCH"
+
+      - name: Upload QPU validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-qpu-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/vc4-qpu-evidence/
+          if-no-files-found: warn
