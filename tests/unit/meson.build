@@ -132,6 +132,14 @@ if have_system
     'test-opts-visitor': [testqapi],
     'test-xs-node': [qom],
     'test-virtio-dmabuf': [meson.project_source_root() / 'hw/display/virtio-dmabuf.c'],
+    'test-vc4-qpu-contract': [
+      meson.project_source_root() / 'hw/display/vc4_qpu.c',
+      meson.project_source_root() / 'hw/display/vc4_qpu_exec.c',
+    ],
+    'test-vc4-qpu': [
+      meson.project_source_root() / 'hw/display/vc4_qpu.c',
+      meson.project_source_root() / 'hw/display/vc4_qpu_exec.c',
+    ],
     'test-qmp-cmds': [testqapi],
     'test-xbzrle': [migration],
     'test-util-sockets': ['socket-helpers.c'],
