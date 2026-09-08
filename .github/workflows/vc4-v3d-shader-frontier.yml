@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 40
     env:
       BRANCH: agent/vc4-linux-mesa-gles2-frontier
-      EVIDENCE_DIR: ${{ runner.temp }}/vc4-qpu-evidence
+      EVIDENCE_DIR: .vc4-qpu-evidence
 
     steps:
       - uses: actions/checkout@v5
@@ -184,3 +184,4 @@ jobs:
           name: vc4-qpu-contracts-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.EVIDENCE_DIR }}/
           if-no-files-found: warn
+          include-hidden-files: true
