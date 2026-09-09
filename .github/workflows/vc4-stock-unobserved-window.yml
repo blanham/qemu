@@ -1,0 +1,254 @@
+name: VC4 stock-firmware unobserved execution control
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - .github/workflows/vc4-stock-unobserved-window.yml
+      - scripts/vc4/raspi3-stock-unobserved-window.py
+      - scripts/vc4/raspi3-stock-arm-payload.py
+      - scripts/vc4/raspi3-stock-bootcode-probe.py
+      - target/vc4/**
+      - hw/arm/bcm2835_peripherals.c
+      - hw/timer/bcm2835_systmr.c
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-unobserved-window
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIXTURE_DIR: /tmp/vc4-stock-unobserved-fixtures
+      RESULT_DIR: /tmp/vc4-stock-unobserved-result
+      STATUS_JSON: VC4_STOCK_UNOBSERVED_WINDOW_STATUS.json
+      STATUS_MD: VC4_STOCK_UNOBSERVED_WINDOW_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies and pin unchanged firmware
+        id: fixtures
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl gcc-aarch64-linux-gnu \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config \
+            python3 zlib1g-dev
+          rm -rf "$FIXTURE_DIR" "$RESULT_DIR"
+          mkdir -p "$FIXTURE_DIR" "$RESULT_DIR"
+
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-unobserved-window.py \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py
+          git diff --check
+
+          for file in bootcode.bin start.elf fixup.dat bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$FIXTURE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIXTURE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIXTURE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIXTURE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+          aarch64-linux-gnu-as \
+            -o "$FIXTURE_DIR/aarch64-handoff.o" \
+            tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -nostdlib -T tests/vc4/aarch64-handoff.ld \
+            -o "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/aarch64-handoff.o"
+          aarch64-linux-gnu-objcopy \
+            -O binary "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/kernel8.img"
+          sha256sum "$FIXTURE_DIR"/* > "$FIXTURE_DIR/SHA256SUMS"
+
+      - name: Build both linked frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/build.log"
+
+      - name: Preserve heterogeneous CPU contracts
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/preg.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$RESULT_DIR/msync.log"
+
+      - name: Run thirty seconds without opening QMP
+        id: runtime
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-stock-unobserved-window.py \
+            build/qemu-system-aarch64 \
+            "$FIXTURE_DIR/bootcode.bin" \
+            "$FIXTURE_DIR/start.elf" \
+            "$FIXTURE_DIR/fixup.dat" \
+            "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb" \
+            "$FIXTURE_DIR/kernel8.img" \
+            --out-dir "$RESULT_DIR" \
+            --quiet-seconds 30 \
+            2>&1 | tee "$RESULT_DIR/control.stdout"
+
+      - name: Classify the unobserved control
+        id: classify
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          result_dir = Path(os.environ['RESULT_DIR'])
+          source = result_dir / 'VC4_STOCK_UNOBSERVED_WINDOW.json'
+          record = json.loads(source.read_text()) if source.is_file() else {
+              'probe_error': 'result file missing',
+              'classification': 'stock-unobserved-control-missing-result',
+          }
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'classification': record.get('classification'),
+              'probe_error': record.get('probe_error'),
+              'quiet_seconds_requested': record.get('quiet_seconds_requested'),
+              'quiet_seconds_elapsed': record.get('quiet_seconds_elapsed'),
+              'qemu_alive_after_quiet_window': record.get(
+                  'qemu_alive_after_quiet_window'
+              ),
+              'qmp_connected_before_quiet_window': record.get(
+                  'qmp_connected_before_quiet_window'
+              ),
+              'sample_count_during_quiet_window': record.get(
+                  'sample_count_during_quiet_window'
+              ),
+              'vpu_pc': record.get('vpu_pc'),
+              'vpu_registers': record.get('vpu_registers'),
+              'a53_pcs': record.get('a53_pcs'),
+              'signature_seen': record.get('signature_seen'),
+              'system_timer_us': record.get('system_timer_us'),
+              'arm_control0': record.get('arm_control0'),
+              'arm_control1': record.get('arm_control1'),
+              'arm_status': record.get('arm_status'),
+              'arm_id': record.get('arm_id'),
+              'pm_proc': record.get('pm_proc'),
+              'qemu_command': record.get('qemu_command'),
+              'outcomes': {
+                  'fixtures': '${{ steps.fixtures.outcome }}',
+                  'build': '${{ steps.build.outcome }}',
+                  'regressions': '${{ steps.regressions.outcome }}',
+                  'runtime': '${{ steps.runtime.outcome }}',
+              },
+          }
+          Path(os.environ['STATUS_JSON']).write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          lines = [
+              '# VC4 stock-firmware unobserved execution control',
+              '',
+              f"Classification: **`{status.get('classification')}`**",
+              '',
+              f"- Probe error: `{status.get('probe_error')}`",
+              f"- Quiet window requested: `{status.get('quiet_seconds_requested')}` s",
+              f"- Quiet window elapsed: `{status.get('quiet_seconds_elapsed')}` s",
+              f"- QMP connected before window: `{status.get('qmp_connected_before_quiet_window')}`",
+              f"- Samples during window: `{status.get('sample_count_during_quiet_window')}`",
+              f"- QEMU alive after window: `{status.get('qemu_alive_after_quiet_window')}`",
+              f"- VPU PC after window: `{status.get('vpu_pc')}`",
+              f"- A53 PCs after window: `{status.get('a53_pcs')}`",
+              f"- ARM witness reached: `{status.get('signature_seen')}`",
+              f"- System timer after window: `{status.get('system_timer_us')}` us",
+              f"- ARM_CONTROL0: `{status.get('arm_control0')}`",
+              f"- ARM_CONTROL1: `{status.get('arm_control1')}`",
+              f"- ARM_STATUS: `{status.get('arm_status')}`",
+              f"- PM_PROC: `{status.get('pm_proc')}`",
+              '',
+              'The primary quiet window contains no QMP connection, HMP register',
+              'query, physical-memory read, qtest clock operation, or periodic',
+              'sampler. The first guest-state observation occurs only after the',
+              'window has elapsed.',
+              '',
+          ]
+          Path(os.environ['STATUS_MD']).write_text(
+              '\n'.join(lines), encoding='utf-8'
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+
+          command = status.get('qemu_command') or []
+          joined = ' '.join(str(value) for value in command)
+          if status.get('probe_error'):
+              raise SystemExit(str(status['probe_error']))
+          if status.get('qmp_connected_before_quiet_window') is not False:
+              raise SystemExit('quiet control connected QMP too early')
+          if status.get('sample_count_during_quiet_window') != 0:
+              raise SystemExit('quiet control sampled guest state')
+          if status.get('qemu_alive_after_quiet_window') is not True:
+              raise SystemExit('QEMU did not survive the quiet window')
+          if int(status.get('system_timer_us') or 0) < 1_000_000:
+              raise SystemExit('ordinary TCG system timer did not advance')
+          if 'tcg,thread=single' not in joined or 'qtest' in joined:
+              raise SystemExit('control did not use ordinary single-thread TCG')
+          PY
+
+      - name: Upload complete control evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-unobserved-window-${{ github.run_attempt }}
+          path: |
+            VC4_STOCK_UNOBSERVED_WINDOW_STATUS.json
+            VC4_STOCK_UNOBSERVED_WINDOW_STATUS.md
+            /tmp/vc4-stock-unobserved-fixtures/SHA256SUMS
+            /tmp/vc4-stock-unobserved-result
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish measured unobserved frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git config user.name "VC4 Unobserved Control CI"
+          git config user.email "vc4-unobserved-control-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "tests/vc4: record unobserved stock-firmware frontier [skip ci]"
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
