@@ -3,15 +3,15 @@
 
 This probe builds a normal FAT32 boot volume containing an unchanged pinned
 firmware trio, CONFIG.TXT, an optional matching DTB, and a caller-supplied
-kernel8.img.  It deliberately does not use QEMU's -kernel shortcut: success
-requires bootcode.bin and start.elf to load and enter the payload through the
-emulated VideoCore/ARM boot path.
+kernel8.img.  It deliberately does not use QEMU's ``-kernel`` shortcut:
+success requires ``bootcode.bin`` and ``start.elf`` to load and enter the
+payload through the emulated VideoCore/ARM boot path.
 
-When a qtest server is present its client owns QEMU_CLOCK_VIRTUAL.  The probe
-therefore advances that clock in measured wall-time increments while polling
-guest memory.  Without this synchronization, stock firmware delay loops that
-read the BCM2835 system timer remain at their low-PC polling body even though
-the VPU is otherwise executing correctly.
+The running TCG machine is observed through QMP/HMP physical-memory reads.
+Unlike a qtest-accelerator session, ordinary TCG owns and advances its virtual
+clock.  Keeping the qtest server out of this production-firmware probe avoids
+both qtest-only clock commands and high-frequency test-transport interference
+with firmware delay loops.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -39,7 +40,7 @@ ARM_STATUS = 0x3F00B444
 ARM_ID = 0x3F00B44C
 PM_PROC = 0x3F100110
 KERNEL_LOAD_ADDR = 0x00080000
-POLL_INTERVAL_SECONDS = 0.05
+POLL_INTERVAL_SECONDS = 0.10
 
 
 def load_stock_probe() -> ModuleType:
@@ -50,26 +51,6 @@ def load_stock_probe() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-class LineSocket:
-    def __init__(self, path: Path) -> None:
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(str(path))
-        self.file = self.sock.makefile("rwb", buffering=0)
-
-    def send_line(self, line: str) -> str:
-        self.file.write(line.encode("ascii") + b"\n")
-        reply = self.file.readline()
-        if not reply:
-            raise RuntimeError(
-                f"qtest socket closed while waiting for {line!r}"
-            )
-        return reply.decode("ascii", errors="replace").strip()
-
-    def close(self) -> None:
-        self.file.close()
-        self.sock.close()
 
 
 class QMP:
@@ -112,17 +93,48 @@ class QMP:
         result = self.execute("human-monitor-command", arguments)
         return "" if result is None else str(result)
 
+    def physical_bytes(self, address: int, size: int) -> bytes:
+        if address < 0 or address > 0xFFFFFFFFFFFFFFFF:
+            raise ValueError(f"physical address out of range: {address}")
+        if size <= 0 or size > 64:
+            raise ValueError(f"unsupported physical read size: {size}")
+
+        output = self.hmp(f"xp /{size}bx 0x{address:x}")
+        values: list[int] = []
+        for line in output.splitlines():
+            if ":" not in line:
+                continue
+            right = line.split(":", 1)[1]
+            values.extend(
+                int(match, 16)
+                for match in re.findall(
+                    r"(?:^|\s)0x([0-9a-fA-F]{2})(?=\s|$)",
+                    right,
+                )
+            )
+        if len(values) != size:
+            raise RuntimeError(
+                f"HMP physical read returned {len(values)} of {size} bytes "
+                f"at 0x{address:x}: {output!r}"
+            )
+        return bytes(values)
+
+    def readl(self, address: int) -> int:
+        return int.from_bytes(self.physical_bytes(address, 4), "little")
+
+    def readq(self, address: int) -> int:
+        return int.from_bytes(self.physical_bytes(address, 8), "little")
+
     def close(self) -> None:
         self.file.close()
         self.sock.close()
 
 
-def wait_for_connection(
+def wait_for_qmp(
     path: Path,
     process: subprocess.Popen[bytes],
-    kind: str,
     timeout: float,
-) -> QMP | LineSocket:
+) -> QMP:
     deadline = time.monotonic() + timeout
     last_error: OSError | None = None
     while time.monotonic() < deadline:
@@ -131,36 +143,13 @@ def wait_for_connection(
                 f"QEMU exited early with status {process.returncode}"
             )
         try:
-            if kind == "qmp":
-                return QMP(path)
-            return LineSocket(path)
+            return QMP(path)
         except (FileNotFoundError, ConnectionRefusedError) as error:
             last_error = error
             time.sleep(0.02)
     raise TimeoutError(
-        f"{kind} socket did not accept connections: {path}"
+        f"QMP socket did not accept connections: {path}"
     ) from last_error
-
-
-def parse_qtest_value(reply: str) -> int:
-    fields = reply.split()
-    if len(fields) != 2 or fields[0] != "OK":
-        raise RuntimeError(f"unexpected qtest reply: {reply!r}")
-    return int(fields[1], 0)
-
-
-def readq(qtest: LineSocket, address: int) -> int:
-    return parse_qtest_value(qtest.send_line(f"readq 0x{address:x}"))
-
-
-def readl(qtest: LineSocket, address: int) -> int:
-    return parse_qtest_value(qtest.send_line(f"readl 0x{address:x}"))
-
-
-def advance_virtual_clock(qtest: LineSocket, nanoseconds: int) -> int:
-    if nanoseconds <= 0:
-        raise ValueError("virtual-clock step must be positive")
-    return parse_qtest_value(qtest.send_line(f"clock_step {nanoseconds}"))
 
 
 def stop_process(process: subprocess.Popen[bytes]) -> None:
@@ -206,7 +195,7 @@ def cpu_snapshot(qmp: QMP) -> dict[str, Any]:
     }
 
 
-def diagnostics_tail(text: str, lines: int = 192) -> list[str]:
+def diagnostics_tail(text: str, lines: int = 256) -> list[str]:
     return text.splitlines()[-lines:]
 
 
@@ -280,7 +269,6 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="vc4-stock-arm-") as temporary:
         tmp = Path(temporary)
         qmp_path = tmp / "qmp.sock"
-        qtest_path = tmp / "qtest.sock"
         command = [
             str(args.qemu.resolve()),
             "-M",
@@ -304,8 +292,6 @@ def main() -> int:
             "guest_errors,unimp",
             "-qmp",
             f"unix:{qmp_path},server=on,wait=off",
-            "-qtest",
-            f"unix:{qtest_path},server=on,wait=off",
         ]
 
         with stderr_path.open("wb") as stderr:
@@ -316,11 +302,11 @@ def main() -> int:
             )
 
         qmp: QMP | None = None
-        qtest: LineSocket | None = None
         result: dict[str, Any] = {
-            "schema_version": 3,
+            "schema_version": 4,
             "source_sha": os.environ.get("GITHUB_SHA"),
             "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+            "observer": "qmp-hmp-xp-byte-reads",
             "signature_address": f"0x{SIGNATURE_ADDR:08x}",
             "expected_signature": f"0x{SIGNATURE:016x}",
             "signature_seen": False,
@@ -331,34 +317,18 @@ def main() -> int:
             "qemu_command": command,
         }
         try:
-            qmp = wait_for_connection(qmp_path, process, "qmp", 15.0)
-            qtest = wait_for_connection(qtest_path, process, "qtest", 15.0)
-            assert isinstance(qmp, QMP)
-            assert isinstance(qtest, LineSocket)
+            qmp = wait_for_qmp(qmp_path, process, 15.0)
 
-            initial_kernel_word = readq(qtest, KERNEL_LOAD_ADDR)
-            initial_system_timer = readl(qtest, SYSTEM_TIMER_CLO)
+            initial_kernel_word = qmp.readq(KERNEL_LOAD_ADDR)
+            initial_system_timer = qmp.readl(SYSTEM_TIMER_CLO)
             started = time.monotonic()
             deadline = started + args.seconds
-            last_clock_wall = started
             signature = 0
-            qtest_virtual_clock_ns = 0
-            qtest_clock_step_ns = 0
-            qtest_clock_steps = 0
+            polls = 0
 
             while time.monotonic() < deadline:
-                now = time.monotonic()
-                step_ns = max(
-                    1, int((now - last_clock_wall) * 1_000_000_000)
-                )
-                qtest_virtual_clock_ns = advance_virtual_clock(
-                    qtest, step_ns
-                )
-                qtest_clock_step_ns += step_ns
-                qtest_clock_steps += 1
-                last_clock_wall = now
-
-                signature = readq(qtest, SIGNATURE_ADDR)
+                signature = qmp.readq(SIGNATURE_ADDR)
+                polls += 1
                 if signature == SIGNATURE:
                     result["signature_seen"] = True
                     break
@@ -371,15 +341,13 @@ def main() -> int:
             except Exception:
                 pass
 
-            final_system_timer = readl(qtest, SYSTEM_TIMER_CLO)
+            final_system_timer = qmp.readl(SYSTEM_TIMER_CLO)
             result.update(
                 {
                     "observed_signature": f"0x{signature:016x}",
                     "elapsed_seconds": time.monotonic() - started,
+                    "poll_count": polls,
                     "qemu_returncode": process.poll(),
-                    "qtest_clock_steps": qtest_clock_steps,
-                    "qtest_clock_step_ns": qtest_clock_step_ns,
-                    "qtest_virtual_clock_ns": qtest_virtual_clock_ns,
                     "system_timer_clo_before": (
                         f"0x{initial_system_timer:08x}"
                     ),
@@ -394,22 +362,28 @@ def main() -> int:
                         f"0x{initial_kernel_word:016x}"
                     ),
                     "kernel_word_after_boot": (
-                        f"0x{readq(qtest, KERNEL_LOAD_ADDR):016x}"
+                        f"0x{qmp.readq(KERNEL_LOAD_ADDR):016x}"
                     ),
                     "payload_argument_x0": (
-                        f"0x{readq(qtest, SIGNATURE_ADDR + 8):016x}"
+                        f"0x{qmp.readq(SIGNATURE_ADDR + 24):016x}"
                     ),
                     "payload_initial_sp": (
-                        f"0x{readq(qtest, SIGNATURE_ADDR + 16):016x}"
+                        f"0x{qmp.readq(SIGNATURE_ADDR + 16):016x}"
                     ),
                     "payload_mpidr_el1": (
-                        f"0x{readq(qtest, SIGNATURE_ADDR + 24):016x}"
+                        f"0x{qmp.readq(SIGNATURE_ADDR + 8):016x}"
                     ),
-                    "arm_control0": f"0x{readl(qtest, ARM_CONTROL0):08x}",
-                    "arm_control1": f"0x{readl(qtest, ARM_CONTROL1):08x}",
-                    "arm_status": f"0x{readl(qtest, ARM_STATUS):08x}",
-                    "arm_id": f"0x{readl(qtest, ARM_ID):08x}",
-                    "pm_proc": f"0x{readl(qtest, PM_PROC):08x}",
+                    "payload_current_el": (
+                        f"0x{qmp.readq(SIGNATURE_ADDR + 32):016x}"
+                    ),
+                    "payload_sctlr_el1": (
+                        f"0x{qmp.readq(SIGNATURE_ADDR + 40):016x}"
+                    ),
+                    "arm_control0": f"0x{qmp.readl(ARM_CONTROL0):08x}",
+                    "arm_control1": f"0x{qmp.readl(ARM_CONTROL1):08x}",
+                    "arm_status": f"0x{qmp.readl(ARM_STATUS):08x}",
+                    "arm_id": f"0x{qmp.readl(ARM_ID):08x}",
+                    "pm_proc": f"0x{qmp.readl(PM_PROC):08x}",
                     "cpu_snapshot": cpu_snapshot(qmp),
                 }
             )
@@ -435,8 +409,6 @@ def main() -> int:
                 except Exception:
                     pass
                 qmp.close()
-            if qtest is not None:
-                qtest.close()
             stop_process(process)
 
     return 0 if result.get("signature_seen") is True else 2
