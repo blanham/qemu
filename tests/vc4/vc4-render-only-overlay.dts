@@ -16,6 +16,10 @@
      * command submission rather than physical scanout.  This is also the
      * acceptance topology for real Mesa primitive dispatch: do not add a
      * software renderer, host-side draw bypass, or firmware framebuffer path.
+     *
+     * The overlay is deliberately render-layout-neutral.  Linear, LT, and T
+     * render-target semantics belong to the emulated V3D memory interface and
+     * must pass through the same guest kernel/Mesa topology used here.
      */
     fragment@0 {
         target = <&v3d>;
