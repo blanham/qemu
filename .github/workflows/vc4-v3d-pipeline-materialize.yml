@@ -44,18 +44,19 @@ jobs:
 
           path = Path("/tmp/v3d-pipeline-materialize.py")
           text = path.read_text(encoding="utf-8")
+          nl = chr(92) + "n"
           replacements = (
               (
-                  '        """    case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:\n""",',
-                  '        """        cl->frontier.have_shader_record = true;\n'
-                  '        return true;\n\n'
-                  '    case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:\n""",',
+                  f'        """    case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:{nl}""",',
+                  f'        """        cl->frontier.have_shader_record = true;{nl}'
+                  f'        return true;{nl}{nl}'
+                  f'    case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:{nl}""",',
               ),
               (
-                  '        """    case VC4_PACKET_VIEWPORT_OFFSET: {\n',
-                  '        """        cl->frontier.have_shader_record = true;\n'
-                  '        return true;\n\n'
-                  '    case VC4_PACKET_VIEWPORT_OFFSET: {\n',
+                  f'        """    case VC4_PACKET_VIEWPORT_OFFSET: {{{nl}',
+                  f'        """        cl->frontier.have_shader_record = true;{nl}'
+                  f'        return true;{nl}{nl}'
+                  f'    case VC4_PACKET_VIEWPORT_OFFSET: {{{nl}',
               ),
           )
           for old, new in replacements:
