@@ -1,0 +1,84 @@
+name: VC4 V3D primitive pipeline materialization
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-mesa-gles2-frontier
+    paths:
+      - .github/workflows/vc4-v3d-pipeline-materialize.yml
+      - scripts/vc4/.v3d-pipeline-materialize.b64.*
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-v3d-pipeline-materialize
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 zlib1g-dev
+
+      - name: Materialize the bounded primitive pipeline
+        run: |
+          set -euo pipefail
+          cat scripts/vc4/.v3d-pipeline-materialize.b64.* | \
+            base64 -d > /tmp/v3d-pipeline-materialize.py
+          test "$(sha256sum /tmp/v3d-pipeline-materialize.py | cut -d' ' -f1)" = \
+            "1e1f4adb468dd628866947e7502dc5f32e72e9827fc4e4ad1665b1dfd6596d3a"
+          python3 -m py_compile /tmp/v3d-pipeline-materialize.py
+          python3 /tmp/v3d-pipeline-materialize.py
+          git diff --check
+
+      - name: Configure and build the product tree
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror
+          ninja -C build \
+            qemu-system-aarch64 qemu-system-vc4 \
+            tests/unit/test-vc4-qpu \
+            tests/unit/test-vc4-qpu-contract \
+            tests/unit/test-vc4-v3d-pipeline
+
+      - name: Run focused architectural regressions
+        run: |
+          set -euo pipefail
+          build/tests/unit/test-vc4-qpu --tap -k
+          build/tests/unit/test-vc4-qpu-contract --tap -k
+          build/tests/unit/test-vc4-v3d-pipeline --tap -k
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64
+
+      - name: Publish only the tested product tree
+        env:
+          BRANCH: agent/vc4-linux-mesa-gles2-frontier
+        run: |
+          set -euo pipefail
+          git rm -- \
+            .github/workflows/vc4-v3d-pipeline-materialize.yml \
+            scripts/vc4/.v3d-pipeline-materialize.b64.*
+          git add -A
+          git diff --cached --check
+          git config user.name "VC4 Agent"
+          git config user.email "vc4-agent@users.noreply.github.com"
+          git commit -m \
+            "hw/display: execute bounded VC4 array primitives"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
