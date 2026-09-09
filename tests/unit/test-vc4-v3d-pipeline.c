@@ -95,7 +95,7 @@ static void encode_u32(uint8_t *bytes, const uint32_t *words, size_t count)
 typedef struct PipelineFixture {
     TestMemory memory;
     uint8_t record[44];
-    uint8_t attributes[24];
+    uint8_t attributes[32];
     uint8_t fs_code[sizeof(measured_fs)];
     uint8_t vs_code[sizeof(measured_vs)];
     uint8_t cs_code[sizeof(measured_cs)];
@@ -125,6 +125,7 @@ static void fixture_init(PipelineFixture *fixture)
         0xbf800000, 0xbf800000,
         0x40400000, 0xbf800000,
         0xbf800000, 0x40400000,
+        0x40400000, 0x40400000,
     };
 
     memset(fixture, 0, sizeof(*fixture));
@@ -214,6 +215,36 @@ static void test_measured_triangle(void)
     g_assert_cmphex(result.triangles[0].color, ==, 0xff2080df);
 }
 
+static void test_triangle_fan(void)
+{
+    PipelineFixture fixture;
+    VC4V3DPipelineResult result;
+
+    fixture_init(&fixture);
+    fixture.primitive.mode_byte = 6;
+    fixture.primitive.length = 4;
+    g_assert_true(vc4_v3d_execute_array_primitive(
+        test_memory_read, &fixture.memory,
+        &fixture.state, &fixture.primitive, 0x0200, 0x0200, &result));
+    g_assert_cmpint(result.fault, ==, VC4_V3D_PIPELINE_FAULT_NONE);
+    g_assert_cmpuint(result.triangle_count, ==, 2);
+
+    g_assert_cmpint(result.triangles[0].x[0], ==, 0);
+    g_assert_cmpint(result.triangles[0].y[0], ==, 1024);
+    g_assert_cmpint(result.triangles[0].x[1], ==, 2048);
+    g_assert_cmpint(result.triangles[0].y[1], ==, 1024);
+    g_assert_cmpint(result.triangles[0].x[2], ==, 0);
+    g_assert_cmpint(result.triangles[0].y[2], ==, -1024);
+
+    g_assert_cmpint(result.triangles[1].x[0], ==, 0);
+    g_assert_cmpint(result.triangles[1].y[0], ==, 1024);
+    g_assert_cmpint(result.triangles[1].x[1], ==, 0);
+    g_assert_cmpint(result.triangles[1].y[1], ==, -1024);
+    g_assert_cmpint(result.triangles[1].x[2], ==, 2048);
+    g_assert_cmpint(result.triangles[1].y[2], ==, -1024);
+    g_assert_cmphex(result.triangles[1].color, ==, 0xff2080df);
+}
+
 static void test_bad_mode_fails_closed(void)
 {
     PipelineFixture fixture;
@@ -240,6 +271,20 @@ static void test_bad_length_fails_closed(void)
     g_assert_cmpint(result.fault, ==, VC4_V3D_PIPELINE_FAULT_LENGTH);
 }
 
+static void test_short_fan_fails_closed(void)
+{
+    PipelineFixture fixture;
+    VC4V3DPipelineResult result;
+
+    fixture_init(&fixture);
+    fixture.primitive.mode_byte = 6;
+    fixture.primitive.length = 2;
+    g_assert_false(vc4_v3d_execute_array_primitive(
+        test_memory_read, &fixture.memory,
+        &fixture.state, &fixture.primitive, 0, 0, &result));
+    g_assert_cmpint(result.fault, ==, VC4_V3D_PIPELINE_FAULT_LENGTH);
+}
+
 static void test_bad_attribute_select_fails_closed(void)
 {
     PipelineFixture fixture;
@@ -259,10 +304,14 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/vc4/v3d-pipeline/measured-triangle",
                     test_measured_triangle);
+    g_test_add_func("/vc4/v3d-pipeline/triangle-fan",
+                    test_triangle_fan);
     g_test_add_func("/vc4/v3d-pipeline/bad-mode",
                     test_bad_mode_fails_closed);
     g_test_add_func("/vc4/v3d-pipeline/bad-length",
                     test_bad_length_fails_closed);
+    g_test_add_func("/vc4/v3d-pipeline/short-fan",
+                    test_short_fan_fails_closed);
     g_test_add_func("/vc4/v3d-pipeline/bad-attribute-select",
                     test_bad_attribute_select_fails_closed);
     return g_test_run();
