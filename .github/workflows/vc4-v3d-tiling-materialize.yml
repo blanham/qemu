@@ -174,6 +174,7 @@ jobs:
           git rm -- \
             .github/workflows/vc4-v3d-tiling-materialize.yml \
             scripts/vc4/v3d-tiling-materialize.py
+          rm -rf "$EVIDENCE_DIR"
           git add -A
           git diff --cached --check
           git config user.name "VC4 Tiling CI"
