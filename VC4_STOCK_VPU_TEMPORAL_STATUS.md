@@ -5,10 +5,10 @@ Classification: **`stock-vpu-lowpc-loop-is-progressing`**
 - ARM witness reached: `False`
 - Samples: `399`
 - Unique PCs: `8`
-- Unique selected register states: `52`
-- State transitions: `52`
-- PC 0x544 sample fraction: `0.8721804511278195`
-- System timer advance: `19989719` us
+- Unique selected register states: `50`
+- State transitions: `50`
+- PC 0x544 sample fraction: `0.8771929824561403`
+- System timer advance: `20002170` us
 - ARM_CONTROL0: `0x00000000`
 - ARM_CONTROL1: `0x00000000`
 - ARM_STATUS: `0x00000000`
@@ -17,13 +17,13 @@ Classification: **`stock-vpu-lowpc-loop-is-progressing`**
 ## Sampled PCs
 
 - `0x00000542`: `2` samples
-- `0x00000544`: `348` samples
-- `0x000026ba`: `1` samples
-- `0x0000766a`: `16` samples
-- `0x00007670`: `9` samples
-- `0x0000767c`: `8` samples
-- `0x0000768a`: `14` samples
-- `0x1ed879b6`: `1` samples
+- `0x00000544`: `350` samples
+- `0x00006af8`: `1` samples
+- `0x0000766a`: `8` samples
+- `0x00007670`: `11` samples
+- `0x0000767c`: `6` samples
+- `0x0000768a`: `20` samples
+- `0x00008308`: `1` samples
 
 ## Translation context around 0x544
 

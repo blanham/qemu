@@ -46,36 +46,36 @@
     ""
   ],
   "classification": "stock-vpu-lowpc-loop-is-progressing",
-  "generated_at": "2026-09-09T13:01:04.639202+00:00",
-  "pc_0x00000544_fraction": 0.8721804511278195,
+  "generated_at": "2026-09-09T14:10:43.768421+00:00",
+  "pc_0x00000544_fraction": 0.8771929824561403,
   "pc_counts": {
     "0x00000542": 2,
-    "0x00000544": 348,
-    "0x000026ba": 1,
-    "0x0000766a": 16,
-    "0x00007670": 9,
-    "0x0000767c": 8,
-    "0x0000768a": 14,
-    "0x1ed879b6": 1
+    "0x00000544": 350,
+    "0x00006af8": 1,
+    "0x0000766a": 8,
+    "0x00007670": 11,
+    "0x0000767c": 6,
+    "0x0000768a": 20,
+    "0x00008308": 1
   },
   "pm_proc": "0x00000000",
   "probe_error": null,
-  "run_id": "34353842637",
+  "run_id": "34361247108",
   "sample_count": 399,
   "schema_version": 1,
   "signature_seen": false,
-  "source_sha": "0f7a91e3a8f3a4965055e7ae9267c70fcc37bc3d",
-  "system_timer_delta_us": 19989719,
-  "transition_count": 52,
+  "source_sha": "6d6c9144d9131c874748f20a302344a6f7e14c41",
+  "system_timer_delta_us": 20002170,
+  "transition_count": 50,
   "unique_pcs": [
     "0x00000542",
     "0x00000544",
-    "0x000026ba",
+    "0x00006af8",
     "0x0000766a",
     "0x00007670",
     "0x0000767c",
     "0x0000768a",
-    "0x1ed879b6"
+    "0x00008308"
   ],
-  "unique_state_count": 52
+  "unique_state_count": 50
 }
