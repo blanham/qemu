@@ -73,6 +73,13 @@ jobs:
           python3 -m py_compile /tmp/v3d-pipeline-materialize.py
           python3 /tmp/v3d-pipeline-materialize.py
           git diff --check
+          grep -n 'VC4_PACKET_START_TILE_BINNING' hw/display/bcm2835_v3d.c
+          mkdir -p /tmp/vc4-v3d-generated
+          cp hw/display/bcm2835_v3d.c /tmp/vc4-v3d-generated/
+          cp include/hw/display/bcm2835_v3d.h /tmp/vc4-v3d-generated/
+          cp hw/display/vc4_v3d_pipeline.c /tmp/vc4-v3d-generated/
+          cp include/hw/display/vc4_v3d_pipeline.h /tmp/vc4-v3d-generated/
+          git diff --binary > /tmp/vc4-v3d-generated/product.patch
 
       - name: Configure and build the product tree
         run: |
@@ -85,6 +92,15 @@ jobs:
             tests/unit/test-vc4-qpu \
             tests/unit/test-vc4-qpu-contract \
             tests/unit/test-vc4-v3d-pipeline
+
+      - name: Upload generated source on every run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-v3d-generated-${{ github.run_attempt }}
+          path: /tmp/vc4-v3d-generated
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Run focused architectural regressions
         run: |
