@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Prove the stock Raspberry Pi firmware-to-AArch64 handoff.
 
-This probe builds a normal FAT32 boot volume containing the pinned firmware
-trio plus CONFIG.TXT and a caller-supplied kernel8.img.  It deliberately does
-not use QEMU's -kernel shortcut: success requires bootcode.bin and start.elf to
-load and enter the payload through the emulated VideoCore/ARM boot path.
+This probe builds a normal FAT32 boot volume containing an unchanged pinned
+firmware trio, CONFIG.TXT, an optional matching DTB, and a caller-supplied
+kernel8.img.  It deliberately does not use QEMU's -kernel shortcut: success
+requires bootcode.bin and start.elf to load and enter the payload through the
+emulated VideoCore/ARM boot path.
+
+When a qtest server is present its client owns QEMU_CLOCK_VIRTUAL.  The probe
+therefore advances that clock in measured wall-time increments while polling
+guest memory.  Without this synchronization, stock firmware delay loops that
+read the BCM2835 system timer remain at their low-PC polling body even though
+the VPU is otherwise executing correctly.
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -24,12 +32,14 @@ from typing import Any
 SIGNATURE_ADDR = 0x00001000
 SIGNATURE = 0x5643345F41524D21  # "VC4_ARM!"
 
+SYSTEM_TIMER_CLO = 0x3F003004
 ARM_CONTROL0 = 0x3F00B000
 ARM_CONTROL1 = 0x3F00B440
 ARM_STATUS = 0x3F00B444
 ARM_ID = 0x3F00B44C
 PM_PROC = 0x3F100110
 KERNEL_LOAD_ADDR = 0x00080000
+POLL_INTERVAL_SECONDS = 0.05
 
 
 def load_stock_probe() -> ModuleType:
@@ -52,7 +62,9 @@ class LineSocket:
         self.file.write(line.encode("ascii") + b"\n")
         reply = self.file.readline()
         if not reply:
-            raise RuntimeError(f"qtest socket closed while waiting for {line!r}")
+            raise RuntimeError(
+                f"qtest socket closed while waiting for {line!r}"
+            )
         return reply.decode("ascii", errors="replace").strip()
 
     def close(self) -> None:
@@ -79,8 +91,11 @@ class QMP:
             if "event" not in message:
                 return message
 
-    def execute(self, command: str,
-                arguments: dict[str, Any] | None = None) -> Any:
+    def execute(
+        self,
+        command: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> Any:
         request: dict[str, Any] = {"execute": command}
         if arguments:
             request["arguments"] = arguments
@@ -102,21 +117,29 @@ class QMP:
         self.sock.close()
 
 
-def wait_for_connection(path: Path, proc: subprocess.Popen[bytes],
-                        kind: str, timeout: float) -> QMP | LineSocket:
+def wait_for_connection(
+    path: Path,
+    process: subprocess.Popen[bytes],
+    kind: str,
+    timeout: float,
+) -> QMP | LineSocket:
     deadline = time.monotonic() + timeout
     last_error: OSError | None = None
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f"QEMU exited early with status {proc.returncode}")
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"QEMU exited early with status {process.returncode}"
+            )
         try:
             if kind == "qmp":
                 return QMP(path)
             return LineSocket(path)
-        except (FileNotFoundError, ConnectionRefusedError) as exc:
-            last_error = exc
+        except (FileNotFoundError, ConnectionRefusedError) as error:
+            last_error = error
             time.sleep(0.02)
-    raise TimeoutError(f"{kind} socket did not accept connections: {path}") from last_error
+    raise TimeoutError(
+        f"{kind} socket did not accept connections: {path}"
+    ) from last_error
 
 
 def parse_qtest_value(reply: str) -> int:
@@ -134,15 +157,21 @@ def readl(qtest: LineSocket, address: int) -> int:
     return parse_qtest_value(qtest.send_line(f"readl 0x{address:x}"))
 
 
-def stop_process(proc: subprocess.Popen[bytes]) -> None:
-    if proc.poll() is not None:
+def advance_virtual_clock(qtest: LineSocket, nanoseconds: int) -> int:
+    if nanoseconds <= 0:
+        raise ValueError("virtual-clock step must be positive")
+    return parse_qtest_value(qtest.send_line(f"clock_step {nanoseconds}"))
+
+
+def stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
         return
-    proc.terminate()
+    process.terminate()
     try:
-        proc.wait(timeout=3)
+        process.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=3)
+        process.kill()
+        process.wait(timeout=3)
 
 
 def cpu_snapshot(qmp: QMP) -> dict[str, Any]:
@@ -158,15 +187,18 @@ def cpu_snapshot(qmp: QMP) -> dict[str, Any]:
         if isinstance(index, int):
             try:
                 registers = qmp.hmp("info registers", cpu_index=index)
-            except Exception as exc:  # Preserve all other CPUs on one failure.
-                registers = f"register query failed: {exc}"
-        records.append({
-            "cpu_index": index,
-            "qom_type": item.get("qom-type"),
-            "thread_id": item.get("thread-id"),
-            "halted": item.get("halted"),
-            "registers": registers,
-        })
+            except Exception as error:
+                registers = f"register query failed: {error}"
+        records.append(
+            {
+                "cpu_index": index,
+                "qom_type": item.get("qom-type"),
+                "target": item.get("target"),
+                "thread_id": item.get("thread-id"),
+                "halted": item.get("halted"),
+                "registers": registers,
+            }
+        )
     return {
         "query_cpus_fast": cpus,
         "cpus": records,
@@ -174,8 +206,21 @@ def cpu_snapshot(qmp: QMP) -> dict[str, Any]:
     }
 
 
-def diagnostics_tail(text: str, lines: int = 160) -> list[str]:
+def diagnostics_tail(text: str, lines: int = 192) -> list[str]:
     return text.splitlines()[-lines:]
+
+
+def default_config(has_dtb: bool) -> bytes:
+    lines = [
+        "arm_64bit=1",
+        "kernel=kernel8.img",
+        "enable_gic=1",
+        "disable_splash=1",
+        "boot_delay=0",
+    ]
+    if has_dtb:
+        lines.append("device_tree=rpi3.dtb")
+    return ("\n".join(lines) + "\n").encode("ascii")
 
 
 def main() -> int:
@@ -185,6 +230,7 @@ def main() -> int:
     parser.add_argument("start_elf", type=Path)
     parser.add_argument("fixup_dat", type=Path)
     parser.add_argument("kernel8", type=Path)
+    parser.add_argument("--dtb", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=360.0)
@@ -192,19 +238,21 @@ def main() -> int:
 
     if args.seconds <= 0:
         parser.error("--seconds must be positive")
-    for path in (args.qemu, args.bootcode, args.start_elf,
-                 args.fixup_dat, args.kernel8):
+    required = (
+        args.qemu,
+        args.bootcode,
+        args.start_elf,
+        args.fixup_dat,
+        args.kernel8,
+    )
+    for path in required:
         if not path.is_file():
             parser.error(f"not a file: {path}")
+    if args.dtb is not None and not args.dtb.is_file():
+        parser.error(f"not a file: {args.dtb}")
 
     if args.config is None:
-        config = (
-            b"arm_64bit=1\n"
-            b"kernel=kernel8.img\n"
-            b"enable_gic=1\n"
-            b"disable_splash=1\n"
-            b"boot_delay=0\n"
-        )
+        config = default_config(args.dtb is not None)
     else:
         if not args.config.is_file():
             parser.error(f"not a file: {args.config}")
@@ -222,91 +270,159 @@ def main() -> int:
         ("START.ELF", args.start_elf.read_bytes()),
         ("FIXUP.DAT", args.fixup_dat.read_bytes()),
         ("CONFIG.TXT", config),
+        ("CMDLINE.TXT", b"console=serial0,115200 earlycon=pl011,0x3f201000\n"),
         ("KERNEL8.IMG", args.kernel8.read_bytes()),
     ]
+    if args.dtb is not None:
+        files.insert(-1, ("RPI3.DTB", args.dtb.read_bytes()))
     layouts = stock.build_fat32_image(image_path, files)
 
-    with tempfile.TemporaryDirectory(prefix="vc4-stock-arm-") as tmp_s:
-        tmp = Path(tmp_s)
+    with tempfile.TemporaryDirectory(prefix="vc4-stock-arm-") as temporary:
+        tmp = Path(temporary)
         qmp_path = tmp / "qmp.sock"
         qtest_path = tmp / "qtest.sock"
         command = [
             str(args.qemu.resolve()),
-            "-M", "raspi3b-vc4-hetero",
-            "-m", "1G",
-            "-smp", "5",
-            "-drive", f"file={image_path},format=raw,if=sd",
-            "-accel", "tcg,thread=single",
-            "-display", "none",
-            "-monitor", "none",
-            "-serial", "none",
+            "-M",
+            "raspi3b-vc4-hetero",
+            "-m",
+            "1G",
+            "-smp",
+            "5",
+            "-drive",
+            f"file={image_path},format=raw,if=sd",
+            "-accel",
+            "tcg,thread=single",
+            "-display",
+            "none",
+            "-monitor",
+            "none",
+            "-serial",
+            "none",
             "-no-reboot",
-            "-d", "guest_errors,unimp",
-            "-qmp", f"unix:{qmp_path},server=on,wait=off",
-            "-qtest", f"unix:{qtest_path},server=on,wait=off",
+            "-d",
+            "guest_errors,unimp",
+            "-qmp",
+            f"unix:{qmp_path},server=on,wait=off",
+            "-qtest",
+            f"unix:{qtest_path},server=on,wait=off",
         ]
 
         with stderr_path.open("wb") as stderr:
-            proc = subprocess.Popen(command, stdout=subprocess.DEVNULL,
-                                    stderr=stderr)
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+            )
 
         qmp: QMP | None = None
         qtest: LineSocket | None = None
         result: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 3,
+            "source_sha": os.environ.get("GITHUB_SHA"),
+            "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
             "signature_address": f"0x{SIGNATURE_ADDR:08x}",
             "expected_signature": f"0x{SIGNATURE:016x}",
             "signature_seen": False,
             "image": str(image_path),
-            "fat_layout": {name: list(chain) for name, chain in layouts.items()},
+            "fat_layout": {
+                name: list(chain) for name, chain in layouts.items()
+            },
             "qemu_command": command,
         }
         try:
-            qmp = wait_for_connection(qmp_path, proc, "qmp", 15.0)
-            qtest = wait_for_connection(qtest_path, proc, "qtest", 15.0)
+            qmp = wait_for_connection(qmp_path, process, "qmp", 15.0)
+            qtest = wait_for_connection(qtest_path, process, "qtest", 15.0)
             assert isinstance(qmp, QMP)
             assert isinstance(qtest, LineSocket)
 
             initial_kernel_word = readq(qtest, KERNEL_LOAD_ADDR)
-            deadline = time.monotonic() + args.seconds
+            initial_system_timer = readl(qtest, SYSTEM_TIMER_CLO)
+            started = time.monotonic()
+            deadline = started + args.seconds
+            last_clock_wall = started
             signature = 0
+            qtest_virtual_clock_ns = 0
+            qtest_clock_step_ns = 0
+            qtest_clock_steps = 0
+
             while time.monotonic() < deadline:
+                now = time.monotonic()
+                step_ns = max(
+                    1, int((now - last_clock_wall) * 1_000_000_000)
+                )
+                qtest_virtual_clock_ns = advance_virtual_clock(
+                    qtest, step_ns
+                )
+                qtest_clock_step_ns += step_ns
+                qtest_clock_steps += 1
+                last_clock_wall = now
+
                 signature = readq(qtest, SIGNATURE_ADDR)
                 if signature == SIGNATURE:
                     result["signature_seen"] = True
                     break
-                if proc.poll() is not None:
+                if process.poll() is not None:
                     break
-                time.sleep(0.05)
+                time.sleep(POLL_INTERVAL_SECONDS)
 
             try:
                 qmp.execute("stop")
             except Exception:
                 pass
 
-            result.update({
-                "observed_signature": f"0x{signature:016x}",
-                "elapsed_seconds": args.seconds - max(0.0, deadline - time.monotonic()),
-                "qemu_returncode": proc.poll(),
-                "kernel_word_before_boot": f"0x{initial_kernel_word:016x}",
-                "kernel_word_after_boot": f"0x{readq(qtest, KERNEL_LOAD_ADDR):016x}",
-                "payload_argument_x0": f"0x{readq(qtest, SIGNATURE_ADDR + 8):016x}",
-                "payload_initial_sp": f"0x{readq(qtest, SIGNATURE_ADDR + 16):016x}",
-                "payload_mpidr_el1": f"0x{readq(qtest, SIGNATURE_ADDR + 24):016x}",
-                "arm_control0": f"0x{readl(qtest, ARM_CONTROL0):08x}",
-                "arm_control1": f"0x{readl(qtest, ARM_CONTROL1):08x}",
-                "arm_status": f"0x{readl(qtest, ARM_STATUS):08x}",
-                "arm_id": f"0x{readl(qtest, ARM_ID):08x}",
-                "pm_proc": f"0x{readl(qtest, PM_PROC):08x}",
-                "cpu_snapshot": cpu_snapshot(qmp),
-            })
-        except Exception as exc:
-            result["probe_error"] = f"{type(exc).__name__}: {exc}"
+            final_system_timer = readl(qtest, SYSTEM_TIMER_CLO)
+            result.update(
+                {
+                    "observed_signature": f"0x{signature:016x}",
+                    "elapsed_seconds": time.monotonic() - started,
+                    "qemu_returncode": process.poll(),
+                    "qtest_clock_steps": qtest_clock_steps,
+                    "qtest_clock_step_ns": qtest_clock_step_ns,
+                    "qtest_virtual_clock_ns": qtest_virtual_clock_ns,
+                    "system_timer_clo_before": (
+                        f"0x{initial_system_timer:08x}"
+                    ),
+                    "system_timer_clo_after": (
+                        f"0x{final_system_timer:08x}"
+                    ),
+                    "system_timer_delta_us": (
+                        final_system_timer - initial_system_timer
+                    )
+                    & 0xFFFFFFFF,
+                    "kernel_word_before_boot": (
+                        f"0x{initial_kernel_word:016x}"
+                    ),
+                    "kernel_word_after_boot": (
+                        f"0x{readq(qtest, KERNEL_LOAD_ADDR):016x}"
+                    ),
+                    "payload_argument_x0": (
+                        f"0x{readq(qtest, SIGNATURE_ADDR + 8):016x}"
+                    ),
+                    "payload_initial_sp": (
+                        f"0x{readq(qtest, SIGNATURE_ADDR + 16):016x}"
+                    ),
+                    "payload_mpidr_el1": (
+                        f"0x{readq(qtest, SIGNATURE_ADDR + 24):016x}"
+                    ),
+                    "arm_control0": f"0x{readl(qtest, ARM_CONTROL0):08x}",
+                    "arm_control1": f"0x{readl(qtest, ARM_CONTROL1):08x}",
+                    "arm_status": f"0x{readl(qtest, ARM_STATUS):08x}",
+                    "arm_id": f"0x{readl(qtest, ARM_ID):08x}",
+                    "pm_proc": f"0x{readl(qtest, PM_PROC):08x}",
+                    "cpu_snapshot": cpu_snapshot(qmp),
+                }
+            )
+        except Exception as error:
+            result["probe_error"] = f"{type(error).__name__}: {error}"
         finally:
             if stderr_path.is_file():
                 diagnostics = stderr_path.read_text(
-                    encoding="utf-8", errors="replace")
-                result["qemu_diagnostics_tail"] = diagnostics_tail(diagnostics)
+                    encoding="utf-8", errors="replace"
+                )
+                result["qemu_diagnostics_tail"] = diagnostics_tail(
+                    diagnostics
+                )
             result_path.write_text(
                 json.dumps(result, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -314,14 +430,14 @@ def main() -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
             if qmp is not None:
                 try:
-                    if proc.poll() is None:
+                    if process.poll() is None:
                         qmp.execute("quit")
                 except Exception:
                     pass
                 qmp.close()
             if qtest is not None:
                 qtest.close()
-            stop_process(proc)
+            stop_process(process)
 
     return 0 if result.get("signature_seen") is True else 2
 
