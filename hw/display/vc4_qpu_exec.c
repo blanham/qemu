@@ -14,6 +14,7 @@
 
 #define VC4_QPU_MAX_EXEC_WORDS          64
 #define VC4_QPU_PROGRAM_END_SIGNAL       3
+#define VC4_QPU_LAST_THREAD_SWITCH_SIGNAL 6
 #define VC4_QPU_SCOREBOARD_UNLOCK_SIGNAL 5
 #define VC4_QPU_SMALL_IMMEDIATE_SIGNAL  13
 #define VC4_QPU_LOAD_IMMEDIATE_SIGNAL   14
@@ -22,12 +23,15 @@
 #define VC4_QPU_COND_ALWAYS               1
 
 #define VC4_QPU_ADD_NOP                   0
+#define VC4_QPU_ADD_FADD                  1
 #define VC4_QPU_ADD_FSUB                  2
+#define VC4_QPU_ADD_FMAX                  4
 #define VC4_QPU_ADD_FTOI                  7
 #define VC4_QPU_ADD_OR                   21
 
 #define VC4_QPU_MUL_NOP                   0
 #define VC4_QPU_MUL_FMUL                  1
+#define VC4_QPU_MUL_V8MIN                 4
 
 #define VC4_QPU_MUX_R0                    0
 #define VC4_QPU_MUX_R5                    5
@@ -39,6 +43,7 @@
 #define VC4_QPU_REG_TLB_COLOR_ALL        46
 #define VC4_QPU_REG_VPM                  48
 #define VC4_QPU_REG_VPM_SETUP            49
+#define VC4_QPU_REG_SFU_RECIP             52
 
 static bool vc4_qpu_exec_set_fault(VC4QPUExecState *state,
                                    VC4QPUExecFault fault,
@@ -262,20 +267,37 @@ static bool vc4_qpu_exec_add(VC4QPUExecState *state, unsigned operation,
                              const VC4QPUVector *b,
                              VC4QPUVector *result)
 {
+    memset(result, 0, sizeof(*result));
+
     switch (operation) {
     case VC4_QPU_ADD_NOP:
-        memset(result, 0, sizeof(*result));
+        return true;
+    case VC4_QPU_ADD_FADD:
+        for (unsigned lane = 0; lane < state->active_lanes; lane++) {
+            float value = vc4_qpu_bits_to_float(a->lane[lane]) +
+                          vc4_qpu_bits_to_float(b->lane[lane]);
+
+            result->lane[lane] = vc4_qpu_float_to_bits(value);
+        }
         return true;
     case VC4_QPU_ADD_FSUB:
-        for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        for (unsigned lane = 0; lane < state->active_lanes; lane++) {
             float value = vc4_qpu_bits_to_float(a->lane[lane]) -
                           vc4_qpu_bits_to_float(b->lane[lane]);
 
             result->lane[lane] = vc4_qpu_float_to_bits(value);
         }
         return true;
+    case VC4_QPU_ADD_FMAX:
+        for (unsigned lane = 0; lane < state->active_lanes; lane++) {
+            float value = fmaxf(vc4_qpu_bits_to_float(a->lane[lane]),
+                                vc4_qpu_bits_to_float(b->lane[lane]));
+
+            result->lane[lane] = vc4_qpu_float_to_bits(value);
+        }
+        return true;
     case VC4_QPU_ADD_FTOI:
-        for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        for (unsigned lane = 0; lane < state->active_lanes; lane++) {
             float value = vc4_qpu_bits_to_float(a->lane[lane]);
 
             /* The positive limit is exclusive; -2^31 is representable. */
@@ -288,7 +310,7 @@ static bool vc4_qpu_exec_add(VC4QPUExecState *state, unsigned operation,
         }
         return true;
     case VC4_QPU_ADD_OR:
-        for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        for (unsigned lane = 0; lane < state->active_lanes; lane++) {
             result->lane[lane] = a->lane[lane] | b->lane[lane];
         }
         return true;
@@ -303,16 +325,31 @@ static bool vc4_qpu_exec_mul(VC4QPUExecState *state, unsigned operation,
                              const VC4QPUVector *b,
                              VC4QPUVector *result)
 {
+    memset(result, 0, sizeof(*result));
+
     switch (operation) {
     case VC4_QPU_MUL_NOP:
-        memset(result, 0, sizeof(*result));
         return true;
     case VC4_QPU_MUL_FMUL:
-        for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        for (unsigned lane = 0; lane < state->active_lanes; lane++) {
             float value = vc4_qpu_bits_to_float(a->lane[lane]) *
                           vc4_qpu_bits_to_float(b->lane[lane]);
 
             result->lane[lane] = vc4_qpu_float_to_bits(value);
+        }
+        return true;
+    case VC4_QPU_MUL_V8MIN:
+        for (unsigned lane = 0; lane < state->active_lanes; lane++) {
+            uint32_t value = 0;
+
+            for (unsigned byte = 0; byte < sizeof(uint32_t); byte++) {
+                unsigned shift = byte * 8;
+                uint32_t a_byte = (a->lane[lane] >> shift) & 0xff;
+                uint32_t b_byte = (b->lane[lane] >> shift) & 0xff;
+
+                value |= MIN(a_byte, b_byte) << shift;
+            }
+            result->lane[lane] = value;
         }
         return true;
     default:
@@ -342,7 +379,7 @@ static bool vc4_qpu_exec_write_general(VC4QPUExecState *state,
             state, VC4_QPU_EXEC_FAULT_PACK, pack);
     }
 
-    for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+    for (unsigned lane = 0; lane < state->active_lanes; lane++) {
         uint32_t packed = value->lane[lane] & 0xffff;
 
         if (pack == 1) {
@@ -382,6 +419,16 @@ static bool vc4_qpu_exec_write(VC4QPUExecState *state, bool file_a,
     case VC4_QPU_REG_TLB_COLOR_ALL:
         state->tlb_color_all = *value;
         state->tlb_color_all_valid = true;
+        return true;
+    case VC4_QPU_REG_SFU_RECIP:
+        memset(&state->accumulator[4], 0,
+               sizeof(state->accumulator[4]));
+        for (unsigned lane = 0; lane < state->active_lanes; lane++) {
+            float input = vc4_qpu_bits_to_float(value->lane[lane]);
+
+            state->accumulator[4].lane[lane] =
+                vc4_qpu_float_to_bits(1.0f / input);
+        }
         return true;
     case VC4_QPU_REG_VPM:
         return vc4_qpu_exec_write_vpm(state, value);
@@ -588,6 +635,19 @@ void vc4_qpu_exec_init(VC4QPUExecState *state, uint32_t uniform_address)
 {
     memset(state, 0, sizeof(*state));
     state->uniform_address = uniform_address;
+    state->active_lanes = VC4_QPU_LANES;
+}
+
+bool vc4_qpu_exec_set_active_lanes(VC4QPUExecState *state,
+                                   unsigned active_lanes)
+{
+    if (state == NULL || active_lanes == 0 ||
+        active_lanes > VC4_QPU_LANES) {
+        return false;
+    }
+
+    state->active_lanes = active_lanes;
+    return true;
 }
 
 bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
@@ -604,6 +664,7 @@ bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
     state->pc = code_address;
     state->scoreboard_unlocked = false;
     state->tlb_color_all_valid = false;
+    state->last_thread_switch = false;
 
     for (unsigned index = 0; index < VC4_QPU_MAX_EXEC_WORDS; index++) {
         VC4QPUInstruction instruction;
@@ -627,6 +688,7 @@ bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
         case 1:
         case VC4_QPU_PROGRAM_END_SIGNAL:
         case VC4_QPU_SCOREBOARD_UNLOCK_SIGNAL:
+        case VC4_QPU_LAST_THREAD_SWITCH_SIGNAL:
         case VC4_QPU_SMALL_IMMEDIATE_SIGNAL:
             if (!vc4_qpu_exec_alu(
                     read_func, opaque, state, &instruction)) {
@@ -647,6 +709,9 @@ bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
         state->instruction_count = index + 1;
         if (instruction.signal == VC4_QPU_SCOREBOARD_UNLOCK_SIGNAL) {
             state->scoreboard_unlocked = true;
+        }
+        if (instruction.signal == VC4_QPU_LAST_THREAD_SWITCH_SIGNAL) {
+            state->last_thread_switch = true;
         }
         if (saw_program_end) {
             if (--end_delay == 0) {
