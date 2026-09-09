@@ -8,8 +8,18 @@ on:
       - .github/workflows/vc4-linux-mesa-gles2-frontier.yml
       - hw/arm/bcm2835_peripherals.c
       - hw/display/bcm2835_v3d.c
+      - hw/display/vc4_qpu.c
+      - hw/display/vc4_qpu_exec.c
+      - hw/display/vc4_tiling.c
+      - hw/display/vc4_v3d_frontier.c
+      - hw/display/vc4_v3d_pipeline.c
       - include/hw/arm/bcm2835_peripherals.h
       - include/hw/display/bcm2835_v3d.h
+      - include/hw/display/vc4_qpu.h
+      - include/hw/display/vc4_qpu_exec.h
+      - include/hw/display/vc4_tiling.h
+      - include/hw/display/vc4_v3d_frontier.h
+      - include/hw/display/vc4_v3d_pipeline.h
       - scripts/vc4/build-linux-mesa-gles2-initramfs.sh
       - scripts/vc4/build-linux-mesa-gles2-root.sh
       - scripts/vc4/build-linux-v3d-modular-initramfs.sh
@@ -24,6 +34,10 @@ on:
       - scripts/vc4/summarize-linux-mesa-gles2.py
       - scripts/vc4/summarize-linux-mesa-gles2-smoke.py
       - scripts/vc4/v3d-smoke.py
+      - tests/unit/test-vc4-qpu.c
+      - tests/unit/test-vc4-qpu-contract.c
+      - tests/unit/test-vc4-tiling.c
+      - tests/unit/test-vc4-v3d-pipeline.c
       - tests/vc4/linux-mesa-gles2-probe.c
       - tests/vc4/linux-mesa-gles2-supervisor.inc.c
       - tests/vc4/linux-v3d-modular-init.c
@@ -225,13 +239,26 @@ jobs:
             --target-list=aarch64-softmmu,vc4-softmmu \
             --disable-docs --disable-werror \
             2>&1 | tee "$EVIDENCE_DIR/configure.log"
-          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+          ninja -C build \
+            qemu-system-aarch64 qemu-system-vc4 \
+            tests/unit/test-vc4-qpu \
+            tests/unit/test-vc4-qpu-contract \
+            tests/unit/test-vc4-tiling \
+            tests/unit/test-vc4-v3d-pipeline \
             2>&1 | tee "$EVIDENCE_DIR/build.log"
 
       - name: Preserve VC4 architectural regressions
         id: regressions
         run: |
           set -euo pipefail
+          build/tests/unit/test-vc4-qpu --tap -k \
+            2>&1 | tee "$EVIDENCE_DIR/qpu.tap"
+          build/tests/unit/test-vc4-qpu-contract --tap -k \
+            2>&1 | tee "$EVIDENCE_DIR/qpu-contract.tap"
+          build/tests/unit/test-vc4-tiling --tap -k \
+            2>&1 | tee "$EVIDENCE_DIR/tiling.tap"
+          build/tests/unit/test-vc4-v3d-pipeline --tap -k \
+            2>&1 | tee "$EVIDENCE_DIR/v3d-pipeline.tap"
           python3 scripts/vc4/property-power-domain-smoke.py \
             --qemu build/qemu-system-aarch64 \
             2>&1 | tee "$EVIDENCE_DIR/power-domain.log"
