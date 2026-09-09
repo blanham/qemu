@@ -56,6 +56,12 @@ typedef struct VC4QPUExecState {
     uint8_t vpm_write_row;
     uint8_t vpm_write_stride;
 
+    /* Exact rows emitted by the current program, for typed pipeline output. */
+    bool vpm_wrote;
+    uint8_t vpm_first_write_row;
+    uint8_t vpm_last_write_row;
+    unsigned vpm_write_count;
+
     bool tlb_color_all_valid;
     VC4QPUVector tlb_color_all;
     bool scoreboard_unlocked;

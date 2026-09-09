@@ -18,33 +18,6 @@
 #define VC4_PACKET_GL_INDEXED_PRIMITIVE 32
 #define VC4_PACKET_GL_ARRAY_PRIMITIVE   33
 
-typedef struct VC4V3DShaderAttribute {
-    uint32_t address;
-    uint32_t stride;
-    uint16_t bytes;
-    uint8_t vs_vpm_offset;
-    uint8_t cs_vpm_offset;
-} VC4V3DShaderAttribute;
-
-typedef struct VC4V3DShaderRecord {
-    uint32_t address;
-    uint32_t fs_code;
-    uint32_t fs_uniforms;
-    uint32_t vs_code;
-    uint32_t vs_uniforms;
-    uint32_t cs_code;
-    uint32_t cs_uniforms;
-    uint8_t flags;
-    uint8_t fs_varyings;
-    uint8_t vs_attribute_select;
-    uint8_t vs_attribute_size;
-    uint8_t cs_attribute_select;
-    uint8_t cs_attribute_size;
-    uint8_t attribute_count;
-    bool extended;
-    VC4V3DShaderAttribute attributes[VC4_MAX_SHADER_ATTRIBUTES];
-} VC4V3DShaderRecord;
-
 typedef struct VC4V3DFrontierReader {
     VC4V3DFrontierReadFunc read_func;
     void *opaque;
@@ -103,7 +76,7 @@ static const char *vc4_v3d_primitive_name(unsigned mode)
     return mode < ARRAY_SIZE(names) ? names[mode] : "unknown";
 }
 
-static bool vc4_v3d_decode_shader_record(VC4V3DFrontierReader *reader,
+static bool vc4_v3d_decode_shader_record_reader(VC4V3DFrontierReader *reader,
                                          uint32_t raw,
                                          VC4V3DShaderRecord *record)
 {
@@ -167,6 +140,20 @@ static bool vc4_v3d_decode_shader_record(VC4V3DFrontierReader *reader,
     }
 
     return true;
+}
+
+bool vc4_v3d_decode_shader_record(VC4V3DFrontierReadFunc read_func,
+                                   void *opaque, uint32_t raw,
+                                   VC4V3DShaderRecord *record)
+{
+    VC4V3DFrontierReader reader = {
+        .read_func = read_func,
+        .opaque = opaque,
+        .device_name = NULL,
+    };
+
+    return read_func != NULL && record != NULL &&
+           vc4_v3d_decode_shader_record_reader(&reader, raw, record);
 }
 
 static void vc4_v3d_trace_uniforms(VC4V3DFrontierReader *reader,
@@ -307,7 +294,7 @@ bool vc4_v3d_frontier_report(VC4V3DFrontierReadFunc read_func,
                       device_name);
         return true;
     }
-    if (!vc4_v3d_decode_shader_record(
+    if (!vc4_v3d_decode_shader_record_reader(
             &reader, state->shader_record, &record)) {
         qemu_log_mask(LOG_UNIMP,
                       "%s: frontier shader record unreadable "

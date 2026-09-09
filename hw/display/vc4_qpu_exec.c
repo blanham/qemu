@@ -160,12 +160,21 @@ static bool vc4_qpu_exec_read_vpm(VC4QPUExecState *state,
 static bool vc4_qpu_exec_write_vpm(VC4QPUExecState *state,
                                    const VC4QPUVector *value)
 {
+    uint8_t row;
+
     if (!state->vpm_write_configured) {
         return vc4_qpu_exec_set_fault(
             state, VC4_QPU_EXEC_FAULT_VPM_SETUP, 0);
     }
 
-    state->vpm[state->vpm_write_row] = *value;
+    row = state->vpm_write_row;
+    state->vpm[row] = *value;
+    if (!state->vpm_wrote) {
+        state->vpm_wrote = true;
+        state->vpm_first_write_row = row;
+    }
+    state->vpm_last_write_row = row;
+    state->vpm_write_count++;
     state->vpm_write_row =
         (state->vpm_write_row + state->vpm_write_stride) &
         (VC4_QPU_VPM_ROWS - 1);

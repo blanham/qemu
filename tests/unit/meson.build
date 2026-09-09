@@ -140,6 +140,12 @@ if have_system
       meson.project_source_root() / 'hw/display/vc4_qpu.c',
       meson.project_source_root() / 'hw/display/vc4_qpu_exec.c',
     ],
+    'test-vc4-v3d-pipeline': [
+      meson.project_source_root() / 'hw/display/vc4_qpu.c',
+      meson.project_source_root() / 'hw/display/vc4_qpu_exec.c',
+      meson.project_source_root() / 'hw/display/vc4_v3d_frontier.c',
+      meson.project_source_root() / 'hw/display/vc4_v3d_pipeline.c',
+    ],
     'test-qmp-cmds': [testqapi],
     'test-xbzrle': [migration],
     'test-util-sockets': ['socket-helpers.c'],

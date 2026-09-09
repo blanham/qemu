@@ -17,6 +17,7 @@
 #include "hw/core/irq.h"
 #include "hw/display/bcm2835_v3d.h"
 #include "hw/display/vc4_v3d_frontier.h"
+#include "hw/display/vc4_v3d_pipeline.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -172,9 +173,12 @@ typedef struct VC4V3DCLState {
     uint8_t clear_stencil;
     uint8_t tile_x;
     uint8_t tile_y;
+    int16_t viewport_x;
+    int16_t viewport_y;
     VC4V3DFrontierState frontier;
     bool have_render_config;
     bool have_clear_color;
+    bool have_viewport;
     bool saw_eof;
     uint32_t main_start;
     uint32_t main_end;
@@ -273,11 +277,11 @@ static bool bcm2835_v3d_frontier_read(void *opaque,
            MEMTX_OK;
 }
 
-static bool bcm2835_v3d_report_primitive_frontier(
-    BCM2835V3DState *s, unsigned thread, VC4V3DCLState *cl,
-    uint32_t pc, uint8_t packet)
+static bool bcm2835_v3d_read_primitive(
+    BCM2835V3DState *s, unsigned thread, uint32_t pc, uint8_t packet,
+    VC4V3DPrimitiveInfo *primitive)
 {
-    VC4V3DPrimitiveInfo primitive = {
+    *primitive = (VC4V3DPrimitiveInfo) {
         .pc = pc,
         .thread = thread,
         .packet = packet,
@@ -285,28 +289,130 @@ static bool bcm2835_v3d_report_primitive_frontier(
     };
 
     if (!bcm2835_v3d_cl_read_u8(s, pc + 1,
-                                &primitive.mode_byte) ||
+                                &primitive->mode_byte) ||
         !bcm2835_v3d_cl_read_u32(s, pc + 2,
-                                 &primitive.length)) {
-        return true;
+                                 &primitive->length)) {
+        return false;
     }
 
-    if (!primitive.indexed) {
-        if (!bcm2835_v3d_cl_read_u32(s, pc + 6,
-                                     &primitive.first)) {
-            return true;
-        }
-    } else if (!bcm2835_v3d_cl_read_u32(
-                   s, pc + 6, &primitive.index_address) ||
-               !bcm2835_v3d_cl_read_u32(
-                   s, pc + 10, &primitive.max_index)) {
-        return true;
+    if (!primitive->indexed) {
+        return bcm2835_v3d_cl_read_u32(s, pc + 6,
+                                       &primitive->first);
     }
+    return bcm2835_v3d_cl_read_u32(
+               s, pc + 6, &primitive->index_address) &&
+           bcm2835_v3d_cl_read_u32(
+               s, pc + 10, &primitive->max_index);
+}
 
+static bool bcm2835_v3d_report_primitive_frontier(
+    BCM2835V3DState *s, VC4V3DCLState *cl,
+    const VC4V3DPrimitiveInfo *primitive)
+{
     return vc4_v3d_frontier_report(
         bcm2835_v3d_frontier_read, s, TYPE_BCM2835_V3D,
-        &cl->frontier, &primitive, &s->last_frontier_pc,
+        &cl->frontier, primitive, &s->last_frontier_pc,
         &s->last_frontier_shader_record);
+}
+
+static bool bcm2835_v3d_publish_tile_sub_lists(BCM2835V3DState *s,
+                                                VC4V3DCLState *cl)
+{
+    uint64_t tiles;
+    uint8_t return_packet = VC4_PACKET_RETURN_FROM_SUB_LIST;
+
+    if (!cl->frontier.have_binning_config ||
+        cl->frontier.bin_tiles_x == 0 || cl->frontier.bin_tiles_y == 0) {
+        s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_RENDER;
+        return false;
+    }
+    tiles = (uint64_t)cl->frontier.bin_tiles_x *
+            cl->frontier.bin_tiles_y;
+    if (tiles * 32 > cl->frontier.bin_alloc_size ||
+        cl->frontier.bin_alloc_base > UINT32_MAX - (tiles - 1) * 32) {
+        s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_RENDER;
+        return false;
+    }
+
+    for (uint64_t tile = 0; tile < tiles; tile++) {
+        if (!bcm2835_v3d_dma_write(
+                s, cl->frontier.bin_alloc_base + tile * 32,
+                &return_packet, sizeof(return_packet))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool bcm2835_v3d_append_pipeline(BCM2835V3DState *s,
+                                         const VC4V3DPipelineResult *result)
+{
+    if (result->triangle_count >
+        BCM2835_V3D_MAX_TRIANGLES - s->triangle_count) {
+        s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_RENDER;
+        return false;
+    }
+
+    for (unsigned index = 0; index < result->triangle_count; index++) {
+        unsigned destination = s->triangle_count++;
+
+        for (unsigned vertex = 0; vertex < 3; vertex++) {
+            s->triangle_x[destination * 3 + vertex] =
+                result->triangles[index].x[vertex];
+            s->triangle_y[destination * 3 + vertex] =
+                result->triangles[index].y[vertex];
+        }
+        s->triangle_color[destination] = result->triangles[index].color;
+    }
+    return true;
+}
+
+static int64_t bcm2835_v3d_edge(int32_t ax, int32_t ay,
+                                      int32_t bx, int32_t by,
+                                      int32_t px, int32_t py)
+{
+    return (int64_t)(px - ax) * (by - ay) -
+           (int64_t)(py - ay) * (bx - ax);
+}
+
+static bool bcm2835_v3d_triangle_contains(const BCM2835V3DState *s,
+                                           unsigned triangle,
+                                           int32_t px, int32_t py)
+{
+    const int32_t *x = &s->triangle_x[triangle * 3];
+    const int32_t *y = &s->triangle_y[triangle * 3];
+    int64_t area = bcm2835_v3d_edge(x[0], y[0], x[1], y[1], x[2], y[2]);
+    int64_t e0;
+    int64_t e1;
+    int64_t e2;
+
+    if (area == 0) {
+        return false;
+    }
+    e0 = bcm2835_v3d_edge(x[0], y[0], x[1], y[1], px, py);
+    e1 = bcm2835_v3d_edge(x[1], y[1], x[2], y[2], px, py);
+    e2 = bcm2835_v3d_edge(x[2], y[2], x[0], y[0], px, py);
+    return (e0 >= 0 && e1 >= 0 && e2 >= 0) ||
+           (e0 <= 0 && e1 <= 0 && e2 <= 0);
+}
+
+static void bcm2835_v3d_rasterize_line(const BCM2835V3DState *s,
+                                        uint8_t *line, uint32_t x0,
+                                        uint32_t x1, uint32_t y)
+{
+    int32_t py = (int32_t)y * 16 + 8;
+
+    for (uint32_t x = x0; x < x1; x++) {
+        int32_t px = (int32_t)x * 16 + 8;
+
+        for (unsigned triangle = 0;
+             triangle < s->triangle_count; triangle++) {
+            if (bcm2835_v3d_triangle_contains(s, triangle, px, py)) {
+                stl_le_p(line + (x - x0) * 4,
+                         s->triangle_color[triangle]);
+            }
+        }
+    }
 }
 
 static bool bcm2835_v3d_store_clear_tile(BCM2835V3DState *s,
@@ -327,7 +433,7 @@ static bool bcm2835_v3d_store_clear_tile(BCM2835V3DState *s,
     uint8_t *line;
     size_t line_size;
 
-    if (!cl->have_render_config || !cl->have_clear_color ||
+    if (!cl->have_render_config ||
         cl->width == 0 || cl->height == 0 ||
         cl->width > VC4_MAX_RENDER_DIMENSION ||
         cl->height > VC4_MAX_RENDER_DIMENSION) {
@@ -356,13 +462,21 @@ static bool bcm2835_v3d_store_clear_tile(BCM2835V3DState *s,
     line_size = (x1 - x0) * 4;
     line = g_malloc(line_size);
 
-    for (col = 0; col < x1 - x0; col++) {
-        stl_le_p(line + col * 4, cl->clear_color[0]);
+    if (cl->have_clear_color) {
+        for (col = 0; col < x1 - x0; col++) {
+            stl_le_p(line + col * 4, cl->clear_color[0]);
+        }
     }
 
     for (row = y0; row < y1; row++) {
         hwaddr address = cl->render_base + (hwaddr)row * pitch + x0 * 4;
 
+        if (!cl->have_clear_color &&
+            !bcm2835_v3d_dma_read(s, address, line, line_size)) {
+            g_free(line);
+            return false;
+        }
+        bcm2835_v3d_rasterize_line(s, line, x0, x1, row);
         if (!bcm2835_v3d_dma_write(s, address, line, line_size)) {
             g_free(line);
             return false;
@@ -508,7 +622,6 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
         *stop = true;
         return true;
     case VC4_PACKET_NOP:
-    case VC4_PACKET_START_TILE_BINNING:
     case VC4_PACKET_INCREMENT_SEMAPHORE:
     case VC4_PACKET_WAIT_ON_SEMAPHORE:
     case VC4_PACKET_PRIMITIVE_LIST_FORMAT:
@@ -521,7 +634,6 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
     case VC4_PACKET_RHT_X_BOUNDARY:
     case VC4_PACKET_DEPTH_OFFSET:
     case VC4_PACKET_CLIP_WINDOW:
-    case VC4_PACKET_VIEWPORT_OFFSET:
     case VC4_PACKET_Z_CLIPPING:
     case VC4_PACKET_CLIPPER_XY_SCALING:
     case VC4_PACKET_CLIPPER_Z_SCALING:
@@ -529,6 +641,14 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
     case VC4_PACKET_LOAD_FULL_RES_TILE:
     case VC4_PACKET_STORE_TILE_BUFFER_GENERAL:
     case VC4_PACKET_LOAD_TILE_BUFFER_GENERAL:
+        return true;
+
+    case VC4_PACKET_START_TILE_BINNING:
+        if (thread != 0) {
+            s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_BAD_PACKET;
+            return false;
+        }
+        s->triangle_count = 0;
         return true;
 
     case VC4_PACKET_FLUSH:
@@ -612,6 +732,21 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
         cl->frontier.have_shader_record = true;
         return true;
 
+    case VC4_PACKET_VIEWPORT_OFFSET: {
+        uint16_t x;
+        uint16_t y;
+
+        if (thread != 0 ||
+            !bcm2835_v3d_cl_read_u16(s, pc + 1, &x) ||
+            !bcm2835_v3d_cl_read_u16(s, pc + 3, &y)) {
+            return false;
+        }
+        cl->viewport_x = (int16_t)x;
+        cl->viewport_y = (int16_t)y;
+        cl->have_viewport = true;
+        return true;
+    }
+
     case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:
         if (thread != 1 ||
             !bcm2835_v3d_cl_read_u32(s, pc + 1, &cl->render_base) ||
@@ -648,20 +783,46 @@ static bool bcm2835_v3d_execute_packet(BCM2835V3DState *s,
         }
         if (packet == VC4_PACKET_STORE_MS_TILE_BUFFER_EOF) {
             cl->saw_eof = true;
+            s->triangle_count = 0;
         }
         return true;
 
     case VC4_PACKET_GL_INDEXED_PRIMITIVE:
-    case VC4_PACKET_GL_ARRAY_PRIMITIVE:
-        if (bcm2835_v3d_report_primitive_frontier(
-                s, thread, cl, pc, packet)) {
-            qemu_log_mask(LOG_UNIMP,
-                          TYPE_BCM2835_V3D
-                          ": packet 0x%02x requires binning/QPU "
-                          "execution at 0x%08x\n", packet, pc);
+    case VC4_PACKET_GL_ARRAY_PRIMITIVE: {
+        VC4V3DPrimitiveInfo primitive;
+        VC4V3DPipelineResult result;
+
+        if (!bcm2835_v3d_read_primitive(
+                s, thread, pc, packet, &primitive)) {
+            return false;
+        }
+        if (packet == VC4_PACKET_GL_ARRAY_PRIMITIVE && cl->have_viewport &&
+            vc4_v3d_execute_array_primitive(
+                bcm2835_v3d_frontier_read, s, &cl->frontier, &primitive,
+                cl->viewport_x, cl->viewport_y, &result)) {
+            return bcm2835_v3d_publish_tile_sub_lists(s, cl) &&
+                   bcm2835_v3d_append_pipeline(s, &result);
+        }
+
+        if (bcm2835_v3d_report_primitive_frontier(s, cl, &primitive)) {
+            if (packet == VC4_PACKET_GL_ARRAY_PRIMITIVE &&
+                cl->have_viewport) {
+                qemu_log_mask(
+                    LOG_UNIMP, TYPE_BCM2835_V3D
+                    ": primitive pipeline fault=%s detail=0x%08x "
+                    "qpu=%s at 0x%08x\n",
+                    vc4_v3d_pipeline_fault_name(result.fault),
+                    result.detail, vc4_qpu_exec_fault_name(result.qpu_fault),
+                    pc);
+            } else {
+                qemu_log_mask(LOG_UNIMP, TYPE_BCM2835_V3D
+                              ": packet 0x%02x requires a supported "
+                              "array/QPU pipeline at 0x%08x\n", packet, pc);
+            }
         }
         s->regs[REG_INDEX(V3D_ERRSTAT)] |= V3D_ERR_UNSUPPORTED;
         return false;
+    }
 
     case VC4_PACKET_COMPRESSED_PRIMITIVE:
     case VC4_PACKET_CLIPPED_COMPRESSED_PRIMITIVE:
@@ -925,6 +1086,10 @@ static void bcm2835_v3d_reset(DeviceState *dev)
     BCM2835V3DState *s = BCM2835_V3D(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
+    s->triangle_count = 0;
+    memset(s->triangle_x, 0, sizeof(s->triangle_x));
+    memset(s->triangle_y, 0, sizeof(s->triangle_y));
+    memset(s->triangle_color, 0, sizeof(s->triangle_color));
     s->last_frontier_pc = UINT32_MAX;
     s->last_frontier_shader_record = UINT32_MAX;
     bcm2835_v3d_update_irq(s);
@@ -934,18 +1099,33 @@ static int bcm2835_v3d_post_load(void *opaque, int version_id)
 {
     BCM2835V3DState *s = opaque;
 
+    if (version_id < 2) {
+        s->triangle_count = 0;
+        memset(s->triangle_x, 0, sizeof(s->triangle_x));
+        memset(s->triangle_y, 0, sizeof(s->triangle_y));
+        memset(s->triangle_color, 0, sizeof(s->triangle_color));
+    } else if (s->triangle_count > BCM2835_V3D_MAX_TRIANGLES) {
+        return -EINVAL;
+    }
     bcm2835_v3d_update_irq(s);
     return 0;
 }
 
 static const VMStateDescription bcm2835_v3d_vmstate = {
     .name = TYPE_BCM2835_V3D,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = bcm2835_v3d_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, BCM2835V3DState,
                              BCM2835_V3D_REG_WORDS),
+        VMSTATE_UINT32_V(triangle_count, BCM2835V3DState, 2),
+        VMSTATE_INT32_ARRAY_V(triangle_x, BCM2835V3DState,
+                              BCM2835_V3D_TRIANGLE_COORDS, 2),
+        VMSTATE_INT32_ARRAY_V(triangle_y, BCM2835V3DState,
+                              BCM2835_V3D_TRIANGLE_COORDS, 2),
+        VMSTATE_UINT32_ARRAY_V(triangle_color, BCM2835V3DState,
+                               BCM2835_V3D_MAX_TRIANGLES, 2),
         VMSTATE_END_OF_LIST()
     }
 };
