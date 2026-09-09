@@ -50,8 +50,13 @@ static bool vc4_v3d_load_attributes(VC4V3DFrontierReadFunc read_func,
 {
     uint32_t valid_mask = record->attribute_count == 8 ?
                           0xffu : ((1u << record->attribute_count) - 1u);
-    unsigned selected_bytes = 0;
+    bool occupied[VC4_MAX_ATTRIBUTE_BYTES] = { false };
 
+    if (expected_size == 0) {
+        return vc4_v3d_pipeline_set_fault(
+            result, VC4_V3D_PIPELINE_FAULT_ATTRIBUTE_SIZE,
+            expected_size);
+    }
     if ((select & ~valid_mask) != 0) {
         return vc4_v3d_pipeline_set_fault(
             result, VC4_V3D_PIPELINE_FAULT_ATTRIBUTE_SELECT, select);
@@ -59,22 +64,38 @@ static bool vc4_v3d_load_attributes(VC4V3DFrontierReadFunc read_func,
 
     for (unsigned index = 0; index < record->attribute_count; index++) {
         const VC4V3DShaderAttribute *attribute = &record->attributes[index];
-        unsigned words;
-        unsigned vpm_offset;
+        unsigned vpm_byte_offset;
 
         if ((select & (1u << index)) == 0) {
             continue;
         }
 
-        selected_bytes += attribute->bytes;
-        words = DIV_ROUND_UP(attribute->bytes, sizeof(uint32_t));
-        vpm_offset = coordinate ? attribute->cs_vpm_offset :
-                                  attribute->vs_vpm_offset;
-        if (attribute->bytes == 0 || attribute->bytes > VC4_MAX_ATTRIBUTE_BYTES ||
-            words == 0 || vpm_offset + words > VC4_QPU_VPM_ROWS) {
+        /*
+         * Shader-record VPM offsets are byte offsets.  Attribute fetches may
+         * extend past the shader's declared total input size (the measured
+         * Mesa record fetches a 16-byte texcoord slot at byte 16 while its VS
+         * consumes only the first 24 bytes).  Populate the complete bounded
+         * fetch, but require the declared prefix to be gap-free.
+         */
+        vpm_byte_offset = coordinate ? attribute->cs_vpm_offset :
+                                       attribute->vs_vpm_offset;
+        if (attribute->bytes == 0 ||
+            attribute->bytes > VC4_MAX_ATTRIBUTE_BYTES ||
+            vpm_byte_offset > VC4_MAX_ATTRIBUTE_BYTES - attribute->bytes) {
             return vc4_v3d_pipeline_set_fault(
                 result, VC4_V3D_PIPELINE_FAULT_ATTRIBUTE_BOUNDS,
-                (index << 24) | (vpm_offset << 16) | attribute->bytes);
+                (index << 24) | (vpm_byte_offset << 16) |
+                attribute->bytes);
+        }
+        for (unsigned byte = 0; byte < attribute->bytes; byte++) {
+            unsigned destination = vpm_byte_offset + byte;
+
+            if (occupied[destination]) {
+                return vc4_v3d_pipeline_set_fault(
+                    result, VC4_V3D_PIPELINE_FAULT_ATTRIBUTE_BOUNDS,
+                    (index << 24) | destination);
+            }
+            occupied[destination] = true;
         }
 
         for (unsigned vertex = 0; vertex < length; vertex++) {
@@ -94,23 +115,25 @@ static bool vc4_v3d_load_attributes(VC4V3DFrontierReadFunc read_func,
                     (index << 24) | vertex);
             }
 
-            for (unsigned word = 0; word < words; word++) {
-                uint8_t scalar[4] = { 0 };
-                size_t offset = word * sizeof(uint32_t);
-                size_t available = MIN((size_t)attribute->bytes - offset,
-                                       sizeof(scalar));
+            for (unsigned byte = 0; byte < attribute->bytes; byte++) {
+                unsigned destination = vpm_byte_offset + byte;
+                unsigned row = destination / sizeof(uint32_t);
+                unsigned shift = (destination % sizeof(uint32_t)) * 8;
+                uint32_t mask = 0xffu << shift;
+                uint32_t *lane = &qpu->vpm[row].lane[vertex];
 
-                memcpy(scalar, bytes + offset, available);
-                qpu->vpm[vpm_offset + word].lane[vertex] =
-                    ldl_le_p(scalar);
+                *lane = (*lane & ~mask) |
+                        ((uint32_t)bytes[byte] << shift);
             }
         }
     }
 
-    if (selected_bytes != expected_size) {
-        return vc4_v3d_pipeline_set_fault(
-            result, VC4_V3D_PIPELINE_FAULT_ATTRIBUTE_SIZE,
-            (selected_bytes << 16) | expected_size);
+    for (unsigned byte = 0; byte < expected_size; byte++) {
+        if (!occupied[byte]) {
+            return vc4_v3d_pipeline_set_fault(
+                result, VC4_V3D_PIPELINE_FAULT_ATTRIBUTE_SIZE,
+                (byte << 16) | expected_size);
+        }
     }
     return true;
 }
@@ -197,13 +220,19 @@ bool vc4_v3d_execute_array_primitive(VC4V3DFrontierReadFunc read_func,
             result, VC4_V3D_PIPELINE_FAULT_SHADER_RECORD,
             state->shader_record);
     }
-    if (record.fs_varyings != 0) {
-        return vc4_v3d_pipeline_set_fault(
-            result, VC4_V3D_PIPELINE_FAULT_VARYINGS,
-            record.fs_varyings);
-    }
 
+    /*
+     * Run the bounded transform stages before rejecting fragment features.
+     * This lets the real Mesa workload validate its exact CS/VS programs and
+     * attribute layout while the still-unimplemented varying/TMU fragment
+     * path remains an explicit hard boundary.
+     */
     vc4_qpu_exec_init(&coordinate_qpu, record.cs_uniforms);
+    if (!vc4_qpu_exec_set_active_lanes(
+            &coordinate_qpu, primitive->length)) {
+        return vc4_v3d_pipeline_set_fault(
+            result, VC4_V3D_PIPELINE_FAULT_LENGTH, primitive->length);
+    }
     if (!vc4_v3d_load_attributes(
             read_func, opaque, &record,
             record.cs_attribute_select, record.cs_attribute_size,
@@ -228,6 +257,11 @@ bool vc4_v3d_execute_array_primitive(VC4V3DFrontierReadFunc read_func,
                  (VC4_QPU_VPM_ROWS - 1);
 
     vc4_qpu_exec_init(&vertex_qpu, record.vs_uniforms);
+    if (!vc4_qpu_exec_set_active_lanes(
+            &vertex_qpu, primitive->length)) {
+        return vc4_v3d_pipeline_set_fault(
+            result, VC4_V3D_PIPELINE_FAULT_LENGTH, primitive->length);
+    }
     if (!vc4_v3d_load_attributes(
             read_func, opaque, &record,
             record.vs_attribute_select, record.vs_attribute_size,
@@ -240,7 +274,18 @@ bool vc4_v3d_execute_array_primitive(VC4V3DFrontierReadFunc read_func,
         return false;
     }
 
+    if (record.fs_varyings != 0) {
+        return vc4_v3d_pipeline_set_fault(
+            result, VC4_V3D_PIPELINE_FAULT_VARYINGS,
+            record.fs_varyings);
+    }
+
     vc4_qpu_exec_init(&fragment_qpu, record.fs_uniforms);
+    if (!vc4_qpu_exec_set_active_lanes(
+            &fragment_qpu, primitive->length)) {
+        return vc4_v3d_pipeline_set_fault(
+            result, VC4_V3D_PIPELINE_FAULT_LENGTH, primitive->length);
+    }
     if (!vc4_v3d_run_stage(
             read_func, opaque, record.fs_code, record.fs_uniforms,
             &fragment_qpu, result,
@@ -281,7 +326,8 @@ bool vc4_v3d_execute_array_primitive(VC4V3DFrontierReadFunc read_func,
 
         output->color = color;
         for (unsigned vertex = 0; vertex < 3; vertex++) {
-            uint32_t packed = coordinate_qpu.vpm[packed_row].lane[lane[vertex]];
+            uint32_t packed =
+                coordinate_qpu.vpm[packed_row].lane[lane[vertex]];
 
             output->x[vertex] =
                 (int32_t)(int16_t)(packed & 0xffffu) + viewport_x;
