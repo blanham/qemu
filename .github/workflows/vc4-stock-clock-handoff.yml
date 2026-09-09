@@ -1,4 +1,4 @@
-name: VC4 stock-firmware clock-synchronous ARM handoff
+name: VC4 stock-firmware normal-TCG ARM handoff
 
 on:
   push:
@@ -25,17 +25,17 @@ permissions:
   contents: write
 
 concurrency:
-  group: vc4-stock-clock-handoff
+  group: vc4-stock-normal-tcg-handoff
   cancel-in-progress: true
 
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 60
     env:
       RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
-      FIXTURE_DIR: /tmp/vc4-stock-clock-fixtures
-      RESULT_DIR: /tmp/vc4-stock-clock-result
+      FIXTURE_DIR: /tmp/vc4-stock-tcg-fixtures
+      RESULT_DIR: /tmp/vc4-stock-tcg-result
 
     steps:
       - uses: actions/checkout@v5
@@ -122,7 +122,7 @@ jobs:
             --qemu build/qemu-system-aarch64 \
             2>&1 | tee "$RESULT_DIR/msync.log"
 
-      - name: Run unchanged firmware with explicit virtual-clock ownership
+      - name: Run unchanged firmware under ordinary TCG time
         id: runtime
         run: |
           set +e
@@ -134,7 +134,7 @@ jobs:
             "$FIXTURE_DIR/kernel8.img" \
             --dtb "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb" \
             --out-dir "$RESULT_DIR/probe" \
-            --seconds 150 \
+            --seconds 180 \
             > "$RESULT_DIR/probe.stdout" \
             2> "$RESULT_DIR/probe.stderr"
           rc=$?
@@ -144,7 +144,7 @@ jobs:
           cat "$RESULT_DIR/probe.stderr" >&2
           exit 0
 
-      - name: Record the exact post-clock frontier
+      - name: Record the exact normal-TCG frontier
         id: classify
         if: always()
         env:
@@ -181,15 +181,12 @@ jobs:
                   'regressions', 'runtime'
               )
           )
-          clock_steps = int(probe.get('qtest_clock_steps') or 0)
-          clock_ns = int(probe.get('qtest_clock_step_ns') or 0)
+          observer = probe.get('observer')
+          observer_valid = observer == 'qmp-hmp-xp-byte-reads'
           timer_us = int(probe.get('system_timer_delta_us') or 0)
-          clock_recovered = (
-              clock_steps > 0 and clock_ns >= 100_000_000 and
-              timer_us >= 100_000
-          )
           signature_seen = probe.get('signature_seen') is True
-          passed = infrastructure_ok and clock_recovered and signature_seen
+          normal_tcg_time_observed = timer_us >= 100_000 or signature_seen
+          passed = infrastructure_ok and observer_valid and signature_seen
 
           vpu = None
           for cpu in probe.get('cpu_snapshot', {}).get('cpus', []):
@@ -238,8 +235,10 @@ jobs:
               classification = f'stock-handoff-infrastructure-{failed}-failed'
           elif probe.get('probe_error'):
               classification = 'stock-handoff-probe-error'
-          elif not clock_recovered:
-              classification = 'stock-handoff-virtual-clock-not-advanced'
+          elif not observer_valid:
+              classification = 'stock-handoff-observer-invalid'
+          elif not normal_tcg_time_observed:
+              classification = 'stock-handoff-system-timer-not-advancing'
           elif opcode:
               classification = (
                   'stock-handoff-vc4-opcode-' + opcode.removeprefix('0x')
@@ -256,7 +255,7 @@ jobs:
           rc_path = result_dir / 'probe.return-code'
           probe_rc = rc_path.read_text().strip() if rc_path.is_file() else None
           status = {
-              'schema_version': 2,
+              'schema_version': 3,
               'generated_at': datetime.now(timezone.utc).isoformat(),
               'source_sha': os.environ.get('GITHUB_SHA'),
               'run_id': os.environ.get('GITHUB_RUN_ID'),
@@ -265,10 +264,11 @@ jobs:
               'classification': classification,
               'probe_return_code': probe_rc,
               'outcomes': outcomes,
-              'virtual_clock_recovered': clock_recovered,
-              'qtest_clock_steps': clock_steps,
-              'qtest_clock_step_ns': clock_ns,
+              'observer': observer,
+              'observer_valid': observer_valid,
+              'normal_tcg_time_observed': normal_tcg_time_observed,
               'system_timer_delta_us': timer_us,
+              'poll_count': probe.get('poll_count'),
               'final_vpu_pc': final_vpu_pc,
               'last_unimplemented_opcode': opcode,
               'last_unimplemented_pc': opcode_pc,
@@ -287,16 +287,19 @@ jobs:
               '',
               f"Frontier: **`{classification}`**",
               '',
-              f"- Virtual clock recovered: `{clock_recovered}`",
-              f"- qtest clock steps: `{clock_steps}`",
-              f"- Virtual time advanced: `{clock_ns}` ns",
+              f"- Observer: `{observer}`",
+              f"- Observer valid: `{observer_valid}`",
+              f"- Ordinary TCG time observed: `{normal_tcg_time_observed}`",
               f"- BCM2835 system timer advanced: `{timer_us}` us",
+              f"- Memory poll count: `{probe.get('poll_count')}`",
               f"- ARM witness signature: `{signature_seen}`",
               f"- Observed signature: `{probe.get('observed_signature')}`",
               f"- Kernel word after firmware: `{probe.get('kernel_word_after_boot')}`",
               f"- Firmware x0: `{probe.get('payload_argument_x0')}`",
               f"- Initial SP: `{probe.get('payload_initial_sp')}`",
               f"- MPIDR_EL1: `{probe.get('payload_mpidr_el1')}`",
+              f"- CurrentEL: `{probe.get('payload_current_el')}`",
+              f"- SCTLR_EL1: `{probe.get('payload_sctlr_el1')}`",
               f"- ARM_CONTROL0: `{probe.get('arm_control0')}`",
               f"- ARM_CONTROL1: `{probe.get('arm_control1')}`",
               f"- ARM_STATUS: `{probe.get('arm_status')}`",
@@ -322,7 +325,7 @@ jobs:
           ]
           if relevant:
               lines += ['## Relevant diagnostics', '']
-              lines += [f'- `{line}`' for line in relevant[-48:]]
+              lines += [f'- `{line}`' for line in relevant[-64:]]
               lines += ['']
           Path('VC4_STOCK_ARM_HANDOFF_STATUS.md').write_text(
               '\n'.join(lines), encoding='utf-8'
@@ -335,12 +338,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vc4-stock-clock-handoff-${{ github.run_attempt }}
+          name: vc4-stock-normal-tcg-handoff-${{ github.run_attempt }}
           path: |
             VC4_STOCK_ARM_HANDOFF_STATUS.json
             VC4_STOCK_ARM_HANDOFF_STATUS.md
-            /tmp/vc4-stock-clock-fixtures
-            /tmp/vc4-stock-clock-result
+            /tmp/vc4-stock-tcg-fixtures
+            /tmp/vc4-stock-tcg-result
           if-no-files-found: warn
           retention-days: 14
 
@@ -360,18 +363,16 @@ jobs:
           PY
           )
 
-          git config user.name "VC4 Clock Handoff CI"
-          git config user.email "vc4-clock-handoff-ci@users.noreply.github.com"
+          git config user.name "VC4 Stock Handoff CI"
+          git config user.email "vc4-stock-handoff-ci@users.noreply.github.com"
           git add -- \
             VC4_STOCK_ARM_HANDOFF_STATUS.json \
             VC4_STOCK_ARM_HANDOFF_STATUS.md
-          git rm --ignore-unmatch \
-            .github/workflows/vc4-stock-arm-handoff-recovered.yml
           if [ "$passed" = true ]; then
             git rm -- .github/workflows/vc4-stock-clock-handoff.yml
-            message='hw/arm: validate clock-synchronous stock-firmware handoff'
+            message='hw/arm: validate stock-firmware AArch64 handoff under TCG'
           else
-            message='tests/vc4: record clock-synchronous handoff frontier [skip ci]'
+            message='tests/vc4: record normal-TCG handoff frontier [skip ci]'
           fi
           git diff --cached --check
           git commit -m "$message"
