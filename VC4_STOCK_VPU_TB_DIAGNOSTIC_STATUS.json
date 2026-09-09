@@ -1,0 +1,211 @@
+{
+  "baseline": {
+    "arm_control0": "0x00000000",
+    "arm_control1": "0x00000000",
+    "arm_status": "0x00000000",
+    "classification_hint": "stock-vpu-delay-loop-state-progressing",
+    "elapsed_seconds": 30.068226556000013,
+    "low_pc_phase": {
+      "entered": true,
+      "first_elapsed_seconds": 0.0831237790000614,
+      "first_sample_index": 1,
+      "pc_counts": {
+        "0x00000542": 2,
+        "0x00000544": 546,
+        "0x0000766a": 21,
+        "0x00007670": 15,
+        "0x0000767c": 9,
+        "0x0000768a": 4,
+        "0x1ed879b6": 1
+      },
+      "r2_values": [
+        "0x0000ac11",
+        "0x00017020",
+        "0x001cab40",
+        "0x00282af0",
+        "0x7e202040"
+      ],
+      "r3_values": [
+        "0x0000266b",
+        "0x0002575b",
+        "0x00281260",
+        "0x1f12647c"
+      ],
+      "sample_count": 598,
+      "stationary": false,
+      "system_timer_delta_us": 29915793,
+      "timer_register_changed": true,
+      "transition_count": 52,
+      "unique_pcs": [
+        "0x00000542",
+        "0x00000544",
+        "0x0000766a",
+        "0x00007670",
+        "0x0000767c",
+        "0x0000768a",
+        "0x1ed879b6"
+      ],
+      "unique_state_count": 53
+    },
+    "pc_counts": {
+      "0x00000542": 2,
+      "0x00000544": 546,
+      "0x00002740": 1,
+      "0x0000766a": 21,
+      "0x00007670": 15,
+      "0x0000767c": 9,
+      "0x0000768a": 4,
+      "0x1ed879b6": 1
+    },
+    "pm_proc": "0x00000000",
+    "pre_stop_debug": {
+      "_errors": {
+        "debug-basic-enable": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-basic-enable' not found\"}",
+        "debug-basic-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-basic-pending' not found\"}",
+        "debug-cpu-irq": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-cpu-irq' not found\"}",
+        "debug-direct-enable": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-direct-enable' not found\"}",
+        "debug-direct-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-direct-pending' not found\"}",
+        "debug-exit-request": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-exit-request' not found\"}",
+        "debug-fiq-asserted": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-fiq-asserted' not found\"}",
+        "debug-fiq-control": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-fiq-control' not found\"}",
+        "debug-fiq-direct": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-fiq-direct' not found\"}",
+        "debug-fiq-gpu": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-fiq-gpu' not found\"}",
+        "debug-gpu-enable": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-gpu-enable' not found\"}",
+        "debug-gpu-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-gpu-pending' not found\"}",
+        "debug-halted": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-halted' not found\"}",
+        "debug-hard-interrupt": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-hard-interrupt' not found\"}",
+        "debug-has-work": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-has-work' not found\"}",
+        "debug-irq-any-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-irq-any-pending' not found\"}",
+        "debug-irq-enabled-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-irq-enabled-pending' not found\"}",
+        "debug-stop": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-stop' not found\"}",
+        "debug-stopped": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-stopped' not found\"}",
+        "debug-thread-kicked": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-thread-kicked' not found\"}",
+        "debug-vc4-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-vc4-pending' not found\"}"
+      }
+    },
+    "probe_error": null,
+    "sample_count": 599,
+    "signature_seen": false,
+    "system_timer_delta_us": 30031040,
+    "unique_pcs": [
+      "0x00000542",
+      "0x00000544",
+      "0x00002740",
+      "0x0000766a",
+      "0x00007670",
+      "0x0000767c",
+      "0x0000768a",
+      "0x1ed879b6"
+    ]
+  },
+  "classification": "stock-vpu-delay-loop-progresses-in-both-tb-modes",
+  "generated_at": "2026-09-09T14:12:22.043533+00:00",
+  "one_insn_per_tb": {
+    "arm_control0": "0x00000000",
+    "arm_control1": "0x00000000",
+    "arm_status": "0x00000000",
+    "classification_hint": "stock-vpu-delay-loop-state-progressing",
+    "elapsed_seconds": 30.064400078999938,
+    "low_pc_phase": {
+      "entered": true,
+      "first_elapsed_seconds": 0.08315183900003831,
+      "first_sample_index": 1,
+      "pc_counts": {
+        "0x0000009a": 557,
+        "0x00000542": 2,
+        "0x0000060a": 1,
+        "0x0000766a": 12,
+        "0x00007670": 13,
+        "0x0000767c": 4,
+        "0x0000768a": 8,
+        "0x1ed879ba": 1
+      },
+      "r2_values": [
+        "0x0000002a",
+        "0x0000a88e",
+        "0x00016c37",
+        "0x003b7c48",
+        "0x7e200000",
+        "0x7e202040"
+      ],
+      "r3_values": [
+        "0x000029d1",
+        "0x00024537",
+        "0x00040000",
+        "0x1ef39374",
+        "0xffffffff"
+      ],
+      "sample_count": 598,
+      "stationary": false,
+      "system_timer_delta_us": 29911712,
+      "timer_register_changed": true,
+      "transition_count": 41,
+      "unique_pcs": [
+        "0x0000009a",
+        "0x00000542",
+        "0x0000060a",
+        "0x0000766a",
+        "0x00007670",
+        "0x0000767c",
+        "0x0000768a",
+        "0x1ed879ba"
+      ],
+      "unique_state_count": 42
+    },
+    "pc_counts": {
+      "0x0000009a": 557,
+      "0x00000542": 2,
+      "0x0000060a": 1,
+      "0x00002900": 1,
+      "0x0000766a": 12,
+      "0x00007670": 13,
+      "0x0000767c": 4,
+      "0x0000768a": 8,
+      "0x1ed879ba": 1
+    },
+    "pm_proc": "0x00000000",
+    "pre_stop_debug": {
+      "_errors": {
+        "debug-basic-enable": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-basic-enable' not found\"}",
+        "debug-basic-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-basic-pending' not found\"}",
+        "debug-cpu-irq": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-cpu-irq' not found\"}",
+        "debug-direct-enable": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-direct-enable' not found\"}",
+        "debug-direct-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-direct-pending' not found\"}",
+        "debug-exit-request": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-exit-request' not found\"}",
+        "debug-fiq-asserted": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-fiq-asserted' not found\"}",
+        "debug-fiq-control": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-fiq-control' not found\"}",
+        "debug-fiq-direct": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-fiq-direct' not found\"}",
+        "debug-fiq-gpu": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-fiq-gpu' not found\"}",
+        "debug-gpu-enable": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-gpu-enable' not found\"}",
+        "debug-gpu-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-gpu-pending' not found\"}",
+        "debug-halted": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-halted' not found\"}",
+        "debug-hard-interrupt": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-hard-interrupt' not found\"}",
+        "debug-has-work": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-has-work' not found\"}",
+        "debug-irq-any-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-irq-any-pending' not found\"}",
+        "debug-irq-enabled-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-irq-enabled-pending' not found\"}",
+        "debug-stop": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-stop' not found\"}",
+        "debug-stopped": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-stopped' not found\"}",
+        "debug-thread-kicked": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-thread-kicked' not found\"}",
+        "debug-vc4-pending": "RuntimeError: QMP qom-get failed: {'class': 'GenericError', 'desc': \"Property 'vpu-vc4-cpu.debug-vc4-pending' not found\"}"
+      }
+    },
+    "probe_error": null,
+    "sample_count": 599,
+    "signature_seen": false,
+    "system_timer_delta_us": 30027261,
+    "unique_pcs": [
+      "0x0000009a",
+      "0x00000542",
+      "0x0000060a",
+      "0x00002900",
+      "0x0000766a",
+      "0x00007670",
+      "0x0000767c",
+      "0x0000768a",
+      "0x1ed879ba"
+    ]
+  },
+  "run_id": "34361328413",
+  "schema_version": 1,
+  "source_sha": "3423d81900f06adf305bbba7e9c40d3f387d3462"
+}
