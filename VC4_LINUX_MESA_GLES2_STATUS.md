@@ -4,122 +4,144 @@ Validation passed: **false**
 
 Harness valid: **true**
 
-Frontier: **`vc4-v3d-unsupported-gl-array-primitive-0x21`**
+Frontier: **`vc4-mesa-gles2-readpixels-start-timeout`**
 
 - Module closure preserved: `True`
 - Handwritten DRM submit preserved: `True`
 - Mesa process started: `True`
 - VC4 hardware frontier reached: `True`
-- Last stage: `VC4_LINUX_MESA_GLES2_FINISH_START`
-- Next missing stage: `VC4_LINUX_MESA_GLES2_FINISH_OK`
+- Last stage: `VC4_LINUX_MESA_GLES2_READPIXELS_START`
+- Next missing stage: `VC4_LINUX_MESA_GLES2_READPIXELS_OK`
 - Renderer: `VC4 V3D 2.1`
 - GL version: `OpenGL ES 2.0 Mesa 24.0.2`
 - Timed out: `True`
 - Child exit: `124`
 - Child signal: `None`
 - Probe return code: `0`
-- Shader/QPU witness lines: `91`
-
-## First unsupported V3D packet
-
-- Opcode: `0x21`
-- Name: `gl-array-primitive`
-- Command-list address: `0xc3fca050`
+- Shader/QPU witness lines: `119`
 
 ## Bounded shader/QPU witness
 
 ```text
-bcm2835-v3d: frontier primitive thread=0 packet=0x21 mode=4:triangles length=3 first=0 bin=1x1 flags=0x44 valid=1 alloc=0xf8201000+0x0007f000 state=0xf8200000
-bcm2835-v3d: frontier shader record=0xc3fca060 raw=0xc3fca061 attrs=1 extended=0 flags=0x05 varyings=0 fs=0xc2eca000 fs-uniforms=0xc3fca09c vs=0xc3c76000 vs-uniforms=0xc3fca0a0 cs=0xc3228000 cs-uniforms=0xc3fca0b0 vs-select=0x01 vs-size=8 cs-select=0x01 cs-size=8
-bcm2835-v3d: frontier attribute index=0 address=0xf9200000 bytes=8 stride=8 vs-vpm=0 cs-vpm=0
-bcm2835-v3d: frontier attribute-data index=0 vertex=0 address=0xf9200000 size=8 words=bf800000,bf800000,00000000,00000000
-bcm2835-v3d: frontier attribute-data index=0 vertex=1 address=0xf9200008 size=8 words=40400000,bf800000,00000000,00000000
-bcm2835-v3d: frontier attribute-data index=0 vertex=2 address=0xf9200010 size=8 words=bf800000,40400000,00000000,00000000
-bcm2835-v3d: qpu frontier stage=fs index=0 address=0xc2eca000 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=fs index=1 address=0xc2eca008 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=fs index=2 address=0xc2eca010 word=0x10020ba715827d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=46 wm=39 add=21 mul=0 ra=32 rb=39 aa=6 ab=6 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=fs index=3 address=0xc2eca018 word=0x300009e7009e7000 sig=3:program-end unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=fs index=4 address=0xc2eca020 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=fs index=5 address=0xc2eca028 word=0x500009e7009e7000 sig=5:scoreboard-unlock unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: frontier uniform stage=fs index=0 address=0xc3fca09c value=0xff2080df
-bcm2835-v3d: frontier uniform stage=fs index=1 address=0xc3fca0a0 value=0x3f800000
-bcm2835-v3d: frontier uniform stage=fs index=2 address=0xc3fca0a4 value=0x44000000
-bcm2835-v3d: frontier uniform stage=fs index=3 address=0xc3fca0a8 value=0xc4000000
-bcm2835-v3d: frontier uniform stage=fs index=4 address=0xc3fca0ac value=0x3f000000
-bcm2835-v3d: frontier uniform stage=fs index=5 address=0xc3fca0b0 value=0x3f800000
-bcm2835-v3d: frontier uniform stage=fs index=6 address=0xc3fca0b4 value=0x44000000
-bcm2835-v3d: frontier uniform stage=fs index=7 address=0xc3fca0b8 value=0xc4000000
-bcm2835-v3d: frontier uniform stage=fs index=8 address=0xc3fca0bc value=0x3f000000
-bcm2835-v3d: frontier uniform stage=fs index=9 address=0xc3fca0c0 value=0x00000000
-bcm2835-v3d: frontier uniform stage=fs index=10 address=0xc3fca0c4 value=0x00000000
-bcm2835-v3d: frontier uniform stage=fs index=11 address=0xc3fca0c8 value=0x00000000
-bcm2835-v3d: frontier uniform stage=fs index=12 address=0xc3fca0cc value=0x00000000
-bcm2835-v3d: frontier uniform stage=fs index=13 address=0xc3fca0d0 value=0x00000000
-bcm2835-v3d: frontier uniform stage=fs index=14 address=0xc3fca0d4 value=0x00000000
-bcm2835-v3d: frontier uniform stage=fs index=15 address=0xc3fca0d8 value=0x00000000
-bcm2835-v3d: qpu frontier stage=vs index=0 address=0xc3c76000 word=0xd002102702821f80 sig=13:small-immediate unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=1 wa=0 wm=39 add=2 mul=0 ra=32 rb=33 aa=7 ab=6 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=1 address=0xc3c76008 word=0xe0024c6700201a00 sig=14:load-immediate unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=49 wm=39 add=0 mul=0 ra=8 rb=1 aa=5 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=2 address=0xc3c76010 word=0x100049e020c20037 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=32 add=0 mul=1 ra=48 rb=32 aa=0 ab=0 ma=6 mb=7
-bcm2835-v3d: qpu frontier stage=vs index=3 address=0xc3c76018 word=0x100049e1209c0007 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=33 add=0 mul=1 ra=39 rb=0 aa=0 ab=0 ma=0 mb=7
-bcm2835-v3d: qpu frontier stage=vs index=4 address=0xc3c76020 word=0x1012402227c20277 sig=1:none unpack=0 pm=0 pack=1 ca=1 cm=1 sf=0 ws=0 wa=0 wm=34 add=7 mul=1 ra=48 rb=32 aa=1 ab=1 ma=6 mb=7
-bcm2835-v3d: qpu frontier stage=vs index=5 address=0xc3c76028 word=0x100049e3209c0017 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=35 add=0 mul=1 ra=39 rb=0 aa=0 ab=0 ma=2 mb=7
-bcm2835-v3d: qpu frontier stage=vs index=6 address=0xc3c76030 word=0x10220027079e76c0 sig=1:none unpack=0 pm=0 pack=2 ca=1 cm=0 sf=0 ws=0 wa=0 wm=39 add=7 mul=0 ra=39 rb=39 aa=3 ab=3 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=7 address=0xc3c76038 word=0xe0025c6700001a00 sig=14:load-immediate unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=1 wa=49 wm=39 add=0 mul=0 ra=0 rb=1 aa=5 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=8 address=0xc3c76040 word=0x10020c2715027d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=0 rb=39 aa=6 ab=6 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=9 address=0xc3c76048 word=0x10020c2715827d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=32 rb=39 aa=6 ab=6 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=10 address=0xc3c76050 word=0x10020c27159c0fc0 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=39 rb=0 aa=7 ab=7 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=11 address=0xc3c76058 word=0x300009e7009e7000 sig=3:program-end unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=12 address=0xc3c76060 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=vs index=13 address=0xc3c76068 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: frontier uniform stage=vs index=0 address=0xc3fca0a0 value=0x3f800000
-bcm2835-v3d: frontier uniform stage=vs index=1 address=0xc3fca0a4 value=0x44000000
-bcm2835-v3d: frontier uniform stage=vs index=2 address=0xc3fca0a8 value=0xc4000000
-bcm2835-v3d: frontier uniform stage=vs index=3 address=0xc3fca0ac value=0x3f000000
-bcm2835-v3d: frontier uniform stage=vs index=4 address=0xc3fca0b0 value=0x3f800000
-bcm2835-v3d: frontier uniform stage=vs index=5 address=0xc3fca0b4 value=0x44000000
-bcm2835-v3d: frontier uniform stage=vs index=6 address=0xc3fca0b8 value=0xc4000000
-bcm2835-v3d: frontier uniform stage=vs index=7 address=0xc3fca0bc value=0x3f000000
-bcm2835-v3d: frontier uniform stage=vs index=8 address=0xc3fca0c0 value=0x00000000
-bcm2835-v3d: frontier uniform stage=vs index=9 address=0xc3fca0c4 value=0x00000000
-bcm2835-v3d: frontier uniform stage=vs index=10 address=0xc3fca0c8 value=0x00000000
-bcm2835-v3d: frontier uniform stage=vs index=11 address=0xc3fca0cc value=0x00000000
-bcm2835-v3d: frontier uniform stage=vs index=12 address=0xc3fca0d0 value=0x00000000
-bcm2835-v3d: frontier uniform stage=vs index=13 address=0xc3fca0d4 value=0x00000000
-bcm2835-v3d: frontier uniform stage=vs index=14 address=0xc3fca0d8 value=0x00000000
-bcm2835-v3d: frontier uniform stage=vs index=15 address=0xc3fca0dc value=0x00000000
-bcm2835-v3d: qpu frontier stage=cs index=0 address=0xc3228000 word=0xe0024c6700201a00 sig=14:load-immediate unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=49 wm=39 add=0 mul=0 ra=8 rb=1 aa=5 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=1 address=0xc3228008 word=0xe0025c6700001a00 sig=14:load-immediate unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=1 wa=49 wm=39 add=0 mul=0 ra=0 rb=1 aa=5 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=2 address=0xc3228010 word=0xd002102702821f80 sig=13:small-immediate unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=1 wa=0 wm=39 add=2 mul=0 ra=32 rb=33 aa=7 ab=6 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=3 address=0xc3228018 word=0x1002086715c27d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=33 wm=39 add=21 mul=0 ra=48 rb=39 aa=6 ab=6 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=4 address=0xc3228020 word=0x10024c233582724e sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=48 wm=35 add=21 mul=1 ra=32 rb=39 aa=1 ab=1 ma=1 mb=6
-bcm2835-v3d: qpu frontier stage=cs index=5 address=0xc3228028 word=0x100248a135c00d9f sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=34 wm=33 add=21 mul=1 ra=48 rb=0 aa=6 ab=6 ma=3 mb=7
-bcm2835-v3d: qpu frontier stage=cs index=6 address=0xc3228030 word=0x1012402027827256 sig=1:none unpack=0 pm=0 pack=1 ca=1 cm=1 sf=0 ws=0 wa=0 wm=32 add=7 mul=1 ra=32 rb=39 aa=1 ab=1 ma=2 mb=6
-bcm2835-v3d: qpu frontier stage=cs index=7 address=0xc3228038 word=0x10024c20359c0487 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=48 wm=32 add=21 mul=1 ra=39 rb=0 aa=2 ab=2 ma=0 mb=7
-bcm2835-v3d: qpu frontier stage=cs index=8 address=0xc3228040 word=0xd0020c27159c0fc0 sig=13:small-immediate unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=39 rb=0 aa=7 ab=7 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=9 address=0xc3228048 word=0x10220027079e7000 sig=1:none unpack=0 pm=0 pack=2 ca=1 cm=0 sf=0 ws=0 wa=0 wm=39 add=7 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=10 address=0xc3228050 word=0xd0020c27159e0fc0 sig=13:small-immediate unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=39 rb=32 aa=7 ab=7 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=11 address=0xc3228058 word=0x10020c2715027d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=0 rb=39 aa=6 ab=6 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=12 address=0xc3228060 word=0x10020c2715827d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=32 rb=39 aa=6 ab=6 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=13 address=0xc3228068 word=0x10020c27159c0fc0 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=39 rb=0 aa=7 ab=7 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=14 address=0xc3228070 word=0x300009e7009e7000 sig=3:program-end unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=15 address=0xc3228078 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: qpu frontier stage=cs index=16 address=0xc3228080 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
-bcm2835-v3d: frontier uniform stage=cs index=0 address=0xc3fca0b0 value=0x3f800000
-bcm2835-v3d: frontier uniform stage=cs index=1 address=0xc3fca0b4 value=0x44000000
-bcm2835-v3d: frontier uniform stage=cs index=2 address=0xc3fca0b8 value=0xc4000000
-bcm2835-v3d: frontier uniform stage=cs index=3 address=0xc3fca0bc value=0x3f000000
-bcm2835-v3d: frontier uniform stage=cs index=4 address=0xc3fca0c0 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=5 address=0xc3fca0c4 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=6 address=0xc3fca0c8 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=7 address=0xc3fca0cc value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=8 address=0xc3fca0d0 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=9 address=0xc3fca0d4 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=10 address=0xc3fca0d8 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=11 address=0xc3fca0dc value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=12 address=0xc3fca0e0 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=13 address=0xc3fca0e4 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=14 address=0xc3fca0e8 value=0x00000000
-bcm2835-v3d: frontier uniform stage=cs index=15 address=0xc3fca0ec value=0x00000000
+bcm2835-v3d: frontier primitive thread=0 packet=0x21 mode=6:triangle-fan length=4 first=0 bin=1x1 flags=0x44 valid=1 alloc=0xf8201000+0x0007f000 state=0xf8200000
+bcm2835-v3d: frontier shader record=0xc5b6a060 raw=0xc5b6a062 attrs=2 extended=0 flags=0x04 varyings=2 fs=0xc33da000 fs-uniforms=0xc5b6a0a8 vs=0xc5aa4000 vs-uniforms=0xc5b6a0b0 cs=0xc5aa5000 cs-uniforms=0xc5b6a0c0 vs-select=0x03 vs-size=24 cs-select=0x01 cs-size=16
+bcm2835-v3d: frontier attribute index=0 address=0xf9200018 bytes=16 stride=32 vs-vpm=0 cs-vpm=0
+bcm2835-v3d: frontier attribute-data index=0 vertex=0 address=0xf9200018 size=16 words=bf800000,bf800000,00000000,3f800000
+bcm2835-v3d: frontier attribute-data index=0 vertex=1 address=0xf9200038 size=16 words=3f800000,bf800000,00000000,3f800000
+bcm2835-v3d: frontier attribute-data index=0 vertex=2 address=0xf9200058 size=16 words=3f800000,3f800000,00000000,3f800000
+bcm2835-v3d: frontier attribute index=1 address=0xf9200028 bytes=16 stride=32 vs-vpm=16 cs-vpm=16
+bcm2835-v3d: frontier attribute-data index=1 vertex=0 address=0xf9200028 size=16 words=3c800000,3f7c0000,00000000,00000000
+bcm2835-v3d: frontier attribute-data index=1 vertex=1 address=0xf9200048 size=16 words=3d000000,3f7c0000,00000000,00000000
+bcm2835-v3d: frontier attribute-data index=1 vertex=2 address=0xf9200068 size=16 words=3d000000,3f780000,00000000,00000000
+bcm2835-v3d: qpu frontier stage=fs index=0 address=0xc33da000 word=0x100049e0203e303e sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=32 add=0 mul=1 ra=15 rb=35 aa=0 ab=0 ma=7 mb=6
+bcm2835-v3d: qpu frontier stage=fs index=1 address=0xc33da008 word=0x100248e1213e317e sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=35 wm=33 add=1 mul=1 ra=15 rb=35 aa=0 ab=5 ma=7 mb=6
+bcm2835-v3d: qpu frontier stage=fs index=2 address=0xc33da010 word=0x600208a7019e7340 sig=6:last-thread-switch unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=34 wm=39 add=1 mul=0 ra=39 rb=39 aa=1 ab=5 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=3 address=0xc33da018 word=0x10021e67159e7480 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=1 wa=57 wm=39 add=21 mul=0 ra=39 rb=39 aa=2 ab=2 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=4 address=0xc33da020 word=0x10021e27159e76c0 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=1 wa=56 wm=39 add=21 mul=0 ra=39 rb=39 aa=3 ab=3 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=5 address=0xc33da028 word=0xa00009e7009e7000 sig=10:tmu0-load unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=6 address=0xc33da030 word=0x1d020867049e7900 sig=1:none unpack=6 pm=1 pack=0 ca=1 cm=0 sf=0 ws=0 wa=33 wm=39 add=4 mul=0 ra=39 rb=39 aa=4 ab=4 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=7 address=0xc33da038 word=0x1b424821849e7909 sig=1:none unpack=5 pm=1 pack=4 ca=1 cm=1 sf=0 ws=0 wa=32 wm=33 add=4 mul=4 ra=39 rb=39 aa=4 ab=4 ma=1 mb=1
+bcm2835-v3d: qpu frontier stage=fs index=8 address=0xc33da040 word=0x195248e1849e7900 sig=1:none unpack=4 pm=1 pack=5 ca=1 cm=1 sf=0 ws=0 wa=35 wm=33 add=4 mul=4 ra=39 rb=39 aa=4 ab=4 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=9 address=0xc33da048 word=0x1f6248a1849e791b sig=1:none unpack=7 pm=1 pack=6 ca=1 cm=1 sf=0 ws=0 wa=34 wm=33 add=4 mul=4 ra=39 rb=39 aa=4 ab=4 ma=3 mb=3
+bcm2835-v3d: qpu frontier stage=fs index=10 address=0xc33da050 word=0x117049e1809e7012 sig=1:none unpack=0 pm=1 pack=7 ca=0 cm=1 sf=0 ws=0 wa=39 wm=33 add=0 mul=4 ra=39 rb=39 aa=0 ab=0 ma=2 mb=2
+bcm2835-v3d: qpu frontier stage=fs index=11 address=0xc33da058 word=0x10020ba7159e7240 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=46 wm=39 add=21 mul=0 ra=39 rb=39 aa=1 ab=1 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=12 address=0xc33da060 word=0x300009e7009e7000 sig=3:program-end unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=13 address=0xc33da068 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=fs index=14 address=0xc33da070 word=0x500009e7009e7000 sig=5:scoreboard-unlock unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: frontier uniform stage=fs index=0 address=0xc5b6a0a8 value=0xf8094000
+bcm2835-v3d: frontier uniform stage=fs index=1 address=0xc5b6a0ac value=0x040040a5
+bcm2835-v3d: frontier uniform stage=fs index=2 address=0xc5b6a0b0 value=0x41000000
+bcm2835-v3d: frontier uniform stage=fs index=3 address=0xc5b6a0b4 value=0x41000000
+bcm2835-v3d: frontier uniform stage=fs index=4 address=0xc5b6a0b8 value=0x3f800000
+bcm2835-v3d: frontier uniform stage=fs index=5 address=0xc5b6a0bc value=0x00000000
+bcm2835-v3d: frontier uniform stage=fs index=6 address=0xc5b6a0c0 value=0x41000000
+bcm2835-v3d: frontier uniform stage=fs index=7 address=0xc5b6a0c4 value=0x41000000
+bcm2835-v3d: frontier uniform stage=fs index=8 address=0xc5b6a0c8 value=0x3f800000
+bcm2835-v3d: frontier uniform stage=fs index=9 address=0xc5b6a0cc value=0x00000000
+bcm2835-v3d: frontier uniform stage=fs index=10 address=0xc5b6a0d0 value=0x00000000
+bcm2835-v3d: frontier uniform stage=fs index=11 address=0xc5b6a0d4 value=0x00000000
+bcm2835-v3d: frontier uniform stage=fs index=12 address=0xc5b6a0d8 value=0x00000000
+bcm2835-v3d: frontier uniform stage=fs index=13 address=0xc5b6a0dc value=0x00000000
+bcm2835-v3d: frontier uniform stage=fs index=14 address=0xc5b6a0e0 value=0x00000000
+bcm2835-v3d: frontier uniform stage=fs index=15 address=0xc5b6a0e4 value=0x00000000
+bcm2835-v3d: qpu frontier stage=vs index=0 address=0xc5aa4000 word=0xe0024c6700601a00 sig=14:load-immediate unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=49 wm=39 add=0 mul=0 ra=24 rb=1 aa=5 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=1 address=0xc5aa4008 word=0x100049e020c20037 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=32 add=0 mul=1 ra=48 rb=32 aa=0 ab=0 ma=6 mb=7
+bcm2835-v3d: qpu frontier stage=vs index=2 address=0xc5aa4010 word=0x100049c020c20037 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=0 add=0 mul=1 ra=48 rb=32 aa=0 ab=0 ma=6 mb=7
+bcm2835-v3d: qpu frontier stage=vs index=3 address=0xc5aa4018 word=0x100059c120c20037 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=1 wa=39 wm=1 add=0 mul=1 ra=48 rb=32 aa=0 ab=0 ma=6 mb=7
+bcm2835-v3d: qpu frontier stage=vs index=4 address=0xc5aa4020 word=0x1002086715c27d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=33 wm=39 add=21 mul=0 ra=48 rb=39 aa=6 ab=6 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=5 address=0xc5aa4028 word=0x10021d27159e7240 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=1 wa=52 wm=39 add=21 mul=0 ra=39 rb=39 aa=1 ab=1 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=6 address=0xc5aa4030 word=0xe0025c6700001a00 sig=14:load-immediate unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=1 wa=49 wm=39 add=0 mul=0 ra=0 rb=1 aa=5 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=7 address=0xc5aa4038 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=8 address=0xc5aa4040 word=0x100049e2209e700c sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=34 add=0 mul=1 ra=39 rb=39 aa=0 ab=0 ma=1 mb=4
+bcm2835-v3d: qpu frontier stage=vs index=9 address=0xc5aa4048 word=0xd00208e7029e1e80 sig=13:small-immediate unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=35 wm=39 add=2 mul=0 ra=39 rb=33 aa=7 ab=2 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=10 address=0xc5aa4050 word=0x100049e1209e7023 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=33 add=0 mul=1 ra=39 rb=39 aa=0 ab=0 ma=4 mb=3
+bcm2835-v3d: qpu frontier stage=vs index=11 address=0xc5aa4058 word=0x100049e2209e7001 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=34 add=0 mul=1 ra=39 rb=39 aa=0 ab=0 ma=0 mb=1
+bcm2835-v3d: qpu frontier stage=vs index=12 address=0xc5aa4060 word=0x10124023279c04b9 sig=1:none unpack=0 pm=0 pack=1 ca=1 cm=1 sf=0 ws=0 wa=0 wm=35 add=7 mul=1 ra=39 rb=0 aa=2 ab=2 ma=7 mb=1
+bcm2835-v3d: qpu frontier stage=vs index=13 address=0xc5aa4068 word=0x10224020270676f1 sig=1:none unpack=0 pm=0 pack=2 ca=1 cm=1 sf=0 ws=0 wa=0 wm=32 add=7 mul=1 ra=1 rb=39 aa=3 ab=3 ma=6 mb=1
+bcm2835-v3d: qpu frontier stage=vs index=14 address=0xc5aa4070 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=15 address=0xc5aa4078 word=0x10020c2715027d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=0 rb=39 aa=6 ab=6 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=16 address=0xc5aa4080 word=0x10024c2081c201f6 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=48 wm=32 add=1 mul=4 ra=48 rb=32 aa=0 ab=7 ma=6 mb=6
+bcm2835-v3d: qpu frontier stage=vs index=17 address=0xc5aa4088 word=0x1002487095c27d89 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=33 wm=48 add=21 mul=4 ra=48 rb=39 aa=6 ab=6 ma=1 mb=1
+bcm2835-v3d: qpu frontier stage=vs index=18 address=0xc5aa4090 word=0x10020c27159e7000 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=19 address=0xc5aa4098 word=0x10020c27159e7240 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=39 rb=39 aa=1 ab=1 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=20 address=0xc5aa40a0 word=0x300009e7009e7000 sig=3:program-end unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=21 address=0xc5aa40a8 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=vs index=22 address=0xc5aa40b0 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: frontier uniform stage=vs index=0 address=0xc5b6a0b0 value=0x41000000
+bcm2835-v3d: frontier uniform stage=vs index=1 address=0xc5b6a0b4 value=0x41000000
+bcm2835-v3d: frontier uniform stage=vs index=2 address=0xc5b6a0b8 value=0x3f800000
+bcm2835-v3d: frontier uniform stage=vs index=3 address=0xc5b6a0bc value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=4 address=0xc5b6a0c0 value=0x41000000
+bcm2835-v3d: frontier uniform stage=vs index=5 address=0xc5b6a0c4 value=0x41000000
+bcm2835-v3d: frontier uniform stage=vs index=6 address=0xc5b6a0c8 value=0x3f800000
+bcm2835-v3d: frontier uniform stage=vs index=7 address=0xc5b6a0cc value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=8 address=0xc5b6a0d0 value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=9 address=0xc5b6a0d4 value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=10 address=0xc5b6a0d8 value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=11 address=0xc5b6a0dc value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=12 address=0xc5b6a0e0 value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=13 address=0xc5b6a0e4 value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=14 address=0xc5b6a0e8 value=0x00000000
+bcm2835-v3d: frontier uniform stage=vs index=15 address=0xc5b6a0ec value=0x00000000
+bcm2835-v3d: qpu frontier stage=cs index=0 address=0xc5aa5000 word=0xe0024c6700401a00 sig=14:load-immediate unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=49 wm=39 add=0 mul=0 ra=16 rb=1 aa=5 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=1 address=0xc5aa5008 word=0x100208e715c27d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=35 wm=39 add=21 mul=0 ra=48 rb=39 aa=6 ab=6 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=2 address=0xc5aa5010 word=0x100208a715c27d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=34 wm=39 add=21 mul=0 ra=48 rb=39 aa=6 ab=6 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=3 address=0xc5aa5018 word=0x1002006715c27d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=1 wm=39 add=21 mul=0 ra=48 rb=39 aa=6 ab=6 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=4 address=0xc5aa5020 word=0xe0025c6700001a00 sig=14:load-immediate unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=1 wa=49 wm=39 add=0 mul=0 ra=0 rb=1 aa=5 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=5 address=0xc5aa5028 word=0x10024c2095c276f6 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=48 wm=32 add=21 mul=4 ra=48 rb=39 aa=3 ab=3 ma=6 mb=6
+bcm2835-v3d: qpu frontier stage=cs index=6 address=0xc5aa5030 word=0x10024c34959e7480 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=48 wm=52 add=21 mul=4 ra=39 rb=39 aa=2 ab=2 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=7 address=0xc5aa5038 word=0x10024c2235060d97 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=1 sf=0 ws=0 wa=48 wm=34 add=21 mul=1 ra=1 rb=32 aa=6 ab=6 ma=2 mb=7
+bcm2835-v3d: qpu frontier stage=cs index=8 address=0xc5aa5040 word=0x10020c27159e7000 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=9 address=0xc5aa5048 word=0x100049e0209e7004 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=32 add=0 mul=1 ra=39 rb=39 aa=0 ab=0 ma=0 mb=4
+bcm2835-v3d: qpu frontier stage=cs index=10 address=0xc5aa5050 word=0xd0020867029e1e00 sig=13:small-immediate unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=33 wm=39 add=2 mul=0 ra=39 rb=33 aa=7 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=11 address=0xc5aa5058 word=0x100049c0209e7021 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=0 add=0 mul=1 ra=39 rb=39 aa=0 ab=0 ma=4 mb=1
+bcm2835-v3d: qpu frontier stage=cs index=12 address=0xc5aa5060 word=0x100049e02082701e sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=32 add=0 mul=1 ra=32 rb=39 aa=0 ab=0 ma=3 mb=6
+bcm2835-v3d: qpu frontier stage=cs index=13 address=0xc5aa5068 word=0x100049e1209c0007 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=33 add=0 mul=1 ra=39 rb=0 aa=0 ab=0 ma=0 mb=7
+bcm2835-v3d: qpu frontier stage=cs index=14 address=0xc5aa5070 word=0x10124023279c0257 sig=1:none unpack=0 pm=0 pack=1 ca=1 cm=1 sf=0 ws=0 wa=0 wm=35 add=7 mul=1 ra=39 rb=0 aa=1 ab=1 ma=2 mb=7
+bcm2835-v3d: qpu frontier stage=cs index=15 address=0xc5aa5078 word=0x10224022270606f7 sig=1:none unpack=0 pm=0 pack=2 ca=1 cm=1 sf=0 ws=0 wa=0 wm=34 add=7 mul=1 ra=1 rb=32 aa=3 ab=3 ma=6 mb=7
+bcm2835-v3d: qpu frontier stage=cs index=16 address=0xc5aa5080 word=0x100049e3209c0017 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=1 sf=0 ws=0 wa=39 wm=35 add=0 mul=1 ra=39 rb=0 aa=0 ab=0 ma=2 mb=7
+bcm2835-v3d: qpu frontier stage=cs index=17 address=0xc5aa5088 word=0x10020c2715027d80 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=0 rb=39 aa=6 ab=6 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=18 address=0xc5aa5090 word=0x10020c2701827780 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=1 mul=0 ra=32 rb=39 aa=3 ab=6 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=19 address=0xc5aa5098 word=0x10020c27159c0fc0 sig=1:none unpack=0 pm=0 pack=0 ca=1 cm=0 sf=0 ws=0 wa=48 wm=39 add=21 mul=0 ra=39 rb=0 aa=7 ab=7 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=20 address=0xc5aa50a0 word=0x300009e7009e7000 sig=3:program-end unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=21 address=0xc5aa50a8 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: qpu frontier stage=cs index=22 address=0xc5aa50b0 word=0x100009e7009e7000 sig=1:none unpack=0 pm=0 pack=0 ca=0 cm=0 sf=0 ws=0 wa=39 wm=39 add=0 mul=0 ra=39 rb=39 aa=0 ab=0 ma=0 mb=0
+bcm2835-v3d: frontier uniform stage=cs index=0 address=0xc5b6a0c0 value=0x41000000
+bcm2835-v3d: frontier uniform stage=cs index=1 address=0xc5b6a0c4 value=0x41000000
+bcm2835-v3d: frontier uniform stage=cs index=2 address=0xc5b6a0c8 value=0x3f800000
+bcm2835-v3d: frontier uniform stage=cs index=3 address=0xc5b6a0cc value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=4 address=0xc5b6a0d0 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=5 address=0xc5b6a0d4 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=6 address=0xc5b6a0d8 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=7 address=0xc5b6a0dc value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=8 address=0xc5b6a0e0 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=9 address=0xc5b6a0e4 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=10 address=0xc5b6a0e8 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=11 address=0xc5b6a0ec value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=12 address=0xc5b6a0f0 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=13 address=0xc5b6a0f4 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=14 address=0xc5b6a0f8 value=0x00000000
+bcm2835-v3d: frontier uniform stage=cs index=15 address=0xc5b6a0fc value=0x00000000
 ```
 
 This gate runs a pinned Mesa VC4 Gallium driver inside the AArch64 guest. It requires a hardware VC4 renderer, compiles real GLES2 shaders, queues a full-surface triangle, waits for GPU completion, and verifies readback pixels. A non-clear classification is therefore the next concrete V3D/QPU contract rather than a synthetic packet guess.
