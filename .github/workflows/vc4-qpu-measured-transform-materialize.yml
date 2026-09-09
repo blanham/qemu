@@ -230,7 +230,6 @@ jobs:
                        if (--end_delay == 0) {
                            state->fault_word = 0;
           PATCH
-          sed -i 's/^          //' /tmp/vc4-qpu-measured-transform.patch
           git apply --check /tmp/vc4-qpu-measured-transform.patch
           git apply /tmp/vc4-qpu-measured-transform.patch
           git diff --check
