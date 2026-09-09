@@ -1,0 +1,232 @@
+name: VC4 stock-firmware temporal VPU trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - .github/workflows/vc4-stock-vpu-temporal-trace.yml
+      - scripts/vc4/raspi3-stock-vpu-trace.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-vpu-temporal-trace
+  cancel-in-progress: true
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIXTURE_DIR: /tmp/vc4-stock-trace-fixtures
+      RESULT_DIR: /tmp/vc4-stock-trace-result
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies and pin unchanged firmware
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl gcc-aarch64-linux-gnu \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config \
+            python3 zlib1g-dev
+          rm -rf "$FIXTURE_DIR" "$RESULT_DIR"
+          mkdir -p "$FIXTURE_DIR" "$RESULT_DIR"
+
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-vpu-trace.py \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py
+          git diff --check
+
+          for file in bootcode.bin start.elf fixup.dat bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$FIXTURE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIXTURE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIXTURE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIXTURE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+          aarch64-linux-gnu-as \
+            -o "$FIXTURE_DIR/aarch64-handoff.o" \
+            tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -nostdlib -T tests/vc4/aarch64-handoff.ld \
+            -o "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/aarch64-handoff.o"
+          aarch64-linux-gnu-objcopy \
+            -O binary "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/kernel8.img"
+          sha256sum "$FIXTURE_DIR"/* > "$FIXTURE_DIR/SHA256SUMS"
+
+      - name: Build both linked frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/build.log"
+
+      - name: Preserve heterogeneous CPU contracts
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/preg.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$RESULT_DIR/msync.log"
+
+      - name: Sample the running VPU and capture translated code
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-stock-vpu-trace.py \
+            build/qemu-system-aarch64 \
+            "$FIXTURE_DIR/bootcode.bin" \
+            "$FIXTURE_DIR/start.elf" \
+            "$FIXTURE_DIR/fixup.dat" \
+            "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb" \
+            "$FIXTURE_DIR/kernel8.img" \
+            --out-dir "$RESULT_DIR" \
+            --seconds 20 --interval 0.05 \
+            2>&1 | tee "$RESULT_DIR/trace.stdout"
+
+      - name: Classify temporal behavior without guessing hardware
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          path = Path(os.environ['RESULT_DIR']) / 'VC4_STOCK_VPU_TRACE.json'
+          trace = json.loads(path.read_text())
+          if trace.get('probe_error'):
+              classification = 'stock-vpu-trace-probe-error'
+          elif trace.get('signature_seen'):
+              classification = 'stock-firmware-aarch64-handoff-clear'
+          elif len(trace.get('unique_pcs') or []) > 1:
+              classification = 'stock-vpu-lowpc-loop-is-progressing'
+          elif trace.get('unique_state_count', 0) > 1:
+              classification = 'stock-vpu-pc-544-register-state-progressing'
+          else:
+              classification = 'stock-vpu-pc-544-stable-state'
+
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'classification': classification,
+              'probe_error': trace.get('probe_error'),
+              'signature_seen': trace.get('signature_seen'),
+              'sample_count': trace.get('sample_count'),
+              'unique_state_count': trace.get('unique_state_count'),
+              'transition_count': trace.get('transition_count'),
+              'unique_pcs': trace.get('unique_pcs'),
+              'pc_counts': trace.get('pc_counts'),
+              'pc_0x00000544_fraction': trace.get('pc_0x00000544_fraction'),
+              'system_timer_delta_us': trace.get('system_timer_delta_us'),
+              'arm_control0': trace.get('arm_control0'),
+              'arm_control1': trace.get('arm_control1'),
+              'arm_status': trace.get('arm_status'),
+              'pm_proc': trace.get('pm_proc'),
+              'asm_context_0x544': trace.get('asm_context_0x544'),
+          }
+          Path('VC4_STOCK_VPU_TEMPORAL_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+
+          counts = status.get('pc_counts') or {}
+          count_lines = [
+              f"- `{pc}`: `{count}` samples"
+              for pc, count in list(counts.items())[:24]
+          ]
+          asm = status.get('asm_context_0x544') or []
+          lines = [
+              '# VC4 stock-firmware temporal VPU frontier',
+              '',
+              f"Classification: **`{classification}`**",
+              '',
+              f"- ARM witness reached: `{status.get('signature_seen')}`",
+              f"- Samples: `{status.get('sample_count')}`",
+              f"- Unique PCs: `{len(status.get('unique_pcs') or [])}`",
+              f"- Unique selected register states: `{status.get('unique_state_count')}`",
+              f"- State transitions: `{status.get('transition_count')}`",
+              f"- PC 0x544 sample fraction: `{status.get('pc_0x00000544_fraction')}`",
+              f"- System timer advance: `{status.get('system_timer_delta_us')}` us",
+              f"- ARM_CONTROL0: `{status.get('arm_control0')}`",
+              f"- ARM_CONTROL1: `{status.get('arm_control1')}`",
+              f"- ARM_STATUS: `{status.get('arm_status')}`",
+              f"- PM_PROC: `{status.get('pm_proc')}`",
+              '',
+              '## Sampled PCs',
+              '',
+              *count_lines,
+              '',
+          ]
+          if asm:
+              lines += ['## Translation context around 0x544', '', '```text']
+              lines += asm
+              lines += ['```', '']
+          Path('VC4_STOCK_VPU_TEMPORAL_STATUS.md').write_text(
+              '\n'.join(lines), encoding='utf-8'
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+
+          if trace.get('probe_error'):
+              raise SystemExit(trace['probe_error'])
+          if int(trace.get('system_timer_delta_us') or 0) < 1_000_000:
+              raise SystemExit('ordinary TCG system timer did not advance')
+          PY
+
+      - name: Upload complete temporal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-vpu-temporal-${{ github.run_attempt }}
+          path: |
+            VC4_STOCK_VPU_TEMPORAL_STATUS.json
+            VC4_STOCK_VPU_TEMPORAL_STATUS.md
+            /tmp/vc4-stock-trace-fixtures/SHA256SUMS
+            /tmp/vc4-stock-trace-result
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish measured temporal frontier
+        if: always()
+        env:
+          BRANCH: agent/vc4-stock-arm-handoff-recovered
+        run: |
+          set -euo pipefail
+          test -f VC4_STOCK_VPU_TEMPORAL_STATUS.json
+          test -f VC4_STOCK_VPU_TEMPORAL_STATUS.md
+          git config user.name "VC4 Temporal Trace CI"
+          git config user.email "vc4-temporal-trace-ci@users.noreply.github.com"
+          git add -- \
+            VC4_STOCK_VPU_TEMPORAL_STATUS.json \
+            VC4_STOCK_VPU_TEMPORAL_STATUS.md
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "tests/vc4: record temporal stock-firmware VPU frontier [skip ci]"
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
