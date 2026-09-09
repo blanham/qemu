@@ -39,8 +39,36 @@ jobs:
           set -euo pipefail
           cat scripts/vc4/.v3d-pipeline-materialize.b64.* | \
             base64 -d > /tmp/v3d-pipeline-materialize.py
+          python3 - <<'PYFIX'
+          from pathlib import Path
+
+          path = Path("/tmp/v3d-pipeline-materialize.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = (
+              (
+                  '        """    case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:\n""",',
+                  '        """        cl->frontier.have_shader_record = true;\n'
+                  '        return true;\n\n'
+                  '    case VC4_PACKET_TILE_RENDERING_MODE_CONFIG:\n""",',
+              ),
+              (
+                  '        """    case VC4_PACKET_VIEWPORT_OFFSET: {\n',
+                  '        """        cl->frontier.have_shader_record = true;\n'
+                  '        return true;\n\n'
+                  '    case VC4_PACKET_VIEWPORT_OFFSET: {\n',
+              ),
+          )
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"materializer anchor {old!r}: expected once, found {count}"
+                  )
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+          PYFIX
           test "$(sha256sum /tmp/v3d-pipeline-materialize.py | cut -d' ' -f1)" = \
-            "1e1f4adb468dd628866947e7502dc5f32e72e9827fc4e4ad1665b1dfd6596d3a"
+            "f65517e6295e94da31282364e0958f57f55629c850f3ede617b79cc5a33cd1ba"
           python3 -m py_compile /tmp/v3d-pipeline-materialize.py
           python3 /tmp/v3d-pipeline-materialize.py
           git diff --check
