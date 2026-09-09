@@ -1,0 +1,393 @@
+name: VC4 stock-firmware clock-synchronous ARM handoff
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - .github/workflows/vc4-stock-clock-handoff.yml
+      - scripts/vc4/raspi3-stock-arm-payload.py
+      - scripts/vc4/raspi3-stock-bootcode-probe.py
+      - scripts/vc4/preg-mutex-smoke.py
+      - scripts/vc4/msync-smoke.py
+      - tests/vc4/aarch64-handoff.S
+      - tests/vc4/aarch64-handoff.ld
+      - hw/arm/**
+      - hw/intc/**
+      - hw/misc/**
+      - hw/sd/**
+      - hw/timer/**
+      - include/hw/**
+      - target/vc4/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-clock-handoff
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIXTURE_DIR: /tmp/vc4-stock-clock-fixtures
+      RESULT_DIR: /tmp/vc4-stock-clock-result
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        id: dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl gcc-aarch64-linux-gnu \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config \
+            python3 python3-venv zlib1g-dev
+          rm -rf "$FIXTURE_DIR" "$RESULT_DIR"
+          mkdir -p "$FIXTURE_DIR" "$RESULT_DIR/probe"
+
+      - name: Validate sources and pin unchanged firmware
+        id: fixtures
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/preg-mutex-smoke.py \
+            scripts/vc4/msync-smoke.py
+          git diff --check
+
+          for file in bootcode.bin start.elf fixup.dat bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$FIXTURE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIXTURE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIXTURE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIXTURE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+          aarch64-linux-gnu-as \
+            -o "$FIXTURE_DIR/aarch64-handoff.o" \
+            tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -nostdlib -T tests/vc4/aarch64-handoff.ld \
+            -o "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/aarch64-handoff.o"
+          aarch64-linux-gnu-objcopy \
+            -O binary "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/kernel8.img"
+          aarch64-linux-gnu-readelf -h \
+            "$FIXTURE_DIR/aarch64-handoff.elf" \
+            > "$FIXTURE_DIR/aarch64-handoff.readelf"
+          aarch64-linux-gnu-objdump -d \
+            "$FIXTURE_DIR/aarch64-handoff.elf" \
+            > "$FIXTURE_DIR/aarch64-handoff.dis"
+          grep -Eq 'Entry point address:[[:space:]]+0x80000' \
+            "$FIXTURE_DIR/aarch64-handoff.readelf"
+          test -s "$FIXTURE_DIR/kernel8.img"
+          sha256sum "$FIXTURE_DIR"/* > "$FIXTURE_DIR/SHA256SUMS"
+
+      - name: Configure and build both VC4 frontends
+        id: build
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/build.log"
+
+      - name: Preserve heterogeneous CPU regressions
+        id: regressions
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/preg.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$RESULT_DIR/msync.log"
+
+      - name: Run unchanged firmware with explicit virtual-clock ownership
+        id: runtime
+        run: |
+          set +e
+          python3 scripts/vc4/raspi3-stock-arm-payload.py \
+            build/qemu-system-aarch64 \
+            "$FIXTURE_DIR/bootcode.bin" \
+            "$FIXTURE_DIR/start.elf" \
+            "$FIXTURE_DIR/fixup.dat" \
+            "$FIXTURE_DIR/kernel8.img" \
+            --dtb "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb" \
+            --out-dir "$RESULT_DIR/probe" \
+            --seconds 150 \
+            > "$RESULT_DIR/probe.stdout" \
+            2> "$RESULT_DIR/probe.stderr"
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > "$RESULT_DIR/probe.return-code"
+          cat "$RESULT_DIR/probe.stdout"
+          cat "$RESULT_DIR/probe.stderr" >&2
+          exit 0
+
+      - name: Record the exact post-clock frontier
+        id: classify
+        if: always()
+        env:
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          FIXTURES_OUTCOME: ${{ steps.fixtures.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          REGRESSIONS_OUTCOME: ${{ steps.regressions.outcome }}
+          RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+          import re
+
+          result_dir = Path(os.environ['RESULT_DIR'])
+          result_path = result_dir / 'probe' / 'result.json'
+          try:
+              probe = json.loads(result_path.read_text())
+          except Exception as error:
+              probe = {'probe_error': f'{type(error).__name__}: {error}'}
+
+          outcomes = {
+              key.removesuffix('_OUTCOME').lower(): value
+              for key, value in os.environ.items()
+              if key.endswith('_OUTCOME')
+          }
+          infrastructure_ok = all(
+              outcomes.get(key) == 'success'
+              for key in (
+                  'dependencies', 'fixtures', 'build',
+                  'regressions', 'runtime'
+              )
+          )
+          clock_steps = int(probe.get('qtest_clock_steps') or 0)
+          clock_ns = int(probe.get('qtest_clock_step_ns') or 0)
+          timer_us = int(probe.get('system_timer_delta_us') or 0)
+          clock_recovered = (
+              clock_steps > 0 and clock_ns >= 100_000_000 and
+              timer_us >= 100_000
+          )
+          signature_seen = probe.get('signature_seen') is True
+          passed = infrastructure_ok and clock_recovered and signature_seen
+
+          vpu = None
+          for cpu in probe.get('cpu_snapshot', {}).get('cpus', []):
+              if 'vc4' in str(cpu.get('qom_type', '')).lower():
+                  vpu = cpu
+                  break
+          registers = str((vpu or {}).get('registers', ''))
+          match = re.search(
+              r'(?:^|\s)pc\s*=\s*([0-9a-f]+)',
+              registers,
+              re.IGNORECASE,
+          )
+          final_vpu_pc = f"0x{match.group(1)}" if match else None
+
+          diagnostics = list(probe.get('qemu_diagnostics_tail') or [])
+          opcode = None
+          opcode_pc = None
+          illegal_pc = None
+          for line in diagnostics:
+              found = re.search(
+                  r'unimplemented opcode 0x([0-9a-f]+) at 0x([0-9a-f]+)',
+                  line,
+                  re.IGNORECASE,
+              )
+              if found:
+                  opcode = f"0x{found.group(1)}"
+                  opcode_pc = f"0x{found.group(2)}"
+              found = re.search(
+                  r'illegal instruction at 0x([0-9a-f]+)',
+                  line,
+                  re.IGNORECASE,
+              )
+              if found:
+                  illegal_pc = f"0x{found.group(1)}"
+
+          if passed:
+              classification = 'stock-firmware-aarch64-handoff-clear'
+          elif not infrastructure_ok:
+              failed = next(
+                  (
+                      key for key, value in outcomes.items()
+                      if value != 'success'
+                  ),
+                  'unknown',
+              )
+              classification = f'stock-handoff-infrastructure-{failed}-failed'
+          elif probe.get('probe_error'):
+              classification = 'stock-handoff-probe-error'
+          elif not clock_recovered:
+              classification = 'stock-handoff-virtual-clock-not-advanced'
+          elif opcode:
+              classification = (
+                  'stock-handoff-vc4-opcode-' + opcode.removeprefix('0x')
+              )
+          elif illegal_pc:
+              classification = 'stock-handoff-vc4-illegal-instruction'
+          elif final_vpu_pc:
+              classification = (
+                  'stock-handoff-vpu-pc-' + final_vpu_pc.removeprefix('0x')
+              )
+          else:
+              classification = 'stock-firmware-arm-handoff-not-reached'
+
+          rc_path = result_dir / 'probe.return-code'
+          probe_rc = rc_path.read_text().strip() if rc_path.is_file() else None
+          status = {
+              'schema_version': 2,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'passed': passed,
+              'classification': classification,
+              'probe_return_code': probe_rc,
+              'outcomes': outcomes,
+              'virtual_clock_recovered': clock_recovered,
+              'qtest_clock_steps': clock_steps,
+              'qtest_clock_step_ns': clock_ns,
+              'system_timer_delta_us': timer_us,
+              'final_vpu_pc': final_vpu_pc,
+              'last_unimplemented_opcode': opcode,
+              'last_unimplemented_pc': opcode_pc,
+              'last_illegal_pc': illegal_pc,
+              'probe': probe,
+          }
+          Path('VC4_STOCK_ARM_HANDOFF_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+
+          lines = [
+              '# VC4 stock-firmware AArch64 handoff',
+              '',
+              f"Validation passed: **{str(passed).lower()}**",
+              '',
+              f"Frontier: **`{classification}`**",
+              '',
+              f"- Virtual clock recovered: `{clock_recovered}`",
+              f"- qtest clock steps: `{clock_steps}`",
+              f"- Virtual time advanced: `{clock_ns}` ns",
+              f"- BCM2835 system timer advanced: `{timer_us}` us",
+              f"- ARM witness signature: `{signature_seen}`",
+              f"- Observed signature: `{probe.get('observed_signature')}`",
+              f"- Kernel word after firmware: `{probe.get('kernel_word_after_boot')}`",
+              f"- Firmware x0: `{probe.get('payload_argument_x0')}`",
+              f"- Initial SP: `{probe.get('payload_initial_sp')}`",
+              f"- MPIDR_EL1: `{probe.get('payload_mpidr_el1')}`",
+              f"- ARM_CONTROL0: `{probe.get('arm_control0')}`",
+              f"- ARM_CONTROL1: `{probe.get('arm_control1')}`",
+              f"- ARM_STATUS: `{probe.get('arm_status')}`",
+              f"- PM_PROC: `{probe.get('pm_proc')}`",
+              f"- Final VPU PC: `{final_vpu_pc}`",
+              f"- Last unimplemented opcode: `{opcode}` at `{opcode_pc}`",
+              f"- Last illegal PC: `{illegal_pc}`",
+              f"- Probe return code: `{probe_rc}`",
+              '',
+          ]
+          if probe.get('probe_error'):
+              lines += ['## Probe error', '', f"`{probe['probe_error']}`", '']
+          relevant = [
+              line for line in diagnostics
+              if any(
+                  token in line.lower()
+                  for token in (
+                      'unimplemented', 'illegal instruction',
+                      'guest error', 'bad read', 'bad write',
+                      'arm cpu0 release failed'
+                  )
+              )
+          ]
+          if relevant:
+              lines += ['## Relevant diagnostics', '']
+              lines += [f'- `{line}`' for line in relevant[-48:]]
+              lines += ['']
+          Path('VC4_STOCK_ARM_HANDOFF_STATUS.md').write_text(
+              '\n'.join(lines), encoding='utf-8'
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+          PY
+          git diff --check
+
+      - name: Upload complete handoff evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-clock-handoff-${{ github.run_attempt }}
+          path: |
+            VC4_STOCK_ARM_HANDOFF_STATUS.json
+            VC4_STOCK_ARM_HANDOFF_STATUS.md
+            /tmp/vc4-stock-clock-fixtures
+            /tmp/vc4-stock-clock-result
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the measured frontier
+        if: always()
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test -f VC4_STOCK_ARM_HANDOFF_STATUS.json
+          passed=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          print('true' if json.loads(
+              Path('VC4_STOCK_ARM_HANDOFF_STATUS.json').read_text()
+          ).get('passed') else 'false')
+          PY
+          )
+
+          git config user.name "VC4 Clock Handoff CI"
+          git config user.email "vc4-clock-handoff-ci@users.noreply.github.com"
+          git add -- \
+            VC4_STOCK_ARM_HANDOFF_STATUS.json \
+            VC4_STOCK_ARM_HANDOFF_STATUS.md
+          git rm --ignore-unmatch \
+            .github/workflows/vc4-stock-arm-handoff-recovered.yml
+          if [ "$passed" = true ]; then
+            git rm -- .github/workflows/vc4-stock-clock-handoff.yml
+            message='hw/arm: validate clock-synchronous stock-firmware handoff'
+          else
+            message='tests/vc4: record clock-synchronous handoff frontier [skip ci]'
+          fi
+          git diff --cached --check
+          git commit -m "$message"
+          git pull --rebase origin "$REF_NAME"
+          git push origin "HEAD:$REF_NAME"
+
+      - name: Require the real handoff
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          status = json.loads(
+              Path('VC4_STOCK_ARM_HANDOFF_STATUS.json').read_text()
+          )
+          if not status.get('passed'):
+              raise SystemExit(1)
+          PY
