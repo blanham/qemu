@@ -146,6 +146,9 @@ if have_system
       meson.project_source_root() / 'hw/display/vc4_v3d_frontier.c',
       meson.project_source_root() / 'hw/display/vc4_v3d_pipeline.c',
     ],
+    'test-vc4-tiling': [
+      meson.project_source_root() / 'hw/display/vc4_tiling.c',
+    ],
     'test-qmp-cmds': [testqapi],
     'test-xbzrle': [migration],
     'test-util-sockets': ['socket-helpers.c'],

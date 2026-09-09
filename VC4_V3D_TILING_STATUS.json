@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-09T13:57:57.819865+00:00",
+  "layouts": [
+    "linear-rgba8888",
+    "lt-rgba8888",
+    "t-rgba8888"
+  ],
+  "mesa_gate": "not-claimed-by-this-workflow",
+  "run_attempt": "1",
+  "run_id": "34359876122",
+  "schema_version": 1,
+  "source_sha": "8c4012a1e80336ce8075a963b497cb66982cc7f2",
+  "subtile_bytes": 1024,
+  "t_tile_bytes": 4096,
+  "tests": {
+    "dual_frontend_build": true,
+    "linear_render_store": true,
+    "primitive_pipeline": true,
+    "qpu_contract": true,
+    "qpu_measured": true,
+    "t_lt_render_store": true,
+    "tiling_unit": true
+  },
+  "utile": {
+    "bytes": 64,
+    "height": 4,
+    "width": 4
+  },
+  "validated": true
+}
