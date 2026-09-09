@@ -25,6 +25,39 @@ ARM_STATUS = 0x3F00B444
 ARM_ID = 0x3F00B44C
 PM_PROC = 0x3F100110
 
+LOW_PC_LOOP = {
+    "0x00000540",
+    "0x00000542",
+    "0x00000544",
+    "0x00000546",
+    "0x0000054a",
+}
+CORE_DEBUG_PROPERTIES = (
+    "debug-halted",
+    "debug-stop",
+    "debug-stopped",
+    "debug-exit-request",
+    "debug-thread-kicked",
+    "debug-hard-interrupt",
+    "debug-has-work",
+)
+IRQ_DEBUG_PROPERTIES = (
+    "debug-vc4-pending",
+    "debug-basic-pending",
+    "debug-basic-enable",
+    "debug-gpu-pending",
+    "debug-gpu-enable",
+    "debug-direct-enable",
+    "debug-direct-pending",
+    "debug-cpu-irq",
+    "debug-fiq-asserted",
+    "debug-fiq-control",
+    "debug-fiq-gpu",
+    "debug-fiq-direct",
+    "debug-irq-enabled-pending",
+    "debug-irq-any-pending",
+)
+
 REG_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)\s*=\s*([0-9A-Fa-f]+)")
 SELECTED_REGS = {
     "pc", "sp", "lr", "sr", "r0", "r00", "r1", "r01", "r2", "r02",
@@ -70,6 +103,121 @@ def extract_asm_context(log_text: str, target: int = 0x544) -> list[str]:
     return selected[:240]
 
 
+def read_qom_debug(
+    qmp: Any,
+    qom_path: str | None,
+    *,
+    include_irq: bool,
+) -> dict[str, Any]:
+    if not qom_path:
+        return {"_error": "query-cpus-fast did not expose the VPU qom-path"}
+
+    properties = CORE_DEBUG_PROPERTIES + (IRQ_DEBUG_PROPERTIES if include_irq else ())
+    values: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    for name in properties:
+        try:
+            values[name] = qmp.execute(
+                "qom-get",
+                {"path": qom_path, "property": name},
+            )
+        except Exception as error:
+            errors[name] = f"{type(error).__name__}: {error}"
+    if errors:
+        values["_errors"] = errors
+    return values
+
+
+def register_value(sample: dict[str, Any], name: str) -> str | None:
+    registers = sample.get("registers") or {}
+    value = registers.get(name)
+    if value is None and len(name) == 2 and name.startswith("r"):
+        value = registers.get(f"r0{name[1]}")
+    return value
+
+
+def fingerprint(sample: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    registers = sample.get("registers") or {}
+    return tuple(sorted((str(key), str(value)) for key, value in registers.items()))
+
+
+def summarize_low_pc_phase(
+    timeline: list[dict[str, Any]],
+    first_index: int | None,
+) -> dict[str, Any]:
+    if first_index is None:
+        return {
+            "entered": False,
+            "first_sample_index": None,
+            "sample_count": 0,
+            "unique_state_count": 0,
+            "transition_count": 0,
+            "unique_pcs": [],
+            "pc_counts": {},
+            "r2_values": [],
+            "r3_values": [],
+            "timer_register_changed": False,
+            "system_timer_delta_us": 0,
+            "stationary": False,
+        }
+
+    phase = timeline[first_index:]
+    states = [fingerprint(sample) for sample in phase]
+    transitions = sum(
+        current != previous
+        for previous, current in zip(states, states[1:])
+    )
+    counts = Counter(str(sample.get("pc", "unknown")) for sample in phase)
+    r2_values = sorted({
+        value for sample in phase
+        if (value := register_value(sample, "r2")) is not None
+    })
+    r3_values = sorted({
+        value for sample in phase
+        if (value := register_value(sample, "r3")) is not None
+    })
+    first_timer = int(str(phase[0]["system_timer_clo"]), 16)
+    last_timer = int(str(phase[-1]["system_timer_clo"]), 16)
+    unique_state_count = len(set(states))
+    return {
+        "entered": True,
+        "first_sample_index": first_index,
+        "first_elapsed_seconds": phase[0]["elapsed_seconds"],
+        "sample_count": len(phase),
+        "unique_state_count": unique_state_count,
+        "transition_count": transitions,
+        "unique_pcs": sorted(counts),
+        "pc_counts": dict(counts.most_common()),
+        "r2_values": r2_values,
+        "r3_values": r3_values,
+        "timer_register_changed": len(r2_values) > 1,
+        "system_timer_delta_us": (last_timer - first_timer) & 0xffffffff,
+        "stationary": len(phase) >= 10 and unique_state_count == 1,
+    }
+
+
+def classify_hint(
+    *,
+    signature_seen: bool,
+    low_pc_phase: dict[str, Any],
+    pre_stop_debug: dict[str, Any],
+) -> str:
+    if signature_seen:
+        return "stock-firmware-aarch64-handoff-clear"
+    if not low_pc_phase.get("entered"):
+        return "stock-vpu-did-not-enter-delay-loop"
+    if not low_pc_phase.get("stationary"):
+        return "stock-vpu-delay-loop-state-progressing"
+
+    stopped = any(
+        pre_stop_debug.get(name) is True
+        for name in ("debug-halted", "debug-stop", "debug-stopped")
+    )
+    if stopped:
+        return "stock-vpu-delay-loop-cpu-stopped"
+    return "stock-vpu-delay-loop-runnable-state-stationary"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("qemu", type=Path)
@@ -81,10 +229,16 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--seconds", type=float, default=20.0)
     parser.add_argument("--interval", type=float, default=0.05)
+    parser.add_argument("--qom-interval", type=float, default=0.5)
+    parser.add_argument(
+        "--one-insn-per-tb",
+        action="store_true",
+        help="run TCG with one guest instruction in each translation block",
+    )
     args = parser.parse_args()
 
-    if args.seconds <= 0 or args.interval <= 0:
-        parser.error("--seconds and --interval must be positive")
+    if args.seconds <= 0 or args.interval <= 0 or args.qom_interval <= 0:
+        parser.error("--seconds, --interval, and --qom-interval must be positive")
     for path in (
         args.qemu, args.bootcode, args.start_elf,
         args.fixup_dat, args.dtb, args.kernel8,
@@ -118,13 +272,16 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="vc4-stock-vpu-trace-") as temp_s:
         temp = Path(temp_s)
         qmp_path = temp / "qmp.sock"
+        accel = "tcg,thread=single"
+        if args.one_insn_per_tb:
+            accel += ",one-insn-per-tb=on"
         command = [
             str(args.qemu.resolve()),
             "-M", "raspi3b-vc4-hetero",
             "-m", "1G",
             "-smp", "5",
             "-drive", f"file={image_path},format=raw,if=sd",
-            "-accel", "tcg,thread=single",
+            "-accel", accel,
             "-display", "none",
             "-monitor", "none",
             "-serial", "none",
@@ -142,11 +299,13 @@ def main() -> int:
 
         qmp = None
         result: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "source_sha": os.environ.get("GITHUB_SHA"),
             "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
             "seconds_requested": args.seconds,
             "sample_interval_requested": args.interval,
+            "qom_interval_requested": args.qom_interval,
+            "one_insn_per_tb": args.one_insn_per_tb,
             "qemu_command": command,
             "fat_layout": {name: list(chain) for name, chain in layout.items()},
         }
@@ -154,18 +313,27 @@ def main() -> int:
         unique_states: dict[tuple[tuple[str, str], ...], dict[str, Any]] = {}
         transitions: list[dict[str, Any]] = []
         pc_counts: Counter[str] = Counter()
+        qom_timeline: list[dict[str, Any]] = []
         last_fingerprint: tuple[tuple[str, str], ...] | None = None
         started = time.monotonic()
         initial_timer = 0
+        first_low_pc_index: int | None = None
+        next_qom_sample = started
+        vpu_qom_path: str | None = None
+        pre_stop_debug: dict[str, Any] = {}
 
         try:
             qmp = handoff.wait_for_qmp(qmp_path, process, 15.0)
             cpus = qmp.execute("query-cpus-fast")
-            vpu_index = next(
-                item["cpu-index"]
+            vpu = next(
+                item
                 for item in cpus
                 if "vc4" in str(item.get("qom-type", "")).lower()
             )
+            vpu_index = int(vpu["cpu-index"])
+            qom_path_value = vpu.get("qom-path")
+            if isinstance(qom_path_value, str):
+                vpu_qom_path = qom_path_value
             initial_timer = qmp.readl(SYSTEM_TIMER_CLO)
             deadline = started + args.seconds
 
@@ -180,7 +348,7 @@ def main() -> int:
                     name: value for name, value in registers.items()
                     if name in SELECTED_REGS
                 }
-                fingerprint = tuple(sorted(selected.items()))
+                current_fingerprint = tuple(sorted(selected.items()))
                 sample = {
                     "elapsed_seconds": now - started,
                     "system_timer_clo": f"0x{timer:08x}",
@@ -192,9 +360,27 @@ def main() -> int:
                 timeline.append(sample)
                 pc_counts[pc] += 1
 
-                state = unique_states.get(fingerprint)
+                entered_now = pc in LOW_PC_LOOP and first_low_pc_index is None
+                if entered_now:
+                    first_low_pc_index = len(timeline) - 1
+
+                if now >= next_qom_sample or entered_now:
+                    qom_timeline.append({
+                        "sample_index": len(timeline) - 1,
+                        "elapsed_seconds": now - started,
+                        "pc": pc,
+                        "include_irq": entered_now,
+                        "properties": read_qom_debug(
+                            qmp,
+                            vpu_qom_path,
+                            include_irq=entered_now,
+                        ),
+                    })
+                    next_qom_sample = now + args.qom_interval
+
+                state = unique_states.get(current_fingerprint)
                 if state is None:
-                    unique_states[fingerprint] = {
+                    unique_states[current_fingerprint] = {
                         "first_sample": len(timeline) - 1,
                         "last_sample": len(timeline) - 1,
                         "count": 1,
@@ -205,14 +391,14 @@ def main() -> int:
                     state["last_sample"] = len(timeline) - 1
                     state["count"] += 1
 
-                if fingerprint != last_fingerprint:
+                if current_fingerprint != last_fingerprint:
                     transitions.append({
                         "sample_index": len(timeline) - 1,
                         "elapsed_seconds": now - started,
                         "pc": pc,
                         "registers": selected,
                     })
-                    last_fingerprint = fingerprint
+                    last_fingerprint = current_fingerprint
 
                 if signature == SIGNATURE or process.poll() is not None:
                     break
@@ -220,14 +406,25 @@ def main() -> int:
                 if remaining > 0:
                     time.sleep(remaining)
 
+            pre_stop_debug = read_qom_debug(
+                qmp,
+                vpu_qom_path,
+                include_irq=True,
+            )
             try:
                 qmp.execute("stop")
             except Exception:
                 pass
 
             final_timer = qmp.readl(SYSTEM_TIMER_CLO)
+            low_pc_phase = summarize_low_pc_phase(timeline, first_low_pc_index)
+            signature_seen = any(
+                sample["signature"] == f"0x{SIGNATURE:016x}"
+                for sample in timeline
+            )
             result.update({
                 "vpu_cpu_index": vpu_index,
+                "vpu_qom_path": vpu_qom_path,
                 "elapsed_seconds": time.monotonic() - started,
                 "sample_count": len(timeline),
                 "unique_state_count": len(unique_states),
@@ -241,17 +438,22 @@ def main() -> int:
                 "system_timer_clo_before": f"0x{initial_timer:08x}",
                 "system_timer_clo_after": f"0x{final_timer:08x}",
                 "system_timer_delta_us": (final_timer - initial_timer) & 0xffffffff,
-                "signature_seen": any(
-                    sample["signature"] == f"0x{SIGNATURE:016x}"
-                    for sample in timeline
-                ),
+                "signature_seen": signature_seen,
                 "arm_control0": f"0x{qmp.readl(ARM_CONTROL0):08x}",
                 "arm_control1": f"0x{qmp.readl(ARM_CONTROL1):08x}",
                 "arm_status": f"0x{qmp.readl(ARM_STATUS):08x}",
                 "arm_id": f"0x{qmp.readl(ARM_ID):08x}",
                 "pm_proc": f"0x{qmp.readl(PM_PROC):08x}",
+                "low_pc_phase": low_pc_phase,
+                "pre_stop_debug": pre_stop_debug,
+                "classification_hint": classify_hint(
+                    signature_seen=signature_seen,
+                    low_pc_phase=low_pc_phase,
+                    pre_stop_debug=pre_stop_debug,
+                ),
                 "cpu_snapshot": handoff.cpu_snapshot(qmp),
                 "timeline": timeline,
+                "qom_timeline": qom_timeline,
                 "transitions": transitions,
                 "unique_states": list(unique_states.values()),
             })
@@ -288,6 +490,8 @@ def main() -> int:
                 "pc_counts", "pc_0x00000544_fraction",
                 "system_timer_delta_us", "signature_seen",
                 "arm_control0", "arm_control1", "arm_status", "pm_proc",
+                "one_insn_per_tb", "low_pc_phase", "pre_stop_debug",
+                "classification_hint",
             )
         }, indent=2, sort_keys=True))
 
