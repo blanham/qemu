@@ -49,8 +49,60 @@ static const uint64_t measured_fs[] = {
     0x100009e7009e7000ULL, 0x500009e7009e7000ULL,
 };
 
+static const uint64_t mesa_vs[] = {
+    0xe0024c6700601a00ULL, 0x100049e020c20037ULL,
+    0x100049c020c20037ULL, 0x100059c120c20037ULL,
+    0x1002086715c27d80ULL, 0x10021d27159e7240ULL,
+    0xe0025c6700001a00ULL, 0x100009e7009e7000ULL,
+    0x100049e2209e700cULL, 0xd00208e7029e1e80ULL,
+    0x100049e1209e7023ULL, 0x100049e2209e7001ULL,
+    0x10124023279c04b9ULL, 0x10224020270676f1ULL,
+    0x100009e7009e7000ULL, 0x10020c2715027d80ULL,
+    0x10024c2081c201f6ULL, 0x1002487095c27d89ULL,
+    0x10020c27159e7000ULL, 0x10020c27159e7240ULL,
+    0x300009e7009e7000ULL, 0x100009e7009e7000ULL,
+    0x100009e7009e7000ULL,
+};
+
+static const uint64_t mesa_cs[] = {
+    0xe0024c6700401a00ULL, 0x100208e715c27d80ULL,
+    0x100208a715c27d80ULL, 0x1002006715c27d80ULL,
+    0xe0025c6700001a00ULL, 0x10024c2095c276f6ULL,
+    0x10024c34959e7480ULL, 0x10024c2235060d97ULL,
+    0x10020c27159e7000ULL, 0x100049e0209e7004ULL,
+    0xd0020867029e1e00ULL, 0x100049c0209e7021ULL,
+    0x100049e02082701eULL, 0x100049e1209c0007ULL,
+    0x10124023279c0257ULL, 0x10224022270606f7ULL,
+    0x100049e3209c0017ULL, 0x10020c2715027d80ULL,
+    0x10020c2701827780ULL, 0x10020c27159c0fc0ULL,
+    0x300009e7009e7000ULL, 0x100009e7009e7000ULL,
+    0x100009e7009e7000ULL,
+};
+
 static const uint32_t transform_uniforms[] = {
     0x3f800000, 0x44000000, 0xc4000000, 0x3f000000,
+};
+
+static const uint32_t mesa_uniforms[] = {
+    0x41000000, 0x41000000, 0x3f800000, 0x00000000,
+};
+
+static const uint32_t mesa_position[4][4] = {
+    { 0xbf800000, 0xbf800000, 0x00000000, 0x3f800000 },
+    { 0x3f800000, 0xbf800000, 0x00000000, 0x3f800000 },
+    { 0x3f800000, 0x3f800000, 0x00000000, 0x3f800000 },
+    { 0xbf800000, 0x3f800000, 0x00000000, 0x3f800000 },
+};
+
+static const uint32_t mesa_texcoord[4][2] = {
+    { 0x3c800000, 0x3f7c0000 },
+    { 0x3d000000, 0x3f7c0000 },
+    { 0x3d000000, 0x3f780000 },
+    { 0x3c800000, 0x3f780000 },
+};
+
+static const uint32_t mesa_packed_xy[4] = {
+    0xfff8fff8, 0xfff80008, 0x00080008, 0x0008fff8,
 };
 
 static bool test_memory_read(void *opaque, uint32_t address,
@@ -107,6 +159,17 @@ static void load_triangle_attributes(VC4QPUExecState *state)
     state->vpm[1].lane[0] = 0xbf800000;
     state->vpm[1].lane[1] = 0xbf800000;
     state->vpm[1].lane[2] = 0x40400000;
+}
+
+static void load_mesa_quad_attributes(VC4QPUExecState *state)
+{
+    for (unsigned lane = 0; lane < 4; lane++) {
+        for (unsigned word = 0; word < 4; word++) {
+            state->vpm[word].lane[lane] = mesa_position[lane][word];
+        }
+        state->vpm[4].lane[lane] = mesa_texcoord[lane][0];
+        state->vpm[5].lane[lane] = mesa_texcoord[lane][1];
+    }
 }
 
 static void assert_transform_output(const VC4QPUExecState *state,
@@ -219,9 +282,140 @@ static void test_measured_fragment_shader(void)
     }
 }
 
+static void prepare_mesa_transform_memory(TestMemory *memory,
+                                          uint32_t code_address,
+                                          uint32_t uniform_address,
+                                          uint8_t *code,
+                                          const uint64_t *words,
+                                          size_t word_count,
+                                          uint8_t *uniforms)
+{
+    encode_words(code, words, word_count);
+    encode_uniforms(uniforms, mesa_uniforms, ARRAY_SIZE(mesa_uniforms));
+    test_memory_add(memory, code_address, code,
+                    word_count * sizeof(uint64_t));
+    test_memory_add(memory, uniform_address, uniforms,
+                    sizeof(mesa_uniforms));
+}
+
+static void test_mesa_coordinate_shader(void)
+{
+    enum { CODE = 0x7000, UNIFORMS = 0x8000 };
+    uint8_t code[sizeof(mesa_cs)];
+    uint8_t uniforms[sizeof(mesa_uniforms)];
+    TestMemory memory = { 0 };
+    VC4QPUExecState state;
+
+    prepare_mesa_transform_memory(&memory, CODE, UNIFORMS, code,
+                                  mesa_cs, ARRAY_SIZE(mesa_cs), uniforms);
+    vc4_qpu_exec_init(&state, UNIFORMS);
+    g_assert_true(vc4_qpu_exec_set_active_lanes(&state, 4));
+    load_mesa_quad_attributes(&state);
+
+    g_assert_true(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
+    g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_NONE);
+    g_assert_cmpuint(state.instruction_count, ==, ARRAY_SIZE(mesa_cs));
+    g_assert_cmphex(state.uniform_address, ==,
+                    UNIFORMS + sizeof(mesa_uniforms));
+    g_assert_cmpuint(state.vpm_write_count, ==, 7);
+    g_assert_cmpuint(state.vpm_first_write_row, ==, 0);
+    g_assert_cmpuint(state.vpm_last_write_row, ==, 6);
+
+    for (unsigned lane = 0; lane < 4; lane++) {
+        for (unsigned word = 0; word < 4; word++) {
+            g_assert_cmphex(state.vpm[word].lane[lane], ==,
+                            mesa_position[lane][word]);
+        }
+        g_assert_cmphex(state.vpm[4].lane[lane], ==,
+                        mesa_packed_xy[lane]);
+        g_assert_cmphex(state.vpm[5].lane[lane], ==, 0x00000000);
+        g_assert_cmphex(state.vpm[6].lane[lane], ==, 0x3f800000);
+    }
+    for (unsigned lane = 4; lane < VC4_QPU_LANES; lane++) {
+        for (unsigned row = 0; row < 7; row++) {
+            g_assert_cmphex(state.vpm[row].lane[lane], ==, 0x00000000);
+        }
+    }
+}
+
+static void test_mesa_vertex_shader(void)
+{
+    enum { CODE = 0x9000, UNIFORMS = 0xa000 };
+    uint8_t code[sizeof(mesa_vs)];
+    uint8_t uniforms[sizeof(mesa_uniforms)];
+    TestMemory memory = { 0 };
+    VC4QPUExecState state;
+
+    prepare_mesa_transform_memory(&memory, CODE, UNIFORMS, code,
+                                  mesa_vs, ARRAY_SIZE(mesa_vs), uniforms);
+    vc4_qpu_exec_init(&state, UNIFORMS);
+    g_assert_true(vc4_qpu_exec_set_active_lanes(&state, 4));
+    load_mesa_quad_attributes(&state);
+
+    g_assert_true(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
+    g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_NONE);
+    g_assert_cmpuint(state.instruction_count, ==, ARRAY_SIZE(mesa_vs));
+    g_assert_cmphex(state.uniform_address, ==,
+                    UNIFORMS + sizeof(mesa_uniforms));
+    g_assert_cmpuint(state.vpm_write_count, ==, 5);
+    g_assert_cmpuint(state.vpm_first_write_row, ==, 0);
+    g_assert_cmpuint(state.vpm_last_write_row, ==, 4);
+
+    for (unsigned lane = 0; lane < 4; lane++) {
+        g_assert_cmphex(state.vpm[0].lane[lane], ==,
+                        mesa_packed_xy[lane]);
+        g_assert_cmphex(state.vpm[1].lane[lane], ==, 0x00000000);
+        g_assert_cmphex(state.vpm[2].lane[lane], ==, 0x3f800000);
+        g_assert_cmphex(state.vpm[3].lane[lane], ==,
+                        mesa_texcoord[lane][0]);
+        g_assert_cmphex(state.vpm[4].lane[lane], ==,
+                        mesa_texcoord[lane][1]);
+    }
+    for (unsigned lane = 4; lane < VC4_QPU_LANES; lane++) {
+        for (unsigned row = 0; row < 5; row++) {
+            g_assert_cmphex(state.vpm[row].lane[lane], ==, 0x00000000);
+        }
+    }
+}
+
+static void test_last_thread_switch_signal(void)
+{
+    enum { CODE = 0xb000 };
+    static const uint64_t program[] = {
+        0x600009e7009e7000ULL,
+        0x300009e7009e7000ULL,
+        0x100009e7009e7000ULL,
+        0x100009e7009e7000ULL,
+    };
+    uint8_t code[sizeof(program)];
+    TestMemory memory = { 0 };
+    VC4QPUExecState state;
+
+    encode_words(code, program, ARRAY_SIZE(program));
+    test_memory_add(&memory, CODE, code, sizeof(code));
+    vc4_qpu_exec_init(&state, 0);
+
+    g_assert_true(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
+    g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_NONE);
+    g_assert_true(state.last_thread_switch);
+}
+
+static void test_active_lane_contract(void)
+{
+    VC4QPUExecState state;
+
+    vc4_qpu_exec_init(&state, 0);
+    g_assert_cmpuint(state.active_lanes, ==, VC4_QPU_LANES);
+    g_assert_false(vc4_qpu_exec_set_active_lanes(&state, 0));
+    g_assert_false(vc4_qpu_exec_set_active_lanes(
+        &state, VC4_QPU_LANES + 1));
+    g_assert_true(vc4_qpu_exec_set_active_lanes(&state, 4));
+    g_assert_cmpuint(state.active_lanes, ==, 4);
+}
+
 static void test_unsupported_signal_fails_closed(void)
 {
-    enum { CODE = 0x7000 };
+    enum { CODE = 0xc000 };
     static const uint64_t branch = 0xf000000000000000ULL;
     uint8_t code[sizeof(branch)];
     TestMemory memory = { 0 };
@@ -243,6 +437,11 @@ int main(int argc, char **argv)
     g_test_add_func("/vc4/qpu/measured-vs", test_measured_vertex_shader);
     g_test_add_func("/vc4/qpu/measured-cs", test_measured_coordinate_shader);
     g_test_add_func("/vc4/qpu/measured-fs", test_measured_fragment_shader);
+    g_test_add_func("/vc4/qpu/mesa-vs", test_mesa_vertex_shader);
+    g_test_add_func("/vc4/qpu/mesa-cs", test_mesa_coordinate_shader);
+    g_test_add_func("/vc4/qpu/last-thread-switch",
+                    test_last_thread_switch_signal);
+    g_test_add_func("/vc4/qpu/active-lanes", test_active_lane_contract);
     g_test_add_func("/vc4/qpu/fail-closed",
                     test_unsupported_signal_fails_closed);
     return g_test_run();
