@@ -72,13 +72,46 @@ jobs:
             "f65517e6295e94da31282364e0958f57f55629c850f3ede617b79cc5a33cd1ba"
           python3 -m py_compile /tmp/v3d-pipeline-materialize.py
           python3 /tmp/v3d-pipeline-materialize.py
+
+          # The materializer promotes the shader-record types into the public
+          # header so diagnostics and execution share one decoder.  Remove the
+          # now-stale private declarations from the implementation, requiring
+          # the exact original declaration block rather than editing by line.
+          python3 - <<'PYFIX'
+          from pathlib import Path
+
+          path = Path("hw/display/vc4_v3d_frontier.c")
+          text = path.read_text(encoding="utf-8")
+          start_marker = "typedef struct VC4V3DShaderAttribute {\n"
+          end_marker = "} VC4V3DShaderRecord;\n\n"
+          if text.count(start_marker) != 1:
+              raise SystemExit(
+                  "private shader-attribute declaration: expected exactly once"
+              )
+          start = text.index(start_marker)
+          end = text.find(end_marker, start)
+          if end < 0:
+              raise SystemExit("private shader-record declaration end not found")
+          end += len(end_marker)
+          text = text[:start] + text[end:]
+          if "typedef struct VC4V3DShaderAttribute" in text or \
+             "typedef struct VC4V3DShaderRecord" in text:
+              raise SystemExit("private shader-record declarations remain")
+          path.write_text(text, encoding="utf-8")
+          PYFIX
+
           git diff --check
           grep -n 'VC4_PACKET_START_TILE_BINNING' hw/display/bcm2835_v3d.c
+          grep -n 'vc4_v3d_decode_shader_record' \
+            include/hw/display/vc4_v3d_frontier.h \
+            hw/display/vc4_v3d_frontier.c
           mkdir -p /tmp/vc4-v3d-generated
           cp hw/display/bcm2835_v3d.c /tmp/vc4-v3d-generated/
           cp include/hw/display/bcm2835_v3d.h /tmp/vc4-v3d-generated/
           cp hw/display/vc4_v3d_pipeline.c /tmp/vc4-v3d-generated/
           cp include/hw/display/vc4_v3d_pipeline.h /tmp/vc4-v3d-generated/
+          cp hw/display/vc4_v3d_frontier.c /tmp/vc4-v3d-generated/
+          cp include/hw/display/vc4_v3d_frontier.h /tmp/vc4-v3d-generated/
           git diff --binary > /tmp/vc4-v3d-generated/product.patch
 
       - name: Configure and build the product tree
