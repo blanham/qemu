@@ -13,7 +13,9 @@
      * TXP supplies the smallest headless CRTC/writeback path.  Keep the
      * pixel valves, HDMI, VEC, and firmware-KMS nodes in their base-DTB state
      * so this variant remains focused on render-node registration and V3D
-     * command submission rather than physical scanout.
+     * command submission rather than physical scanout.  This is also the
+     * acceptance topology for real Mesa primitive dispatch: do not add a
+     * software renderer, host-side draw bypass, or firmware framebuffer path.
      */
     fragment@0 {
         target = <&v3d>;
