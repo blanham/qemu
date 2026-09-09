@@ -1,0 +1,399 @@
+name: VC4 stock-firmware low-PC execution and memory trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - .github/workflows/vc4-stock-vpu-lowpc-execlog-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-vpu-lowpc-execlog-v1
+  cancel-in-progress: false
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      RPI_KERNEL_RELEASE: 6.18.44-v8+
+      FIXTURE_DIR: /tmp/vc4-stock-lowpc-fixtures
+      RESULT_DIR: /tmp/vc4-stock-lowpc-result
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies and pin unchanged firmware
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl gcc-aarch64-linux-gnu \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config \
+            python3 zlib1g-dev
+          rm -rf "$FIXTURE_DIR" "$RESULT_DIR"
+          mkdir -p "$FIXTURE_DIR" "$RESULT_DIR"
+
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-vpu-trace.py
+          git diff --check
+
+          for file in bootcode.bin start.elf fixup.dat bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$FIXTURE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIXTURE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIXTURE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIXTURE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+          aarch64-linux-gnu-as \
+            -o "$FIXTURE_DIR/aarch64-handoff.o" \
+            tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -nostdlib -T tests/vc4/aarch64-handoff.ld \
+            -o "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/aarch64-handoff.o"
+          aarch64-linux-gnu-objcopy \
+            -O binary "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/kernel8.img"
+          sha256sum "$FIXTURE_DIR"/* > "$FIXTURE_DIR/SHA256SUMS"
+
+      - name: Build normal-TCG frontends and execlog plugin
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --enable-plugins \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/build.log"
+
+          ninja -C build -t targets all > "$RESULT_DIR/ninja-targets.txt"
+          target=$(python3 - <<'PY'
+          from pathlib import Path
+          for line in Path('/tmp/vc4-stock-lowpc-result/ninja-targets.txt').read_text().splitlines():
+              if 'libexeclog.so:' in line:
+                  print(line.split(':', 1)[0])
+                  break
+          PY
+          )
+          if test -n "$target"; then
+            ninja -C build "$target" \
+              2>&1 | tee "$RESULT_DIR/plugin-build.log"
+          fi
+          plugin=$(find build -type f -name 'libexeclog.so' -print -quit)
+          test -n "$plugin"
+          realpath "$plugin" > "$RESULT_DIR/PLUGIN_PATH"
+          sha256sum "$plugin" > "$RESULT_DIR/PLUGIN_SHA256"
+
+      - name: Preserve heterogeneous CPU contracts
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/preg.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$RESULT_DIR/msync.log"
+
+      - name: Build ordinary firmware volume
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import importlib.util
+
+          scripts = Path('scripts/vc4')
+          spec = importlib.util.spec_from_file_location(
+              'vc4_stock_handoff', scripts / 'raspi3-stock-arm-payload.py'
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit('could not load stock handoff helper')
+          handoff = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(handoff)
+          stock = handoff.load_stock_probe()
+
+          fixture = Path('/tmp/vc4-stock-lowpc-fixtures')
+          result = Path('/tmp/vc4-stock-lowpc-result')
+          files = [
+              ('BOOTCODE.BIN', (fixture / 'bootcode.bin').read_bytes()),
+              ('START.ELF', (fixture / 'start.elf').read_bytes()),
+              ('FIXUP.DAT', (fixture / 'fixup.dat').read_bytes()),
+              ('CONFIG.TXT', handoff.default_config(True)),
+              ('CMDLINE.TXT', b'console=serial0,115200 earlycon=pl011,0x3f201000\n'),
+              ('RPI3.DTB', (fixture / 'bcm2710-rpi-3-b.dtb').read_bytes()),
+              ('KERNEL8.IMG', (fixture / 'kernel8.img').read_bytes()),
+          ]
+          layout = stock.build_fat32_image(result / 'stock-lowpc.img', files)
+          (result / 'FAT_LAYOUT.txt').write_text(
+              '\n'.join(f'{name}: {chain}' for name, chain in layout.items()) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Trace low-PC execution and memory accesses under normal TCG
+        run: |
+          set -euo pipefail
+          plugin=$(cat "$RESULT_DIR/PLUGIN_PATH")
+          log="$RESULT_DIR/execlog.log"
+          stderr="$RESULT_DIR/qemu.stderr"
+          command=(
+            build/qemu-system-aarch64
+            -M raspi3b-vc4-hetero
+            -m 1G
+            -smp 5
+            -drive "file=$RESULT_DIR/stock-lowpc.img,format=raw,if=sd"
+            -accel tcg,thread=single
+            -display none
+            -monitor none
+            -serial none
+            -no-reboot
+            -plugin "$plugin,afilter=0x0-0x10000"
+            -d plugin,in_asm,guest_errors,unimp
+            -D "$log"
+          )
+          printf '%q ' "${command[@]}" > "$RESULT_DIR/COMMAND"
+          printf '\n' >> "$RESULT_DIR/COMMAND"
+          set +e
+          timeout --signal=TERM --kill-after=3s 8s \
+            "${command[@]}" 2>"$stderr"
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > "$RESULT_DIR/RETURN_CODE"
+          if test "$rc" -ne 0 && test "$rc" -ne 124 && test "$rc" -ne 143; then
+            cat "$stderr" >&2
+            exit "$rc"
+          fi
+          test -s "$log"
+
+      - name: Reconfirm temporal behavior without plugin interference
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-stock-vpu-trace.py \
+            build/qemu-system-aarch64 \
+            "$FIXTURE_DIR/bootcode.bin" \
+            "$FIXTURE_DIR/start.elf" \
+            "$FIXTURE_DIR/fixup.dat" \
+            "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb" \
+            "$FIXTURE_DIR/kernel8.img" \
+            --out-dir "$RESULT_DIR/temporal" \
+            --seconds 12 --interval 0.025 \
+            2>&1 | tee "$RESULT_DIR/temporal.stdout"
+
+      - name: Classify measured low-PC memory traffic
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from collections import Counter
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+          import re
+
+          result_dir = Path('/tmp/vc4-stock-lowpc-result')
+          log = (result_dir / 'execlog.log').read_text(
+              encoding='utf-8', errors='replace'
+          )
+          temporal = json.loads(
+              (result_dir / 'temporal' / 'VC4_STOCK_VPU_TRACE.json').read_text()
+          )
+
+          low_pc_re = re.compile(
+              r'0x0*(?:009a|0542|0544|060a|766a|7670|767c|768a)\b',
+              re.IGNORECASE,
+          )
+          access_word_re = re.compile(
+              r'\b(?:load|store|read|write|mem(?:ory)?)\b',
+              re.IGNORECASE,
+          )
+          address_re = re.compile(r'0x[0-9a-fA-F]{4,16}')
+
+          lines = log.splitlines()
+          selected = []
+          access_lines = []
+          candidate_addresses = Counter()
+          for index, line in enumerate(lines):
+              if low_pc_re.search(line):
+                  start = max(0, index - 3)
+                  end = min(len(lines), index + 5)
+                  selected.extend(lines[start:end])
+              if access_word_re.search(line):
+                  access_lines.append(line)
+                  for token in address_re.findall(line):
+                      value = int(token, 16)
+                      if (0x3f000000 <= value <= 0x3fffffff or
+                          0x7e000000 <= value <= 0x7effffff):
+                          candidate_addresses[f'0x{value:08x}'] += 1
+
+          def unique_bounded(items, limit):
+              seen = set()
+              output = []
+              for item in items:
+                  if item in seen:
+                      continue
+                  seen.add(item)
+                  output.append(item)
+                  if len(output) >= limit:
+                      break
+              return output
+
+          selected = unique_bounded(selected, 800)
+          access_lines = unique_bounded(access_lines, 1200)
+          low_pc_seen = bool(selected)
+          peripheral_access_seen = bool(candidate_addresses)
+          command = (result_dir / 'COMMAND').read_text().strip()
+          normal_tcg = (
+              '-accel tcg,thread=single' in command and
+              'qtest' not in command and
+              'clock_step' not in command
+          )
+          timer_advanced = int(temporal.get('system_timer_delta_us') or 0) > 1_000_000
+          state_progressed = int(temporal.get('unique_state_count') or 0) > 1
+          arm_witness = bool(temporal.get('signature_seen'))
+
+          if not normal_tcg:
+              classification = 'stock-lowpc-trace-not-normal-tcg'
+          elif temporal.get('probe_error'):
+              classification = 'stock-lowpc-temporal-control-failed'
+          elif not timer_advanced or not state_progressed:
+              classification = 'stock-lowpc-temporal-control-regressed'
+          elif arm_witness:
+              classification = 'stock-firmware-aarch64-handoff-clear'
+          elif not low_pc_seen:
+              classification = 'stock-lowpc-execlog-address-filter-missed'
+          elif peripheral_access_seen:
+              classification = 'stock-lowpc-peripheral-traffic-captured'
+          else:
+              classification = 'stock-lowpc-execution-captured-no-peripheral-token'
+
+          record = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'classification': classification,
+              'normal_tcg': normal_tcg,
+              'low_pc_seen_in_plugin_log': low_pc_seen,
+              'peripheral_access_seen': peripheral_access_seen,
+              'candidate_peripheral_addresses': dict(
+                  candidate_addresses.most_common(128)
+              ),
+              'plugin_log_bytes': len(log.encode('utf-8')),
+              'plugin_access_line_count': len(access_lines),
+              'temporal_control': {
+                  'probe_error': temporal.get('probe_error'),
+                  'signature_seen': arm_witness,
+                  'system_timer_delta_us': temporal.get('system_timer_delta_us'),
+                  'unique_state_count': temporal.get('unique_state_count'),
+                  'transition_count': temporal.get('transition_count'),
+                  'unique_pcs': temporal.get('unique_pcs'),
+                  'pc_counts': temporal.get('pc_counts'),
+                  'arm_control0': temporal.get('arm_control0'),
+                  'arm_control1': temporal.get('arm_control1'),
+                  'arm_status': temporal.get('arm_status'),
+                  'pm_proc': temporal.get('pm_proc'),
+              },
+              'low_pc_context': selected,
+              'access_excerpt': access_lines,
+          }
+          Path('VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.json').write_text(
+              json.dumps(record, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+
+          addresses = [
+              f'- `{address}`: `{count}` observations'
+              for address, count in candidate_addresses.most_common(32)
+          ] or ['- No peripheral-address token was recognized in the plugin format.']
+          Path('VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.md').write_text(
+              '\n'.join([
+                  '# VC4 stock-firmware low-PC execution/memory frontier',
+                  '',
+                  f'Classification: **`{classification}`**',
+                  '',
+                  f'- Normal TCG: `{normal_tcg}`',
+                  f'- Low-PC execution observed by plugin: `{low_pc_seen}`',
+                  f'- Peripheral-address token observed: `{peripheral_access_seen}`',
+                  f'- Temporal states: `{temporal.get("unique_state_count")}`',
+                  f'- Temporal transitions: `{temporal.get("transition_count")}`',
+                  f'- System timer advance: `{temporal.get("system_timer_delta_us")}` us',
+                  f'- ARM witness reached: `{arm_witness}`',
+                  '',
+                  '## Candidate peripheral traffic',
+                  '',
+                  *addresses,
+                  '',
+                  'The plugin trace is diagnostic evidence only. It does not alter '
+                  'firmware, force ARM-control writes, synthesize interrupts, or use '
+                  'qtest clock manipulation.',
+                  '',
+              ]),
+              encoding='utf-8',
+          )
+          print(json.dumps({
+              'classification': classification,
+              'candidate_peripheral_addresses': dict(
+                  candidate_addresses.most_common(32)
+              ),
+              'temporal_control': record['temporal_control'],
+          }, indent=2, sort_keys=True))
+
+          if not normal_tcg:
+              raise SystemExit('diagnostic did not execute under normal TCG')
+          if temporal.get('probe_error'):
+              raise SystemExit(str(temporal['probe_error']))
+          if not timer_advanced or not state_progressed:
+              raise SystemExit('temporal control did not reproduce progressing low-PC firmware')
+          PY
+          cp VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.* "$RESULT_DIR/"
+          git diff --check
+
+      - name: Upload complete low-PC evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-vpu-lowpc-execlog-${{ github.run_attempt }}
+          path: |
+            VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.json
+            VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.md
+            /tmp/vc4-stock-lowpc-fixtures/SHA256SUMS
+            /tmp/vc4-stock-lowpc-result
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish measured diagnostic and retire one-shot workflow
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.json
+          test -f VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.md
+          git rm -- .github/workflows/vc4-stock-vpu-lowpc-execlog-v1.yml
+          git add -- \
+            VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.json \
+            VC4_STOCK_VPU_LOWPC_EXECLOG_STATUS.md
+          git diff --cached --check
+          git config user.name "VC4 Low-PC Trace CI"
+          git config user.email "vc4-lowpc-trace-ci@users.noreply.github.com"
+          git commit -m \
+            "tests/vc4: record stock VPU low-PC memory frontier [skip ci]"
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
