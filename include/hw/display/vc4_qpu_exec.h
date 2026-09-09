@@ -46,6 +46,7 @@ typedef struct VC4QPUExecState {
     uint32_t uniform_address;
     uint32_t pc;
     unsigned instruction_count;
+    unsigned active_lanes;
 
     bool vpm_read_configured;
     uint8_t vpm_read_row;
@@ -65,6 +66,7 @@ typedef struct VC4QPUExecState {
     bool tlb_color_all_valid;
     VC4QPUVector tlb_color_all;
     bool scoreboard_unlocked;
+    bool last_thread_switch;
 
     VC4QPUExecFault fault;
     unsigned fault_index;
@@ -73,6 +75,9 @@ typedef struct VC4QPUExecState {
 } VC4QPUExecState;
 
 void vc4_qpu_exec_init(VC4QPUExecState *state, uint32_t uniform_address);
+
+bool vc4_qpu_exec_set_active_lanes(VC4QPUExecState *state,
+                                   unsigned active_lanes);
 
 bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
                      uint32_t code_address, VC4QPUExecState *state);
