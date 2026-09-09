@@ -1,0 +1,58 @@
+name: VC4 transform materializer workflow repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-mesa-gles2-frontier
+    paths:
+      - .github/workflows/vc4-qpu-transform-workflow-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-qpu-transform-workflow-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Remove the erroneous second indentation pass
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/vc4-qpu-measured-transform-materialize.yml')
+          text = path.read_text(encoding='utf-8')
+          bad = "          sed -i 's/^          //' /tmp/vc4-qpu-measured-transform.patch\n"
+          count = text.count(bad)
+          if count != 1:
+              raise SystemExit(f'expected exactly one bad indentation pass, found {count}')
+          path.write_text(text.replace(bad, ''), encoding='utf-8')
+          PY
+          grep -Fq 'git apply --check /tmp/vc4-qpu-measured-transform.patch' \
+            .github/workflows/vc4-qpu-measured-transform-materialize.yml
+          if grep -Fq "sed -i 's/^          //'" \
+              .github/workflows/vc4-qpu-measured-transform-materialize.yml; then
+            echo 'erroneous indentation pass remains' >&2
+            exit 1
+          fi
+          git diff --check
+
+      - name: Publish repair and retire this workflow
+        run: |
+          set -euo pipefail
+          git rm -- .github/workflows/vc4-qpu-transform-workflow-repair.yml
+          git add -- .github/workflows/vc4-qpu-measured-transform-materialize.yml
+          git diff --cached --check
+          git config user.name 'VC4 CI Repair'
+          git config user.email 'vc4-ci-repair@users.noreply.github.com'
+          git commit -m 'ci/vc4: preserve measured transform patch indentation'
+          git pull --rebase origin agent/vc4-linux-mesa-gles2-frontier
+          git push origin HEAD:agent/vc4-linux-mesa-gles2-frontier
