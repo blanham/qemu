@@ -1,0 +1,279 @@
+name: VC4 stock-firmware VPU TB diagnostic
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - .github/workflows/vc4-stock-vpu-tb-diagnostic.yml
+      - scripts/vc4/raspi3-stock-vpu-trace.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-vpu-tb-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIXTURE_DIR: /tmp/vc4-stock-tb-fixtures
+      RESULT_DIR: /tmp/vc4-stock-tb-result
+      STATUS_JSON: VC4_STOCK_VPU_TB_DIAGNOSTIC_STATUS.json
+      STATUS_MD: VC4_STOCK_VPU_TB_DIAGNOSTIC_STATUS.md
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies and pin unchanged firmware
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl gcc-aarch64-linux-gnu \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config \
+            python3 zlib1g-dev
+          rm -rf "$FIXTURE_DIR" "$RESULT_DIR"
+          mkdir -p "$FIXTURE_DIR" "$RESULT_DIR/baseline" \
+            "$RESULT_DIR/one-insn-per-tb"
+
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-vpu-trace.py \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py
+          git diff --check
+
+          for file in bootcode.bin start.elf fixup.dat bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$FIXTURE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIXTURE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIXTURE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIXTURE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+          aarch64-linux-gnu-as \
+            -o "$FIXTURE_DIR/aarch64-handoff.o" \
+            tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -nostdlib -T tests/vc4/aarch64-handoff.ld \
+            -o "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/aarch64-handoff.o"
+          aarch64-linux-gnu-objcopy \
+            -O binary "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/kernel8.img"
+          sha256sum "$FIXTURE_DIR"/* > "$FIXTURE_DIR/SHA256SUMS"
+
+      - name: Build both linked frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/build.log"
+
+      - name: Preserve heterogeneous CPU contracts
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/preg.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$RESULT_DIR/msync.log"
+
+      - name: Compare ordinary and one-instruction translation blocks
+        run: |
+          set -euo pipefail
+          common=(
+            build/qemu-system-aarch64
+            "$FIXTURE_DIR/bootcode.bin"
+            "$FIXTURE_DIR/start.elf"
+            "$FIXTURE_DIR/fixup.dat"
+            "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb"
+            "$FIXTURE_DIR/kernel8.img"
+            --seconds 30 --interval 0.05 --qom-interval 0.5
+          )
+
+          python3 scripts/vc4/raspi3-stock-vpu-trace.py \
+            "${common[@]}" \
+            --out-dir "$RESULT_DIR/baseline" \
+            2>&1 | tee "$RESULT_DIR/baseline.stdout"
+
+          python3 scripts/vc4/raspi3-stock-vpu-trace.py \
+            "${common[@]}" \
+            --out-dir "$RESULT_DIR/one-insn-per-tb" \
+            --one-insn-per-tb \
+            2>&1 | tee "$RESULT_DIR/one-insn-per-tb.stdout"
+
+          rm -f \
+            "$RESULT_DIR/baseline/stock-vpu-trace.img" \
+            "$RESULT_DIR/one-insn-per-tb/stock-vpu-trace.img"
+
+      - name: Classify the measured A/B result
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import os
+
+          result_dir = Path(os.environ['RESULT_DIR'])
+          baseline = json.loads(
+              (result_dir / 'baseline' / 'VC4_STOCK_VPU_TRACE.json').read_text()
+          )
+          single = json.loads(
+              (result_dir / 'one-insn-per-tb' / 'VC4_STOCK_VPU_TRACE.json').read_text()
+          )
+
+          def compact(trace):
+              return {
+                  'probe_error': trace.get('probe_error'),
+                  'classification_hint': trace.get('classification_hint'),
+                  'signature_seen': trace.get('signature_seen'),
+                  'elapsed_seconds': trace.get('elapsed_seconds'),
+                  'sample_count': trace.get('sample_count'),
+                  'system_timer_delta_us': trace.get('system_timer_delta_us'),
+                  'unique_pcs': trace.get('unique_pcs'),
+                  'pc_counts': trace.get('pc_counts'),
+                  'low_pc_phase': trace.get('low_pc_phase'),
+                  'pre_stop_debug': trace.get('pre_stop_debug'),
+                  'arm_control0': trace.get('arm_control0'),
+                  'arm_control1': trace.get('arm_control1'),
+                  'arm_status': trace.get('arm_status'),
+                  'pm_proc': trace.get('pm_proc'),
+              }
+
+          b = compact(baseline)
+          s = compact(single)
+          b_phase = b.get('low_pc_phase') or {}
+          s_phase = s.get('low_pc_phase') or {}
+
+          if b.get('probe_error') or s.get('probe_error'):
+              classification = 'stock-vpu-tb-diagnostic-probe-error'
+          elif b.get('signature_seen'):
+              classification = 'stock-firmware-aarch64-handoff-clear'
+          elif s.get('signature_seen'):
+              classification = 'stock-vpu-handoff-is-tb-length-sensitive'
+          elif not b_phase.get('entered'):
+              classification = 'stock-vpu-baseline-did-not-enter-delay-loop'
+          elif not s_phase.get('entered'):
+              classification = 'stock-vpu-one-insn-run-did-not-reach-delay-loop'
+          elif b_phase.get('stationary') and not s_phase.get('stationary'):
+              classification = 'stock-vpu-delay-loop-is-tb-length-sensitive'
+          elif b_phase.get('stationary') and s_phase.get('stationary'):
+              stopped_names = ('debug-halted', 'debug-stop', 'debug-stopped')
+              b_debug = b.get('pre_stop_debug') or {}
+              s_debug = s.get('pre_stop_debug') or {}
+              b_stopped = any(b_debug.get(name) is True for name in stopped_names)
+              s_stopped = any(s_debug.get(name) is True for name in stopped_names)
+              if b_stopped or s_stopped:
+                  classification = 'stock-vpu-delay-loop-cpu-stopped'
+              else:
+                  classification = 'stock-vpu-delay-loop-stationary-under-one-insn-tb'
+          else:
+              classification = 'stock-vpu-delay-loop-progresses-in-both-tb-modes'
+
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'classification': classification,
+              'baseline': b,
+              'one_insn_per_tb': s,
+          }
+          Path(os.environ['STATUS_JSON']).write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+
+          def value(record, *keys):
+              current = record
+              for key in keys:
+                  if not isinstance(current, dict):
+                      return None
+                  current = current.get(key)
+              return current
+
+          lines = [
+              '# VC4 stock-firmware VPU translation-block diagnostic',
+              '',
+              f"Classification: **`{classification}`**",
+              '',
+              '| Measurement | Ordinary TCG | One instruction per TB |',
+              '|---|---:|---:|',
+              f"| ARM witness | `{b.get('signature_seen')}` | `{s.get('signature_seen')}` |",
+              f"| System timer delta (us) | `{b.get('system_timer_delta_us')}` | `{s.get('system_timer_delta_us')}` |",
+              f"| Entered 0x540-0x54a loop | `{value(b, 'low_pc_phase', 'entered')}` | `{value(s, 'low_pc_phase', 'entered')}` |",
+              f"| Post-entry samples | `{value(b, 'low_pc_phase', 'sample_count')}` | `{value(s, 'low_pc_phase', 'sample_count')}` |",
+              f"| Post-entry states | `{value(b, 'low_pc_phase', 'unique_state_count')}` | `{value(s, 'low_pc_phase', 'unique_state_count')}` |",
+              f"| Post-entry transitions | `{value(b, 'low_pc_phase', 'transition_count')}` | `{value(s, 'low_pc_phase', 'transition_count')}` |",
+              f"| VPU timer register changed | `{value(b, 'low_pc_phase', 'timer_register_changed')}` | `{value(s, 'low_pc_phase', 'timer_register_changed')}` |",
+              f"| Post-entry system timer delta (us) | `{value(b, 'low_pc_phase', 'system_timer_delta_us')}` | `{value(s, 'low_pc_phase', 'system_timer_delta_us')}` |",
+              f"| Phase stationary | `{value(b, 'low_pc_phase', 'stationary')}` | `{value(s, 'low_pc_phase', 'stationary')}` |",
+              f"| VPU debug-halted | `{value(b, 'pre_stop_debug', 'debug-halted')}` | `{value(s, 'pre_stop_debug', 'debug-halted')}` |",
+              f"| VPU debug-stop | `{value(b, 'pre_stop_debug', 'debug-stop')}` | `{value(s, 'pre_stop_debug', 'debug-stop')}` |",
+              f"| VPU debug-stopped | `{value(b, 'pre_stop_debug', 'debug-stopped')}` | `{value(s, 'pre_stop_debug', 'debug-stopped')}` |",
+              f"| VPU hard interrupt | `{value(b, 'pre_stop_debug', 'debug-hard-interrupt')}` | `{value(s, 'pre_stop_debug', 'debug-hard-interrupt')}` |",
+              '',
+              'The firmware, FAT image contents, machine, CPU count, and TCG thread mode are identical.  The only execution variable is the documented TCG `one-insn-per-tb` accelerator property.  No PC-specific behavior or firmware patch is used.',
+              '',
+          ]
+          Path(os.environ['STATUS_MD']).write_text(
+              '\n'.join(lines), encoding='utf-8'
+          )
+          print(json.dumps(status, indent=2, sort_keys=True))
+
+          for label, trace in (('baseline', baseline), ('one-insn-per-tb', single)):
+              if trace.get('probe_error'):
+                  raise SystemExit(f"{label}: {trace['probe_error']}")
+              if int(trace.get('system_timer_delta_us') or 0) < 1_000_000:
+                  raise SystemExit(f'{label}: ordinary TCG timer did not advance')
+          PY
+          git diff --check
+
+      - name: Upload complete A/B evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-vpu-tb-diagnostic-${{ github.run_attempt }}
+          path: |
+            VC4_STOCK_VPU_TB_DIAGNOSTIC_STATUS.json
+            VC4_STOCK_VPU_TB_DIAGNOSTIC_STATUS.md
+            /tmp/vc4-stock-tb-fixtures/SHA256SUMS
+            /tmp/vc4-stock-tb-result
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish measured A/B frontier
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$STATUS_JSON"
+          test -f "$STATUS_MD"
+          git config user.name "VC4 TB Diagnostic CI"
+          git config user.email "vc4-tb-diagnostic-ci@users.noreply.github.com"
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "tests/vc4: record stock VPU TB diagnostic [skip ci]"
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
