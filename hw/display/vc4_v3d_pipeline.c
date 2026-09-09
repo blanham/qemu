@@ -2,9 +2,10 @@
  * VideoCore IV bounded primitive and shader pipeline
  *
  * This file connects validated shader records and the separately tested QPU
- * subset to typed triangles.  It intentionally supports only array triangles,
- * zero-varying fragment shaders, and bounded vertex batches.  Everything else
- * fails explicitly so later coverage cannot be mistaken for working hardware.
+ * subset to typed triangles.  It intentionally supports only bounded array
+ * triangle lists and triangle fans, zero-varying fragment shaders, and bounded
+ * vertex batches.  Everything else fails explicitly so later coverage cannot
+ * be mistaken for working hardware.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -15,6 +16,7 @@
 
 #define VC4_PACKET_GL_ARRAY_PRIMITIVE 33
 #define VC4_PRIMITIVE_TRIANGLES        4
+#define VC4_PRIMITIVE_TRIANGLE_FAN     6
 #define VC4_COORDINATE_PACKED_XY_WORD  4
 #define VC4_MAX_ATTRIBUTE_BYTES      256
 
@@ -142,6 +144,8 @@ bool vc4_v3d_execute_array_primitive(VC4V3DFrontierReadFunc read_func,
     VC4QPUExecState vertex_qpu;
     VC4QPUExecState fragment_qpu;
     uint8_t packed_row;
+    unsigned mode;
+    unsigned triangle_count;
     uint32_t color;
 
     if (result == NULL) {
@@ -156,14 +160,33 @@ bool vc4_v3d_execute_array_primitive(VC4V3DFrontierReadFunc read_func,
         return vc4_v3d_pipeline_set_fault(
             result, VC4_V3D_PIPELINE_FAULT_STATE, 0);
     }
-    if ((primitive->mode_byte & 0xf) != VC4_PRIMITIVE_TRIANGLES) {
+
+    mode = primitive->mode_byte & 0xf;
+    switch (mode) {
+    case VC4_PRIMITIVE_TRIANGLES:
+        if (primitive->length < 3 ||
+            (primitive->length % 3) != 0) {
+            return vc4_v3d_pipeline_set_fault(
+                result, VC4_V3D_PIPELINE_FAULT_LENGTH,
+                primitive->length);
+        }
+        triangle_count = primitive->length / 3;
+        break;
+    case VC4_PRIMITIVE_TRIANGLE_FAN:
+        if (primitive->length < 3) {
+            return vc4_v3d_pipeline_set_fault(
+                result, VC4_V3D_PIPELINE_FAULT_LENGTH,
+                primitive->length);
+        }
+        triangle_count = primitive->length - 2;
+        break;
+    default:
         return vc4_v3d_pipeline_set_fault(
-            result, VC4_V3D_PIPELINE_FAULT_MODE,
-            primitive->mode_byte & 0xf);
+            result, VC4_V3D_PIPELINE_FAULT_MODE, mode);
     }
-    if (primitive->length < 3 ||
-        primitive->length > VC4_V3D_PIPELINE_MAX_VERTICES ||
-        (primitive->length % 3) != 0 ||
+
+    if (primitive->length > VC4_V3D_PIPELINE_MAX_VERTICES ||
+        triangle_count > VC4_V3D_PIPELINE_MAX_TRIANGLES ||
         primitive->first > UINT32_MAX - primitive->length) {
         return vc4_v3d_pipeline_set_fault(
             result, VC4_V3D_PIPELINE_FAULT_LENGTH, primitive->length);
@@ -240,15 +263,25 @@ bool vc4_v3d_execute_array_primitive(VC4V3DFrontierReadFunc read_func,
         }
     }
 
-    result->triangle_count = primitive->length / 3;
+    result->triangle_count = triangle_count;
     for (unsigned triangle = 0;
          triangle < result->triangle_count; triangle++) {
         VC4V3DPipelineTriangle *output = &result->triangles[triangle];
+        unsigned lane[3];
+
+        if (mode == VC4_PRIMITIVE_TRIANGLE_FAN) {
+            lane[0] = 0;
+            lane[1] = triangle + 1;
+            lane[2] = triangle + 2;
+        } else {
+            lane[0] = triangle * 3;
+            lane[1] = triangle * 3 + 1;
+            lane[2] = triangle * 3 + 2;
+        }
 
         output->color = color;
         for (unsigned vertex = 0; vertex < 3; vertex++) {
-            unsigned lane = triangle * 3 + vertex;
-            uint32_t packed = coordinate_qpu.vpm[packed_row].lane[lane];
+            uint32_t packed = coordinate_qpu.vpm[packed_row].lane[lane[vertex]];
 
             output->x[vertex] =
                 (int32_t)(int16_t)(packed & 0xffffu) + viewport_x;
