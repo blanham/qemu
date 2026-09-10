@@ -1,0 +1,74 @@
+{
+  "candidate_files": [
+    {
+      "exists": true,
+      "header_present": false,
+      "path": "/tmp/vc4-stock-memtrace-v2-result/plugin.log",
+      "sha256": "bcf7b60b390f520bc00bd9a14e843a7a71df1dd08e437752dad3518b9c522c01",
+      "size": 156457210,
+      "tail": [
+        "4,0x766a,,0x7e003004,0x7e003004,32,load,0x007a1520",
+        "4,0x7670,,0x7e202020,0x7e202020,32,load,0x00000001",
+        "4,0x767c,,0x7e003004,0x7e003004,32,load,0x007a1525",
+        "4,0x768a,,0x7e202040,0x7e202040,32,load,0x600208b0",
+        "4,0x7690,,0xc0332b0c,0xc0332b0c,32,store,0x600208b0",
+        "4,0x766a,,0x7e003004,0x7e003004,32,load,0x007a152c",
+        "4,0x7670,,0x7e202020,0x7e202020,32,load,0x00000001",
+        "4,0x767c,,0x7e003004,0x7e003004,32,load,0x007a1531",
+        "4,0x768a,,0x7e202040,0x7e202040,32,load,0x60030461",
+        "4,0x7690,,0xc0332b10,0xc0332b10,32,store,0x60030461",
+        "4,0x766a,,0x7e003004,0x7e003004,32,load,0x007a1538",
+        "4,0x7670,,0x7e202020,0x7e202020,32,load,0x00000001",
+        "4,0x767c,,0x7e003004,0x7e003004,32,load,0x007a153d",
+        "4,0x768a,,0x7e202040,0x7e202040,32,load,0xe7b39ff8",
+        "4,0x7690,,0xc0332b14,0xc0332b14,32,store,0xe7b39ff8",
+        "4,0x766a,,0x7e003004,0x7e003004,32,load,0x007a1544",
+        "4,0x7670,,0x7e202020,0x7e202020,32,load,0x00000001",
+        "4,0x767c,,0x7e003004,0x7e003004,32,load,0x007a1548",
+        "4,0x768a,,0x7e202040,0x7e202040,32,load,0x600108b0",
+        "4,0x7690,,0xc0332b18,0xc0332b18,32,store,0x600108b0",
+        "4,0x766a,,0x7e003004,0x7e003004,32,load,0x007a1550",
+        "4,0x7670,,0x7e202020,0x7e202020,32,load,0x00000001",
+        "4,0x767c,,0x7e003004,0x7e003004,32,load,0x007a1554",
+        "4,0x768a,,0x7e202040,0x7e202040,32,load,0x40e340d2",
+        "io accesses: 0"
+      ]
+    },
+    {
+      "exists": true,
+      "header_present": false,
+      "path": "/tmp/vc4-stock-memtrace-v2-result/qemu.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "tail": []
+    },
+    {
+      "exists": true,
+      "header_present": false,
+      "path": "/tmp/vc4-stock-memtrace-v2-result/qemu.stderr",
+      "sha256": "e93882dc579a90ca0a2bc02d3c69fc92bca479db3577cd138f29025e52123fd5",
+      "size": 147,
+      "tail": [
+        "qemu-system-aarch64: info: raspi3b-vc4-hetero: loaded bootcode.bin (52624 bytes) from FAT32 boot partition at LBA 2048; entering VPU at 0x00000200"
+      ]
+    }
+  ],
+  "classification": "harness-no-csv-records",
+  "firmware_commit": "3d301dd924bcd758a4c8cb19fe8531031f033f43",
+  "firmware_modified": false,
+  "generated_at": "2026-09-10T05:41:59.714239+00:00",
+  "low_pc_window_record_count": 0,
+  "low_pc_window_records": [],
+  "malformed_count": 0,
+  "malformed_examples": [],
+  "normal_tcg": true,
+  "qtest_clock_step": false,
+  "record_count": 0,
+  "region_counts": [],
+  "source_sha": "725a44fe7d537f58da2be850df69bb8f470e9d44",
+  "top_access_contracts": [],
+  "top_pcs": [],
+  "trace_source": null,
+  "workflow_run_attempt": "1",
+  "workflow_run_id": "34441690551"
+}
