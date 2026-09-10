@@ -1,14 +1,31 @@
 {
-  "complete": true,
-  "completion_mesa_commit": "adfe48f9a74a249770b81a6e02194a997bb803fe",
-  "completion_source_sha": "6fa0269b46a7e5e81ab99b691782f8fa414f1230",
+  "version": 2,
+  "complete": false,
+  "invalidated": true,
+  "invalidated_completion_mesa_commit": "adfe48f9a74a249770b81a6e02194a997bb803fe",
+  "invalidated_completion_source_sha": "6fa0269b46a7e5e81ab99b691782f8fa414f1230",
+  "authoritative_mesa_commit": "adfe48f9a74a249770b81a6e02194a997bb803fe",
+  "authoritative_source_sha": "6fa0269b46a7e5e81ab99b691782f8fa414f1230",
+  "authoritative_run_id": "34440063659",
+  "authoritative_classification": "vc4-mesa-gles2-readpixels-start-timeout",
+  "authoritative_last_marker": "VC4_LINUX_MESA_GLES2_READPIXELS_START",
+  "authoritative_next_missing_marker": "VC4_LINUX_MESA_GLES2_READPIXELS_OK",
+  "authoritative_child_exit": 124,
+  "completion_validation": {
+    "complete_true": false,
+    "passed_true": false,
+    "child_exit_zero": false,
+    "readpixels_ok_seen": false,
+    "pixels_ok_seen": false,
+    "final_ok_seen": false,
+    "timeout_absent": false
+  },
   "continuation_commits_dispatched": [],
   "current_continuation_commit": "",
   "current_mesa_commit": "adfe48f9a74a249770b81a6e02194a997bb803fe",
   "current_source_sha": "6fa0269b46a7e5e81ab99b691782f8fa414f1230",
   "iterations": 0,
-  "last_action": "complete",
-  "last_reason": "untouched-mesa-exact-pixel-witness",
-  "mesa_sources_dispatched": [],
-  "version": 1
+  "last_action": "resume",
+  "last_reason": "false-positive-invalidated-authoritative-status-times-out-after-readpixels",
+  "mesa_sources_dispatched": []
 }
