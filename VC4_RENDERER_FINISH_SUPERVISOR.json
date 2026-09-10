@@ -1,0 +1,14 @@
+{
+  "complete": true,
+  "completion_mesa_commit": "adfe48f9a74a249770b81a6e02194a997bb803fe",
+  "completion_source_sha": "6fa0269b46a7e5e81ab99b691782f8fa414f1230",
+  "continuation_commits_dispatched": [],
+  "current_continuation_commit": "",
+  "current_mesa_commit": "adfe48f9a74a249770b81a6e02194a997bb803fe",
+  "current_source_sha": "6fa0269b46a7e5e81ab99b691782f8fa414f1230",
+  "iterations": 0,
+  "last_action": "complete",
+  "last_reason": "untouched-mesa-exact-pixel-witness",
+  "mesa_sources_dispatched": [],
+  "version": 1
+}
