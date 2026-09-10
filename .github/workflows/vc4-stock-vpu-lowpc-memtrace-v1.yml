@@ -1,0 +1,353 @@
+name: VC4 stock-firmware low-PC memory trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - .github/workflows/vc4-stock-vpu-lowpc-memtrace-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-vpu-lowpc-memtrace-v1
+  cancel-in-progress: false
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIXTURE_DIR: /tmp/vc4-stock-memtrace-fixtures
+      RESULT_DIR: /tmp/vc4-stock-memtrace-result
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Pin unchanged firmware and build handoff payload
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl gcc-aarch64-linux-gnu \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config \
+            python3 zlib1g-dev
+          rm -rf "$FIXTURE_DIR" "$RESULT_DIR"
+          mkdir -p "$FIXTURE_DIR" "$RESULT_DIR"
+          python3 -m py_compile \
+            scripts/vc4/raspi3-stock-arm-payload.py \
+            scripts/vc4/raspi3-stock-bootcode-probe.py \
+            scripts/vc4/raspi3-stock-vpu-trace.py
+
+          for file in bootcode.bin start.elf fixup.dat bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$FIXTURE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIXTURE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIXTURE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIXTURE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+          aarch64-linux-gnu-as \
+            -o "$FIXTURE_DIR/aarch64-handoff.o" tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -nostdlib -T tests/vc4/aarch64-handoff.ld \
+            -o "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/aarch64-handoff.o"
+          aarch64-linux-gnu-objcopy \
+            -O binary "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/kernel8.img"
+          sha256sum "$FIXTURE_DIR"/* > "$FIXTURE_DIR/SHA256SUMS"
+
+      - name: Build normal-TCG frontends and bounded memory plugin
+        run: |
+          set -euo pipefail
+          # The stock QEMU mem test plugin already exposes vaddr, physical
+          # address, width, direction and value.  Bound its callbacks to the
+          # VPU low-PC window and add cpu_index; this edit is diagnostic-only
+          # and is never committed.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tests/tcg/plugins/mem.c')
+          s = p.read_text()
+          old = '''        struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);\n\n        if (do_inline) {\n'''
+          new = '''        struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, i);\n        uint64_t insn_vaddr = qemu_plugin_insn_vaddr(insn);\n\n        if (insn_vaddr > 0x10000) {\n            continue;\n        }\n\n        if (do_inline) {\n'''
+          if s.count(old) != 1:
+              raise SystemExit('mem plugin translation anchor changed')
+          s = s.replace(old, new, 1)
+          old = '''                    "0x%"PRIx64",%s,0x%"PRIx64",0x%"PRIx64",%d,%s,",\n                    insn_info->vaddr, insn_info->sym,\n                    vaddr, hwaddr, size, type);\n'''
+          new = '''                    "%u,0x%"PRIx64",%s,0x%"PRIx64",0x%"PRIx64",%d,%s,",\n                    cpu_index, insn_info->vaddr, insn_info->sym,\n                    vaddr, hwaddr, size, type);\n'''
+          if s.count(old) != 1:
+              raise SystemExit('mem plugin CSV row anchor changed')
+          s = s.replace(old, new, 1)
+          old = '''                "insn_vaddr,insn_symbol,mem_vaddr,mem_hwaddr,"\n                "access_size,access_type,mem_value\\n");\n'''
+          new = '''                "cpu_index,insn_vaddr,insn_symbol,mem_vaddr,mem_hwaddr,"\n                "access_size,access_type,mem_value\\n");\n'''
+          if s.count(old) != 1:
+              raise SystemExit('mem plugin CSV header anchor changed')
+          p.write_text(s)
+          PY
+
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --enable-plugins --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 test-plugins \
+            2>&1 | tee "$RESULT_DIR/build.log"
+          plugin=$(find build -type f -name 'libmem.so' -print -quit)
+          test -n "$plugin"
+          realpath "$plugin" > "$RESULT_DIR/PLUGIN_PATH"
+          sha256sum "$plugin" > "$RESULT_DIR/PLUGIN_SHA256"
+
+          # Revert the diagnostic source edit so product-tree cleanliness is
+          # part of the test contract.
+          git checkout -- tests/tcg/plugins/mem.c
+          git diff --check
+
+      - name: Preserve heterogeneous CPU contracts and build firmware volume
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/preg.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$RESULT_DIR/msync.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import importlib.util
+          scripts = Path('scripts/vc4')
+          spec = importlib.util.spec_from_file_location(
+              'vc4_stock_handoff', scripts / 'raspi3-stock-arm-payload.py')
+          if spec is None or spec.loader is None:
+              raise SystemExit('could not load stock handoff helper')
+          handoff = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(handoff)
+          stock = handoff.load_stock_probe()
+          f = Path('/tmp/vc4-stock-memtrace-fixtures')
+          r = Path('/tmp/vc4-stock-memtrace-result')
+          files = [
+              ('BOOTCODE.BIN', (f / 'bootcode.bin').read_bytes()),
+              ('START.ELF', (f / 'start.elf').read_bytes()),
+              ('FIXUP.DAT', (f / 'fixup.dat').read_bytes()),
+              ('CONFIG.TXT', handoff.default_config(True)),
+              ('CMDLINE.TXT', b'console=serial0,115200 earlycon=pl011,0x3f201000\n'),
+              ('RPI3.DTB', (f / 'bcm2710-rpi-3-b.dtb').read_bytes()),
+              ('KERNEL8.IMG', (f / 'kernel8.img').read_bytes()),
+          ]
+          layout = stock.build_fat32_image(r / 'stock-lowpc.img', files)
+          (r / 'FAT_LAYOUT.txt').write_text(
+              '\n'.join(f'{name}: {chain}' for name, chain in layout.items()) + '\n')
+          PY
+
+      - name: Trace actual low-PC memory transactions under normal TCG
+        run: |
+          set -euo pipefail
+          plugin=$(cat "$RESULT_DIR/PLUGIN_PATH")
+          command=(
+            build/qemu-system-aarch64
+            -M raspi3b-vc4-hetero
+            -m 1G
+            -smp 5
+            -drive "file=$RESULT_DIR/stock-lowpc.img,format=raw,if=sd"
+            -accel tcg,thread=single
+            -display none
+            -monitor none
+            -serial none
+            -no-reboot
+            -plugin "$plugin,print-accesses=true,haddr=true,track=rw"
+            -d plugin,guest_errors,unimp
+            -D "$RESULT_DIR/memtrace.log"
+          )
+          printf '%s\n' "${command[@]}" > "$RESULT_DIR/COMMAND_ARGS"
+          set +e
+          timeout --signal=TERM --kill-after=3s 8s \
+            "${command[@]}" 2>"$RESULT_DIR/qemu.stderr"
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > "$RESULT_DIR/RETURN_CODE"
+          case "$rc" in 0|124|143) ;; *) cat "$RESULT_DIR/qemu.stderr" >&2; exit "$rc";; esac
+          test -s "$RESULT_DIR/memtrace.log"
+          grep -Fq 'cpu_index,insn_vaddr' "$RESULT_DIR/memtrace.log"
+
+      - name: Reconfirm behavior without plugin observation
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/raspi3-stock-vpu-trace.py \
+            build/qemu-system-aarch64 \
+            "$FIXTURE_DIR/bootcode.bin" "$FIXTURE_DIR/start.elf" \
+            "$FIXTURE_DIR/fixup.dat" "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb" \
+            "$FIXTURE_DIR/kernel8.img" \
+            --out-dir "$RESULT_DIR/temporal" \
+            --seconds 12 --interval 0.025 \
+            2>&1 | tee "$RESULT_DIR/temporal.stdout"
+
+      - name: Publish exact low-PC access contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from collections import Counter
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import csv, io, json, os
+
+          rd = Path('/tmp/vc4-stock-memtrace-result')
+          text = (rd / 'memtrace.log').read_text(errors='replace')
+          header = 'cpu_index,insn_vaddr,insn_symbol,mem_vaddr,mem_hwaddr,access_size,access_type,mem_value'
+          rows = []
+          started = False
+          for line in text.splitlines():
+              if line == header:
+                  started = True
+                  continue
+              if not started or not line or not line[0].isdigit():
+                  continue
+              try:
+                  row = next(csv.DictReader(io.StringIO(header + '\n' + line)))
+                  row['cpu_index'] = int(row['cpu_index'])
+                  row['insn_vaddr_int'] = int(row['insn_vaddr'], 16)
+                  row['mem_vaddr_int'] = int(row['mem_vaddr'], 16)
+                  row['mem_hwaddr_int'] = int(row['mem_hwaddr'], 16)
+                  row['access_size'] = int(row['access_size'])
+              except Exception:
+                  continue
+              rows.append(row)
+
+          low = [r for r in rows if 0x500 <= r['insn_vaddr_int'] < 0x8000]
+          loop = [r for r in rows if 0x53c <= r['insn_vaddr_int'] <= 0x550]
+          periph = [r for r in low if 0x7e000000 <= r['mem_vaddr_int'] < 0x7f000000]
+          timer = [r for r in periph if 0x7e003000 <= r['mem_vaddr_int'] < 0x7e003020]
+          exact_544 = [r for r in rows if r['insn_vaddr_int'] == 0x544]
+
+          def compact(r):
+              return {
+                  'cpu_index': r['cpu_index'],
+                  'pc': r['insn_vaddr'],
+                  'symbol': r['insn_symbol'],
+                  'vaddr': r['mem_vaddr'],
+                  'hwaddr': r['mem_hwaddr'],
+                  'bits': r['access_size'],
+                  'type': r['access_type'],
+                  'value': r['mem_value'],
+              }
+
+          temporal = json.loads(
+              (rd / 'temporal' / 'VC4_STOCK_VPU_TRACE.json').read_text())
+          command_args = (rd / 'COMMAND_ARGS').read_text().splitlines()
+          normal_tcg = (
+              '-accel' in command_args and
+              command_args[command_args.index('-accel') + 1] == 'tcg,thread=single' and
+              '-icount' not in command_args and
+              not any('qtest' in arg.lower() for arg in command_args)
+          )
+
+          if timer:
+              classification = 'stock-lowpc-system-timer-access-confirmed'
+              next_contract = 'compare timer load result and loop arithmetic against architectural VC4 semantics'
+          elif periph:
+              classification = 'stock-lowpc-nontimer-peripheral-access-confirmed'
+              next_contract = 'model the first measured peripheral contract before changing firmware flow'
+          elif low:
+              classification = 'stock-lowpc-memory-access-confirmed-no-peripheral'
+              next_contract = 'trace the producer of the low-PC loaded value before changing device models'
+          else:
+              classification = 'stock-lowpc-memtrace-missed'
+              next_contract = 'verify plugin CPU/PC filtering before product changes'
+
+          counts = Counter(
+              (r['insn_vaddr'], r['mem_vaddr'], r['access_type'], r['access_size'])
+              for r in low)
+          top = [
+              {'pc': k[0], 'vaddr': k[1], 'type': k[2], 'bits': k[3], 'count': n}
+              for k, n in counts.most_common(32)
+          ]
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'classification': classification,
+              'next_contract': next_contract,
+              'normal_tcg': normal_tcg,
+              'plugin': 'tests/tcg/plugins/mem.c with diagnostic low-PC/cpu-index instrumentation',
+              'total_access_rows': len(rows),
+              'low_pc_access_rows': len(low),
+              'loop_access_rows': len(loop),
+              'peripheral_access_rows': len(periph),
+              'system_timer_access_rows': len(timer),
+              'pc_0x544_access_rows': len(exact_544),
+              'pc_0x544_accesses': [compact(r) for r in exact_544[:64]],
+              'loop_accesses': [compact(r) for r in loop[:128]],
+              'system_timer_accesses': [compact(r) for r in timer[:128]],
+              'top_low_pc_accesses': top,
+              'temporal_control': {
+                  'signature_seen': temporal.get('signature_seen'),
+                  'system_timer_delta_us': temporal.get('system_timer_delta_us'),
+                  'unique_state_count': temporal.get('unique_state_count'),
+                  'transition_count': temporal.get('transition_count'),
+                  'unique_pcs': temporal.get('unique_pcs'),
+                  'classification_hint': temporal.get('classification_hint'),
+              },
+          }
+          Path('VC4_STOCK_VPU_LOWPC_MEMTRACE_STATUS.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n')
+          lines = [
+              '# VC4 stock-firmware low-PC memory trace', '',
+              f"Classification: **`{classification}`**", '',
+              f"- Normal TCG contract: `{normal_tcg}`",
+              f"- Low-PC accesses: `{len(low)}`",
+              f"- Loop-window accesses: `{len(loop)}`",
+              f"- Peripheral accesses: `{len(periph)}`",
+              f"- System-timer accesses: `{len(timer)}`",
+              f"- Memory accesses issued exactly at PC 0x544: `{len(exact_544)}`",
+              f"- Uninstrumented temporal timer advance: `{temporal.get('system_timer_delta_us')}` us",
+              f"- ARM witness reached: `{temporal.get('signature_seen')}`", '',
+              '## Loop-window samples', '',
+          ]
+          for r in loop[:48]:
+              c = compact(r)
+              lines.append(
+                  f"- cpu `{c['cpu_index']}` pc `{c['pc']}` {c['type']} {c['bits']}-bit "
+                  f"`{c['vaddr']}` (hw `{c['hwaddr']}`) => `{c['value']}`")
+          lines += ['', '## Next contract', '', next_contract, '']
+          Path('VC4_STOCK_VPU_LOWPC_MEMTRACE_STATUS.md').write_text('\n'.join(lines))
+          print(json.dumps(status, indent=2, sort_keys=True))
+          if not normal_tcg:
+              raise SystemExit('normal TCG command contract was not preserved')
+          if not low:
+              raise SystemExit('memory plugin did not observe the measured low-PC phase')
+          PY
+
+          git config user.name 'VC4 Low-PC Memtrace CI'
+          git config user.email 'vc4-lowpc-memtrace-ci@users.noreply.github.com'
+          git add -- VC4_STOCK_VPU_LOWPC_MEMTRACE_STATUS.json VC4_STOCK_VPU_LOWPC_MEMTRACE_STATUS.md
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m 'tests/vc4: record low-PC memory access contract [skip ci]'
+            git pull --rebase origin "$BRANCH"
+            git push origin "HEAD:$BRANCH"
+          fi
+
+      - name: Upload complete diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-lowpc-memtrace-${{ github.run_attempt }}
+          path: |
+            VC4_STOCK_VPU_LOWPC_MEMTRACE_STATUS.json
+            VC4_STOCK_VPU_LOWPC_MEMTRACE_STATUS.md
+            /tmp/vc4-stock-memtrace-fixtures/SHA256SUMS
+            /tmp/vc4-stock-memtrace-result
+          if-no-files-found: warn
+          retention-days: 14
