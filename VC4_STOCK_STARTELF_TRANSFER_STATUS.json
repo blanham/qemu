@@ -1,0 +1,2528 @@
+{
+  "arm_control_writes": [],
+  "classification": "stock-startelf-transfer-complete-stop-seen-no-arm-witness",
+  "generated_at": "2026-09-10T20:02:51.291744+00:00",
+  "max_observed_pc": "0x00009b5a",
+  "next_contract": "trace start.elf execution and the first post-load firmware contract",
+  "normal_tcg": true,
+  "power_writes": [
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10110c",
+      "index": 149,
+      "pc": "0x000027de",
+      "type": "store",
+      "vaddr": "0x7e10110c",
+      "value": "0x5a00020a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10110c",
+      "index": 168,
+      "pc": "0x0000265e",
+      "type": "store",
+      "vaddr": "0x7e10110c",
+      "value": "0x5a00024a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10110c",
+      "index": 171,
+      "pc": "0x0000266e",
+      "type": "store",
+      "vaddr": "0x7e10110c",
+      "value": "0x5a00020a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10110c",
+      "index": 174,
+      "pc": "0x0000267e",
+      "type": "store",
+      "vaddr": "0x7e10110c",
+      "value": "0x5a00020a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10107c",
+      "index": 190,
+      "pc": "0x000025d4",
+      "type": "store",
+      "vaddr": "0x7e10107c",
+      "value": "0x5a014000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101078",
+      "index": 197,
+      "pc": "0x000025fe",
+      "type": "store",
+      "vaddr": "0x7e101078",
+      "value": "0x5a000056"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101078",
+      "index": 200,
+      "pc": "0x0000263e",
+      "type": "store",
+      "vaddr": "0x7e101078",
+      "value": "0x5a000056"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101108",
+      "index": 236,
+      "pc": "0x000027de",
+      "type": "store",
+      "vaddr": "0x7e101108",
+      "value": "0x5a000228"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101108",
+      "index": 255,
+      "pc": "0x0000265e",
+      "type": "store",
+      "vaddr": "0x7e101108",
+      "value": "0x5a000229"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101108",
+      "index": 258,
+      "pc": "0x0000266e",
+      "type": "store",
+      "vaddr": "0x7e101108",
+      "value": "0x5a000228"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101108",
+      "index": 261,
+      "pc": "0x0000267e",
+      "type": "store",
+      "vaddr": "0x7e101108",
+      "value": "0x5a000228"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10100c",
+      "index": 275,
+      "pc": "0x000025d4",
+      "type": "store",
+      "vaddr": "0x7e10100c",
+      "value": "0x5a004000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101008",
+      "index": 281,
+      "pc": "0x000025fe",
+      "type": "store",
+      "vaddr": "0x7e101008",
+      "value": "0x5a000055"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101008",
+      "index": 284,
+      "pc": "0x0000263e",
+      "type": "store",
+      "vaddr": "0x7e101008",
+      "value": "0x5a000055"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1010ec",
+      "index": 296,
+      "pc": "0x000004b8",
+      "type": "store",
+      "vaddr": "0x7e1010ec",
+      "value": "0x5a013333"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1010e8",
+      "index": 297,
+      "pc": "0x000004c0",
+      "type": "store",
+      "vaddr": "0x7e1010e8",
+      "value": "0x5a000011"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011ac",
+      "index": 312,
+      "pc": "0x000028c8",
+      "type": "store",
+      "vaddr": "0x7e1011ac",
+      "value": "0x5a001000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 314,
+      "pc": "0x000028d8",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a004001"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 316,
+      "pc": "0x000028e2",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a004011"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 319,
+      "pc": "0x0000288a",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a024091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 322,
+      "pc": "0x000028a4",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a030091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 324,
+      "pc": "0x000028b0",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a010091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 468,
+      "pc": "0x00007d86",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a020091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 470,
+      "pc": "0x00007d9a",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a028081"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 471,
+      "pc": "0x00007d9e",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a008081"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011ac",
+      "index": 476,
+      "pc": "0x00007df0",
+      "type": "store",
+      "vaddr": "0x7e1011ac",
+      "value": "0x5a000000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 478,
+      "pc": "0x00007dfa",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a008080"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 479,
+      "pc": "0x00007dfe",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a008090"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 481,
+      "pc": "0x00007e08",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a028090"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 483,
+      "pc": "0x00007e1c",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a020090"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 484,
+      "pc": "0x00007e20",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a000090"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e100074",
+      "index": 46459,
+      "pc": "0x000008d6",
+      "type": "store",
+      "vaddr": "0x7e100074",
+      "value": "0x5a400000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10110c",
+      "index": 5512355,
+      "pc": "0x000027de",
+      "type": "store",
+      "vaddr": "0x7e10110c",
+      "value": "0x5a00020a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10110c",
+      "index": 5512374,
+      "pc": "0x0000265e",
+      "type": "store",
+      "vaddr": "0x7e10110c",
+      "value": "0x5a00024a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10110c",
+      "index": 5512377,
+      "pc": "0x0000266e",
+      "type": "store",
+      "vaddr": "0x7e10110c",
+      "value": "0x5a00020a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10110c",
+      "index": 5512380,
+      "pc": "0x0000267e",
+      "type": "store",
+      "vaddr": "0x7e10110c",
+      "value": "0x5a00020a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10107c",
+      "index": 5512396,
+      "pc": "0x000025d4",
+      "type": "store",
+      "vaddr": "0x7e10107c",
+      "value": "0x5a014000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101078",
+      "index": 5512403,
+      "pc": "0x000025fe",
+      "type": "store",
+      "vaddr": "0x7e101078",
+      "value": "0x5a000056"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101078",
+      "index": 5512406,
+      "pc": "0x0000263e",
+      "type": "store",
+      "vaddr": "0x7e101078",
+      "value": "0x5a000056"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101108",
+      "index": 5512442,
+      "pc": "0x000027de",
+      "type": "store",
+      "vaddr": "0x7e101108",
+      "value": "0x5a000228"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101108",
+      "index": 5512461,
+      "pc": "0x0000265e",
+      "type": "store",
+      "vaddr": "0x7e101108",
+      "value": "0x5a000229"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101108",
+      "index": 5512464,
+      "pc": "0x0000266e",
+      "type": "store",
+      "vaddr": "0x7e101108",
+      "value": "0x5a000228"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101108",
+      "index": 5512467,
+      "pc": "0x0000267e",
+      "type": "store",
+      "vaddr": "0x7e101108",
+      "value": "0x5a000228"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e10100c",
+      "index": 5512481,
+      "pc": "0x000025d4",
+      "type": "store",
+      "vaddr": "0x7e10100c",
+      "value": "0x5a004000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101008",
+      "index": 5512488,
+      "pc": "0x000025fe",
+      "type": "store",
+      "vaddr": "0x7e101008",
+      "value": "0x5a000055"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e101008",
+      "index": 5512491,
+      "pc": "0x0000263e",
+      "type": "store",
+      "vaddr": "0x7e101008",
+      "value": "0x5a000055"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1010ec",
+      "index": 5512503,
+      "pc": "0x000004b8",
+      "type": "store",
+      "vaddr": "0x7e1010ec",
+      "value": "0x5a013333"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1010e8",
+      "index": 5512504,
+      "pc": "0x000004c0",
+      "type": "store",
+      "vaddr": "0x7e1010e8",
+      "value": "0x5a000011"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011ac",
+      "index": 5512519,
+      "pc": "0x000028c8",
+      "type": "store",
+      "vaddr": "0x7e1011ac",
+      "value": "0x5a001000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512521,
+      "pc": "0x000028d8",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a000091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512523,
+      "pc": "0x000028e2",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a000091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512526,
+      "pc": "0x0000288a",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a020091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512529,
+      "pc": "0x000028a4",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a030091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512531,
+      "pc": "0x000028b0",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a010091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512695,
+      "pc": "0x00007d86",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a020091"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512697,
+      "pc": "0x00007d9a",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a028081"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512698,
+      "pc": "0x00007d9e",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a008081"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011ac",
+      "index": 5512703,
+      "pc": "0x00007df0",
+      "type": "store",
+      "vaddr": "0x7e1011ac",
+      "value": "0x5a000000"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512705,
+      "pc": "0x00007dfa",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a008080"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512706,
+      "pc": "0x00007dfe",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a008090"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512708,
+      "pc": "0x00007e08",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a028090"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512710,
+      "pc": "0x00007e1c",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a020090"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e1011a8",
+      "index": 5512711,
+      "pc": "0x00007e20",
+      "type": "store",
+      "vaddr": "0x7e1011a8",
+      "value": "0x5a000090"
+    }
+  ],
+  "run_id": "34523286706",
+  "schema_version": 3,
+  "sdhost": {
+    "cmd12_after_startelf_count": 5,
+    "cmd12_after_startelf_samples": [
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3953901,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3954752,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3955534,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3956298,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3966100,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      }
+    ],
+    "cmd12_count": 63,
+    "cmd12_samples": [
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 146651,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 149383,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 152115,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 154847,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 157579,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 160311,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 163043,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 165775,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 168507,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 171239,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 173971,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3953901,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3954752,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3955534,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3956298,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3966100,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      }
+    ],
+    "cmd18_count": 63,
+    "cmd18_samples": [
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 145992,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 148724,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 151456,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 154188,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 156920,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 159652,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 162384,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 165116,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 167848,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 170580,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 173312,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 175962,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3954093,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3954875,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3955639,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3956481,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x00008052"
+      }
+    ],
+    "startelf_cmd18": {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e202000",
+      "index": 175962,
+      "pc": "0x00007afc",
+      "type": "store",
+      "vaddr": "0x7e202000",
+      "value": "0x00008052"
+    },
+    "startelf_data_read_count": 755583,
+    "startelf_status_values": [
+      "0x00000001"
+    ]
+  },
+  "source_sha": "30e31a15995777542f1b02329559d12c58c6aaef",
+  "start_elf": {
+    "complete": true,
+    "exact_length": true,
+    "expected_blocks": 5903,
+    "expected_transfer_bytes": 3022336,
+    "expected_words": 755584,
+    "file_bytes": 3022336,
+    "first_access_index": 175977,
+    "first_destination": "0xc0100000",
+    "first_word": "0x464c457f",
+    "last_access_index": 3953892,
+    "last_destination": "0xc03e1dfc",
+    "observed": true,
+    "observed_bytes": 3022336,
+    "observed_words": 755584,
+    "post_transfer_access_rows": 1561113,
+    "post_transfer_max_pc": "0x00009b5a",
+    "post_transfer_samples": [
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d3fc",
+        "index": 3953893,
+        "pc": "0x000076a0",
+        "type": "load",
+        "vaddr": "0x8000d3fc",
+        "value": "0x0000006c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d400",
+        "index": 3953894,
+        "pc": "0x000076a0",
+        "type": "load",
+        "vaddr": "0x8000d400",
+        "value": "0x0000170f"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d404",
+        "index": 3953895,
+        "pc": "0x000076a0",
+        "type": "load",
+        "vaddr": "0x8000d404",
+        "value": "0x0000170f"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d408",
+        "index": 3953896,
+        "pc": "0x000076a0",
+        "type": "load",
+        "vaddr": "0x8000d408",
+        "value": "0xc0100000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d40c",
+        "index": 3953897,
+        "pc": "0x000076a0",
+        "type": "load",
+        "vaddr": "0x8000d40c",
+        "value": "0x00007854"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202020",
+        "index": 3953898,
+        "pc": "0x00007ad8",
+        "type": "load",
+        "vaddr": "0x7e202020",
+        "value": "0x00000001"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000c04c",
+        "index": 3953899,
+        "pc": "0x00007ae8",
+        "type": "load",
+        "vaddr": "0x8000c04c",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202004",
+        "index": 3953900,
+        "pc": "0x00007af8",
+        "type": "store",
+        "vaddr": "0x7e202004",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3953901,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000880c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202020",
+        "index": 3953902,
+        "pc": "0x00007afe",
+        "type": "load",
+        "vaddr": "0x7e202020",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3953903,
+        "pc": "0x00007870",
+        "type": "load",
+        "vaddr": "0x7e202000",
+        "value": "0x0000080c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202020",
+        "index": 3953904,
+        "pc": "0x00007880",
+        "type": "load",
+        "vaddr": "0x7e202020",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000c064",
+        "index": 3953905,
+        "pc": "0x00007886",
+        "type": "load",
+        "vaddr": "0x8000c064",
+        "value": "0x1a3a0000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202020",
+        "index": 3953906,
+        "pc": "0x00007ad8",
+        "type": "load",
+        "vaddr": "0x7e202020",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000c04c",
+        "index": 3953907,
+        "pc": "0x00007ae8",
+        "type": "load",
+        "vaddr": "0x8000c04c",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202004",
+        "index": 3953908,
+        "pc": "0x00007af8",
+        "type": "store",
+        "vaddr": "0x7e202004",
+        "value": "0x1a3a0000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202000",
+        "index": 3953909,
+        "pc": "0x00007afc",
+        "type": "store",
+        "vaddr": "0x7e202000",
+        "value": "0x0000800d"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x7e202020",
+        "index": 3953910,
+        "pc": "0x00007afe",
+        "type": "load",
+        "vaddr": "0x7e202020",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d410",
+        "index": 3953911,
+        "pc": "0x00007892",
+        "type": "load",
+        "vaddr": "0x8000d410",
+        "value": "0x002e1e00"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d414",
+        "index": 3953912,
+        "pc": "0x00007892",
+        "type": "load",
+        "vaddr": "0x8000d414",
+        "value": "0x0000006a"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d418",
+        "index": 3953913,
+        "pc": "0x00007892",
+        "type": "load",
+        "vaddr": "0x8000d418",
+        "value": "0x000078d8"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d41c",
+        "index": 3953914,
+        "pc": "0x000078fc",
+        "type": "load",
+        "vaddr": "0x8000d41c",
+        "value": "0x00000080"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d420",
+        "index": 3953915,
+        "pc": "0x000078fc",
+        "type": "load",
+        "vaddr": "0x8000d420",
+        "value": "0xc0020000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d424",
+        "index": 3953916,
+        "pc": "0x000078fc",
+        "type": "load",
+        "vaddr": "0x8000d424",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d428",
+        "index": 3953917,
+        "pc": "0x000078fc",
+        "type": "load",
+        "vaddr": "0x8000d428",
+        "value": "0xc002004c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d42c",
+        "index": 3953918,
+        "pc": "0x000078fc",
+        "type": "load",
+        "vaddr": "0x8000d42c",
+        "value": "0xc0100000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d430",
+        "index": 3953919,
+        "pc": "0x000078fc",
+        "type": "load",
+        "vaddr": "0x8000d430",
+        "value": "0x8000d65c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d434",
+        "index": 3953920,
+        "pc": "0x000078fc",
+        "type": "load",
+        "vaddr": "0x8000d434",
+        "value": "0x00c00000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d438",
+        "index": 3953921,
+        "pc": "0x000078fc",
+        "type": "load",
+        "vaddr": "0x8000d438",
+        "value": "0x00000b3c"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d444",
+        "index": 3953922,
+        "pc": "0x00000b3e",
+        "type": "load",
+        "vaddr": "0x8000d444",
+        "value": "0x8000d463"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d448",
+        "index": 3953923,
+        "pc": "0x00000b3e",
+        "type": "load",
+        "vaddr": "0x8000d448",
+        "value": "0x8000d6c4"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d44c",
+        "index": 3953924,
+        "pc": "0x00000b3e",
+        "type": "load",
+        "vaddr": "0x8000d44c",
+        "value": "0xc0100000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d450",
+        "index": 3953925,
+        "pc": "0x00000b3e",
+        "type": "load",
+        "vaddr": "0x8000d450",
+        "value": "0x00c00000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d454",
+        "index": 3953926,
+        "pc": "0x00000b3e",
+        "type": "load",
+        "vaddr": "0x8000d454",
+        "value": "0x00001634"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d65c",
+        "index": 3953927,
+        "pc": "0x00001638",
+        "type": "load",
+        "vaddr": "0x8000d65c",
+        "value": "0x002e1e00"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d448",
+        "index": 3953928,
+        "pc": "0x000090d8",
+        "type": "store",
+        "vaddr": "0x8000d448",
+        "value": "0x002e1e00"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d44c",
+        "index": 3953929,
+        "pc": "0x000090da",
+        "type": "store",
+        "vaddr": "0x8000d44c",
+        "value": "0x7e202000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d450",
+        "index": 3953930,
+        "pc": "0x000090dc",
+        "type": "store",
+        "vaddr": "0x8000d450",
+        "value": "0x00000001"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d454",
+        "index": 3953931,
+        "pc": "0x000090de",
+        "type": "store",
+        "vaddr": "0x8000d454",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d440",
+        "index": 3953932,
+        "pc": "0x000090e0",
+        "type": "store",
+        "vaddr": "0x8000d440",
+        "value": "0x0000165e"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d43c",
+        "index": 3953933,
+        "pc": "0x000090e0",
+        "type": "store",
+        "vaddr": "0x8000d43c",
+        "value": "0x00c00000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d438",
+        "index": 3953934,
+        "pc": "0x000090e0",
+        "type": "store",
+        "vaddr": "0x8000d438",
+        "value": "0xc0100000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d434",
+        "index": 3953935,
+        "pc": "0x000090e0",
+        "type": "store",
+        "vaddr": "0x8000d434",
+        "value": "0x8000d6c4"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d430",
+        "index": 3953936,
+        "pc": "0x000090e0",
+        "type": "store",
+        "vaddr": "0x8000d430",
+        "value": "0x002e1e00"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000c080",
+        "index": 3953937,
+        "pc": "0x000090e2",
+        "type": "load",
+        "vaddr": "0x8000c080",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d444",
+        "index": 3953938,
+        "pc": "0x000090e8",
+        "type": "store",
+        "vaddr": "0x8000d444",
+        "value": "0x8000d6c4"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d440",
+        "index": 3953939,
+        "pc": "0x000091f0",
+        "type": "load",
+        "vaddr": "0x8000d440",
+        "value": "0x0000165e"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d430",
+        "index": 3953940,
+        "pc": "0x000091f4",
+        "type": "load",
+        "vaddr": "0x8000d430",
+        "value": "0x002e1e00"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d434",
+        "index": 3953941,
+        "pc": "0x000091f4",
+        "type": "load",
+        "vaddr": "0x8000d434",
+        "value": "0x8000d6c4"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d438",
+        "index": 3953942,
+        "pc": "0x000091f4",
+        "type": "load",
+        "vaddr": "0x8000d438",
+        "value": "0xc0100000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d43c",
+        "index": 3953943,
+        "pc": "0x000091f4",
+        "type": "load",
+        "vaddr": "0x8000d43c",
+        "value": "0x00c00000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000c08c",
+        "index": 3953944,
+        "pc": "0x00001720",
+        "type": "load",
+        "vaddr": "0x8000c08c",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d454",
+        "index": 3953945,
+        "pc": "0x00001724",
+        "type": "store",
+        "vaddr": "0x8000d454",
+        "value": "0x00001666"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d450",
+        "index": 3953946,
+        "pc": "0x00001724",
+        "type": "store",
+        "vaddr": "0x8000d450",
+        "value": "0x00c00000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d44c",
+        "index": 3953947,
+        "pc": "0x00001724",
+        "type": "store",
+        "vaddr": "0x8000d44c",
+        "value": "0xc0100000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d448",
+        "index": 3953948,
+        "pc": "0x00001724",
+        "type": "store",
+        "vaddr": "0x8000d448",
+        "value": "0x8000d6c4"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d444",
+        "index": 3953949,
+        "pc": "0x00001724",
+        "type": "store",
+        "vaddr": "0x8000d444",
+        "value": "0x002e1e00"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d440",
+        "index": 3953950,
+        "pc": "0x00001724",
+        "type": "store",
+        "vaddr": "0x8000d440",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d43c",
+        "index": 3953951,
+        "pc": "0x00001724",
+        "type": "store",
+        "vaddr": "0x8000d43c",
+        "value": "0xc0020000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d43c",
+        "index": 3953952,
+        "pc": "0x000017a4",
+        "type": "load",
+        "vaddr": "0x8000d43c",
+        "value": "0xc0020000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d440",
+        "index": 3953953,
+        "pc": "0x000017a4",
+        "type": "load",
+        "vaddr": "0x8000d440",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d444",
+        "index": 3953954,
+        "pc": "0x000017a4",
+        "type": "load",
+        "vaddr": "0x8000d444",
+        "value": "0x002e1e00"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d448",
+        "index": 3953955,
+        "pc": "0x000017a4",
+        "type": "load",
+        "vaddr": "0x8000d448",
+        "value": "0x8000d6c4"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0x8000d44c",
+        "index": 3953956,
+        "pc": "0x000017a4",
+        "type": "load",
+        "vaddr": "0x8000d44c",
+        "value": "0xc0100000"
+      }
+    ],
+    "prefix_match": true,
+    "prefix_words_compared": 16,
+    "progress_fraction": 1.0,
+    "samples": [
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100000",
+        "index": 175977,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100000",
+        "value": "0x464c457f"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100004",
+        "index": 175982,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100004",
+        "value": "0x00010101"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100008",
+        "index": 175987,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100008",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc010000c",
+        "index": 175992,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc010000c",
+        "value": "0x00000000"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100010",
+        "index": 175997,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100010",
+        "value": "0x00890002"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100014",
+        "index": 176002,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100014",
+        "value": "0x00000001"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100018",
+        "index": 176007,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100018",
+        "value": "0xcec00200"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc010001c",
+        "index": 176012,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc010001c",
+        "value": "0x00000034"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100020",
+        "index": 176017,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100020",
+        "value": "0x002e16d0"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100024",
+        "index": 176022,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100024",
+        "value": "0x00000100"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100028",
+        "index": 176027,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100028",
+        "value": "0x00200034"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc010002c",
+        "index": 176032,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc010002c",
+        "value": "0x00280017"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100030",
+        "index": 176037,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100030",
+        "value": "0x002d002e"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100034",
+        "index": 176042,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100034",
+        "value": "0x00000001"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc0100038",
+        "index": 176047,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc0100038",
+        "value": "0x000004e0"
+      },
+      {
+        "bits": 32,
+        "cpu_index": 4,
+        "hwaddr": "0xc010003c",
+        "index": 176052,
+        "pc": "0x00007690",
+        "type": "store",
+        "vaddr": "0xc010003c",
+        "value": "0xcec00100"
+      }
+    ],
+    "sha256": "6a79bc2f28a51be84e1be03d508c1c4aa205e287346ebf30df7a0961054993e8"
+  },
+  "temporal_control": {
+    "classification_hint": "stock-vpu-delay-loop-state-progressing",
+    "final_pc": null,
+    "signature_seen": false,
+    "system_timer_delta_us": 60022248,
+    "unique_pcs": [
+      "0x00000542",
+      "0x00000544",
+      "0x0000264e",
+      "0x0000766a",
+      "0x00007670",
+      "0x0000767c",
+      "0x0000768a",
+      "0x1ed879b6"
+    ]
+  },
+  "timer": {
+    "delta_us": 10436794,
+    "first": "0x00068b24",
+    "last": "0x00a5cbde"
+  },
+  "total_access_rows": 5515006,
+  "trace_tail": [
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514942,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551a6"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514943,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551a8"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514944,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551ab"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514945,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551ad"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514946,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551af"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514947,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551b2"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514948,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551b4"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514949,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551b7"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514950,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551b9"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514951,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551bc"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514952,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551be"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514953,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551c1"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514954,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551c3"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514955,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551c6"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514956,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551c8"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514957,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551ca"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514958,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551cd"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514959,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551cf"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514960,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551d2"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514961,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551d4"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514962,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551d9"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514963,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551dc"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514964,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551de"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514965,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551e0"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514966,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551e3"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514967,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551e5"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514968,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551e8"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514969,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551ea"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514970,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551ed"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514971,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551ef"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514972,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551f2"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514973,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551f4"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514974,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551f6"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514975,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551f9"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514976,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551fb"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514977,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d551fe"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514978,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55200"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514979,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55203"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514980,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5520d"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514981,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55210"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514982,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55213"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514983,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55215"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514984,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55218"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514985,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5521a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514986,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5521d"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514987,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5521f"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514988,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55222"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514989,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55224"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514990,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55227"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514991,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55229"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514992,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5522b"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514993,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5522e"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514994,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55230"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514995,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55233"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514996,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55235"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514997,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55238"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514998,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5523a"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5514999,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5523d"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5515000,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d5523f"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5515001,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55241"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5515002,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55244"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5515003,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55246"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5515004,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55249"
+    },
+    {
+      "bits": 32,
+      "cpu_index": 4,
+      "hwaddr": "0x7e003004",
+      "index": 5515005,
+      "pc": "0x00000542",
+      "type": "load",
+      "vaddr": "0x7e003004",
+      "value": "0x00d55259"
+    }
+  ]
+}
