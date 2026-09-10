@@ -1,0 +1,8 @@
+{
+  "disposition": "complete",
+  "mesa_source_sha": "6fa0269b46a7e5e81ab99b691782f8fa414f1230",
+  "mesa_run_id": "34440063659",
+  "unmodified_mesa_required": true,
+  "software_renderer_forbidden": true,
+  "host_draw_bypass_forbidden": true
+}
