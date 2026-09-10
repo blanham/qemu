@@ -234,18 +234,19 @@ static void test_varying_fifo_underflow_fails_closed(void)
 
 '''
 s = replace_once(s, anchor, test + anchor, "unit-test insertion")
-s = replace_once(
-    s,
-    "    g_test_add_func(\"/vc4/qpu/measured-fs\", test_measured_fragment_shader);\n"
+registration_anchor = (
+    "    g_test_add_func(\"/vc4/qpu/active-lanes\", test_active_lane_contract);\n"
     "    g_test_add_func(\"/vc4/qpu/fail-closed\",\n"
-    "                    test_unsupported_signal_fails_closed);\n",
-    "    g_test_add_func(\"/vc4/qpu/measured-fs\", test_measured_fragment_shader);\n"
+    "                    test_unsupported_signal_fails_closed);\n"
+)
+registration = (
+    "    g_test_add_func(\"/vc4/qpu/active-lanes\", test_active_lane_contract);\n"
     "    g_test_add_func(\"/vc4/qpu/measured-varying-read\",\n"
     "                    test_measured_varying_read_contract);\n"
     "    g_test_add_func(\"/vc4/qpu/varying-underflow\",\n"
     "                    test_varying_fifo_underflow_fails_closed);\n"
     "    g_test_add_func(\"/vc4/qpu/fail-closed\",\n"
-    "                    test_unsupported_signal_fails_closed);\n",
-    "unit-test registration",
+    "                    test_unsupported_signal_fails_closed);\n"
 )
+s = replace_once(s, registration_anchor, registration, "unit-test registration")
 t.write_text(s)
