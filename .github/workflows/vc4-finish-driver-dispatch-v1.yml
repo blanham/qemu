@@ -1,0 +1,60 @@
+name: VC4 finish driver dispatch v1
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-mesa-gles2-frontier
+    paths:
+      - .github/workflows/vc4-finish-driver-dispatch-v1.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Wait for varying FIFO product or prove it is already present
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: agent/vc4-linux-mesa-gles2-frontier
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 90); do
+            git fetch origin "$BRANCH"
+            if git show "origin/$BRANCH:include/hw/display/vc4_qpu_exec.h" | \
+                 grep -Fq VC4_QPU_EXEC_FAULT_VARYING_READ && \
+               git show "origin/$BRANCH:hw/display/vc4_qpu_exec.c" | \
+                 grep -Fq VC4_QPU_REG_VARYING; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          test "$ready" = true
+      - name: Dispatch bounded continuation driver
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: agent/vc4-linux-mesa-gles2-frontier
+        run: |
+          set -euo pipefail
+          gh workflow run vc4-continuation-t002-driver.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+      - name: Retire dispatcher
+        env:
+          BRANCH: agent/vc4-linux-mesa-gles2-frontier
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git rm .github/workflows/vc4-finish-driver-dispatch-v1.yml
+          git commit -m 'ci/vc4: retire finish driver dispatcher [skip ci]'
+          git push origin "HEAD:$BRANCH"
