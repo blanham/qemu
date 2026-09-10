@@ -1,0 +1,361 @@
+{
+  "boundary_lines": [
+    {
+      "line": "[    7.390475] VC4_LINUX_DRM_SUBMIT_WAIT_OK handle=1 timeout_ns=4988308528",
+      "sequence": 1012
+    },
+    {
+      "line": "[    9.886671] [drm] Resetting GPU.",
+      "sequence": 1021
+    },
+    {
+      "line": "[   10.877085] [drm] Resetting GPU.",
+      "sequence": 1022
+    },
+    {
+      "line": "[   11.900913] [drm] Resetting GPU.",
+      "sequence": 1023
+    },
+    {
+      "line": "[   12.892891] [drm] Resetting GPU.",
+      "sequence": 1024
+    },
+    {
+      "line": "[   13.596964] mmc1: Timeout waiting for hardware interrupt.",
+      "sequence": 1025
+    },
+    {
+      "line": "[   13.852906] [drm] Resetting GPU.",
+      "sequence": 1027
+    },
+    {
+      "line": "[   14.844927] [drm] Resetting GPU.",
+      "sequence": 1028
+    },
+    {
+      "line": "[   15.868909] [drm] Resetting GPU.",
+      "sequence": 1029
+    },
+    {
+      "line": "[   16.892990] [drm] Resetting GPU.",
+      "sequence": 1030
+    },
+    {
+      "line": "[   17.852844] [drm] Resetting GPU.",
+      "sequence": 1031
+    },
+    {
+      "line": "[   18.844873] [drm] Resetting GPU.",
+      "sequence": 1032
+    },
+    {
+      "line": "[   19.868967] [drm] Resetting GPU.",
+      "sequence": 1033
+    },
+    {
+      "line": "[   20.893045] [drm] Resetting GPU.",
+      "sequence": 1034
+    },
+    {
+      "line": "[   21.884956] [drm] Resetting GPU.",
+      "sequence": 1035
+    },
+    {
+      "line": "[   22.876864] [drm] Resetting GPU.",
+      "sequence": 1036
+    },
+    {
+      "line": "[   23.868918] [drm] Resetting GPU.",
+      "sequence": 1037
+    },
+    {
+      "line": "[   24.860966] [drm] Resetting GPU.",
+      "sequence": 1038
+    },
+    {
+      "line": "[   25.852901] [drm] Resetting GPU.",
+      "sequence": 1039
+    },
+    {
+      "line": "[   26.876942] [drm] Resetting GPU.",
+      "sequence": 1040
+    },
+    {
+      "line": "[   27.900967] [drm] Resetting GPU.",
+      "sequence": 1041
+    },
+    {
+      "line": "[   28.892948] [drm] Resetting GPU.",
+      "sequence": 1042
+    },
+    {
+      "line": "[   29.852875] [drm] Resetting GPU.",
+      "sequence": 1043
+    },
+    {
+      "line": "[   30.844833] [drm] Resetting GPU.",
+      "sequence": 1044
+    },
+    {
+      "line": "[   31.868951] [drm] Resetting GPU.",
+      "sequence": 1045
+    },
+    {
+      "line": "[   32.860894] [drm] Resetting GPU.",
+      "sequence": 1046
+    },
+    {
+      "line": "[   33.884904] [drm] Resetting GPU.",
+      "sequence": 1047
+    },
+    {
+      "line": "[   34.876856] [drm] Resetting GPU.",
+      "sequence": 1048
+    },
+    {
+      "line": "[   35.868786] [drm] Resetting GPU.",
+      "sequence": 1049
+    },
+    {
+      "line": "[   36.860994] [drm] Resetting GPU.",
+      "sequence": 1050
+    },
+    {
+      "line": "[   37.852987] [drm] Resetting GPU.",
+      "sequence": 1051
+    },
+    {
+      "line": "[   38.844837] [drm] Resetting GPU.",
+      "sequence": 1052
+    },
+    {
+      "line": "[   39.869093] [drm] Resetting GPU.",
+      "sequence": 1053
+    },
+    {
+      "line": "[   40.860972] [drm] Resetting GPU.",
+      "sequence": 1054
+    },
+    {
+      "line": "[   41.884772] [drm] Resetting GPU.",
+      "sequence": 1055
+    },
+    {
+      "line": "[   42.876795] [drm] Resetting GPU.",
+      "sequence": 1056
+    },
+    {
+      "line": "[   43.868772] [drm] Resetting GPU.",
+      "sequence": 1057
+    },
+    {
+      "line": "[   44.892809] [drm] Resetting GPU.",
+      "sequence": 1058
+    },
+    {
+      "line": "[   45.884885] [drm] Resetting GPU.",
+      "sequence": 1059
+    },
+    {
+      "line": "[   46.876914] [drm] Resetting GPU.",
+      "sequence": 1060
+    },
+    {
+      "line": "[   47.503976] VC4_LINUX_MESA_GLES2_TIMEOUT stage=process-alarm",
+      "sequence": 1079
+    },
+    {
+      "line": "[   47.868848] [drm] Resetting GPU.",
+      "sequence": 1088
+    },
+    {
+      "line": "[   48.860926] [drm] Resetting GPU.",
+      "sequence": 1089
+    }
+  ],
+  "classification": "measured-runtime-boundary",
+  "generated_at": "2026-09-10T20:46:06.346005+00:00",
+  "instruction_count": 0,
+  "instructions": [],
+  "mesa_source_sha": "780b7a68f6cc456ef2f41c556885641823bdf84b",
+  "mesa_status_classification": "vc4-mesa-gles2-readpixels-start-timeout",
+  "observed": {
+    "add_ops": [],
+    "mul_ops": [],
+    "signals": [],
+    "special_reads": [],
+    "special_writes": []
+  },
+  "ordered_gaps": [
+    {
+      "category": "measured-runtime-boundary",
+      "detail": "[    7.390475] VC4_LINUX_DRM_SUBMIT_WAIT_OK handle=1 timeout_ns=4988308528",
+      "evidence": [
+        {
+          "line": "[    7.390475] VC4_LINUX_DRM_SUBMIT_WAIT_OK handle=1 timeout_ns=4988308528",
+          "sequence": 1012
+        },
+        {
+          "line": "[    9.886671] [drm] Resetting GPU.",
+          "sequence": 1021
+        },
+        {
+          "line": "[   10.877085] [drm] Resetting GPU.",
+          "sequence": 1022
+        },
+        {
+          "line": "[   11.900913] [drm] Resetting GPU.",
+          "sequence": 1023
+        },
+        {
+          "line": "[   12.892891] [drm] Resetting GPU.",
+          "sequence": 1024
+        },
+        {
+          "line": "[   13.596964] mmc1: Timeout waiting for hardware interrupt.",
+          "sequence": 1025
+        },
+        {
+          "line": "[   13.852906] [drm] Resetting GPU.",
+          "sequence": 1027
+        },
+        {
+          "line": "[   14.844927] [drm] Resetting GPU.",
+          "sequence": 1028
+        },
+        {
+          "line": "[   15.868909] [drm] Resetting GPU.",
+          "sequence": 1029
+        },
+        {
+          "line": "[   16.892990] [drm] Resetting GPU.",
+          "sequence": 1030
+        },
+        {
+          "line": "[   17.852844] [drm] Resetting GPU.",
+          "sequence": 1031
+        },
+        {
+          "line": "[   18.844873] [drm] Resetting GPU.",
+          "sequence": 1032
+        },
+        {
+          "line": "[   19.868967] [drm] Resetting GPU.",
+          "sequence": 1033
+        },
+        {
+          "line": "[   20.893045] [drm] Resetting GPU.",
+          "sequence": 1034
+        },
+        {
+          "line": "[   21.884956] [drm] Resetting GPU.",
+          "sequence": 1035
+        },
+        {
+          "line": "[   22.876864] [drm] Resetting GPU.",
+          "sequence": 1036
+        },
+        {
+          "line": "[   23.868918] [drm] Resetting GPU.",
+          "sequence": 1037
+        },
+        {
+          "line": "[   24.860966] [drm] Resetting GPU.",
+          "sequence": 1038
+        },
+        {
+          "line": "[   25.852901] [drm] Resetting GPU.",
+          "sequence": 1039
+        },
+        {
+          "line": "[   26.876942] [drm] Resetting GPU.",
+          "sequence": 1040
+        },
+        {
+          "line": "[   27.900967] [drm] Resetting GPU.",
+          "sequence": 1041
+        },
+        {
+          "line": "[   28.892948] [drm] Resetting GPU.",
+          "sequence": 1042
+        },
+        {
+          "line": "[   29.852875] [drm] Resetting GPU.",
+          "sequence": 1043
+        },
+        {
+          "line": "[   30.844833] [drm] Resetting GPU.",
+          "sequence": 1044
+        },
+        {
+          "line": "[   31.868951] [drm] Resetting GPU.",
+          "sequence": 1045
+        },
+        {
+          "line": "[   32.860894] [drm] Resetting GPU.",
+          "sequence": 1046
+        },
+        {
+          "line": "[   33.884904] [drm] Resetting GPU.",
+          "sequence": 1047
+        },
+        {
+          "line": "[   34.876856] [drm] Resetting GPU.",
+          "sequence": 1048
+        },
+        {
+          "line": "[   35.868786] [drm] Resetting GPU.",
+          "sequence": 1049
+        },
+        {
+          "line": "[   36.860994] [drm] Resetting GPU.",
+          "sequence": 1050
+        },
+        {
+          "line": "[   37.852987] [drm] Resetting GPU.",
+          "sequence": 1051
+        },
+        {
+          "line": "[   38.844837] [drm] Resetting GPU.",
+          "sequence": 1052
+        },
+        {
+          "line": "[   39.869093] [drm] Resetting GPU.",
+          "sequence": 1053
+        },
+        {
+          "line": "[   40.860972] [drm] Resetting GPU.",
+          "sequence": 1054
+        },
+        {
+          "line": "[   41.884772] [drm] Resetting GPU.",
+          "sequence": 1055
+        },
+        {
+          "line": "[   42.876795] [drm] Resetting GPU.",
+          "sequence": 1056
+        },
+        {
+          "line": "[   43.868772] [drm] Resetting GPU.",
+          "sequence": 1057
+        },
+        {
+          "line": "[   44.892809] [drm] Resetting GPU.",
+          "sequence": 1058
+        },
+        {
+          "line": "[   45.884885] [drm] Resetting GPU.",
+          "sequence": 1059
+        },
+        {
+          "line": "[   46.876914] [drm] Resetting GPU.",
+          "sequence": 1060
+        }
+      ],
+      "priority": 90
+    }
+  ],
+  "shader_record": null,
+  "varying_executor_present": true,
+  "varying_pipeline_present": false
+}
