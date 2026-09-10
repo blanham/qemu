@@ -44,9 +44,9 @@ jobs:
           tests/unit/test-vc4-qpu.c
           EOF
           )
-          actual=$(git diff --name-only | LC_ALL=C sort)
+          actual=$(git diff --cached --name-only | LC_ALL=C sort)
           test "$actual" = "$(printf '%s\n' "$expected" | sed 's/^          //' | LC_ALL=C sort)"
-          git diff --check
+          git diff --cached --check
 
       - name: Build and validate on the current Mesa frontier
         run: |
