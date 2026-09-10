@@ -1,0 +1,20 @@
+{
+  "complete": false,
+  "completion_validation": {
+    "all_required_markers": false,
+    "child_exit_zero": false,
+    "complete_true": false,
+    "hardware_renderer": true,
+    "harness_valid": true,
+    "marker_order_valid": true,
+    "no_missing_marker": false,
+    "no_timeout_classification": false,
+    "passed_true": false,
+    "probe_return_zero": true
+  },
+  "last_continuation_commit": "",
+  "last_mesa_commit": "",
+  "observed_continuation_commit": "",
+  "observed_mesa_commit": "adfe48f9a74a249770b81a6e02194a997bb803fe",
+  "touched": []
+}
