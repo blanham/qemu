@@ -11,7 +11,8 @@
 #include "hw/display/vc4_v3d_frontier.h"
 
 #define VC4_V3D_PIPELINE_MAX_VERTICES  VC4_QPU_LANES
-#define VC4_V3D_PIPELINE_MAX_TRIANGLES (VC4_QPU_LANES / 3)
+/* A fan can emit N-2 triangles from one bounded QPU vertex batch. */
+#define VC4_V3D_PIPELINE_MAX_TRIANGLES (VC4_QPU_LANES - 2)
 
 typedef enum VC4V3DPipelineFault {
     VC4_V3D_PIPELINE_FAULT_NONE,
