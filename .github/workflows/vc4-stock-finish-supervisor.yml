@@ -1,0 +1,250 @@
+name: VC4 stock-firmware finish supervisor
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - VC4_STOCK_VPU_LOWPC_MEMTRACE_V2_STATUS.json
+      - VC4_STOCK_LOWPC_CONTRACT_MAP_V2.json
+      - VC4_CONTINUATION_T002_STATUS.json
+      - VC4_STOCK_ARM*.json
+      - VC4_STOCK_LINUX*.json
+      - VC4_STOCK_*HANDOFF*.json
+      - .github/workflows/vc4-stock-finish-supervisor.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: vc4-stock-firmware-finish-supervisor
+  cancel-in-progress: false
+
+jobs:
+  supervise:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+      MAP_FILE: VC4_STOCK_LOWPC_CONTRACT_MAP_V2.json
+      CONT_STATUS: VC4_CONTINUATION_T002_STATUS.json
+      STATE_FILE: VC4_FIRMWARE_FINISH_SUPERVISOR.json
+      MAX_ITERATIONS: '8'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Read measured firmware evidence and decide
+        id: decide
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import json
+          import os
+          import re
+          import subprocess
+
+          map_path = Path(os.environ['MAP_FILE'])
+          cont_path = Path(os.environ['CONT_STATUS'])
+          state_path = Path(os.environ['STATE_FILE'])
+          max_iterations = int(os.environ['MAX_ITERATIONS'])
+
+          state = {
+              'version': 1,
+              'iterations': 0,
+              'frontier_keys_dispatched': [],
+              'continuation_commits_dispatched': [],
+              'complete': False,
+          }
+          if state_path.is_file():
+              loaded = json.loads(state_path.read_text())
+              if isinstance(loaded, dict):
+                  state.update(loaded)
+
+          evidence = []
+          for path in sorted(Path('.').glob('VC4_STOCK*.json')):
+              try:
+                  record = json.loads(path.read_text())
+              except Exception:
+                  continue
+              commit = subprocess.check_output(
+                  ['git', 'log', '-1', '--format=%H', '--', str(path)],
+                  text=True,
+              ).strip()
+              evidence.append((path, record, commit))
+
+          witness = None
+          for path, record, commit in evidence:
+              text = json.dumps(record).lower()
+              positive = any((
+                  record.get('arm_witness') is True,
+                  record.get('witness_reached') is True,
+                  record.get('arm_payload_ok') is True,
+                  record.get('complete') is True and 'arm' in text,
+                  'vc4_stock_arm_payload_ok' in text,
+                  'stock_arm_handoff_ok' in text,
+                  'aarch64_handoff_ok' in text,
+              ))
+              negative = any(
+                  marker in text for marker in (
+                      'direct-kernel-bypass', 'forced-arm-release',
+                      'firmware-patched', 'qtest-clock-step'
+                  )
+              )
+              if positive and not negative:
+                  witness = {
+                      'path': str(path),
+                      'commit': commit,
+                      'source_sha': (
+                          record.get('source_sha')
+                          or record.get('tested_source_sha')
+                          or ''
+                      ),
+                  }
+                  break
+
+          map_commit = ''
+          map_record = None
+          if map_path.is_file():
+              map_record = json.loads(map_path.read_text())
+              map_commit = subprocess.check_output(
+                  ['git', 'log', '-1', '--format=%H', '--', str(map_path)],
+                  text=True,
+              ).strip()
+
+          continuation_commit = ''
+          if cont_path.is_file():
+              continuation_commit = subprocess.check_output(
+                  ['git', 'log', '-1', '--format=%H', '--', str(cont_path)],
+                  text=True,
+              ).strip()
+
+          action = 'wait'
+          reason = 'missing-measured-contract'
+          frontier_key = ''
+
+          if witness is not None:
+              action = 'complete'
+              reason = 'unchanged-firmware-arm-witness'
+              state['complete'] = True
+              state['completion_witness'] = witness
+          elif map_record is not None and map_record.get('disposition') in {
+              'low-pc-mmio-contract', 'low-pc-ram-or-rom-contract'
+          }:
+              frontier_key = map_commit or str(map_record.get('trace_run_id') or '')
+              seen_frontiers = set(state.get('frontier_keys_dispatched') or [])
+              seen_cont = set(state.get('continuation_commits_dispatched') or [])
+
+              if (
+                  continuation_commit
+                  and map_commit
+                  and continuation_commit != map_commit
+                  and subprocess.run(
+                      ['git', 'merge-base', '--is-ancestor', map_commit,
+                       continuation_commit],
+                      check=False,
+                  ).returncode == 0
+                  and continuation_commit not in seen_cont
+              ):
+                  action = 'dispatch-evaluators'
+                  reason = 'new-firmware-candidate-after-measured-contract'
+                  state.setdefault(
+                      'continuation_commits_dispatched', []
+                  ).append(continuation_commit)
+              elif frontier_key and frontier_key not in seen_frontiers:
+                  iterations = int(state.get('iterations') or 0)
+                  if iterations >= max_iterations:
+                      action = 'blocked'
+                      reason = 'bounded-iteration-limit-reached'
+                  else:
+                      action = 'dispatch-continuation'
+                      reason = 'new-measured-firmware-frontier'
+                      state['iterations'] = iterations + 1
+                      state.setdefault('frontier_keys_dispatched', []).append(
+                          frontier_key
+                      )
+              else:
+                  action = 'wait'
+                  reason = 'current-firmware-frontier-already-dispatched'
+          elif map_record is not None:
+              action = 'blocked'
+              reason = str(map_record.get('disposition') or 'non-actionable-map')
+
+          state['last_action'] = action
+          state['last_reason'] = reason
+          state['current_frontier_key'] = frontier_key
+          state['current_map_commit'] = map_commit
+          state['current_continuation_commit'] = continuation_commit
+          state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
+          Path('/tmp/ACTION').write_text(action + '\n')
+          Path('/tmp/REASON').write_text(reason + '\n')
+          PY
+          echo "action=$(cat /tmp/ACTION)" >> "$GITHUB_OUTPUT"
+          echo "reason=$(cat /tmp/REASON)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch bounded firmware continuation
+        if: steps.decide.outputs.action == 'dispatch-continuation'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run vc4-continuation-t002-driver.yml \
+            --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+
+      - name: Dispatch measured firmware evaluators
+        if: steps.decide.outputs.action == 'dispatch-evaluators'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t workflows < <(
+            find .github/workflows -maxdepth 1 -type f -printf '%f\n' | \
+              grep -Ei 'vc4.*low.*pc.*(root.*cause.*evaluat|integration.*verif)|vc4.*stock.*(candidate.*evaluat|integration.*verif)' | \
+              sort -u
+          )
+          test "${#workflows[@]}" -gt 0
+          for workflow in "${workflows[@]}"; do
+            gh workflow run "$workflow" \
+              --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          done
+
+      - name: Persist supervisor state
+        run: |
+          set -euo pipefail
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add "$STATE_FILE"
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "test/vc4: firmware supervisor ${{ steps.decide.outputs.action }} [skip ci]"
+            for attempt in 1 2 3; do
+              git fetch origin "$BRANCH"
+              if git rebase "origin/$BRANCH" && \
+                 git push origin "HEAD:$BRANCH"; then
+                exit 0
+              fi
+              git rebase --abort || true
+              sleep 2
+            done
+            exit 1
+          fi
+
+      - name: Retire supervisor after authentic ARM witness
+        if: steps.decide.outputs.action == 'complete'
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git rm .github/workflows/vc4-stock-finish-supervisor.yml
+          git commit -m 'ci/vc4: retire completed firmware supervisor [skip ci]'
+          git push origin "HEAD:$BRANCH"
