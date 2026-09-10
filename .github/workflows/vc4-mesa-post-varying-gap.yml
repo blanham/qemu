@@ -1,0 +1,235 @@
+name: VC4 Mesa post-varying architectural gap
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-mesa-gles2-frontier
+    paths:
+      - .github/workflows/vc4-mesa-post-varying-gap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-mesa-post-varying-gap
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      BRANCH: agent/vc4-linux-mesa-gles2-frontier
+      WORKFLOW_PATH: .github/workflows/vc4-mesa-post-varying-gap.yml
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for a Mesa replay containing varying FIFO support
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 140); do
+            git fetch origin "$BRANCH"
+            if git show "origin/$BRANCH:hw/display/vc4_qpu_exec.c" | \
+                 grep -Fq 'VC4_QPU_REG_VARYING' && \
+               git show "origin/$BRANCH:VC4_LINUX_MESA_GLES2_STATUS.json" \
+                 >/tmp/vc4-mesa-post-varying-status.json 2>/dev/null; then
+              source_sha=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d = json.loads(Path('/tmp/vc4-mesa-post-varying-status.json').read_text())
+          print(d.get('source_sha') or d.get('tested_source_sha') or '')
+          PY
+              )
+              if test -n "$source_sha" && \
+                 git cat-file -e "$source_sha^{commit}" 2>/dev/null && \
+                 git show "$source_sha:hw/display/vc4_qpu_exec.c" | \
+                   grep -Fq 'VC4_QPU_REG_VARYING'; then
+                printf '%s\n' "$source_sha" >/tmp/vc4-mesa-post-varying-source
+                ready=true
+                break
+              fi
+            fi
+            sleep 12
+          done
+          test "$ready" = true
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+
+      - name: Derive the first remaining architectural gap
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from collections import defaultdict
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json, re
+
+          status = json.loads(
+              Path('/tmp/vc4-mesa-post-varying-status.json').read_text())
+          source_sha = Path('/tmp/vc4-mesa-post-varying-source').read_text().strip()
+          qpu_source = Path('hw/display/vc4_qpu_exec.c').read_text()
+          qpu_header = Path('include/hw/display/vc4_qpu_exec.h').read_text()
+          pipeline = Path('hw/display/vc4_v3d_pipeline.c').read_text()
+          v3d = Path('hw/display/bcm2835_v3d.c').read_text()
+
+          diagnostics = []
+          for key in ('qemu_diagnostics_tail', 'serial_tail'):
+              value = status.get(key)
+              if isinstance(value, list):
+                  diagnostics.extend(str(line) for line in value)
+              elif isinstance(value, str):
+                  diagnostics.extend(value.splitlines())
+          summary = status.get('probe_result_summary')
+          if isinstance(summary, dict):
+              for value in summary.values():
+                  if isinstance(value, list):
+                      diagnostics.extend(str(line) for line in value)
+                  elif isinstance(value, str):
+                      diagnostics.extend(value.splitlines())
+
+          record_re = re.compile(
+              r'frontier shader record=.*?attrs=(\d+).*?varyings=(\d+)', re.I)
+          qpu_re = re.compile(
+              r'qpu frontier stage=(\w+) index=(\d+) .*?word=(0x[0-9a-f]+) '
+              r'sig=(\d+):([^ ]+) unpack=(\d+) pm=(\d+) pack=(\d+) '
+              r'ca=(\d+) cm=(\d+) sf=(\d+) ws=(\d+) wa=(\d+) wm=(\d+) '
+              r'add=(\d+) mul=(\d+) ra=(\d+) rb=(\d+) '
+              r'aa=(\d+) ab=(\d+) ma=(\d+) mb=(\d+)', re.I)
+          shader_record = None
+          instructions = []
+          boundary_lines = []
+          for sequence, line in enumerate(diagnostics):
+              m = record_re.search(line)
+              if m:
+                  shader_record = {
+                      'attributes': int(m.group(1)),
+                      'fragment_varyings': int(m.group(2)),
+                  }
+              m = qpu_re.search(line)
+              if m:
+                  g = m.groups()
+                  instructions.append({
+                      'sequence': sequence,
+                      'stage': g[0], 'index': int(g[1]), 'word': g[2],
+                      'signal': int(g[3]), 'signal_name': g[4],
+                      'unpack': int(g[5]), 'pm': int(g[6]),
+                      'pack': int(g[7]), 'cond_add': int(g[8]),
+                      'cond_mul': int(g[9]), 'set_flags': int(g[10]),
+                      'write_swap': int(g[11]),
+                      'waddr_add': int(g[12]), 'waddr_mul': int(g[13]),
+                      'op_add': int(g[14]), 'op_mul': int(g[15]),
+                      'raddr_a': int(g[16]), 'raddr_b': int(g[17]),
+                      'add_a': int(g[18]), 'add_b': int(g[19]),
+                      'mul_a': int(g[20]), 'mul_b': int(g[21]),
+                  })
+              low = line.lower()
+              if any(token in low for token in (
+                  'unsupported', 'fault=', 'timeout', 'resetting gpu',
+                  'pixel_mismatch', 'failed stage=', 'program-limit')):
+                  boundary_lines.append({'sequence': sequence, 'line': line})
+
+          signals = sorted({i['signal'] for i in instructions})
+          add_ops = sorted({i['op_add'] for i in instructions})
+          mul_ops = sorted({i['op_mul'] for i in instructions})
+          special_reads = sorted({a for i in instructions
+                                  for a in (i['raddr_a'], i['raddr_b']) if a >= 32})
+          special_writes = sorted({a for i in instructions
+                                   for a in (i['waddr_add'], i['waddr_mul']) if a >= 32})
+
+          gaps = []
+          def add(priority, category, detail, evidence=None):
+              gaps.append({'priority': priority, 'category': category,
+                           'detail': detail, 'evidence': evidence})
+
+          varying_executor = all(marker in qpu_source + qpu_header for marker in (
+              'VC4_QPU_REG_VARYING', 'vc4_qpu_exec_set_varyings'))
+          varying_pipeline = 'vc4_qpu_exec_set_varyings' in pipeline
+          if shader_record and shader_record['fragment_varyings'] and not varying_executor:
+              add(10, 'qpu-varying-register',
+                  'implement architectural VARYING_READ and r5 coefficient side effect',
+                  shader_record)
+          if shader_record and shader_record['fragment_varyings'] and not varying_pipeline:
+              add(20, 'fragment-varying-transport',
+                  'compute per-lane perspective interpolation inputs and feed the QPU varying FIFO',
+                  shader_record)
+
+          tmu_signal_seen = any(
+              i['signal_name'].lower().startswith('tmu') or i['signal'] in (10, 11)
+              for i in instructions)
+          tmu_write_seen = any(a in (56, 57, 58, 59) for a in special_writes)
+          tmu_source = any(token in (qpu_source + pipeline + v3d).lower()
+                           for token in ('tmu0_s', 'tmu0_t', 'tmu0_r', 'tmu0_b'))
+          if tmu_write_seen and not tmu_source:
+              add(30, 'tmu-parameter-write',
+                  'model TMU0 S/T/R/B parameter registers as queued texture requests',
+                  {'special_writes': special_writes})
+          if tmu_signal_seen and not tmu_source:
+              add(40, 'tmu-load-signal',
+                  'execute TMU0 load with VC4 texture-format, filtering, wrapping, and tiled-memory semantics',
+                  {'signals': signals})
+
+          if boundary_lines:
+              add(90, 'measured-runtime-boundary',
+                  boundary_lines[0]['line'], boundary_lines[:40])
+          if not gaps:
+              classification = (
+                  'mesa-gles2-complete'
+                  if any('vc4_linux_mesa_gles2_ok' in line.lower()
+                         for line in diagnostics)
+                  else 'unclassified-post-varying-frontier')
+          else:
+              gaps.sort(key=lambda g: g['priority'])
+              classification = gaps[0]['category']
+
+          result = {
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'classification': classification,
+              'mesa_source_sha': source_sha,
+              'mesa_status_classification': status.get('classification'),
+              'shader_record': shader_record,
+              'varying_executor_present': varying_executor,
+              'varying_pipeline_present': varying_pipeline,
+              'observed': {
+                  'signals': signals, 'add_ops': add_ops,
+                  'mul_ops': mul_ops, 'special_reads': special_reads,
+                  'special_writes': special_writes,
+              },
+              'ordered_gaps': gaps,
+              'boundary_lines': boundary_lines[:100],
+              'instruction_count': len(instructions),
+              'instructions': instructions[:1000],
+          }
+          Path('VC4_MESA_POST_VARYING_GAP.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n')
+          lines = [
+              '# VC4 Mesa post-varying architectural gap', '',
+              f"Classification: **{classification}**", '',
+              f"Mesa source: `{source_sha}`", '',
+              f"Varying executor present: **{varying_executor}**", '',
+              f"Varying pipeline transport present: **{varying_pipeline}**", '',
+          ]
+          if gaps:
+              lines += ['## Ordered remaining gaps', '']
+              for gap in gaps:
+                  lines.append(
+                      f"- P{gap['priority']} **{gap['category']}** — {gap['detail']}")
+          else:
+              lines += ['No remaining architectural gap was derived from the measured trace.', '']
+          Path('VC4_MESA_POST_VARYING_GAP.md').write_text(
+              '\n'.join(lines) + '\n')
+          PY
+
+      - name: Publish record and retire one-shot
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add VC4_MESA_POST_VARYING_GAP.json VC4_MESA_POST_VARYING_GAP.md
+          git rm "$WORKFLOW_PATH"
+          git commit -m 'test/vc4: record post-varying Mesa frontier [skip ci]'
+          git push origin "HEAD:refs/heads/$BRANCH"
