@@ -49,6 +49,8 @@ typedef struct VC4QPUExecState {
     /*
      * Fragment-pipeline varying FIFO input.  A VARYING_READ returns the
      * precomputed VP term and simultaneously loads its C coefficient into r5.
+     * These are architectural interpolation terms supplied by the rasterizer,
+     * not values selected from a guest shader or command-stream fingerprint.
      * The caller owns these vectors for the duration of vc4_qpu_execute().
      */
     const VC4QPUVector *varying_partial;
