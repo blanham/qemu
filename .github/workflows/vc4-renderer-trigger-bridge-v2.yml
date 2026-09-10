@@ -61,6 +61,13 @@ jobs:
                   text=True,
               ).strip()
 
+          def marker_seen(record: dict[str, object], marker: str) -> bool:
+              positions = record.get('positions')
+              if not isinstance(positions, dict):
+                  return False
+              value = positions.get(marker)
+              return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
           mesa_path = Path('VC4_LINUX_MESA_GLES2_STATUS.json')
           cont_path = Path('VC4_CONTINUATION_T002_STATUS.json')
           mesa_commit = last_commit(str(mesa_path))
@@ -68,19 +75,40 @@ jobs:
           touched = []
           varying_ready = False
           complete = False
+          completion_validation: dict[str, bool] = {}
 
           if mesa_path.is_file():
               mesa = json.loads(mesa_path.read_text())
+              if not isinstance(mesa, dict):
+                  raise SystemExit('Mesa status must be a JSON object')
               source_sha = str(
                   mesa.get('source_sha') or mesa.get('tested_source_sha') or ''
               )
-              text = json.dumps(mesa).lower()
-              complete = any((
-                  mesa.get('complete') is True,
-                  mesa.get('passed') is True,
-                  'vc4_linux_mesa_gles2_ok' in text,
-                  'vc4_linux_mesa_gles2_pixels_ok' in text,
-              ))
+              classification = str(mesa.get('classification') or '').lower()
+              renderer = str(mesa.get('renderer') or '').lower()
+              required_markers = (
+                  'VC4_LINUX_MESA_GLES2_RENDERER_VC4_OK',
+                  'VC4_LINUX_MESA_GLES2_DRAW_OK',
+                  'VC4_LINUX_MESA_GLES2_FINISH_OK',
+                  'VC4_LINUX_MESA_GLES2_READPIXELS_OK',
+                  'VC4_LINUX_MESA_GLES2_PIXELS_OK',
+                  'VC4_LINUX_MESA_GLES2_OK',
+              )
+              completion_validation = {
+                  'complete_true': mesa.get('complete') is True,
+                  'passed_true': mesa.get('passed') is True,
+                  'harness_valid': mesa.get('harness_valid') is True,
+                  'marker_order_valid': mesa.get('marker_order_valid') is True,
+                  'child_exit_zero': mesa.get('child_exit') == 0,
+                  'probe_return_zero': mesa.get('probe_return_code') == 0,
+                  'no_missing_marker': mesa.get('next_missing_marker') in (None, ''),
+                  'hardware_renderer': renderer.startswith('vc4'),
+                  'no_timeout_classification': 'timeout' not in classification,
+                  'all_required_markers': all(
+                      marker_seen(mesa, marker) for marker in required_markers
+                  ),
+              }
+              complete = all(completion_validation.values())
               if source_sha:
                   try:
                       header = subprocess.check_output(
@@ -131,6 +159,7 @@ jobs:
                       or ('integration' in path.name.lower() and 'verif' in path.name.lower())
                       or ('readback' in path.name.lower() and 'evaluat' in path.name.lower())
                   )
+              )
               for path in candidates:
                   path.write_text(path.read_text() + f"\n{stamp} continuation={cont_commit}\n")
                   touched.append(str(path))
@@ -141,6 +170,7 @@ jobs:
           state['observed_mesa_commit'] = mesa_commit
           state['observed_continuation_commit'] = cont_commit
           state['complete'] = complete
+          state['completion_validation'] = completion_validation
           state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
           PY
 
