@@ -16,6 +16,8 @@
      * command submission rather than physical scanout.  This is also the
      * acceptance topology for real Mesa primitive dispatch: do not add a
      * software renderer, host-side draw bypass, or firmware framebuffer path.
+     * The guest Mesa source and generated QPU programs remain unmodified as
+     * QEMU gains additional architectural execution support.
      *
      * The overlay is deliberately render-layout-neutral.  Linear, LT, and T
      * render-target semantics belong to the emulated V3D memory interface and
