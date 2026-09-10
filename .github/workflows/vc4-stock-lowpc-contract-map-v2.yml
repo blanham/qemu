@@ -1,0 +1,261 @@
+name: VC4 stock low-PC contract map v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - VC4_STOCK_VPU_LOWPC_MEMTRACE_V2_STATUS.json
+      - .github/workflows/vc4-stock-lowpc-contract-map-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-lowpc-contract-map-v2
+  cancel-in-progress: false
+
+jobs:
+  map:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+      TRACE: VC4_STOCK_VPU_LOWPC_MEMTRACE_V2_STATUS.json
+      MAP_JSON: VC4_STOCK_LOWPC_CONTRACT_MAP_V2.json
+      MAP_MD: VC4_STOCK_LOWPC_CONTRACT_MAP_V2.md
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Wait for a valid trace record
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 75); do
+            git fetch origin "$BRANCH"
+            if git show "origin/$BRANCH:$TRACE" > /tmp/trace.json 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 8
+          done
+          test "$ready" = true
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+
+      - name: Map exact access contracts to device models
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from collections import Counter
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import json
+          import re
+          import subprocess
+
+          trace = json.loads(Path('/tmp/trace.json').read_text())
+          if trace.get('normal_tcg') is not True:
+              raise SystemExit('trace is not from normal TCG')
+          if trace.get('qtest_clock_step') is not False:
+              raise SystemExit('trace used qtest clock stepping')
+          if trace.get('firmware_modified') is not False:
+              raise SystemExit('trace modified firmware')
+
+          records = trace.get('low_pc_window_records') or []
+          parsed = []
+          for item in records:
+              try:
+                  parsed.append({
+                      'pc': int(str(item['pc']), 0),
+                      'vaddr': int(str(item['vaddr']), 0),
+                      'hwaddr': int(str(item['hwaddr']), 0),
+                      'value': int(str(item['value']), 0),
+                      'size': int(item['size']),
+                      'type': str(item['type']),
+                      'cpu_index': int(item['cpu_index']),
+                      'region': str(item.get('region') or ''),
+                      'peripheral_offset': (
+                          int(str(item['peripheral_offset']), 0)
+                          if item.get('peripheral_offset') is not None else None
+                      ),
+                  })
+              except Exception as exc:
+                  raise SystemExit(f'malformed low-PC record: {item!r}: {exc}')
+
+          contracts = Counter(
+              (row['pc'], row['hwaddr'], row['size'], row['type'])
+              for row in parsed
+          )
+          values = {}
+          for key in contracts:
+              values[key] = Counter(
+                  row['value'] for row in parsed
+                  if (row['pc'], row['hwaddr'], row['size'], row['type']) == key
+              )
+
+          source_by_region = {
+              'system-control': ['hw/arm/bcm2835_peripherals.c', 'hw/arm/vc4_hetero.c'],
+              'system-timer': ['hw/timer/bcm2835_systmr.c'],
+              'dma': ['hw/dma/bcm2835_dma.c'],
+              'arm-control-interrupt-mailbox': [
+                  'hw/vc4/bcm2835_vc4_intc.c',
+                  'hw/intc/bcm2835_ic.c',
+                  'hw/arm/vc4_hetero.c',
+              ],
+              'power-management': ['hw/misc/bcm2835_powermgt.c'],
+              'clock-management': ['hw/misc/bcm2835_cprman.c'],
+              'gpio': ['hw/gpio/bcm2835_gpio.c'],
+              'uart0': ['hw/char/pl011.c'],
+              'sdhost': ['hw/sd/bcm2835_sdhost.c'],
+              'spi0': ['hw/ssi/bcm2835_spi.c'],
+              'bsc0': ['hw/i2c/bcm2835_i2c.c'],
+              'emmc': ['hw/sd/sdhci.c'],
+              'usb': ['hw/usb/hcd-dwc2.c'],
+              'non-peripheral': [
+                  'hw/arm/vc4_raspi3_bootrom.c',
+                  'hw/arm/vc4_raspi3_hetero.c',
+                  'hw/vc4/raspi3_vpu.c',
+                  'target/vc4/translate.c',
+              ],
+              'other-peripheral': ['hw/arm/bcm2835_peripherals.c'],
+          }
+
+          ranked = []
+          for (pc, address, size, kind), count in contracts.most_common():
+              sample = next(
+                  row for row in parsed
+                  if (row['pc'], row['hwaddr'], row['size'], row['type']) ==
+                     (pc, address, size, kind)
+              )
+              offset = sample['peripheral_offset']
+              candidates = [
+                  path for path in source_by_region.get(sample['region'], [])
+                  if Path(path).is_file()
+              ]
+              snippets = []
+              needles = []
+              if offset is not None:
+                  needles.extend([
+                      f'0x{offset:x}', f'0x{offset:X}',
+                      f'0x{offset & 0xfff:x}', f'0x{offset & 0xfff:X}',
+                  ])
+              needles.extend([f'0x{address:x}', f'0x{address:X}'])
+              for path in candidates:
+                  lines = Path(path).read_text(errors='replace').splitlines()
+                  matches = []
+                  for index, line in enumerate(lines):
+                      if any(needle in line for needle in needles):
+                          start = max(0, index - 4)
+                          end = min(len(lines), index + 6)
+                          matches.append({
+                              'line': index + 1,
+                              'text': '\n'.join(
+                                  f'{n + 1}: {lines[n]}' for n in range(start, end)
+                              ),
+                          })
+                      if len(matches) >= 4:
+                          break
+                  snippets.append({'path': path, 'matches': matches})
+
+              ranked.append({
+                  'pc': f'0x{pc:x}',
+                  'hwaddr': f'0x{address:x}',
+                  'peripheral_offset': f'0x{offset:x}' if offset is not None else None,
+                  'size': size,
+                  'type': kind,
+                  'count': count,
+                  'region': sample['region'],
+                  'values': [
+                      {'value': f'0x{value:x}', 'count': value_count}
+                      for value, value_count in values[(pc, address, size, kind)].most_common(32)
+                  ],
+                  'candidate_sources': candidates,
+                  'source_matches': snippets,
+              })
+
+          classification = trace.get('classification')
+          if not parsed:
+              disposition = 'blocked-no-low-pc-access-contract'
+          elif ranked[0]['region'] == 'non-peripheral':
+              disposition = 'low-pc-ram-or-rom-contract'
+          else:
+              disposition = 'low-pc-mmio-contract'
+
+          result = {
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': subprocess.check_output(
+                  ['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'trace_source_sha': trace.get('source_sha'),
+              'trace_run_id': trace.get('workflow_run_id'),
+              'trace_classification': classification,
+              'disposition': disposition,
+              'record_count': len(parsed),
+              'ranked_contracts': ranked[:100],
+              'guardrails': {
+                  'pc_0x544_special_case_forbidden': True,
+                  'firmware_patching_forbidden': True,
+                  'forced_arm_release_forbidden': True,
+                  'synthetic_interrupt_forbidden': True,
+                  'qtest_time_bypass_forbidden': True,
+              },
+          }
+          Path('VC4_STOCK_LOWPC_CONTRACT_MAP_V2.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n'
+          )
+
+          lines = [
+              '# VC4 stock low-PC contract map v2',
+              '',
+              f"Disposition: **{disposition}**",
+              '',
+              f"Measured low-PC records: **{len(parsed)}**",
+              '',
+          ]
+          for item in ranked[:30]:
+              lines += [
+                  f"## PC `{item['pc']}` — `{item['type']}` {item['size']} byte(s)",
+                  '',
+                  f"- Address: `{item['hwaddr']}`",
+                  f"- Peripheral offset: `{item['peripheral_offset']}`",
+                  f"- Region: `{item['region']}`",
+                  f"- Count: {item['count']}",
+                  '- Values: ' + ', '.join(
+                      f"`{value['value']}` × {value['count']}"
+                      for value in item['values'][:10]
+                  ),
+                  '- Candidate sources: ' + (
+                      ', '.join(f"`{path}`" for path in item['candidate_sources'])
+                      if item['candidate_sources'] else '(none)'
+                  ),
+                  '',
+              ]
+          lines += [
+              'No device behavior was changed by this mapping tranche.',
+              '',
+          ]
+          Path('VC4_STOCK_LOWPC_CONTRACT_MAP_V2.md').write_text('\n'.join(lines))
+          PY
+
+      - name: Publish map and retire workflow
+        run: |
+          set -euo pipefail
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add "$MAP_JSON" "$MAP_MD"
+          git rm .github/workflows/vc4-stock-lowpc-contract-map-v2.yml
+          git commit -m 'test/vc4: map low-PC access contract v2 [skip ci]'
+          for attempt in 1 2 3; do
+            git fetch origin "$BRANCH"
+            if git rebase "origin/$BRANCH" && \
+               git push origin "HEAD:$BRANCH"; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep 2
+          done
+          exit 1
