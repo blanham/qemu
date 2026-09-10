@@ -1,0 +1,93 @@
+name: VC4 stock evaluation dispatch v1
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - VC4_CONTINUATION_T002_STATUS.json
+      - .github/workflows/vc4-stock-evaluation-dispatch-v1.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: vc4-stock-evaluation-dispatch-v1
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Wait for continuation status naming a firmware candidate
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 180); do
+            git fetch origin "$BRANCH"
+            if git show "origin/$BRANCH:VC4_CONTINUATION_T002_STATUS.json" \
+                 > /tmp/continuation.json 2>/dev/null; then
+              if python3 - <<'PY'
+          import json
+          record = json.load(open('/tmp/continuation.json'))
+          text = json.dumps(record).lower()
+          raise SystemExit(0 if any(
+              token in text for token in ('firmware', 'stock', 'low-pc', 'low_pc', 'arm-handoff')
+          ) else 1)
+          PY
+              then
+                ready=true
+                break
+              fi
+            fi
+            sleep 10
+          done
+          test "$ready" = true
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+      - name: Discover and dispatch existing stock evaluators
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t workflows < <(
+            find .github/workflows -maxdepth 1 -type f -printf '%f\n' | \
+              grep -Ei 'vc4.*low.*pc.*(root.*cause.*evaluat|integration.*verif)|vc4.*stock.*(candidate.*evaluat|integration.*verif)' | \
+              sort -u
+          )
+          test "${#workflows[@]}" -gt 0
+          : > /tmp/DISPATCHED_WORKFLOWS
+          for workflow in "${workflows[@]}"; do
+            gh workflow run "$workflow" \
+              --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+            printf '%s\n' "$workflow" >> /tmp/DISPATCHED_WORKFLOWS
+          done
+      - name: Record dispatch and retire
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          result = {
+              'dispatched_workflows': Path('/tmp/DISPATCHED_WORKFLOWS').read_text().splitlines(),
+              'continuation_status': json.load(open('/tmp/continuation.json')),
+          }
+          Path('VC4_STOCK_EVALUATION_DISPATCH_STATUS.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+          git add VC4_STOCK_EVALUATION_DISPATCH_STATUS.json
+          git rm .github/workflows/vc4-stock-evaluation-dispatch-v1.yml
+          git commit -m 'test/vc4: record stock evaluation dispatch [skip ci]'
+          git push origin "HEAD:$BRANCH"
