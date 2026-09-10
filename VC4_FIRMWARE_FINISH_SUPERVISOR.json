@@ -1,0 +1,12 @@
+{
+  "complete": false,
+  "continuation_commits_dispatched": [],
+  "current_continuation_commit": "",
+  "current_frontier_key": "",
+  "current_map_commit": "275c9f1de39e87212dcdc1226361492c8c3ff7e5",
+  "frontier_keys_dispatched": [],
+  "iterations": 0,
+  "last_action": "blocked",
+  "last_reason": "blocked-no-low-pc-access-contract",
+  "version": 1
+}
