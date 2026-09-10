@@ -1,0 +1,140 @@
+name: VC4 stock branch-native trigger bridge v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - VC4_STOCK_LOWPC_CONTRACT_MAP_V2.json
+      - VC4_CONTINUATION_T002_STATUS.json
+      - .github/workflows/vc4-stock-trigger-bridge-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-trigger-bridge-v2
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+      STATE: VC4_STOCK_TRIGGER_BRIDGE_V2.json
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Touch branch-native workflows from measured evidence
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import json
+          import os
+          import subprocess
+          import time
+
+          state_path = Path(os.environ['STATE'])
+          state = {
+              'last_map_commit': '',
+              'last_continuation_commit': '',
+              'touched': [],
+          }
+          if state_path.is_file():
+              loaded = json.loads(state_path.read_text())
+              if isinstance(loaded, dict):
+                  state.update(loaded)
+
+          def last_commit(path: str) -> str:
+              if not Path(path).is_file():
+                  return ''
+              return subprocess.check_output(
+                  ['git', 'log', '-1', '--format=%H', '--', path],
+                  text=True,
+              ).strip()
+
+          map_path = Path('VC4_STOCK_LOWPC_CONTRACT_MAP_V2.json')
+          cont_path = Path('VC4_CONTINUATION_T002_STATUS.json')
+          map_commit = last_commit(str(map_path))
+          cont_commit = last_commit(str(cont_path))
+          actionable = False
+          if map_path.is_file():
+              record = json.loads(map_path.read_text())
+              actionable = record.get('disposition') in {
+                  'low-pc-mmio-contract', 'low-pc-ram-or-rom-contract'
+              }
+
+          stamp = f"# branch-native dispatch {int(time.time())}"
+          touched = []
+          driver = Path('.github/workflows/vc4-continuation-t002-driver.yml')
+          if (
+              actionable
+              and map_commit
+              and map_commit != state.get('last_map_commit')
+              and driver.is_file()
+          ):
+              driver.write_text(driver.read_text() + f"\n{stamp} map={map_commit}\n")
+              touched.append(str(driver))
+              state['last_map_commit'] = map_commit
+
+          if (
+              cont_commit
+              and cont_commit != state.get('last_continuation_commit')
+              and map_commit
+              and cont_commit != map_commit
+              and subprocess.run(
+                  ['git', 'merge-base', '--is-ancestor', map_commit, cont_commit],
+                  check=False,
+              ).returncode == 0
+          ):
+              candidates = sorted(
+                  path for path in Path('.github/workflows').glob('*.yml')
+                  if (
+                      ('low' in path.name.lower() and 'pc' in path.name.lower())
+                      or 'stock' in path.name.lower()
+                  )
+                  and (
+                      ('root' in path.name.lower() and 'cause' in path.name.lower()
+                       and 'evaluat' in path.name.lower())
+                      or ('integration' in path.name.lower()
+                          and 'verif' in path.name.lower())
+                      or ('candidate' in path.name.lower()
+                          and 'evaluat' in path.name.lower())
+                  )
+              for path in candidates:
+                  path.write_text(path.read_text() + f"\n{stamp} continuation={cont_commit}\n")
+                  touched.append(str(path))
+              if candidates:
+                  state['last_continuation_commit'] = cont_commit
+
+          state['touched'] = touched
+          state['observed_map_commit'] = map_commit
+          state['observed_continuation_commit'] = cont_commit
+          state['actionable'] = actionable
+          state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
+          PY
+
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add "$STATE" .github/workflows
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci/vc4: trigger stock tranche from measured evidence'
+            for attempt in 1 2 3; do
+              git fetch origin "$BRANCH"
+              if git rebase "origin/$BRANCH" && \
+                 git push origin "HEAD:$BRANCH"; then
+                exit 0
+              fi
+              git rebase --abort || true
+              sleep 2
+            done
+            exit 1
+          fi
