@@ -1,0 +1,106 @@
+name: VC4 renderer evaluation dispatch v2
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-mesa-gles2-frontier
+    paths:
+      - VC4_CONTINUATION_T002_STATUS.json
+      - VC4_POST_VARYING_CONTINUATION_STATUS.json
+      - .github/workflows/vc4-renderer-evaluation-dispatch-v2.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: vc4-renderer-evaluation-dispatch-v2
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BRANCH: agent/vc4-linux-mesa-gles2-frontier
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Wait for continuation record newer than post-varying gate
+        run: |
+          set -euo pipefail
+          ready=false
+          for attempt in $(seq 1 240); do
+            git fetch origin "$BRANCH"
+            ref="origin/$BRANCH"
+            gate_commit=$(git log -1 --format=%H "$ref" -- \
+              VC4_POST_VARYING_CONTINUATION_STATUS.json || true)
+            status_commit=$(git log -1 --format=%H "$ref" -- \
+              VC4_CONTINUATION_T002_STATUS.json || true)
+            if test -n "$gate_commit" && test -n "$status_commit" && \
+               test "$gate_commit" != "$status_commit" && \
+               git merge-base --is-ancestor "$gate_commit" "$status_commit"; then
+              git show "$status_commit:VC4_CONTINUATION_T002_STATUS.json" \
+                > /tmp/continuation.json
+              if python3 - <<'PY'
+          import json
+          record = json.load(open('/tmp/continuation.json'))
+          text = json.dumps(record).lower()
+          raise SystemExit(0 if any(
+              token in text for token in ('renderer', 'mesa', 'tmu', 'qpu', 'readback')
+          ) else 1)
+          PY
+              then
+                printf '%s\n' "$gate_commit" > /tmp/GATE_COMMIT
+                printf '%s\n' "$status_commit" > /tmp/STATUS_COMMIT
+                ready=true
+                break
+              fi
+            fi
+            sleep 10
+          done
+          test "$ready" = true
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+      - name: Dispatch existing renderer evaluators
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t workflows < <(
+            find .github/workflows -maxdepth 1 -type f -printf '%f\n' | \
+              grep -Ei 'vc4.*(tmu|readback).*(candidate.*evaluat|integration.*verif)|vc4.*readback.*evaluat' | \
+              sort -u
+          )
+          test "${#workflows[@]}" -gt 0
+          : > /tmp/DISPATCHED_WORKFLOWS
+          for workflow in "${workflows[@]}"; do
+            gh workflow run "$workflow" \
+              --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+            printf '%s\n' "$workflow" >> /tmp/DISPATCHED_WORKFLOWS
+          done
+      - name: Record ordered dispatch and retire
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          result = {
+              'gate_commit': Path('/tmp/GATE_COMMIT').read_text().strip(),
+              'continuation_status_commit': Path('/tmp/STATUS_COMMIT').read_text().strip(),
+              'dispatched_workflows': Path('/tmp/DISPATCHED_WORKFLOWS').read_text().splitlines(),
+              'continuation_status': json.load(open('/tmp/continuation.json')),
+          }
+          Path('VC4_RENDERER_EVALUATION_DISPATCH_V2_STATUS.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+          git add VC4_RENDERER_EVALUATION_DISPATCH_V2_STATUS.json
+          git rm .github/workflows/vc4-renderer-evaluation-dispatch-v2.yml
+          git commit -m 'test/vc4: record ordered renderer evaluation dispatch [skip ci]'
+          git push origin "HEAD:$BRANCH"
