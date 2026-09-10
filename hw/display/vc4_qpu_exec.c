@@ -39,6 +39,7 @@
 #define VC4_QPU_MUX_B                     7
 
 #define VC4_QPU_REG_UNIFORM              32
+#define VC4_QPU_REG_VARYING              35
 #define VC4_QPU_REG_NULL                 39
 #define VC4_QPU_REG_TLB_COLOR_ALL        46
 #define VC4_QPU_REG_VPM                  48
@@ -204,6 +205,23 @@ static bool vc4_qpu_exec_read_uniform(VC4QPUReadFunc read_func,
     return true;
 }
 
+static bool vc4_qpu_exec_read_varying(VC4QPUExecState *state,
+                                          VC4QPUVector *value)
+{
+    unsigned index = state->varying_index;
+
+    if (index >= state->varying_count ||
+        state->varying_partial == NULL || state->varying_c == NULL) {
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_VARYING_READ, index);
+    }
+
+    *value = state->varying_partial[index];
+    state->accumulator[5] = state->varying_c[index];
+    state->varying_index = index + 1;
+    return true;
+}
+
 static bool vc4_qpu_exec_read_port(VC4QPUReadFunc read_func, void *opaque,
                                    VC4QPUExecState *state, bool file_a,
                                    unsigned address, VC4QPUVector *value)
@@ -217,6 +235,8 @@ static bool vc4_qpu_exec_read_port(VC4QPUReadFunc read_func, void *opaque,
     case VC4_QPU_REG_UNIFORM:
         return vc4_qpu_exec_read_uniform(
             read_func, opaque, state, value);
+    case VC4_QPU_REG_VARYING:
+        return vc4_qpu_exec_read_varying(state, value);
     case VC4_QPU_REG_NULL:
         memset(value, 0, sizeof(*value));
         return true;
@@ -586,6 +606,7 @@ static bool vc4_qpu_exec_alu(VC4QPUReadFunc read_func, void *opaque,
             }
         } else if (need_a && instruction->raddr_a == instruction->raddr_b &&
                    (instruction->raddr_a == VC4_QPU_REG_UNIFORM ||
+                    instruction->raddr_a == VC4_QPU_REG_VARYING ||
                     instruction->raddr_a == VC4_QPU_REG_NULL ||
                     instruction->raddr_a == VC4_QPU_REG_VPM)) {
             port_b = port_a;
@@ -647,6 +668,21 @@ bool vc4_qpu_exec_set_active_lanes(VC4QPUExecState *state,
     }
 
     state->active_lanes = active_lanes;
+    return true;
+}
+
+bool vc4_qpu_exec_set_varyings(VC4QPUExecState *state,
+                                const VC4QPUVector *partial,
+                                const VC4QPUVector *c, unsigned count)
+{
+    if (state == NULL || (count != 0 && (partial == NULL || c == NULL))) {
+        return false;
+    }
+
+    state->varying_partial = partial;
+    state->varying_c = c;
+    state->varying_count = count;
+    state->varying_index = 0;
     return true;
 }
 
@@ -735,6 +771,7 @@ const char *vc4_qpu_exec_fault_name(VC4QPUExecFault fault)
         [VC4_QPU_EXEC_FAULT_NONE] = "none",
         [VC4_QPU_EXEC_FAULT_CODE_READ] = "code-read",
         [VC4_QPU_EXEC_FAULT_UNIFORM_READ] = "uniform-read",
+        [VC4_QPU_EXEC_FAULT_VARYING_READ] = "varying-read",
         [VC4_QPU_EXEC_FAULT_PROGRAM_LIMIT] = "program-limit",
         [VC4_QPU_EXEC_FAULT_SIGNAL] = "signal",
         [VC4_QPU_EXEC_FAULT_CONDITION] = "condition",

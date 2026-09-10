@@ -21,6 +21,7 @@ typedef enum VC4QPUExecFault {
     VC4_QPU_EXEC_FAULT_NONE,
     VC4_QPU_EXEC_FAULT_CODE_READ,
     VC4_QPU_EXEC_FAULT_UNIFORM_READ,
+    VC4_QPU_EXEC_FAULT_VARYING_READ,
     VC4_QPU_EXEC_FAULT_PROGRAM_LIMIT,
     VC4_QPU_EXEC_FAULT_SIGNAL,
     VC4_QPU_EXEC_FAULT_CONDITION,
@@ -44,6 +45,17 @@ typedef struct VC4QPUExecState {
     VC4QPUVector vpm[VC4_QPU_VPM_ROWS];
 
     uint32_t uniform_address;
+
+    /*
+     * Fragment-pipeline varying FIFO input.  A VARYING_READ returns the
+     * precomputed VP term and simultaneously loads its C coefficient into r5.
+     * The caller owns these vectors for the duration of vc4_qpu_execute().
+     */
+    const VC4QPUVector *varying_partial;
+    const VC4QPUVector *varying_c;
+    unsigned varying_count;
+    unsigned varying_index;
+
     uint32_t pc;
     unsigned instruction_count;
     unsigned active_lanes;
@@ -78,6 +90,10 @@ void vc4_qpu_exec_init(VC4QPUExecState *state, uint32_t uniform_address);
 
 bool vc4_qpu_exec_set_active_lanes(VC4QPUExecState *state,
                                    unsigned active_lanes);
+
+bool vc4_qpu_exec_set_varyings(VC4QPUExecState *state,
+                                const VC4QPUVector *partial,
+                                const VC4QPUVector *c, unsigned count);
 
 bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
                      uint32_t code_address, VC4QPUExecState *state);

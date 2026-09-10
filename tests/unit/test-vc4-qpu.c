@@ -413,6 +413,65 @@ static void test_active_lane_contract(void)
     g_assert_cmpuint(state.active_lanes, ==, 4);
 }
 
+static void test_measured_varying_read_contract(void)
+{
+    enum { CODE = 0x6800 };
+    static const uint64_t program[] = {
+        /* First instruction from the measured Mesa readback fragment shader. */
+        0x100049e0203e303eULL,
+        0x300009e7009e7000ULL,
+        0x100009e7009e7000ULL,
+        0x100009e7009e7000ULL,
+    };
+    uint8_t code[sizeof(program)];
+    TestMemory memory = { 0 };
+    VC4QPUExecState state;
+    VC4QPUVector partial = { 0 };
+    VC4QPUVector coefficient = { 0 };
+
+    encode_words(code, program, ARRAY_SIZE(program));
+    test_memory_add(&memory, CODE, code, sizeof(code));
+    vc4_qpu_exec_init(&state, 0);
+    for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        state.reg_a[15].lane[lane] = 0x3f800000; /* W = 1.0 */
+        partial.lane[lane] = 0x40000000;         /* VP = 2.0 */
+        coefficient.lane[lane] = 0x40400000;     /* C = 3.0 */
+    }
+    g_assert_true(vc4_qpu_exec_set_varyings(
+        &state, &partial, &coefficient, 1));
+
+    g_assert_true(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
+    g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_NONE);
+    g_assert_cmpuint(state.varying_index, ==, 1);
+    for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        g_assert_cmphex(state.accumulator[0].lane[lane], ==, 0x40000000);
+        g_assert_cmphex(state.accumulator[5].lane[lane], ==, 0x40400000);
+    }
+}
+
+static void test_varying_fifo_underflow_fails_closed(void)
+{
+    enum { CODE = 0x6900 };
+    static const uint64_t program[] = {
+        0x100049e0203e303eULL,
+        0x300009e7009e7000ULL,
+        0x100009e7009e7000ULL,
+        0x100009e7009e7000ULL,
+    };
+    uint8_t code[sizeof(program)];
+    TestMemory memory = { 0 };
+    VC4QPUExecState state;
+
+    encode_words(code, program, ARRAY_SIZE(program));
+    test_memory_add(&memory, CODE, code, sizeof(code));
+    vc4_qpu_exec_init(&state, 0);
+
+    g_assert_false(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
+    g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_VARYING_READ);
+    g_assert_cmpuint(state.fault_detail, ==, 0);
+    g_assert_cmpstr(vc4_qpu_exec_fault_name(state.fault), ==, "varying-read");
+}
+
 static void test_unsupported_signal_fails_closed(void)
 {
     enum { CODE = 0xc000 };
@@ -442,6 +501,10 @@ int main(int argc, char **argv)
     g_test_add_func("/vc4/qpu/last-thread-switch",
                     test_last_thread_switch_signal);
     g_test_add_func("/vc4/qpu/active-lanes", test_active_lane_contract);
+    g_test_add_func("/vc4/qpu/measured-varying-read",
+                    test_measured_varying_read_contract);
+    g_test_add_func("/vc4/qpu/varying-underflow",
+                    test_varying_fifo_underflow_fails_closed);
     g_test_add_func("/vc4/qpu/fail-closed",
                     test_unsupported_signal_fails_closed);
     return g_test_run();
