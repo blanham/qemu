@@ -6,6 +6,12 @@ on:
       - agent/vc4-qpu-varying-fifo
     paths:
       - .github/workflows/vc4-qpu-varying-fifo.yml
+      - scripts/vc4/materialize-varying-fifo.py
+      - hw/display/vc4_qpu_exec.c
+      - include/hw/display/vc4_qpu_exec.h
+      - tests/unit/test-vc4-qpu.c
+      - tests/unit/test-vc4-qpu-contract.c
+      - tests/unit/test-vc4-v3d-pipeline.c
   workflow_dispatch:
 
 permissions:
