@@ -1,0 +1,438 @@
+name: VC4 stock firmware stage-progress measurement
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - .github/workflows/vc4-stock-stage-progress-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-stage-progress-v1
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIXTURE_DIR: /tmp/vc4-stock-stage-fixtures
+      RESULT_DIR: /tmp/vc4-stock-stage-result
+      STATUS_JSON: VC4_STOCK_STAGE_PROGRESS.json
+      STATUS_MD: VC4_STOCK_STAGE_PROGRESS.md
+      WORKFLOW_PATH: .github/workflows/vc4-stock-stage-progress-v1.yml
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies and pin unchanged firmware
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl \
+            libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 zlib1g-dev
+          rm -rf "$FIXTURE_DIR" "$RESULT_DIR"
+          mkdir -p "$FIXTURE_DIR" "$RESULT_DIR"
+          for file in bootcode.bin start.elf fixup.dat bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$FIXTURE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIXTURE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIXTURE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIXTURE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+          aarch64-linux-gnu-as \
+            -o "$FIXTURE_DIR/aarch64-handoff.o" tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -nostdlib -T tests/vc4/aarch64-handoff.ld \
+            -o "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/aarch64-handoff.o"
+          aarch64-linux-gnu-objcopy \
+            -O binary "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/kernel8.img"
+          sha256sum "$FIXTURE_DIR"/* > "$FIXTURE_DIR/SHA256SUMS"
+
+      - name: Build both frontends and preserve control regressions
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/build.log"
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/preg.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$RESULT_DIR/msync.log"
+
+      - name: Measure START.ELF copy and post-copy control flow
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from collections import Counter
+          from datetime import datetime, timezone
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import struct
+          import subprocess
+          import tempfile
+          import time
+
+          fixture = Path(os.environ['FIXTURE_DIR'])
+          result_dir = Path(os.environ['RESULT_DIR'])
+          status_json = Path(os.environ['STATUS_JSON'])
+          status_md = Path(os.environ['STATUS_MD'])
+          source_sha = os.environ.get('GITHUB_SHA')
+
+          helper_path = Path('scripts/vc4/raspi3-stock-arm-payload.py')
+          spec = importlib.util.spec_from_file_location('vc4_handoff', helper_path)
+          if spec is None or spec.loader is None:
+              raise SystemExit('could not import stock handoff helper')
+          handoff = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(handoff)
+          stock = handoff.load_stock_probe()
+
+          start_elf = (fixture / 'start.elf').read_bytes()
+          if start_elf[:6] != b'\x7fELF\x01\x01':
+              raise SystemExit('pinned start.elf is not ELF32 little-endian')
+          entry = struct.unpack_from('<I', start_elf, 24)[0]
+          size = len(start_elf)
+          sentinel_offsets = sorted({
+              0,
+              min(size - 64, 0x40000),
+              min(size - 64, 0x80000),
+              min(size - 64, 0x100000),
+              min(size - 64, 0x180000),
+              min(size - 64, 0x200000),
+              min(size - 64, 0x280000),
+              size - 64,
+          })
+          expected = {
+              offset: start_elf[offset:offset + 64]
+              for offset in sentinel_offsets
+          }
+
+          files = [
+              ('BOOTCODE.BIN', (fixture / 'bootcode.bin').read_bytes()),
+              ('START.ELF', start_elf),
+              ('FIXUP.DAT', (fixture / 'fixup.dat').read_bytes()),
+              ('CONFIG.TXT', handoff.default_config(True)),
+              ('CMDLINE.TXT', b'console=serial0,115200 earlycon=pl011,0x3f201000\n'),
+              ('RPI3.DTB', (fixture / 'bcm2710-rpi-3-b.dtb').read_bytes()),
+              ('KERNEL8.IMG', (fixture / 'kernel8.img').read_bytes()),
+          ]
+          image = result_dir / 'stock-stage-progress.img'
+          layout = stock.build_fat32_image(image, files)
+
+          register_re = re.compile(
+              r'\b([A-Za-z][A-Za-z0-9_]*)\s*=\s*([0-9A-Fa-f]+)'
+          )
+          def parse_registers(text: str) -> dict[str, str]:
+              return {
+                  name.lower(): f'0x{int(value, 16):08x}'
+                  for name, value in register_re.findall(text)
+              }
+
+          sd_base = 0x3f202000
+          sd_offsets = {
+              'cmd': 0x00,
+              'arg': 0x04,
+              'timeout': 0x08,
+              'cdiv': 0x0c,
+              'status': 0x20,
+              'vdd': 0x30,
+              'edm': 0x34,
+              'config': 0x38,
+              'hbct': 0x3c,
+              'hblc': 0x50,
+          }
+          aliases = {
+              'vpu_bus_uncached': 0xc0100000,
+              'ram_physical': 0x00100000,
+          }
+          signature_value = handoff.SIGNATURE
+          timeline = []
+          pc_counts = Counter()
+          first_high_pc = None
+          first_entry_pc = None
+          all_sentinels_at = {}
+          first_tail_match = {}
+          qemu_error = None
+          final_cpu_snapshot = None
+          final_sd = None
+          trace_path = result_dir / 'sd-command.trace'
+          stderr_path = result_dir / 'qemu.stderr'
+
+          with tempfile.TemporaryDirectory(prefix='vc4-stock-stage-') as td:
+              qmp_path = Path(td) / 'qmp.sock'
+              command = [
+                  str(Path('build/qemu-system-aarch64').resolve()),
+                  '-M', 'raspi3b-vc4-hetero',
+                  '-m', '1G',
+                  '-smp', '5',
+                  '-drive', f'file={image},format=raw,if=sd',
+                  '-accel', 'tcg,thread=single',
+                  '-display', 'none',
+                  '-monitor', 'none',
+                  '-serial', 'none',
+                  '-no-reboot',
+                  '-trace', f'enable=sdbus_command,file={trace_path}',
+                  '-d', 'guest_errors,unimp',
+                  '-qmp', f'unix:{qmp_path},server=on,wait=off',
+              ]
+              (result_dir / 'COMMAND.json').write_text(
+                  json.dumps(command, indent=2) + '\n'
+              )
+              with stderr_path.open('wb') as stderr:
+                  process = subprocess.Popen(
+                      command,
+                      stdout=subprocess.DEVNULL,
+                      stderr=stderr,
+                  )
+
+              qmp = None
+              try:
+                  qmp = handoff.wait_for_qmp(qmp_path, process, 15.0)
+                  cpus = qmp.execute('query-cpus-fast')
+                  vpu = next(
+                      item for item in cpus
+                      if 'vc4' in str(item.get('qom-type', '')).lower()
+                  )
+                  vpu_index = int(vpu['cpu-index'])
+                  started = time.monotonic()
+                  deadline = started + 40.0
+                  post_tail_deadline = None
+
+                  while time.monotonic() < deadline:
+                      now = time.monotonic()
+                      elapsed = now - started
+                      raw_regs = qmp.hmp('info registers', cpu_index=vpu_index)
+                      regs = parse_registers(raw_regs)
+                      pc_text = regs.get('pc', 'unknown')
+                      pc = int(pc_text, 16) if pc_text != 'unknown' else None
+                      if pc is not None:
+                          pc_counts[pc_text] += 1
+                          if pc > 0x10000 and first_high_pc is None:
+                              first_high_pc = {
+                                  'elapsed_seconds': elapsed,
+                                  'pc': pc_text,
+                              }
+                          if pc == entry and first_entry_pc is None:
+                              first_entry_pc = {
+                                  'elapsed_seconds': elapsed,
+                                  'pc': pc_text,
+                              }
+
+                      alias_results = {}
+                      for alias_name, base in aliases.items():
+                          matches = []
+                          read_errors = []
+                          for offset in sentinel_offsets:
+                              try:
+                                  actual = qmp.physical_bytes(base + offset, 64)
+                                  matches.append(actual == expected[offset])
+                                  read_errors.append(None)
+                              except Exception as error:
+                                  matches.append(False)
+                                  read_errors.append(
+                                      f'{type(error).__name__}: {error}'
+                                  )
+                          alias_results[alias_name] = {
+                              'matched': matches,
+                              'match_count': sum(matches),
+                              'read_errors': read_errors,
+                          }
+                          if matches[-1] and alias_name not in first_tail_match:
+                              first_tail_match[alias_name] = elapsed
+                          if all(matches) and alias_name not in all_sentinels_at:
+                              all_sentinels_at[alias_name] = elapsed
+                              post_tail_deadline = elapsed + 10.0
+
+                      sd = {}
+                      for name, offset in sd_offsets.items():
+                          try:
+                              sd[name] = f'0x{qmp.readl(sd_base + offset):08x}'
+                          except Exception as error:
+                              sd[name] = f'error:{type(error).__name__}:{error}'
+
+                      signature = qmp.readq(handoff.SIGNATURE_ADDR)
+                      timeline.append({
+                          'elapsed_seconds': elapsed,
+                          'pc': pc_text,
+                          'registers': {
+                              key: regs[key]
+                              for key in ('sp', 'lr', 'sr', 'r0', 'r1', 'r2', 'r3')
+                              if key in regs
+                          },
+                          'signature': f'0x{signature:016x}',
+                          'aliases': alias_results,
+                          'sdhost': sd,
+                      })
+                      if signature == signature_value:
+                          break
+                      if process.poll() is not None:
+                          break
+                      if post_tail_deadline is not None and elapsed >= post_tail_deadline:
+                          break
+                      time.sleep(0.20)
+
+                  try:
+                      qmp.execute('stop')
+                  except Exception:
+                      pass
+                  final_sd = {}
+                  for name, offset in sd_offsets.items():
+                      try:
+                          final_sd[name] = f'0x{qmp.readl(sd_base + offset):08x}'
+                      except Exception as error:
+                          final_sd[name] = f'error:{type(error).__name__}:{error}'
+                  final_cpu_snapshot = handoff.cpu_snapshot(qmp)
+              except Exception as error:
+                  qemu_error = f'{type(error).__name__}: {error}'
+              finally:
+                  if qmp is not None:
+                      try:
+                          if process.poll() is None:
+                              qmp.execute('quit')
+                      except Exception:
+                          pass
+                      qmp.close()
+                  handoff.stop_process(process)
+
+          signature_seen = any(
+              sample['signature'] == f'0x{signature_value:016x}'
+              for sample in timeline
+          )
+          copy_complete = bool(all_sentinels_at)
+          if signature_seen:
+              classification = 'stock-firmware-aarch64-handoff-clear'
+          elif first_entry_pc is not None:
+              classification = 'start-elf-entry-reached-arm-not-released'
+          elif first_high_pc is not None:
+              classification = 'post-bootcode-high-pc-frontier'
+          elif copy_complete:
+              classification = 'start-elf-copied-bootcode-postcopy-frontier'
+          else:
+              classification = 'start-elf-copy-incomplete'
+
+          trace_lines = []
+          if trace_path.is_file():
+              trace_lines = trace_path.read_text(
+                  encoding='utf-8', errors='replace'
+              ).splitlines()
+          command_lines = [line for line in trace_lines if 'sdbus_command' in line]
+
+          report = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': source_sha,
+              'workflow_run_id': os.environ.get('GITHUB_RUN_ID'),
+              'classification': classification,
+              'signature_seen': signature_seen,
+              'start_elf': {
+                  'size': size,
+                  'entry': f'0x{entry:08x}',
+                  'sentinel_offsets': [f'0x{offset:x}' for offset in sentinel_offsets],
+                  'first_tail_match_seconds': first_tail_match,
+                  'all_sentinels_match_seconds': all_sentinels_at,
+                  'copy_complete_by_sentinels': copy_complete,
+              },
+              'first_high_pc': first_high_pc,
+              'first_start_elf_entry_pc': first_entry_pc,
+              'pc_counts': dict(pc_counts.most_common()),
+              'final_sdhost': final_sd,
+              'sd_command_trace': command_lines[-256:],
+              'qemu_error': qemu_error,
+              'qemu_diagnostics_tail': (
+                  stderr_path.read_text(
+                      encoding='utf-8', errors='replace'
+                  ).splitlines()[-256:]
+                  if stderr_path.is_file() else []
+              ),
+              'fat_layout': {name: list(chain) for name, chain in layout.items()},
+              'timeline': timeline,
+              'final_cpu_snapshot': final_cpu_snapshot,
+          }
+          status_json.write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n'
+          )
+
+          md = [
+              '# VC4 stock firmware stage-progress measurement',
+              '',
+              f'- Classification: `{classification}`',
+              f'- ARM witness: `{signature_seen}`',
+              f'- START.ELF size: `{size}` bytes',
+              f'- START.ELF entry: `0x{entry:08x}`',
+              f'- Copy complete by independent sentinels: `{copy_complete}`',
+              f'- First high VPU PC: `{first_high_pc}`',
+              f'- First exact START.ELF entry PC: `{first_entry_pc}`',
+              f'- Final SDHOST state: `{final_sd}`',
+              '',
+              'This is a diagnostic measurement only. It runs unchanged pinned '
+              'firmware under normal single-threaded TCG and does not alter '
+              'firmware, guest memory, timing, interrupts, or SDHOST behavior.',
+              '',
+          ]
+          status_md.write_text('\n'.join(md))
+          print(json.dumps({
+              'classification': classification,
+              'signature_seen': signature_seen,
+              'copy_complete': copy_complete,
+              'first_high_pc': first_high_pc,
+              'first_entry_pc': first_entry_pc,
+              'final_sdhost': final_sd,
+              'commands': command_lines[-32:],
+          }, indent=2, sort_keys=True))
+          PY
+          test -s "$STATUS_JSON"
+          test -s "$STATUS_MD"
+          git diff --check
+
+      - name: Upload complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-stage-progress-${{ github.run_attempt }}
+          path: |
+            VC4_STOCK_STAGE_PROGRESS.json
+            VC4_STOCK_STAGE_PROGRESS.md
+            /tmp/vc4-stock-stage-fixtures/SHA256SUMS
+            /tmp/vc4-stock-stage-result
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish durable measurement and retire one-shot workflow
+        run: |
+          set -euo pipefail
+          git config user.name 'VC4 Stock Firmware CI'
+          git config user.email 'vc4-stock-firmware-ci@users.noreply.github.com'
+          git add "$STATUS_JSON" "$STATUS_MD"
+          git rm -- "$WORKFLOW_PATH"
+          git diff --cached --check
+          git commit -m 'tests/vc4: record stock firmware stage progress [skip ci]'
+          git pull --rebase origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
