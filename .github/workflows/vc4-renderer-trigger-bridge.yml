@@ -1,0 +1,162 @@
+name: VC4 renderer branch-native trigger bridge
+
+on:
+  push:
+    branches:
+      - agent/vc4-linux-mesa-gles2-frontier
+    paths:
+      - VC4_LINUX_MESA_GLES2_STATUS.json
+      - VC4_CONTINUATION_T002_STATUS.json
+      - .github/workflows/vc4-renderer-trigger-bridge.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-renderer-trigger-bridge
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BRANCH: agent/vc4-linux-mesa-gles2-frontier
+      STATE: VC4_RENDERER_TRIGGER_BRIDGE.json
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Touch branch-native workflows for fresh evidence only
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import json
+          import os
+          import subprocess
+          import time
+
+          state_path = Path(os.environ['STATE'])
+          state = {
+              'last_mesa_commit': '',
+              'last_continuation_commit': '',
+              'touched': [],
+          }
+          if state_path.is_file():
+              loaded = json.loads(state_path.read_text())
+              if isinstance(loaded, dict):
+                  state.update(loaded)
+
+          def last_commit(path: str) -> str:
+              if not Path(path).is_file():
+                  return ''
+              return subprocess.check_output(
+                  ['git', 'log', '-1', '--format=%H', '--', path],
+                  text=True,
+              ).strip()
+
+          mesa_path = Path('VC4_LINUX_MESA_GLES2_STATUS.json')
+          cont_path = Path('VC4_CONTINUATION_T002_STATUS.json')
+          mesa_commit = last_commit(str(mesa_path))
+          cont_commit = last_commit(str(cont_path))
+          touched = []
+
+          varying_ready = False
+          complete = False
+          if mesa_path.is_file():
+              mesa = json.loads(mesa_path.read_text())
+              source_sha = str(
+                  mesa.get('source_sha') or mesa.get('tested_source_sha') or ''
+              )
+              text = json.dumps(mesa).lower()
+              complete = any((
+                  mesa.get('complete') is True,
+                  mesa.get('passed') is True,
+                  'vc4_linux_mesa_gles2_ok' in text,
+                  'vc4_linux_mesa_gles2_pixels_ok' in text,
+              ))
+              if source_sha:
+                  try:
+                      header = subprocess.check_output(
+                          ['git', 'show', f'{source_sha}:include/hw/display/vc4_qpu_exec.h'],
+                          text=True,
+                          stderr=subprocess.DEVNULL,
+                      )
+                      source = subprocess.check_output(
+                          ['git', 'show', f'{source_sha}:hw/display/vc4_qpu_exec.c'],
+                          text=True,
+                          stderr=subprocess.DEVNULL,
+                      )
+                      varying_ready = (
+                          'VC4_QPU_EXEC_FAULT_VARYING_READ' in header
+                          and 'VC4_QPU_REG_VARYING' in source
+                      )
+                  except subprocess.CalledProcessError:
+                      pass
+
+          stamp = f"# branch-native dispatch {int(time.time())}"
+          driver = Path('.github/workflows/vc4-continuation-t002-driver.yml')
+          if (
+              mesa_commit
+              and mesa_commit != state.get('last_mesa_commit')
+              and varying_ready
+              and not complete
+              and driver.is_file()
+          ):
+              driver.write_text(driver.read_text() + f"\n{stamp} mesa={mesa_commit}\n")
+              touched.append(str(driver))
+              state['last_mesa_commit'] = mesa_commit
+
+          if (
+              cont_commit
+              and cont_commit != state.get('last_continuation_commit')
+              and mesa_commit
+              and cont_commit != mesa_commit
+              and subprocess.run(
+                  ['git', 'merge-base', '--is-ancestor', mesa_commit, cont_commit],
+                  check=False,
+              ).returncode == 0
+          ):
+              candidates = sorted(
+                  path for path in Path('.github/workflows').glob('*.yml')
+                  if any(token in path.name.lower() for token in ('tmu', 'readback'))
+                  and (
+                      ('candidate' in path.name.lower() and 'evaluat' in path.name.lower())
+                      or ('integration' in path.name.lower() and 'verif' in path.name.lower())
+                      or ('readback' in path.name.lower() and 'evaluat' in path.name.lower())
+                  )
+              for path in candidates:
+                  path.write_text(path.read_text() + f"\n{stamp} continuation={cont_commit}\n")
+                  touched.append(str(path))
+              if candidates:
+                  state['last_continuation_commit'] = cont_commit
+
+          state['touched'] = touched
+          state['observed_mesa_commit'] = mesa_commit
+          state['observed_continuation_commit'] = cont_commit
+          state['complete'] = complete
+          state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
+          PY
+
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git add "$STATE" .github/workflows
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci/vc4: trigger renderer tranche from fresh evidence [skip ci]'
+            for attempt in 1 2 3; do
+              git fetch origin "$BRANCH"
+              if git rebase "origin/$BRANCH" && \
+                 git push origin "HEAD:$BRANCH"; then
+                exit 0
+              fi
+              git rebase --abort || true
+              sleep 2
+            done
+            exit 1
+          fi
