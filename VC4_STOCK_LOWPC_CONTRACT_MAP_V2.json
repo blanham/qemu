@@ -1,0 +1,17 @@
+{
+  "disposition": "blocked-no-low-pc-access-contract",
+  "generated_at": "2026-09-10T05:42:04.436303+00:00",
+  "guardrails": {
+    "firmware_patching_forbidden": true,
+    "forced_arm_release_forbidden": true,
+    "pc_0x544_special_case_forbidden": true,
+    "qtest_time_bypass_forbidden": true,
+    "synthetic_interrupt_forbidden": true
+  },
+  "ranked_contracts": [],
+  "record_count": 0,
+  "source_sha": "92127baf93e6e6b059468a5ba23d04d342c10329",
+  "trace_classification": "harness-no-csv-records",
+  "trace_run_id": "34441690551",
+  "trace_source_sha": "725a44fe7d537f58da2be850df69bb8f470e9d44"
+}
