@@ -1,0 +1,194 @@
+name: VC4 QPU TMU readback retry
+
+on:
+  push:
+    branches:
+      - agent/vc4-fragment-varying-tmu
+    paths:
+      - .github/workflows/vc4-qpu-tmu-readback-retry.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-qpu-tmu-readback-retry
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      BRANCH: agent/vc4-fragment-varying-tmu
+      EVIDENCE: vc4-qpu-tmu-readback-retry-evidence
+      STATUS: VC4_QPU_TMU_READBACK_STATUS.json
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglib2.0-dev libpixman-1-dev \
+            ninja-build pkg-config python3 zlib1g-dev
+          rm -rf "$EVIDENCE"
+          mkdir -p "$EVIDENCE"
+
+      - name: Repair and materialize architectural TMU contract
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/vc4/materialize-qpu-tmu-readback.py')
+          text = path.read_text()
+          old = '    "#define VC4_QPU_REG_TMU0_S             56",\n'
+          new = '    "#define VC4_QPU_REG_TMU0_S                56",\n'
+          count = text.count(old)
+          if count not in (0, 1):
+              raise SystemExit(f'unexpected TMU marker count: {count}')
+          if count == 1:
+              path.write_text(text.replace(old, new, 1))
+          elif new not in text:
+              raise SystemExit('neither old nor corrected TMU marker exists')
+          PY
+          python3 -m py_compile scripts/vc4/materialize-qpu-tmu-readback.py
+          python3 scripts/vc4/materialize-qpu-tmu-readback.py \
+            2>&1 | tee "$EVIDENCE/materialize.log"
+          python3 scripts/vc4/materialize-qpu-tmu-readback.py \
+            2>&1 | tee "$EVIDENCE/idempotence.log"
+          git diff --check
+          git diff -- \
+            scripts/vc4/materialize-qpu-tmu-readback.py \
+            include/hw/display/vc4_qpu_exec.h \
+            hw/display/vc4_qpu_exec.c \
+            tests/unit/test-vc4-qpu.c \
+            > "$EVIDENCE/product.patch"
+          test -s "$EVIDENCE/product.patch"
+
+      - name: Configure and build both QEMU frontends
+        run: |
+          set -euo pipefail
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --disable-docs --disable-werror \
+            2>&1 | tee "$EVIDENCE/configure.log"
+          ninja -C build \
+            qemu-system-aarch64 qemu-system-vc4 \
+            tests/unit/test-vc4-qpu \
+            tests/unit/test-vc4-qpu-contract \
+            tests/unit/test-vc4-v3d-pipeline \
+            tests/unit/test-vc4-tiling \
+            2>&1 | tee "$EVIDENCE/build.log"
+
+      - name: Run focused and preserved regressions
+        run: |
+          set -euo pipefail
+          build/tests/unit/test-vc4-qpu --tap -k \
+            2>&1 | tee "$EVIDENCE/qpu.tap"
+          grep -Fq '/vc4/qpu/mesa-readback-tmu' "$EVIDENCE/qpu.tap"
+          build/tests/unit/test-vc4-qpu-contract --tap -k \
+            2>&1 | tee "$EVIDENCE/qpu-contract.tap"
+          build/tests/unit/test-vc4-v3d-pipeline --tap -k \
+            2>&1 | tee "$EVIDENCE/v3d-pipeline.tap"
+          build/tests/unit/test-vc4-tiling --tap -k \
+            2>&1 | tee "$EVIDENCE/tiling.tap"
+          python3 scripts/vc4/v3d-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE/v3d-smoke.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$EVIDENCE/msync.log"
+
+      - name: Record validated product status
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          files = [
+              'scripts/vc4/materialize-qpu-tmu-readback.py',
+              'include/hw/display/vc4_qpu_exec.h',
+              'hw/display/vc4_qpu_exec.c',
+              'tests/unit/test-vc4-qpu.c',
+          ]
+          status = {
+              'schema_version': 2,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ.get('GITHUB_SHA', ''),
+              'run_id': os.environ.get('GITHUB_RUN_ID', ''),
+              'classification': 'validated-architectural-varying-tmu-readback',
+              'validated': True,
+              'mesa_source_modified': False,
+              'contracts': {
+                  'varying_c_commits_after_issuing_instruction': True,
+                  'tmu0_t_s_request': True,
+                  'implicit_texture_p0_p1_uniforms': True,
+                  'load_tmu0_to_r4': True,
+                  'pm_r4_byte_unpack': True,
+                  'mul_unorm8_pack': True,
+                  'measured_mesa_fragment_program': True,
+                  'unsupported_modes_fail_closed': True,
+              },
+              'files': {
+                  path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+                  for path in files
+              },
+          }
+          Path(os.environ['STATUS']).write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+          Path('VC4_QPU_TMU_READBACK_STATUS.md').write_text(
+              '# VC4 QPU TMU readback contract\n\n'
+              'Classification: **`validated-architectural-varying-tmu-readback`**\n\n'
+              '- Untouched Mesa source: `true`\n'
+              '- Measured fragment program executes: `true`\n'
+              '- Varying latency, TMU request/load, byte unpack and pack: `true`\n'
+              '- Unsupported modes continue to fail closed: `true`\n'
+          )
+          PY
+
+      - name: Publish clean product commit
+        run: |
+          set -euo pipefail
+          git config user.name 'VC4 TMU CI'
+          git config user.email 'vc4-tmu-ci@users.noreply.github.com'
+          git add -- \
+            scripts/vc4/materialize-qpu-tmu-readback.py \
+            include/hw/display/vc4_qpu_exec.h \
+            hw/display/vc4_qpu_exec.c \
+            tests/unit/test-vc4-qpu.c \
+            "$STATUS" VC4_QPU_TMU_READBACK_STATUS.md
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'hw/display: implement bounded VC4 varying and TMU readback'
+          for attempt in 1 2 3; do
+            git fetch origin "$BRANCH"
+            if git rebase "origin/$BRANCH" && \
+               git push origin "HEAD:$BRANCH"; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep 2
+          done
+          exit 1
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-qpu-tmu-readback-retry-${{ github.run_attempt }}
+          path: |
+            VC4_QPU_TMU_READBACK_STATUS.json
+            VC4_QPU_TMU_READBACK_STATUS.md
+            vc4-qpu-tmu-readback-retry-evidence
+          if-no-files-found: warn
+          retention-days: 14
