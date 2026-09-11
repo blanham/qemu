@@ -1,0 +1,593 @@
+name: VC4 stock START.ELF control-flow trace
+
+on:
+  push:
+    branches:
+      - agent/vc4-stock-arm-handoff-recovered
+    paths:
+      - .github/workflows/vc4-stock-startelf-flow-trace.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-stock-startelf-flow-trace
+  cancel-in-progress: false
+
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      BRANCH: agent/vc4-stock-arm-handoff-recovered
+      RPI_FIRMWARE_COMMIT: 3d301dd924bcd758a4c8cb19fe8531031f033f43
+      FIXTURE_DIR: /tmp/vc4-stock-flow-fixtures
+      RESULT_DIR: /tmp/vc4-stock-flow-result
+      STATUS_JSON: VC4_STOCK_STARTELF_FLOW_STATUS.json
+      STATUS_MD: VC4_STOCK_STARTELF_FLOW_STATUS.md
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Pin unchanged firmware and build ARM witness payload
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils-aarch64-linux-gnu curl gcc-aarch64-linux-gnu \
+            libglib2.0-dev libpixman-1-dev ninja-build pkg-config \
+            python3 zlib1g-dev zstd
+          rm -rf "$FIXTURE_DIR" "$RESULT_DIR"
+          mkdir -p "$FIXTURE_DIR" "$RESULT_DIR"
+
+          for file in bootcode.bin start.elf fixup.dat bcm2710-rpi-3-b.dtb; do
+            curl --fail --location --retry 5 \
+              --output "$FIXTURE_DIR/$file" \
+              "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_COMMIT}/boot/$file"
+          done
+          test "$(git hash-object "$FIXTURE_DIR/bootcode.bin")" = \
+            7642d2d89e4235e7d68875ff70688bdde6e71b5a
+          test "$(git hash-object "$FIXTURE_DIR/start.elf")" = \
+            0cefcf3a756740760f9903f35cc3843117853712
+          test "$(git hash-object "$FIXTURE_DIR/fixup.dat")" = \
+            1845e38de9d4f9a6d9ad7f5273bfe58b2582a7e6
+          test "$(git hash-object "$FIXTURE_DIR/bcm2710-rpi-3-b.dtb")" = \
+            398c480adc49a5fcb03aa4c095ea74db5d1f893b
+
+          aarch64-linux-gnu-as \
+            -o "$FIXTURE_DIR/aarch64-handoff.o" tests/vc4/aarch64-handoff.S
+          aarch64-linux-gnu-ld \
+            -nostdlib -T tests/vc4/aarch64-handoff.ld \
+            -o "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/aarch64-handoff.o"
+          aarch64-linux-gnu-objcopy \
+            -O binary "$FIXTURE_DIR/aarch64-handoff.elf" \
+            "$FIXTURE_DIR/kernel8.img"
+          sha256sum "$FIXTURE_DIR"/* > "$FIXTURE_DIR/SHA256SUMS"
+
+      - name: Build clean QEMU frontends and bounded execution-ring plugin
+        run: |
+          set -euo pipefail
+          cat > tests/tcg/plugins/startelf_flow.c <<'EOF'
+          #include <inttypes.h>
+          #include <limits.h>
+          #include <stdbool.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <glib.h>
+          #include <qemu-plugin.h>
+
+          QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
+
+          #define STARTELF_LO UINT64_C(0x1ec00000)
+          #define STARTELF_HI UINT64_C(0x1f000000)
+          #define LOW_ESCAPE  UINT64_C(0x00010000)
+          #define RING_SIZE 4096
+          #define MAX_TRANSITIONS 64
+          #define POST_ESCAPE 96
+
+          typedef struct InsnInfo {
+              uint64_t pc;
+              uint32_t size;
+          } InsnInfo;
+
+          typedef struct RingEntry {
+              uint64_t sequence;
+              uint64_t pc;
+              uint32_t size;
+          } RingEntry;
+
+          typedef struct Transition {
+              uint64_t sequence;
+              uint64_t from_pc;
+              uint64_t to_pc;
+          } Transition;
+
+          static GPtrArray *infos;
+          static GMutex lock;
+          static RingEntry ring_entries[RING_SIZE];
+          static Transition transitions[MAX_TRANSITIONS];
+          static size_t ring_head;
+          static size_t ring_count;
+          static size_t transition_count;
+          static uint64_t sequence;
+          static uint64_t high_instruction_count;
+          static uint64_t previous_pc;
+          static unsigned tracked_cpu = UINT_MAX;
+          static int post_escape = -1;
+          static bool previous_was_startelf;
+          static bool entered;
+          static bool escaped;
+          static bool frozen;
+          static uint64_t escape_pc;
+
+          static bool is_startelf(uint64_t pc)
+          {
+              return pc >= STARTELF_LO && pc < STARTELF_HI;
+          }
+
+          static void record_entry(uint64_t pc, uint32_t size)
+          {
+              RingEntry *entry = &ring_entries[ring_head];
+
+              entry->sequence = sequence;
+              entry->pc = pc;
+              entry->size = size;
+              ring_head = (ring_head + 1) % RING_SIZE;
+              if (ring_count < RING_SIZE) {
+                  ring_count++;
+              }
+          }
+
+          static void vcpu_insn_exec(unsigned int cpu_index, void *userdata)
+          {
+              const InsnInfo *info = userdata;
+              bool current_is_startelf = is_startelf(info->pc);
+
+              g_mutex_lock(&lock);
+              if (frozen) {
+                  g_mutex_unlock(&lock);
+                  return;
+              }
+
+              if (!entered) {
+                  if (!current_is_startelf) {
+                      g_mutex_unlock(&lock);
+                      return;
+                  }
+                  entered = true;
+                  tracked_cpu = cpu_index;
+              }
+              if (cpu_index != tracked_cpu) {
+                  g_mutex_unlock(&lock);
+                  return;
+              }
+
+              sequence++;
+              record_entry(info->pc, info->size);
+              if (current_is_startelf) {
+                  high_instruction_count++;
+              }
+
+              if (previous_was_startelf && !current_is_startelf &&
+                  transition_count < MAX_TRANSITIONS) {
+                  transitions[transition_count++] = (Transition) {
+                      .sequence = sequence,
+                      .from_pc = previous_pc,
+                      .to_pc = info->pc,
+                  };
+              }
+
+              if (!escaped && high_instruction_count >= 64 &&
+                  previous_was_startelf && !current_is_startelf &&
+                  (info->pc < LOW_ESCAPE || info->pc >= UINT64_C(0x40000000))) {
+                  escaped = true;
+                  escape_pc = info->pc;
+                  post_escape = POST_ESCAPE;
+              } else if (escaped && post_escape > 0) {
+                  post_escape--;
+                  if (post_escape == 0) {
+                      frozen = true;
+                  }
+              }
+
+              previous_pc = info->pc;
+              previous_was_startelf = current_is_startelf;
+              g_mutex_unlock(&lock);
+          }
+
+          static void vcpu_tb_trans(struct qemu_plugin_tb *tb, void *userdata)
+          {
+              size_t count = qemu_plugin_tb_n_insns(tb);
+
+              for (size_t index = 0; index < count; index++) {
+                  struct qemu_plugin_insn *insn =
+                      qemu_plugin_tb_get_insn(tb, index);
+                  InsnInfo *info = g_new0(InsnInfo, 1);
+
+                  info->pc = qemu_plugin_insn_vaddr(insn);
+                  info->size = qemu_plugin_insn_size(insn);
+                  g_ptr_array_add(infos, info);
+                  qemu_plugin_register_vcpu_insn_exec_cb(
+                      insn, vcpu_insn_exec, QEMU_PLUGIN_CB_NO_REGS, info);
+              }
+          }
+
+          static void plugin_exit(void *opaque)
+          {
+              GString *out = g_string_new(NULL);
+              size_t oldest;
+
+              g_mutex_lock(&lock);
+              g_string_append_printf(
+                  out,
+                  "STARTELF_FLOW_SUMMARY entered=%u escaped=%u frozen=%u "
+                  "cpu=%u high_insns=%" PRIu64 " escape=0x%016" PRIx64 "\n",
+                  entered, escaped, frozen, tracked_cpu,
+                  high_instruction_count, escape_pc);
+              for (size_t index = 0; index < transition_count; index++) {
+                  const Transition *event = &transitions[index];
+                  g_string_append_printf(
+                      out,
+                      "STARTELF_FLOW_TRANSITION sequence=%" PRIu64
+                      " from=0x%016" PRIx64 " to=0x%016" PRIx64 "\n",
+                      event->sequence, event->from_pc, event->to_pc);
+              }
+              g_string_append(out, "STARTELF_FLOW_RING_BEGIN\n");
+              oldest = (ring_head + RING_SIZE - ring_count) % RING_SIZE;
+              for (size_t index = 0; index < ring_count; index++) {
+                  const RingEntry *entry =
+                      &ring_entries[(oldest + index) % RING_SIZE];
+                  g_string_append_printf(
+                      out,
+                      "STARTELF_FLOW sequence=%" PRIu64
+                      " pc=0x%016" PRIx64 " size=%u\n",
+                      entry->sequence, entry->pc, entry->size);
+              }
+              g_string_append(out, "STARTELF_FLOW_RING_END\n");
+              g_mutex_unlock(&lock);
+
+              qemu_plugin_outs(out->str);
+              g_string_free(out, TRUE);
+              g_ptr_array_free(infos, TRUE);
+          }
+
+          QEMU_PLUGIN_EXPORT int qemu_plugin_install(
+              qemu_plugin_id_t id, const qemu_info_t *info,
+              int argc, char **argv)
+          {
+              infos = g_ptr_array_new_with_free_func(g_free);
+              qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans, NULL);
+              qemu_plugin_register_atexit_cb(id, plugin_exit, NULL);
+              return 0;
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/tcg/plugins/meson.build')
+          text = path.read_text()
+          anchor = "'insn.c',\n"
+          if text.count(anchor) != 1:
+              raise SystemExit('plugin meson anchor changed')
+          path.write_text(text.replace(anchor, anchor + "'startelf_flow.c',\n", 1))
+          PY
+
+          ./configure \
+            --target-list=aarch64-softmmu,vc4-softmmu \
+            --enable-plugins --disable-docs --disable-werror \
+            2>&1 | tee "$RESULT_DIR/configure.log"
+          ninja -C build qemu-system-aarch64 qemu-system-vc4 test-plugins \
+            2>&1 | tee "$RESULT_DIR/build.log"
+          plugin=$(find build -type f -name 'libstartelf_flow.so' -print -quit)
+          test -n "$plugin"
+          realpath "$plugin" > "$RESULT_DIR/PLUGIN_PATH"
+          sha256sum "$plugin" > "$RESULT_DIR/PLUGIN_SHA256"
+
+          git checkout -- tests/tcg/plugins/meson.build
+          rm -f tests/tcg/plugins/startelf_flow.c
+          git diff --check
+
+      - name: Preserve heterogeneous CPU contracts and build firmware volume
+        run: |
+          set -euo pipefail
+          python3 scripts/vc4/preg-mutex-smoke.py \
+            --qemu build/qemu-system-vc4 \
+            2>&1 | tee "$RESULT_DIR/preg.log"
+          python3 scripts/vc4/msync-smoke.py \
+            --qemu build/qemu-system-aarch64 \
+            2>&1 | tee "$RESULT_DIR/msync.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import importlib.util
+
+          scripts = Path('scripts/vc4')
+          spec = importlib.util.spec_from_file_location(
+              'vc4_stock_handoff', scripts / 'raspi3-stock-arm-payload.py')
+          if spec is None or spec.loader is None:
+              raise SystemExit('could not load stock handoff helper')
+          handoff = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(handoff)
+          stock = handoff.load_stock_probe()
+          fixtures = Path('/tmp/vc4-stock-flow-fixtures')
+          result = Path('/tmp/vc4-stock-flow-result')
+          files = [
+              ('BOOTCODE.BIN', (fixtures / 'bootcode.bin').read_bytes()),
+              ('START.ELF', (fixtures / 'start.elf').read_bytes()),
+              ('FIXUP.DAT', (fixtures / 'fixup.dat').read_bytes()),
+              ('CONFIG.TXT', handoff.default_config(True)),
+              ('CMDLINE.TXT', b'console=serial0,115200 earlycon=pl011,0x3f201000\n'),
+              ('RPI3.DTB', (fixtures / 'bcm2710-rpi-3-b.dtb').read_bytes()),
+              ('KERNEL8.IMG', (fixtures / 'kernel8.img').read_bytes()),
+          ]
+          layout = stock.build_fat32_image(result / 'stock-flow.img', files)
+          (result / 'FAT_LAYOUT.txt').write_text(
+              '\n'.join(f'{name}: {chain}' for name, chain in layout.items()) + '\n'
+          )
+          PY
+
+      - name: Capture exact execution ring under normal TCG
+        run: |
+          set -euo pipefail
+          plugin=$(cat "$RESULT_DIR/PLUGIN_PATH")
+          command=(
+            build/qemu-system-aarch64
+            -M raspi3b-vc4-hetero
+            -m 1G
+            -smp 5
+            -drive "file=$RESULT_DIR/stock-flow.img,format=raw,if=sd"
+            -accel tcg,thread=single
+            -display none
+            -monitor none
+            -serial none
+            -no-reboot
+            -plugin "$plugin"
+            -d plugin,guest_errors,unimp
+            -D "$RESULT_DIR/flow.log"
+          )
+          printf '%s\n' "${command[@]}" > "$RESULT_DIR/COMMAND_ARGS"
+          set +e
+          timeout --signal=TERM --kill-after=5s 35s \
+            "${command[@]}" \
+            >"$RESULT_DIR/qemu.stdout" \
+            2>"$RESULT_DIR/qemu.stderr"
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" > "$RESULT_DIR/RETURN_CODE"
+          case "$rc" in
+            0|124|143) ;;
+            *) cat "$RESULT_DIR/qemu.stderr" >&2; exit "$rc" ;;
+          esac
+          cat "$RESULT_DIR/flow.log" \
+              "$RESULT_DIR/qemu.stdout" \
+              "$RESULT_DIR/qemu.stderr" \
+              > "$RESULT_DIR/combined.log"
+          grep -Fq 'STARTELF_FLOW_SUMMARY' "$RESULT_DIR/combined.log"
+
+      - name: Classify and map the control-flow escape to official ELF bytes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+          import re
+          import struct
+
+          result_dir = Path('/tmp/vc4-stock-flow-result')
+          fixture_dir = Path('/tmp/vc4-stock-flow-fixtures')
+          text = (result_dir / 'combined.log').read_text(errors='replace')
+          start_elf = (fixture_dir / 'start.elf').read_bytes()
+
+          summaries = re.findall(
+              r'STARTELF_FLOW_SUMMARY entered=(\d+) escaped=(\d+) frozen=(\d+) '
+              r'cpu=(\d+) high_insns=(\d+) escape=(0x[0-9a-fA-F]+)', text
+          )
+          if not summaries:
+              raise SystemExit('missing STARTELF flow summary')
+          entered_s, escaped_s, frozen_s, cpu_s, high_s, escape_s = summaries[-1]
+          entered = entered_s == '1'
+          escaped = escaped_s == '1'
+          frozen = frozen_s == '1'
+          tracked_cpu = int(cpu_s)
+          high_insns = int(high_s)
+          escape_pc = int(escape_s, 16)
+
+          transitions = []
+          for sequence, source, target in re.findall(
+              r'STARTELF_FLOW_TRANSITION sequence=(\d+) '
+              r'from=(0x[0-9a-fA-F]+) to=(0x[0-9a-fA-F]+)', text
+          ):
+              transitions.append({
+                  'sequence': int(sequence),
+                  'from_pc': source,
+                  'to_pc': target,
+              })
+
+          ring = []
+          for sequence, pc, size in re.findall(
+              r'STARTELF_FLOW sequence=(\d+) '
+              r'pc=(0x[0-9a-fA-F]+) size=(\d+)', text
+          ):
+              ring.append({
+                  'sequence': int(sequence),
+                  'pc': pc,
+                  'pc_int': int(pc, 16),
+                  'size': int(size),
+              })
+
+          if start_elf[:4] != b'\x7fELF' or start_elf[4] != 1 or start_elf[5] != 1:
+              raise SystemExit('START.ELF is not little-endian ELF32')
+          e_phoff = struct.unpack_from('<I', start_elf, 28)[0]
+          e_phentsize = struct.unpack_from('<H', start_elf, 42)[0]
+          e_phnum = struct.unpack_from('<H', start_elf, 44)[0]
+          segments = []
+          for index in range(e_phnum):
+              offset = e_phoff + index * e_phentsize
+              p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align = \
+                  struct.unpack_from('<IIIIIIII', start_elf, offset)
+              if p_type != 1 or p_filesz == 0:
+                  continue
+              runtime_base = 0x10000000 + (p_vaddr & 0x3fffffff)
+              segments.append({
+                  'index': index,
+                  'file_offset': p_offset,
+                  'vaddr': p_vaddr,
+                  'runtime_base': runtime_base,
+                  'file_size': p_filesz,
+                  'memory_size': p_memsz,
+                  'flags': p_flags,
+              })
+
+          def map_instruction(entry):
+              pc = entry['pc_int']
+              mapped = {
+                  'sequence': entry['sequence'],
+                  'pc': entry['pc'],
+                  'size': entry['size'],
+                  'mapped': False,
+              }
+              for segment in segments:
+                  base = segment['runtime_base']
+                  if base <= pc < base + segment['file_size']:
+                      file_offset = segment['file_offset'] + pc - base
+                      size = max(1, min(entry['size'], 10))
+                      mapped.update({
+                          'mapped': True,
+                          'segment': segment['index'],
+                          'file_offset': file_offset,
+                          'bytes': start_elf[file_offset:file_offset + size].hex(),
+                      })
+                      break
+              return mapped
+
+          mapped_ring = [map_instruction(entry) for entry in ring]
+          mapped_high = [entry for entry in mapped_ring if entry['mapped']]
+          final_high = mapped_high[-128:]
+
+          command_args = (result_dir / 'COMMAND_ARGS').read_text().splitlines()
+          normal_tcg = (
+              '-accel' in command_args and
+              command_args[command_args.index('-accel') + 1] == 'tcg,thread=single' and
+              '-icount' not in command_args and
+              not any('one-insn' in arg for arg in command_args)
+          )
+
+          if not entered:
+              classification = 'stock-startelf-flow-not-entered'
+              next_contract = 'find the pre-entry control-flow regression'
+          elif escaped and escape_pc < 0x10000:
+              classification = 'stock-startelf-control-flow-escape-to-low-memory'
+              next_contract = 'decode the final mapped START.ELF instructions and repair the architectural branch/return contract'
+          elif escaped:
+              classification = 'stock-startelf-control-flow-escape-outside-image'
+              next_contract = 'identify the architectural producer of the measured external target'
+          else:
+              classification = 'stock-startelf-executing-no-bounded-escape'
+              next_contract = 'extend the execution window or trace the next device interaction'
+
+          status = {
+              'schema_version': 1,
+              'generated_at': datetime.now(timezone.utc).isoformat(),
+              'source_sha': os.environ.get('GITHUB_SHA', ''),
+              'run_id': os.environ.get('GITHUB_RUN_ID', ''),
+              'classification': classification,
+              'next_contract': next_contract,
+              'normal_tcg': normal_tcg,
+              'official_firmware_commit': os.environ['RPI_FIRMWARE_COMMIT'],
+              'official_start_elf_sha256': hashlib.sha256(start_elf).hexdigest(),
+              'entered_startelf': entered,
+              'escaped_startelf': escaped,
+              'ring_frozen_after_escape': frozen,
+              'tracked_cpu': tracked_cpu,
+              'high_instruction_count': high_insns,
+              'escape_pc': f'0x{escape_pc:08x}',
+              'transition_count': len(transitions),
+              'transitions': transitions,
+              'ring_entry_count': len(ring),
+              'elf_load_segments': segments,
+              'final_mapped_instructions': final_high,
+          }
+          Path(os.environ['STATUS_JSON']).write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n'
+          )
+
+          lines = [
+              '# VC4 stock START.ELF control-flow trace', '',
+              f'Classification: **`{classification}`**', '',
+              f'- Normal TCG: `{normal_tcg}`',
+              f'- Entered START.ELF: `{entered}`',
+              f'- High-range instructions observed: `{high_insns}`',
+              f'- Escape captured: `{escaped}`',
+              f'- Escape target: `0x{escape_pc:08x}`',
+              f'- Tracked CPU: `{tracked_cpu}`',
+              f'- Official START.ELF SHA-256: `{hashlib.sha256(start_elf).hexdigest()}`', '',
+              '## Final mapped instruction bytes', '',
+          ]
+          for entry in final_high[-64:]:
+              lines.append(
+                  f"- seq `{entry['sequence']}` pc `{entry['pc']}` "
+                  f"size `{entry['size']}` file `0x{entry['file_offset']:x}` "
+                  f"bytes `{entry['bytes']}`"
+              )
+          lines += ['', '## Next contract', '', next_contract, '']
+          Path(os.environ['STATUS_MD']).write_text('\n'.join(lines))
+          print(json.dumps(status, indent=2, sort_keys=True))
+          if not normal_tcg:
+              raise SystemExit('normal TCG contract was not preserved')
+          PY
+
+      - name: Publish exact control-flow frontier
+        run: |
+          set -euo pipefail
+          git config user.name 'VC4 START.ELF Flow CI'
+          git config user.email 'vc4-startelf-flow-ci@users.noreply.github.com'
+          git add -- "$STATUS_JSON" "$STATUS_MD"
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'tests/vc4: record START.ELF control-flow frontier [skip ci]'
+          for attempt in 1 2 3; do
+            git fetch origin "$BRANCH"
+            if git rebase "origin/$BRANCH" && \
+               git push origin "HEAD:$BRANCH"; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep 2
+          done
+          exit 1
+
+      - name: Compress and upload diagnostic evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "$RESULT_DIR/stock-flow.img"
+          for file in flow.log combined.log; do
+            if test -s "$RESULT_DIR/$file"; then
+              zstd -T0 -3 -f "$RESULT_DIR/$file" \
+                -o "$RESULT_DIR/$file.zst"
+              rm -f "$RESULT_DIR/$file"
+            fi
+          done
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vc4-stock-startelf-flow-${{ github.run_attempt }}
+          path: |
+            VC4_STOCK_STARTELF_FLOW_STATUS.json
+            VC4_STOCK_STARTELF_FLOW_STATUS.md
+            /tmp/vc4-stock-flow-fixtures/SHA256SUMS
+            /tmp/vc4-stock-flow-result
+          if-no-files-found: warn
+          retention-days: 14
