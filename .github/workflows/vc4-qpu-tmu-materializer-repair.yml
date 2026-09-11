@@ -1,0 +1,59 @@
+name: VC4 QPU TMU materializer repair
+
+on:
+  push:
+    branches:
+      - agent/vc4-fragment-varying-tmu
+    paths:
+      - .github/workflows/vc4-qpu-tmu-materializer-repair.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vc4-qpu-tmu-materializer-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Repair exact marker and retrigger validation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          script = Path('scripts/vc4/materialize-qpu-tmu-readback.py')
+          text = script.read_text()
+          old = '    "#define VC4_QPU_REG_TMU0_S             56",\n'
+          new = '    "#define VC4_QPU_REG_TMU0_S                56",\n'
+          if text.count(old) != 1:
+              raise SystemExit(
+                  f'TMU marker repair expected one match, found {text.count(old)}'
+              )
+          script.write_text(text.replace(old, new, 1))
+
+          driver = Path('.github/workflows/vc4-qpu-tmu-readback.yml')
+          driver.write_text(
+              driver.read_text() +
+              '\n# retrigger after exact TMU materializer marker repair\n'
+          )
+          PY
+
+          git config user.name 'VC4 CI'
+          git config user.email 'vc4-ci@users.noreply.github.com'
+          git rm -- .github/workflows/vc4-qpu-tmu-materializer-repair.yml
+          git add -- \
+            scripts/vc4/materialize-qpu-tmu-readback.py \
+            .github/workflows/vc4-qpu-tmu-readback.yml
+          git diff --cached --check
+          git commit -m 'scripts/vc4: fix TMU materializer verification marker'
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
