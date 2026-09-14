@@ -34,7 +34,7 @@ MARKERS = (
     "bool tmu0_request_pending;",
     "bool vc4_qpu_exec_set_tmu0(",
     "#define VC4_QPU_TMU0_LOAD_SIGNAL      10",
-    "#define VC4_QPU_REG_TMU0_S             56",
+    "#define VC4_QPU_REG_TMU0_S                56",
     "static bool vc4_qpu_exec_load_tmu0(",
     "static bool vc4_qpu_exec_unpack_r4(",
     "static void test_mesa_readback_fragment_tmu(void)",
@@ -345,11 +345,15 @@ static bool vc4_qpu_exec_load_tmu0(VC4QPUExecState *state)
     write_end = "static bool vc4_qpu_exec_condition(VC4QPUExecState *state,\n"
     new_write = r'''static bool vc4_qpu_exec_write(VC4QPUReadFunc read_func, void *opaque,
                                VC4QPUExecState *state, bool file_a,
-                               unsigned address, const VC4QPUVector *value,
+                               bool mul_pack_mode, unsigned address,
+                               const VC4QPUVector *value,
                                unsigned pack)
 {
     if (address < VC4_QPU_REGFILE_SIZE) {
-        if (pack != 0) {
+        /* PM=1 byte packing to a general register is outside the
+         * bounded subset; do not reinterpret it as PM=0 halfword pack.
+         */
+        if (mul_pack_mode && pack != 0) {
             return vc4_qpu_exec_set_fault(
                 state, VC4_QPU_EXEC_FAULT_PACK, pack);
         }
@@ -359,7 +363,10 @@ static bool vc4_qpu_exec_load_tmu0(VC4QPUExecState *state)
     if (address >= 32 && address <= 35) {
         VC4QPUVector *destination = &state->accumulator[address - 32];
 
-        if (pack == 0) {
+        /* PM=0 packing belongs to regfile A; accumulator writes
+         * bypass it.  PM=1 packing is the mul byte-pack unit.
+         */
+        if (!mul_pack_mode || pack == 0) {
             *destination = *value;
             return true;
         }
@@ -435,10 +442,10 @@ static bool vc4_qpu_exec_load_tmu0(VC4QPUExecState *state)
         1,
     ).replace(
         "!vc4_qpu_exec_write(state, !instruction->ws,",
-        "!vc4_qpu_exec_write(read_func, opaque, state, !instruction->ws,",
+        "!vc4_qpu_exec_write(read_func, opaque, state, !instruction->ws, false,",
     ).replace(
         "!vc4_qpu_exec_write(state, instruction->ws,",
-        "!vc4_qpu_exec_write(read_func, opaque, state, instruction->ws,",
+        "!vc4_qpu_exec_write(read_func, opaque, state, instruction->ws, false,",
     )
     text = replace_block(text, load_start, load_end, new_load,
                          "load-immediate write plumbing")
@@ -601,13 +608,15 @@ static bool vc4_qpu_exec_load_tmu0(VC4QPUExecState *state)
 
     if (add_execute &&
         !vc4_qpu_exec_write(read_func, opaque, state, !instruction->ws,
-                            instruction->waddr_add, &add_result,
+                            instruction->pm, instruction->waddr_add,
+                            &add_result,
                             add_pack)) {
         return false;
     }
     if (mul_execute &&
         !vc4_qpu_exec_write(read_func, opaque, state, instruction->ws,
-                            instruction->waddr_mul, &mul_result,
+                            instruction->pm, instruction->waddr_mul,
+                            &mul_result,
                             mul_pack)) {
         return false;
     }

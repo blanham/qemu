@@ -16,6 +16,7 @@
 #define VC4_QPU_PROGRAM_END_SIGNAL       3
 #define VC4_QPU_LAST_THREAD_SWITCH_SIGNAL 6
 #define VC4_QPU_SCOREBOARD_UNLOCK_SIGNAL 5
+#define VC4_QPU_TMU0_LOAD_SIGNAL      10
 #define VC4_QPU_SMALL_IMMEDIATE_SIGNAL  13
 #define VC4_QPU_LOAD_IMMEDIATE_SIGNAL   14
 
@@ -45,6 +46,15 @@
 #define VC4_QPU_REG_VPM                  48
 #define VC4_QPU_REG_VPM_SETUP            49
 #define VC4_QPU_REG_SFU_RECIP             52
+#define VC4_QPU_REG_TMU0_S                56
+#define VC4_QPU_REG_TMU0_T                57
+#define VC4_QPU_REG_TMU0_R                58
+#define VC4_QPU_REG_TMU0_B                59
+
+#define VC4_QPU_UNPACK_8A                  4
+#define VC4_QPU_UNPACK_8D                  7
+#define VC4_QPU_PACK_MUL_8A                4
+#define VC4_QPU_PACK_MUL_8D                7
 
 static bool vc4_qpu_exec_set_fault(VC4QPUExecState *state,
                                    VC4QPUExecFault fault,
@@ -211,14 +221,132 @@ static bool vc4_qpu_exec_read_varying(VC4QPUExecState *state,
     unsigned index = state->varying_index;
 
     if (index >= state->varying_count ||
-        state->varying_partial == NULL || state->varying_c == NULL) {
+        state->varying_partial == NULL || state->varying_c == NULL ||
+        state->varying_c_pending) {
         return vc4_qpu_exec_set_fault(
             state, VC4_QPU_EXEC_FAULT_VARYING_READ, index);
     }
 
+    /*
+     * The VP term is available to this instruction.  The matching C term is
+     * the r5 input of the following instruction, so commit it only after the
+     * issuing ALU instruction has completed.
+     */
     *value = state->varying_partial[index];
-    state->accumulator[5] = state->varying_c[index];
+    state->varying_pending_c = state->varying_c[index];
+    state->varying_c_pending = true;
     state->varying_index = index + 1;
+    return true;
+}
+
+static bool vc4_qpu_exec_unpack_r4(VC4QPUExecState *state,
+                                      unsigned unpack,
+                                      VC4QPUVector *value)
+{
+    unsigned shift;
+
+    if (unpack < VC4_QPU_UNPACK_8A || unpack > VC4_QPU_UNPACK_8D) {
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_UNPACK, unpack);
+    }
+    shift = (unpack - VC4_QPU_UNPACK_8A) * 8;
+    memset(value, 0, sizeof(*value));
+    for (unsigned lane = 0; lane < state->active_lanes; lane++) {
+        float normalized =
+            ((state->accumulator[4].lane[lane] >> shift) & 0xff) / 255.0f;
+
+        value->lane[lane] = vc4_qpu_float_to_bits(normalized);
+    }
+    return true;
+}
+
+static uint8_t vc4_qpu_exec_pack_unorm8(uint32_t bits)
+{
+    float value = vc4_qpu_bits_to_float(bits);
+
+    if (isnan(value) || value <= 0.0f) {
+        return 0;
+    }
+    if (value >= 1.0f) {
+        return 0xff;
+    }
+    return (uint8_t)lrintf(value * 255.0f);
+}
+
+static bool vc4_qpu_exec_pack_mul_byte(VC4QPUExecState *state,
+                                       VC4QPUVector *destination,
+                                       const VC4QPUVector *value,
+                                       unsigned pack)
+{
+    unsigned shift;
+    uint32_t mask;
+
+    if (pack < VC4_QPU_PACK_MUL_8A || pack > VC4_QPU_PACK_MUL_8D) {
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_PACK, pack);
+    }
+    shift = (pack - VC4_QPU_PACK_MUL_8A) * 8;
+    mask = 0xffu << shift;
+    for (unsigned lane = 0; lane < state->active_lanes; lane++) {
+        uint32_t packed = vc4_qpu_exec_pack_unorm8(value->lane[lane]);
+
+        destination->lane[lane] =
+            (destination->lane[lane] & ~mask) | (packed << shift);
+    }
+    return true;
+}
+
+static bool vc4_qpu_exec_prepare_tmu0(VC4QPUReadFunc read_func,
+                                      void *opaque,
+                                      VC4QPUExecState *state,
+                                      const VC4QPUVector *s)
+{
+    uint32_t address = state->uniform_address;
+
+    if (state->tmu0_request_pending) {
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_TMU_REQUEST, 1);
+    }
+    if (!vc4_qpu_exec_read_u32(
+            read_func, opaque, address, &state->tmu0_config_p0) ||
+        !vc4_qpu_exec_read_u32(
+            read_func, opaque, address + 4, &state->tmu0_config_p1)) {
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_TMU_CONFIG_READ, address);
+    }
+
+    state->uniform_address += 8;
+    state->tmu0_s = *s;
+    state->tmu0_s_valid = true;
+    state->tmu0_request_pending = true;
+    return true;
+}
+
+static bool vc4_qpu_exec_load_tmu0(VC4QPUExecState *state)
+{
+    VC4QPUVector result = { 0 };
+
+    if (!state->tmu0_request_pending ||
+        !state->tmu0_s_valid || !state->tmu0_t_valid) {
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_TMU_REQUEST,
+            (state->tmu0_request_pending ? 1u : 0u) |
+            (state->tmu0_s_valid ? 2u : 0u) |
+            (state->tmu0_t_valid ? 4u : 0u));
+    }
+    if (state->tmu0_load_func == NULL ||
+        !state->tmu0_load_func(
+            state->tmu0_opaque, &state->tmu0_s, &state->tmu0_t,
+            state->tmu0_config_p0, state->tmu0_config_p1, &result)) {
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_TMU_LOAD,
+            state->tmu0_config_p0);
+    }
+
+    state->accumulator[4] = result;
+    state->tmu0_s_valid = false;
+    state->tmu0_t_valid = false;
+    state->tmu0_request_pending = false;
     return true;
 }
 
@@ -413,17 +541,35 @@ static bool vc4_qpu_exec_write_general(VC4QPUExecState *state,
     return true;
 }
 
-static bool vc4_qpu_exec_write(VC4QPUExecState *state, bool file_a,
-                               unsigned address, const VC4QPUVector *value,
+static bool vc4_qpu_exec_write(VC4QPUReadFunc read_func, void *opaque,
+                               VC4QPUExecState *state, bool file_a,
+                               bool mul_pack_mode, unsigned address,
+                               const VC4QPUVector *value,
                                unsigned pack)
 {
     if (address < VC4_QPU_REGFILE_SIZE) {
+        /* PM=1 byte packing to a general register is outside the
+         * bounded subset; do not reinterpret it as PM=0 halfword pack.
+         */
+        if (mul_pack_mode && pack != 0) {
+            return vc4_qpu_exec_set_fault(
+                state, VC4_QPU_EXEC_FAULT_PACK, pack);
+        }
         return vc4_qpu_exec_write_general(
             state, file_a, address, value, pack);
     }
     if (address >= 32 && address <= 35) {
-        state->accumulator[address - 32] = *value;
-        return true;
+        VC4QPUVector *destination = &state->accumulator[address - 32];
+
+        /* PM=0 packing belongs to regfile A; accumulator writes
+         * bypass it.  PM=1 packing is the mul byte-pack unit.
+         */
+        if (!mul_pack_mode || pack == 0) {
+            *destination = *value;
+            return true;
+        }
+        return vc4_qpu_exec_pack_mul_byte(
+            state, destination, value, pack);
     }
     if (address == VC4_QPU_REG_NULL) {
         return true;
@@ -450,6 +596,22 @@ static bool vc4_qpu_exec_write(VC4QPUExecState *state, bool file_a,
                 vc4_qpu_float_to_bits(1.0f / input);
         }
         return true;
+    case VC4_QPU_REG_TMU0_T:
+        if (state->tmu0_request_pending) {
+            return vc4_qpu_exec_set_fault(
+                state, VC4_QPU_EXEC_FAULT_TMU_REQUEST, 2);
+        }
+        state->tmu0_t = *value;
+        state->tmu0_t_valid = true;
+        return true;
+    case VC4_QPU_REG_TMU0_S:
+        return vc4_qpu_exec_prepare_tmu0(
+            read_func, opaque, state, value);
+    case VC4_QPU_REG_TMU0_R:
+    case VC4_QPU_REG_TMU0_B:
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_WRITE_ADDRESS,
+            (file_a ? 0x100 : 0x200) | address);
     case VC4_QPU_REG_VPM:
         return vc4_qpu_exec_write_vpm(state, value);
     case VC4_QPU_REG_VPM_SETUP:
@@ -474,7 +636,9 @@ static bool vc4_qpu_exec_condition(VC4QPUExecState *state,
     return true;
 }
 
-static bool vc4_qpu_exec_load_immediate(VC4QPUExecState *state,
+static bool vc4_qpu_exec_load_immediate(VC4QPUReadFunc read_func,
+                                                void *opaque,
+                                                VC4QPUExecState *state,
                                         const VC4QPUInstruction *instruction)
 {
     VC4QPUVector value;
@@ -502,12 +666,12 @@ static bool vc4_qpu_exec_load_immediate(VC4QPUExecState *state,
 
     vc4_qpu_vector_splat(&value, (uint32_t)instruction->word);
     if (add_execute &&
-        !vc4_qpu_exec_write(state, !instruction->ws,
+        !vc4_qpu_exec_write(read_func, opaque, state, !instruction->ws, false,
                             instruction->waddr_add, &value, 0)) {
         return false;
     }
     if (mul_execute &&
-        !vc4_qpu_exec_write(state, instruction->ws,
+        !vc4_qpu_exec_write(read_func, opaque, state, instruction->ws, false,
                             instruction->waddr_mul, &value, 0)) {
         return false;
     }
@@ -520,6 +684,7 @@ static bool vc4_qpu_exec_alu(VC4QPUReadFunc read_func, void *opaque,
 {
     VC4QPUVector port_a = { 0 };
     VC4QPUVector port_b = { 0 };
+    VC4QPUVector unpacked_r4 = { 0 };
     VC4QPUVector add_result;
     VC4QPUVector mul_result;
     const VC4QPUVector *add_a;
@@ -530,22 +695,26 @@ static bool vc4_qpu_exec_alu(VC4QPUReadFunc read_func, void *opaque,
     bool mul_execute;
     bool need_a;
     bool need_b;
+    bool uses_r4;
     unsigned add_pack;
     unsigned mul_pack;
 
+    state->varying_c_pending = false;
     if (instruction->set_flags) {
         return vc4_qpu_exec_set_fault(
             state, VC4_QPU_EXEC_FAULT_FLAGS, 1);
     }
-    if (instruction->unpack != 0) {
+    if (instruction->unpack != 0 &&
+        (!instruction->pm ||
+         instruction->unpack < VC4_QPU_UNPACK_8A ||
+         instruction->unpack > VC4_QPU_UNPACK_8D)) {
         return vc4_qpu_exec_set_fault(
             state, VC4_QPU_EXEC_FAULT_UNPACK, instruction->unpack);
     }
-    if (instruction->pm && instruction->pack != 0) {
-        return vc4_qpu_exec_set_fault(
-            state, VC4_QPU_EXEC_FAULT_PACK, instruction->pack);
-    }
-    if (instruction->pack > 2) {
+    if ((!instruction->pm && instruction->pack > 2) ||
+        (instruction->pm && instruction->pack != 0 &&
+         (instruction->pack < VC4_QPU_PACK_MUL_8A ||
+          instruction->pack > VC4_QPU_PACK_MUL_8D))) {
         return vc4_qpu_exec_set_fault(
             state, VC4_QPU_EXEC_FAULT_PACK, instruction->pack);
     }
@@ -558,28 +727,30 @@ static bool vc4_qpu_exec_alu(VC4QPUReadFunc read_func, void *opaque,
 
     add_execute &= instruction->op_add != VC4_QPU_ADD_NOP;
     mul_execute &= instruction->op_mul != VC4_QPU_MUL_NOP;
-
-    /* PM=0 packing belongs to regfile A, not to the add pipeline.
-     * Accumulator writes bypass that pack unit. Packed peripheral writes
-     * remain unsupported rather than guessing their behavior.
-     * See VideoCoreIV-AG100-R, pp. 27 and 30-31.
-     */
-    add_pack = instruction->ws ? 0 : instruction->pack;
-    mul_pack = instruction->ws ? instruction->pack : 0;
-
-    /* A 16-bit pack of a floating-point result means float16 conversion,
-     * not truncating the low 16 bits.  That mode is not implemented yet.
-     * Reject it before reads or either pipeline's writeback.
-     */
-    if ((add_execute && add_pack &&
-         instruction->waddr_add < VC4_QPU_REGFILE_SIZE &&
-         instruction->op_add == VC4_QPU_ADD_FSUB) ||
-        (mul_execute && mul_pack &&
-         instruction->waddr_mul < VC4_QPU_REGFILE_SIZE &&
-         instruction->op_mul == VC4_QPU_MUL_FMUL)) {
+    if (instruction->pm && instruction->pack != 0 && !mul_execute) {
         return vc4_qpu_exec_set_fault(
             state, VC4_QPU_EXEC_FAULT_PACK, instruction->pack);
     }
+
+    /* PM=0 packs the regfile-A destination.  PM=1 unpacks r4 and packs the
+     * mul pipeline's output into one byte of its destination.
+     */
+    add_pack = instruction->pm ? 0 :
+               (instruction->ws ? 0 : instruction->pack);
+    mul_pack = instruction->pm ? instruction->pack :
+               (instruction->ws ? instruction->pack : 0);
+
+    if (!instruction->pm &&
+        ((add_execute && add_pack &&
+          instruction->waddr_add < VC4_QPU_REGFILE_SIZE &&
+          instruction->op_add == VC4_QPU_ADD_FSUB) ||
+         (mul_execute && mul_pack &&
+          instruction->waddr_mul < VC4_QPU_REGFILE_SIZE &&
+          instruction->op_mul == VC4_QPU_MUL_FMUL))) {
+        return vc4_qpu_exec_set_fault(
+            state, VC4_QPU_EXEC_FAULT_PACK, instruction->pack);
+    }
+
     need_a = (add_execute &&
               (instruction->add_a == VC4_QPU_MUX_A ||
                instruction->add_b == VC4_QPU_MUX_A)) ||
@@ -626,6 +797,30 @@ static bool vc4_qpu_exec_alu(VC4QPUReadFunc read_func, void *opaque,
     mul_b = vc4_qpu_exec_mux(
         state, instruction->mul_b, &port_a, &port_b);
 
+    uses_r4 = add_a == &state->accumulator[4] ||
+              add_b == &state->accumulator[4] ||
+              mul_a == &state->accumulator[4] ||
+              mul_b == &state->accumulator[4];
+    if (instruction->unpack != 0) {
+        if (!uses_r4 ||
+            !vc4_qpu_exec_unpack_r4(
+                state, instruction->unpack, &unpacked_r4)) {
+            return false;
+        }
+        if (add_a == &state->accumulator[4]) {
+            add_a = &unpacked_r4;
+        }
+        if (add_b == &state->accumulator[4]) {
+            add_b = &unpacked_r4;
+        }
+        if (mul_a == &state->accumulator[4]) {
+            mul_a = &unpacked_r4;
+        }
+        if (mul_b == &state->accumulator[4]) {
+            mul_b = &unpacked_r4;
+        }
+    }
+
     if (add_execute &&
         !vc4_qpu_exec_add(state, instruction->op_add,
                           add_a, add_b, &add_result)) {
@@ -638,16 +833,22 @@ static bool vc4_qpu_exec_alu(VC4QPUReadFunc read_func, void *opaque,
     }
 
     if (add_execute &&
-        !vc4_qpu_exec_write(state, !instruction->ws,
-                            instruction->waddr_add, &add_result,
+        !vc4_qpu_exec_write(read_func, opaque, state, !instruction->ws,
+                            instruction->pm, instruction->waddr_add,
+                            &add_result,
                             add_pack)) {
         return false;
     }
     if (mul_execute &&
-        !vc4_qpu_exec_write(state, instruction->ws,
-                            instruction->waddr_mul, &mul_result,
+        !vc4_qpu_exec_write(read_func, opaque, state, instruction->ws,
+                            instruction->pm, instruction->waddr_mul,
+                            &mul_result,
                             mul_pack)) {
         return false;
+    }
+    if (state->varying_c_pending) {
+        state->accumulator[5] = state->varying_pending_c;
+        state->varying_c_pending = false;
     }
     return true;
 }
@@ -683,6 +884,19 @@ bool vc4_qpu_exec_set_varyings(VC4QPUExecState *state,
     state->varying_c = c;
     state->varying_count = count;
     state->varying_index = 0;
+    state->varying_c_pending = false;
+    return true;
+}
+
+bool vc4_qpu_exec_set_tmu0(VC4QPUExecState *state,
+                            VC4QPUTMULoadFunc load_func,
+                            void *opaque)
+{
+    if (state == NULL || load_func == NULL) {
+        return false;
+    }
+    state->tmu0_load_func = load_func;
+    state->tmu0_opaque = opaque;
     return true;
 }
 
@@ -701,6 +915,10 @@ bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
     state->scoreboard_unlocked = false;
     state->tlb_color_all_valid = false;
     state->last_thread_switch = false;
+    state->varying_c_pending = false;
+    state->tmu0_s_valid = false;
+    state->tmu0_t_valid = false;
+    state->tmu0_request_pending = false;
 
     for (unsigned index = 0; index < VC4_QPU_MAX_EXEC_WORDS; index++) {
         VC4QPUInstruction instruction;
@@ -731,8 +949,16 @@ bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
                 return false;
             }
             break;
+        case VC4_QPU_TMU0_LOAD_SIGNAL:
+            if (!vc4_qpu_exec_load_tmu0(state) ||
+                !vc4_qpu_exec_alu(
+                    read_func, opaque, state, &instruction)) {
+                return false;
+            }
+            break;
         case VC4_QPU_LOAD_IMMEDIATE_SIGNAL:
-            if (!vc4_qpu_exec_load_immediate(state, &instruction)) {
+            if (!vc4_qpu_exec_load_immediate(
+                    read_func, opaque, state, &instruction)) {
                 return false;
             }
             break;
@@ -772,6 +998,9 @@ const char *vc4_qpu_exec_fault_name(VC4QPUExecFault fault)
         [VC4_QPU_EXEC_FAULT_CODE_READ] = "code-read",
         [VC4_QPU_EXEC_FAULT_UNIFORM_READ] = "uniform-read",
         [VC4_QPU_EXEC_FAULT_VARYING_READ] = "varying-read",
+        [VC4_QPU_EXEC_FAULT_TMU_CONFIG_READ] = "tmu-config-read",
+        [VC4_QPU_EXEC_FAULT_TMU_REQUEST] = "tmu-request",
+        [VC4_QPU_EXEC_FAULT_TMU_LOAD] = "tmu-load",
         [VC4_QPU_EXEC_FAULT_PROGRAM_LIMIT] = "program-limit",
         [VC4_QPU_EXEC_FAULT_SIGNAL] = "signal",
         [VC4_QPU_EXEC_FAULT_CONDITION] = "condition",

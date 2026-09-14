@@ -79,6 +79,18 @@ static const uint64_t mesa_cs[] = {
     0x100009e7009e7000ULL,
 };
 
+
+static const uint64_t mesa_readback_fs[] = {
+    0x100049e0203e303eULL, 0x100248e1213e317eULL,
+    0x600208a7019e7340ULL, 0x10021e67159e7480ULL,
+    0x10021e27159e76c0ULL, 0xa00009e7009e7000ULL,
+    0x1d020867049e7900ULL, 0x1b424821849e7909ULL,
+    0x195248e1849e7900ULL, 0x1f6248a1849e791bULL,
+    0x117049e1809e7012ULL, 0x10020ba7159e7240ULL,
+    0x300009e7009e7000ULL, 0x100009e7009e7000ULL,
+    0x500009e7009e7000ULL,
+};
+
 static const uint32_t transform_uniforms[] = {
     0x3f800000, 0x44000000, 0xc4000000, 0x3f000000,
 };
@@ -472,6 +484,98 @@ static void test_varying_fifo_underflow_fails_closed(void)
     g_assert_cmpstr(vc4_qpu_exec_fault_name(state.fault), ==, "varying-read");
 }
 
+
+typedef struct TestTMUContext {
+    unsigned calls;
+    uint32_t expected_p0;
+    uint32_t expected_p1;
+    uint32_t sampled_word;
+    float expected_s;
+    float expected_t;
+} TestTMUContext;
+
+static bool test_tmu0_load(void *opaque,
+                           const VC4QPUVector *s,
+                           const VC4QPUVector *t,
+                           uint32_t config_p0,
+                           uint32_t config_p1,
+                           VC4QPUVector *result)
+{
+    TestTMUContext *context = opaque;
+
+    context->calls++;
+    g_assert_cmphex(config_p0, ==, context->expected_p0);
+    g_assert_cmphex(config_p1, ==, context->expected_p1);
+    for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        float actual_s;
+        float actual_t;
+
+        memcpy(&actual_s, &s->lane[lane], sizeof(actual_s));
+        memcpy(&actual_t, &t->lane[lane], sizeof(actual_t));
+        g_assert_cmpfloat_with_epsilon(
+            actual_s, context->expected_s, 0x1p-20f);
+        g_assert_cmpfloat_with_epsilon(
+            actual_t, context->expected_t, 0x1p-20f);
+        result->lane[lane] = context->sampled_word;
+    }
+    return true;
+}
+
+static void test_mesa_readback_fragment_tmu(void)
+{
+    enum { CODE = 0xd000, UNIFORMS = 0xe000 };
+    static const uint32_t texture_uniforms[] = {
+        0x00100000, 0x040040a5,
+    };
+    uint8_t code[sizeof(mesa_readback_fs)];
+    uint8_t uniforms[sizeof(texture_uniforms)];
+    TestMemory memory = { 0 };
+    VC4QPUExecState state;
+    VC4QPUVector partial[2] = { 0 };
+    VC4QPUVector coefficient[2] = { 0 };
+    TestTMUContext tmu = {
+        .expected_p0 = texture_uniforms[0],
+        .expected_p1 = texture_uniforms[1],
+        /* Texture word ABGR -> fragment shader repacks to RGBA bytes. */
+        .sampled_word = 0xff2080df,
+        .expected_s = 0.35f,
+        .expected_t = 0.95f,
+    };
+
+    encode_words(code, mesa_readback_fs, ARRAY_SIZE(mesa_readback_fs));
+    encode_uniforms(uniforms, texture_uniforms,
+                    ARRAY_SIZE(texture_uniforms));
+    test_memory_add(&memory, CODE, code, sizeof(code));
+    test_memory_add(&memory, UNIFORMS, uniforms, sizeof(uniforms));
+
+    vc4_qpu_exec_init(&state, UNIFORMS);
+    g_assert_true(vc4_qpu_exec_set_tmu0(&state, test_tmu0_load, &tmu));
+    for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        state.reg_a[15].lane[lane] = 0x3f800000; /* fragment W = 1 */
+        partial[0].lane[lane] = 0x3e800000;      /* 0.25 */
+        coefficient[0].lane[lane] = 0x3dcccccd;  /* 0.10 */
+        partial[1].lane[lane] = 0x3f400000;      /* 0.75 */
+        coefficient[1].lane[lane] = 0x3e4ccccd;  /* 0.20 */
+    }
+    g_assert_true(vc4_qpu_exec_set_varyings(
+        &state, partial, coefficient, ARRAY_SIZE(partial)));
+
+    g_assert_true(vc4_qpu_execute(test_memory_read, &memory, CODE, &state));
+    g_assert_cmpint(state.fault, ==, VC4_QPU_EXEC_FAULT_NONE);
+    g_assert_cmpuint(state.instruction_count, ==,
+                     ARRAY_SIZE(mesa_readback_fs));
+    g_assert_cmpuint(state.varying_index, ==, 2);
+    g_assert_cmpuint(tmu.calls, ==, 1);
+    g_assert_cmphex(state.uniform_address, ==,
+                    UNIFORMS + sizeof(texture_uniforms));
+    g_assert_true(state.last_thread_switch);
+    g_assert_true(state.scoreboard_unlocked);
+    g_assert_true(state.tlb_color_all_valid);
+    for (unsigned lane = 0; lane < VC4_QPU_LANES; lane++) {
+        g_assert_cmphex(state.tlb_color_all.lane[lane], ==, 0xffdf8020);
+    }
+}
+
 static void test_unsupported_signal_fails_closed(void)
 {
     enum { CODE = 0xc000 };
@@ -505,6 +609,8 @@ int main(int argc, char **argv)
                     test_measured_varying_read_contract);
     g_test_add_func("/vc4/qpu/varying-underflow",
                     test_varying_fifo_underflow_fails_closed);
+    g_test_add_func("/vc4/qpu/mesa-readback-tmu",
+                    test_mesa_readback_fragment_tmu);
     g_test_add_func("/vc4/qpu/fail-closed",
                     test_unsupported_signal_fails_closed);
     return g_test_run();

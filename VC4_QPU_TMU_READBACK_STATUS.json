@@ -1,0 +1,32 @@
+{
+  "classification": "validated-architectural-varying-tmu-readback",
+  "contracts": {
+    "implicit_texture_p0_p1_uniforms": true,
+    "load_tmu0_to_r4": true,
+    "measured_mesa_fragment_program": true,
+    "mul_unorm8_pack": true,
+    "pm_r4_byte_unpack": true,
+    "tmu0_t_s_request": true,
+    "unsupported_modes_fail_closed": true,
+    "varying_c_commits_after_issuing_instruction": true
+  },
+  "files": {
+    "hw/display/vc4_qpu_exec.c": "ba2c56cb76bc38aef0a05be6187cb928252ed3cf08eab461460c71e9d55b5060",
+    "include/hw/display/vc4_qpu_exec.h": "061c5b9947f98403c8f78e61b1222c0671fb72c5ff227ee1ff3aeae6bd8ac6c3",
+    "scripts/vc4/materialize-qpu-tmu-readback.py": "c741fd3b9eaa9b277499326db446e3b2edca961e3a29e33fc5e0a57bacedf148",
+    "tests/unit/test-vc4-qpu.c": "25e09afb1c1c025663027a957a0d2c5606a660397b7e5118877e9cf4dd95e73f"
+  },
+  "generated_at": "2026-09-14T06:04:46.045238+00:00",
+  "mesa_source_modified": false,
+  "run_id": "34811583238",
+  "schema_version": 4,
+  "source_sha": "530ba1f4fa4055d8c56383f042e2b8b5504b2642",
+  "validated": true,
+  "writeback_contracts": {
+    "pm0_accumulator_pack_bypass_preserved": true,
+    "pm0_packed_peripheral_fails_closed": true,
+    "pm0_regfile_halfword_pack_preserved": true,
+    "pm1_accumulator_byte_pack": true,
+    "pm1_packed_regfile_fails_closed": true
+  }
+}

@@ -17,11 +17,19 @@ typedef struct VC4QPUVector {
     uint32_t lane[VC4_QPU_LANES];
 } VC4QPUVector;
 
+typedef bool (*VC4QPUTMULoadFunc)(
+    void *opaque, const VC4QPUVector *s, const VC4QPUVector *t,
+    uint32_t config_p0, uint32_t config_p1,
+    VC4QPUVector *result);
+
 typedef enum VC4QPUExecFault {
     VC4_QPU_EXEC_FAULT_NONE,
     VC4_QPU_EXEC_FAULT_CODE_READ,
     VC4_QPU_EXEC_FAULT_UNIFORM_READ,
     VC4_QPU_EXEC_FAULT_VARYING_READ,
+    VC4_QPU_EXEC_FAULT_TMU_CONFIG_READ,
+    VC4_QPU_EXEC_FAULT_TMU_REQUEST,
+    VC4_QPU_EXEC_FAULT_TMU_LOAD,
     VC4_QPU_EXEC_FAULT_PROGRAM_LIMIT,
     VC4_QPU_EXEC_FAULT_SIGNAL,
     VC4_QPU_EXEC_FAULT_CONDITION,
@@ -57,6 +65,19 @@ typedef struct VC4QPUExecState {
     const VC4QPUVector *varying_c;
     unsigned varying_count;
     unsigned varying_index;
+    VC4QPUVector varying_pending_c;
+    bool varying_c_pending;
+
+    /* One bounded two-dimensional TMU0 request. */
+    VC4QPUTMULoadFunc tmu0_load_func;
+    void *tmu0_opaque;
+    VC4QPUVector tmu0_s;
+    VC4QPUVector tmu0_t;
+    uint32_t tmu0_config_p0;
+    uint32_t tmu0_config_p1;
+    bool tmu0_s_valid;
+    bool tmu0_t_valid;
+    bool tmu0_request_pending;
 
     uint32_t pc;
     unsigned instruction_count;
@@ -96,6 +117,10 @@ bool vc4_qpu_exec_set_active_lanes(VC4QPUExecState *state,
 bool vc4_qpu_exec_set_varyings(VC4QPUExecState *state,
                                 const VC4QPUVector *partial,
                                 const VC4QPUVector *c, unsigned count);
+
+bool vc4_qpu_exec_set_tmu0(VC4QPUExecState *state,
+                            VC4QPUTMULoadFunc load_func,
+                            void *opaque);
 
 bool vc4_qpu_execute(VC4QPUReadFunc read_func, void *opaque,
                      uint32_t code_address, VC4QPUExecState *state);
